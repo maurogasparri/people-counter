@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project-specific secrets (NEVER commit)
+/config/config.yaml
+/certs/
+*.pem
+*.pem.crt
+*.pem.key
+.env
+*.shadow.json
+
+# Binary artifacts
+*.npz
+*.hef
+*.onnx
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Calibration captures (large image sets)
+/calibration_captures/
