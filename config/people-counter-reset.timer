@@ -1,0 +1,10 @@
+[Unit]
+Description=People Counter daily reset timer
+
+[Timer]
+# Runs at 04:00 every day (before any store opens)
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

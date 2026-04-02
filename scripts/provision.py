@@ -222,14 +222,26 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     _ssh(host, f"chmod 600 {REMOTE_CERT_DIR}/device.pem.key")
     _ssh(host, f"chmod 644 {REMOTE_CERT_DIR}/device.pem.crt {REMOTE_CERT_DIR}/AmazonRootCA1.pem")
 
-    # Install systemd service
-    service_file = Path(__file__).resolve().parent.parent / "config" / "people-counter.service"
-    if service_file.exists():
-        _scp(str(service_file), f"{host}:/tmp/people-counter.service")
-        _ssh(host, "sudo mv /tmp/people-counter.service /etc/systemd/system/")
-        _ssh(host, "sudo systemctl daemon-reload")
-        _ssh(host, "sudo systemctl enable people-counter")
-        logger.info("Systemd service installed and enabled")
+    # Install systemd services and logrotate
+    config_dir = Path(__file__).resolve().parent.parent / "config"
+    for config_file in [
+        "people-counter.service",
+        "people-counter-reset.service",
+        "people-counter-reset.timer",
+    ]:
+        src = config_dir / config_file
+        if src.exists():
+            _scp(str(src), f"{host}:/tmp/{config_file}")
+            _ssh(host, f"sudo mv /tmp/{config_file} /etc/systemd/system/")
+
+    logrotate = config_dir / "logrotate.conf"
+    if logrotate.exists():
+        _scp(str(logrotate), f"{host}:/tmp/people-counter-logrotate")
+        _ssh(host, "sudo mv /tmp/people-counter-logrotate /etc/logrotate.d/people-counter")
+
+    _ssh(host, "sudo systemctl daemon-reload")
+    _ssh(host, "sudo systemctl enable people-counter people-counter-reset.timer")
+    logger.info("Systemd services and logrotate installed")
 
     logger.info("Device %s deployed to %s", device_id, args.host)
 

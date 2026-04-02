@@ -248,7 +248,29 @@ pip install -e ".[dev]"
 pytest -v
 ```
 
-## 13. PoC — Siguiente paso
+## 13. Instalar servicios del sistema
+
+```bash
+# Logrotate (rotación de logs)
+sudo cp /usr/src/people-counter/config/logrotate.conf /etc/logrotate.d/people-counter
+
+# Servicio principal (pipeline)
+sudo cp /usr/src/people-counter/config/people-counter.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable people-counter
+
+# Timer de reset diario (dedup counters a las 04:00)
+sudo cp /usr/src/people-counter/config/people-counter-reset.service /etc/systemd/system/
+sudo cp /usr/src/people-counter/config/people-counter-reset.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable people-counter-reset.timer
+
+# Crear directorios de datos
+sudo mkdir -p /etc/people-counter/certs /var/lib/people-counter /var/log/people-counter
+sudo chown -R pi:pi /etc/people-counter /var/lib/people-counter /var/log/people-counter
+```
+
+## 14. PoC — Siguiente paso
 
 Una vez que todo lo anterior funciona, abrí Claude Code en el directorio
 del repo y pedile:
