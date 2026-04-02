@@ -1,0 +1,285 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  People Counter — Cloud infrastructure.
+  IoT Core, Timestream, DynamoDB, Lambda dedup L3, IAM roles.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+  TimestreamRetentionHoursMemory:
+    Type: Number
+    Default: 168  # 7 days
+    Description: Hours to keep data in memory store
+  TimestreamRetentionDaysMagnetic:
+    Type: Number
+    Default: 365
+    Description: Days to keep data in magnetic store
+  DedupTTLDays:
+    Type: Number
+    Default: 7
+    Description: Days to keep dedup hashes in DynamoDB
+
+Resources:
+
+  # =========================================================================
+  # IoT Core
+  # =========================================================================
+
+  IoTDevicePolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: people-counter-device-policy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - iot:Connect
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${!iot:Connection.Thing.ThingName}"
+          - Effect: Allow
+            Action:
+              - iot:Publish
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/counting"
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/wifi_ble"
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/telemetry"
+          - Effect: Allow
+            Action:
+              - iot:Subscribe
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/things/${!iot:Connection.Thing.ThingName}/shadow/*"
+          - Effect: Allow
+            Action:
+              - iot:Receive
+            Resource:
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/things/${!iot:Connection.Thing.ThingName}/shadow/*"
+
+  IoTThingType:
+    Type: AWS::IoT::ThingType
+    Properties:
+      ThingTypeName: people-counter
+      ThingTypeProperties:
+        ThingTypeDescription: People Counter edge device (RPi5 + Hailo-8L)
+        SearchableAttributes:
+          - store_id
+          - firmware_version
+
+  # =========================================================================
+  # IoT Rules — route MQTT messages to backends
+  # =========================================================================
+
+  IoTRuleCounting:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: people_counter_counting
+      TopicRulePayload:
+        Sql: "SELECT * FROM 'store/+/counting'"
+        Actions:
+          - Timestream:
+              DatabaseName: !Ref TimestreamDatabase
+              TableName: !GetAtt TimestreamCountingTable.Name
+              RoleArn: !GetAtt IoTTimestreamRole.Arn
+              Dimensions:
+                - Name: device_id
+                  Value: "${device_id}"
+                - Name: store_id
+                  Value: "${topic(2)}"
+                - Name: direction
+                  Value: "${data.direction}"
+              Timestamp:
+                Value: "${timestamp()}"
+                Unit: MILLISECONDS
+        RuleDisabled: false
+
+  IoTRuleTelemetry:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: people_counter_telemetry
+      TopicRulePayload:
+        Sql: "SELECT * FROM 'store/+/telemetry'"
+        Actions:
+          - Timestream:
+              DatabaseName: !Ref TimestreamDatabase
+              TableName: !GetAtt TimestreamTelemetryTable.Name
+              RoleArn: !GetAtt IoTTimestreamRole.Arn
+              Dimensions:
+                - Name: device_id
+                  Value: "${device_id}"
+                - Name: store_id
+                  Value: "${topic(2)}"
+              Timestamp:
+                Value: "${timestamp()}"
+                Unit: MILLISECONDS
+        RuleDisabled: false
+
+  IoTRuleWifiBle:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: people_counter_wifi_ble
+      TopicRulePayload:
+        Sql: "SELECT * FROM 'store/+/wifi_ble'"
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt DedupLambda.Arn
+        RuleDisabled: false
+
+  # =========================================================================
+  # Timestream
+  # =========================================================================
+
+  TimestreamDatabase:
+    Type: AWS::Timestream::Database
+    Properties:
+      DatabaseName: !Sub "people-counter-${Environment}"
+
+  TimestreamCountingTable:
+    Type: AWS::Timestream::Table
+    Properties:
+      DatabaseName: !Ref TimestreamDatabase
+      TableName: counting
+      RetentionProperties:
+        MemoryStoreRetentionPeriodInHours: !Ref TimestreamRetentionHoursMemory
+        MagneticStoreRetentionPeriodInDays: !Ref TimestreamRetentionDaysMagnetic
+
+  TimestreamTelemetryTable:
+    Type: AWS::Timestream::Table
+    Properties:
+      DatabaseName: !Ref TimestreamDatabase
+      TableName: telemetry
+      RetentionProperties:
+        MemoryStoreRetentionPeriodInHours: !Ref TimestreamRetentionHoursMemory
+        MagneticStoreRetentionPeriodInDays: !Ref TimestreamRetentionDaysMagnetic
+
+  # =========================================================================
+  # DynamoDB — WiFi/BLE dedup L3 (inter-camera)
+  # =========================================================================
+
+  DedupTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "people-counter-dedup-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: store_date
+          AttributeType: S
+        - AttributeName: hash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: store_date
+          KeyType: HASH
+        - AttributeName: hash
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # =========================================================================
+  # Lambda — Dedup L3
+  # =========================================================================
+
+  DedupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "people-counter-dedup-lambda-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource: !GetAtt DedupTable.Arn
+
+  DedupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "people-counter-dedup-${Environment}"
+      Runtime: python3.12
+      Handler: lambda_dedup.handler
+      Code:
+        ZipFile: |
+          # Placeholder — deploy actual code from src/cloud/lambda_dedup.py
+          # Use: aws lambda update-function-code --function-name <name> --zip-file fileb://lambda.zip
+          def handler(event, context):
+              return {"statusCode": 501, "body": "Deploy lambda_dedup.py"}
+      Role: !GetAtt DedupLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          DEDUP_TABLE_NAME: !Ref DedupTable
+
+  DedupLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DedupLambda
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IoTRuleWifiBle.Arn
+
+  # =========================================================================
+  # IAM — IoT Core → Timestream
+  # =========================================================================
+
+  IoTTimestreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "people-counter-iot-timestream-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: TimestreamWrite
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - timestream:WriteRecords
+                Resource:
+                  - !GetAtt TimestreamCountingTable.Arn
+                  - !GetAtt TimestreamTelemetryTable.Arn
+              - Effect: Allow
+                Action:
+                  - timestream:DescribeEndpoints
+                Resource: "*"
+
+# =========================================================================
+# Outputs
+# =========================================================================
+
+Outputs:
+  IoTEndpoint:
+    Description: IoT Core data endpoint (use with provision.py --endpoint)
+    Value: !Sub "${AWS::AccountId}.iot.${AWS::Region}.amazonaws.com"
+
+  TimestreamDatabase:
+    Description: Timestream database name
+    Value: !Ref TimestreamDatabase
+
+  DedupTableName:
+    Description: DynamoDB dedup table name
+    Value: !Ref DedupTable
+
+  DedupLambdaArn:
+    Description: Dedup Lambda ARN
+    Value: !GetAtt DedupLambda.Arn
