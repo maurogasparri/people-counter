@@ -41,13 +41,16 @@ Edge Device (per store door)          AWS Cloud
 
 | Area | Status | Details |
 |------|--------|---------|
-| Source code | ✅ 20 files, 2684 lines | All modules implemented |
-| Tests | ✅ 129/129 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud |
+| Source code | ✅ 22 files | All modules implemented |
+| Tests | ✅ 189/189 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
 | Config | ✅ Local + Cloud | YAML (hardware) + IoT Shadow (business) |
-| Hardware | 📦 In box | RPi5 + Hailo-8L + cameras, unboxing pending |
-| Calibration | 🔧 Code ready | `scripts/calibrate.py` — needs real cameras |
-| WiFi/BLE capture | 🔧 Stub | Needs nexmon on RPi5 + real hardware |
-| Cloud infra | 🔧 Stub | CloudFormation templates pending |
+| Hardware | ✅ Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2× OV5647 |
+| Stereo capture | ✅ Validated | picamera2 on RPi5, both cameras working |
+| Detection | ✅ Validated | YOLOv8n HEF on Hailo-8L, person detected at 91% confidence |
+| Calibration | 🔧 Ready to run | `scripts/calibrate.py` headless — pending ChArUco capture |
+| WiFi/BLE capture | 🔧 Skeletons | wifi_probe.py + ble_scan.py with tests, needs hardware validation |
+| Cloud infra | ✅ CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
+| Deployment | ✅ Ready | provision.py, systemd service, logrotate, daily reset timer |
 | TFG document | ✅ 90+ pages | 27 references, 13 tables, 6 figures |
 
 ## Quick start
@@ -72,23 +75,33 @@ See [`config/config.example.yaml`](config/config.example.yaml) for the full anno
 
 ```
 src/
-├── vision/          # Stereo capture, calibration, SGBM depth, YOLOv8n detection
+├── vision/          # Stereo capture (picamera2), calibration, SGBM depth, YOLOv8n detection (Hailo + OpenCV)
 ├── tracking/        # 3D Euclidean tracker + virtual line counter
-├── wifi_ble/        # MAC hashing, dedup (L1 intra + L2 cross-protocol)
+├── wifi_ble/        # WiFi probe capture, BLE scan, MAC hashing, dedup (L1+L2)
 ├── mqtt/            # AWS IoT Core client + SQLite buffer
 ├── cloud/           # Lambda dedup L3 (inter-camera)
 ├── config/          # YAML loader + IoT Shadow merge
-└── main.py          # Pipeline orchestrator
-tests/               # 129 tests mirroring src/ structure
+└── main.py          # Pipeline orchestrator (17 tests)
+tests/               # 189 tests mirroring src/ structure
 scripts/
-└── calibrate.py     # CLI: generate-board, capture, calibrate, verify
+├── calibrate.py     # CLI: generate-board, capture (headless), calibrate, verify
+├── provision.py     # Device provisioning: create, deploy, list
+└── download_model.py # Download YOLOv8n HEF/ONNX
 config/
-└── config.example.yaml  # Annotated config with strategy docs
+├── config.example.yaml       # Annotated config with strategy docs
+├── people-counter.service    # systemd service (auto-restart, hardening)
+├── people-counter-reset.*    # Daily dedup reset timer (04:00)
+└── logrotate.conf            # Log rotation
+infra/
+└── cloudformation/people-counter.yaml  # Full AWS stack
+docs/
+└── setup-guide.md            # Hardware assembly + RPi setup (14 steps)
 ```
 
 ## Key references
 
 - [CLAUDE.md](CLAUDE.md) — Full architecture documentation for Claude Code
+- [docs/setup-guide.md](docs/setup-guide.md) — Hardware assembly + RPi setup guide
 - [config/config.example.yaml](config/config.example.yaml) — Annotated configuration with strategy
 
 ## License
