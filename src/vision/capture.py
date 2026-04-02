@@ -1,12 +1,9 @@
 """Stereo frame acquisition from dual CSI cameras.
 
-Supports two modes:
-  - live: Real cameras via OpenCV VideoCapture (CSI or USB).
+Supports three modes:
+  - picamera2: RPi5 CSI cameras via libcamera/picamera2 (production).
+  - opencv: USB or V4L2 cameras via OpenCV VideoCapture (fallback).
   - file: Replay from saved image pairs (for testing/development).
-
-On RPi5 with libcamera, cameras appear as /dev/video0 and /dev/video2
-(not sequential) depending on CSI port. Use `v4l2-ctl --list-devices`
-to confirm.
 """
 
 import logging
@@ -21,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class StereoCapture:
-    """Manages simultaneous capture from left and right cameras."""
+    """Manages simultaneous capture from left and right CSI cameras via picamera2."""
 
     def __init__(
         self,
@@ -33,8 +30,8 @@ class StereoCapture:
         """Initialize stereo capture.
 
         Args:
-            cam_left_id: Left camera device index (e.g. 0).
-            cam_right_id: Right camera device index (e.g. 1 or 2).
+            cam_left_id: Left camera index as listed by rpicam-hello --list-cameras.
+            cam_right_id: Right camera index.
             resolution: (width, height) capture resolution.
             fps: Target frame rate.
         """
@@ -42,29 +39,41 @@ class StereoCapture:
         self.cam_right_id = cam_right_id
         self.resolution = resolution
         self.fps = fps
-        self._cap_left: Optional[cv2.VideoCapture] = None
-        self._cap_right: Optional[cv2.VideoCapture] = None
+        self._cam_left = None
+        self._cam_right = None
 
     def open(self) -> None:
-        """Open both camera streams.
+        """Open both camera streams via picamera2.
 
         Raises:
             RuntimeError: If either camera fails to open.
         """
-        self._cap_left = cv2.VideoCapture(self.cam_left_id)
-        self._cap_right = cv2.VideoCapture(self.cam_right_id)
+        try:
+            from picamera2 import Picamera2
+        except ImportError:
+            raise RuntimeError(
+                "picamera2 not installed. "
+                "Install with: pip install picamera2"
+            )
 
-        for cap, name, cam_id in [
-            (self._cap_left, "left", self.cam_left_id),
-            (self._cap_right, "right", self.cam_right_id),
+        try:
+            self._cam_left = Picamera2(self.cam_left_id)
+            self._cam_right = Picamera2(self.cam_right_id)
+        except Exception as e:
+            self.close()
+            raise RuntimeError(f"Failed to open cameras: {e}") from e
+
+        w, h = self.resolution
+        for cam, name in [
+            (self._cam_left, "left"),
+            (self._cam_right, "right"),
         ]:
-            if not cap.isOpened():
-                self.close()
-                raise RuntimeError(f"Failed to open {name} camera (id={cam_id})")
-
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-            cap.set(cv2.CAP_PROP_FPS, self.fps)
+            config = cam.create_still_configuration(
+                main={"size": (w, h), "format": "BGR888"},
+                controls={"FrameRate": self.fps},
+            )
+            cam.configure(config)
+            cam.start()
 
         logger.info(
             "Stereo capture opened: left=%d, right=%d, res=%s, fps=%d",
@@ -75,7 +84,7 @@ class StereoCapture:
         )
 
     def read(self) -> tuple[np.ndarray, np.ndarray]:
-        """Read synchronized frame pair.
+        """Read frame pair.
 
         Returns:
             (left_frame, right_frame) as BGR numpy arrays.
@@ -83,27 +92,31 @@ class StereoCapture:
         Raises:
             RuntimeError: If cameras not opened or read fails.
         """
-        if self._cap_left is None or self._cap_right is None:
+        if self._cam_left is None or self._cam_right is None:
             raise RuntimeError("Cameras not opened. Call open() first.")
 
-        ret_l, frame_l = self._cap_left.read()
-        ret_r, frame_r = self._cap_right.read()
-
-        if not ret_l or not ret_r:
-            raise RuntimeError(
-                f"Frame read failed: left={ret_l}, right={ret_r}"
-            )
+        try:
+            frame_l = self._cam_left.capture_array("main")
+            frame_r = self._cam_right.capture_array("main")
+        except Exception as e:
+            raise RuntimeError(f"Frame capture failed: {e}") from e
 
         return frame_l, frame_r
 
     def close(self) -> None:
         """Release camera resources."""
-        if self._cap_left is not None:
-            self._cap_left.release()
-            self._cap_left = None
-        if self._cap_right is not None:
-            self._cap_right.release()
-            self._cap_right = None
+        for cam, name in [
+            (self._cam_left, "left"),
+            (self._cam_right, "right"),
+        ]:
+            if cam is not None:
+                try:
+                    cam.stop()
+                    cam.close()
+                except Exception:
+                    logger.warning("Error closing %s camera", name)
+        self._cam_left = None
+        self._cam_right = None
         logger.info("Stereo capture closed")
 
     def __enter__(self) -> "StereoCapture":

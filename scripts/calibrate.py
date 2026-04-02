@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.vision.calibration import (
     calibrate_stereo,
     create_charuco_board,
+    detect_charuco_corners,
     generate_board_image,
     load_calibration,
     rectify_pair,
@@ -55,56 +56,73 @@ def cmd_generate_board(args: argparse.Namespace) -> None:
 
 
 def cmd_capture(args: argparse.Namespace) -> None:
-    """Capture stereo image pairs from live cameras."""
+    """Capture stereo image pairs for calibration (headless, picamera2)."""
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cap_l = cv2.VideoCapture(args.left)
-    cap_r = cv2.VideoCapture(args.right)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from src.vision.capture import StereoCapture
 
-    if not cap_l.isOpened() or not cap_r.isOpened():
-        logger.error("Failed to open cameras (left=%d, right=%d)", args.left, args.right)
-        sys.exit(1)
+    cap = StereoCapture(
+        cam_left_id=args.left,
+        cam_right_id=args.right,
+        resolution=tuple(args.resolution),
+        fps=args.fps,
+    )
+    cap.open()
+
+    board = create_charuco_board(
+        board_size=(args.columns, args.rows),
+        square_length=args.square_length,
+        marker_length=args.marker_length,
+    )
+
+    import time
 
     count = 0
     logger.info(
-        "Press SPACE to capture, Q to quit. Need %d pairs.", args.count
+        "Capturing %d pairs every %d seconds. Move the ChArUco board between captures.",
+        args.count,
+        args.interval,
     )
+    logger.info("Press Ctrl+C to stop early.")
 
-    while count < args.count:
-        ret_l, frame_l = cap_l.read()
-        ret_r, frame_r = cap_r.read()
+    try:
+        while count < args.count:
+            if count > 0:
+                logger.info("Next capture in %d seconds — move the board...", args.interval)
+                time.sleep(args.interval)
 
-        if not ret_l or not ret_r:
-            logger.warning("Frame read failed, retrying...")
-            continue
+            frame_l, frame_r = cap.read()
 
-        # Show live preview side by side
-        h, w = frame_l.shape[:2]
-        preview = np.hstack([
-            cv2.resize(frame_l, (w // 2, h // 2)),
-            cv2.resize(frame_r, (w // 2, h // 2)),
-        ])
-        cv2.putText(
-            preview, f"Captured: {count}/{args.count} | SPACE=capture Q=quit",
-            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2,
-        )
-        cv2.imshow("Stereo Capture", preview)
+            # Verify ChArUco is visible in both frames before saving
+            corners_l, ids_l = detect_charuco_corners(frame_l, board)
+            corners_r, ids_r = detect_charuco_corners(frame_r, board)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
-        elif key == ord(" "):
+            if corners_l is None or corners_r is None:
+                logger.warning(
+                    "ChArUco not detected in both cameras — skipping. "
+                    "Make sure the board is visible to both cameras."
+                )
+                continue
+
+            common = np.intersect1d(ids_l.flatten(), ids_r.flatten())
+            logger.info(
+                "Detected %d/%d corners (left/right), %d common",
+                len(ids_l), len(ids_r), len(common),
+            )
+
             left_path = output_dir / f"left_{count:03d}.png"
             right_path = output_dir / f"right_{count:03d}.png"
             cv2.imwrite(str(left_path), frame_l)
             cv2.imwrite(str(right_path), frame_r)
-            logger.info("Pair %d saved", count)
+            logger.info("Pair %d/%d saved", count + 1, args.count)
             count += 1
+    except KeyboardInterrupt:
+        logger.info("Capture interrupted by user")
+    finally:
+        cap.close()
 
-    cap_l.release()
-    cap_r.release()
-    cv2.destroyAllWindows()
     logger.info("Captured %d pairs in %s", count, output_dir)
 
 
@@ -199,18 +217,25 @@ def main() -> None:
     p_board.add_argument("--output", default="charuco_board.png")
     p_board.add_argument("--columns", type=int, default=7)
     p_board.add_argument("--rows", type=int, default=5)
-    p_board.add_argument("--square-length", type=float, default=30.0)
-    p_board.add_argument("--marker-length", type=float, default=22.5)
+    p_board.add_argument("--square-length", type=float, default=35.0)
+    p_board.add_argument("--marker-length", type=float, default=26.0)
     p_board.add_argument("--width", type=int, default=2480, help="Image width (px)")
     p_board.add_argument("--height", type=int, default=3508, help="Image height (px)")
     p_board.set_defaults(func=cmd_generate_board)
 
     # --- capture ---
     p_cap = sub.add_parser("capture", help="Capture stereo image pairs")
-    p_cap.add_argument("--left", type=int, default=0, help="Left camera index")
-    p_cap.add_argument("--right", type=int, default=1, help="Right camera index")
-    p_cap.add_argument("--output-dir", default="./calibration_captures")
+    p_cap.add_argument("--left", type=int, default=1, help="Left camera index")
+    p_cap.add_argument("--right", type=int, default=0, help="Right camera index")
+    p_cap.add_argument("--resolution", type=int, nargs=2, default=[1296, 972])
+    p_cap.add_argument("--fps", type=int, default=15)
+    p_cap.add_argument("--output-dir", default="./calibration/captures")
     p_cap.add_argument("--count", type=int, default=30, help="Number of pairs")
+    p_cap.add_argument("--interval", type=int, default=5, help="Seconds between captures")
+    p_cap.add_argument("--columns", type=int, default=7)
+    p_cap.add_argument("--rows", type=int, default=5)
+    p_cap.add_argument("--square-length", type=float, default=35.0)
+    p_cap.add_argument("--marker-length", type=float, default=26.0)
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
@@ -219,8 +244,8 @@ def main() -> None:
     p_cal.add_argument("--output", default="calibration.npz")
     p_cal.add_argument("--columns", type=int, default=7)
     p_cal.add_argument("--rows", type=int, default=5)
-    p_cal.add_argument("--square-length", type=float, default=30.0)
-    p_cal.add_argument("--marker-length", type=float, default=22.5)
+    p_cal.add_argument("--square-length", type=float, default=35.0)
+    p_cal.add_argument("--marker-length", type=float, default=26.0)
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---

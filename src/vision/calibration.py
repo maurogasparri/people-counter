@@ -26,11 +26,11 @@ logger = logging.getLogger(__name__)
 # ChArUco board factory
 # ---------------------------------------------------------------------------
 
-# Default board parameters matching A4 print at ~7x5 squares
+# Default board parameters matching calib.io print (5x7, DICT_5X5)
 DEFAULT_BOARD_SIZE = (7, 5)  # (columns, rows) of chessboard squares
-DEFAULT_SQUARE_LENGTH = 30.0  # mm
-DEFAULT_MARKER_LENGTH = 22.5  # mm (75% of square)
-ARUCO_DICT_ID = cv2.aruco.DICT_6X6_250
+DEFAULT_SQUARE_LENGTH = 35.0  # mm
+DEFAULT_MARKER_LENGTH = 26.0  # mm
+ARUCO_DICT_ID = cv2.aruco.DICT_5X5_250
 
 
 def create_charuco_board(
