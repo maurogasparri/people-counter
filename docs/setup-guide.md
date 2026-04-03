@@ -192,7 +192,32 @@ rpicam-still -o /tmp/test_cam1.jpg --camera 1
 scp pi@people-counter.local:/tmp/test_cam*.jpg .
 ```
 
-## 11. Calibración estéreo
+## 11. Ajuste de foco y calibración estéreo
+
+### 11.1. Ajustar foco
+
+Antes de calibrar, ajustar el foco de ambas cámaras. Las OV5647 tienen un anillo
+de foco manual que se gira con pinza de punta fina.
+
+Poner un objeto con detalle (diario, patrón ChArUco) a la distancia de trabajo (~3m)
+y correr el asistente de foco:
+
+```bash
+cd /usr/src/people-counter
+PYTHONPATH=. python3 scripts/focus_assist.py --camera both
+```
+
+El script muestra un puntaje de foco en tiempo real (varianza del Laplaciano).
+Girar el anillo hasta que el número sea lo más alto posible. Ctrl+C para salir.
+
+Para verificar visualmente, bajar las imágenes a la PC:
+
+```bash
+scp pi@people-counter.local:/tmp/focus_left.jpg .
+scp pi@people-counter.local:/tmp/focus_right.jpg .
+```
+
+### 11.2. Calibración estéreo
 
 ```bash
 cd /usr/src/people-counter
