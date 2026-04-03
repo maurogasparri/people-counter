@@ -118,7 +118,7 @@ people-counter/
 │   ├── config/
 │   │   └── loader.py      ← YAML config loading + validation
 │   └── main.py            ← full pipeline orchestrator (IMPLEMENTED)
-├── tests/                 ← 179 tests across all modules
+├── tests/                 ← 180 tests across all modules
 ├── scripts/
 │   ├── calibrate.py       ← CLI calibration tool (4 subcommands, headless)
 │   └── provision.py       ← device provisioning (create/deploy/list)

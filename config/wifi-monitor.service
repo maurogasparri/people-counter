@@ -1,0 +1,15 @@
+[Unit]
+Description=WiFi monitor mode for probe capture (nexmon + airmon-ng)
+After=network-pre.target
+Before=people-counter.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/sbin/airmon-ng check kill
+ExecStart=/usr/sbin/airmon-ng start wlan0
+ExecStop=/usr/sbin/airmon-ng stop wlan0mon
+
+[Install]
+WantedBy=multi-user.target

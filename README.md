@@ -42,7 +42,7 @@ Edge Device (per store door)          AWS Cloud
 | Area | Status | Details |
 |------|--------|---------|
 | Source code | ✅ 22 files | All modules implemented |
-| Tests | ✅ 189/189 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
+| Tests | ✅ 180/180 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
 | Config | ✅ Local + Cloud | YAML (hardware) + IoT Shadow (business) |
 | Hardware | ✅ Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2× OV5647 |
 | Stereo capture | ✅ Validated | picamera2 on RPi5, both cameras working |
@@ -83,7 +83,7 @@ src/
 ├── cloud/           # Lambda dedup L3 (inter-camera)
 ├── config/          # YAML loader + IoT Shadow merge
 └── main.py          # Pipeline orchestrator (17 tests)
-tests/               # 189 tests mirroring src/ structure
+tests/               # 180 tests mirroring src/ structure
 scripts/
 ├── calibrate.py     # CLI: generate-board, capture (headless), calibrate, verify
 ├── provision.py     # Device provisioning: create, deploy, list

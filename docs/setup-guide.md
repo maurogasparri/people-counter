@@ -290,6 +290,11 @@ pytest -v
 # Logrotate (rotación de logs)
 sudo cp /usr/src/people-counter/config/logrotate.conf /etc/logrotate.d/people-counter
 
+# WiFi monitor mode (arranca antes del pipeline, pone wlan0 en monitor)
+sudo cp /usr/src/people-counter/config/wifi-monitor.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable wifi-monitor
+
 # Servicio principal (pipeline)
 sudo cp /usr/src/people-counter/config/people-counter.service /etc/systemd/system/
 sudo systemctl daemon-reload

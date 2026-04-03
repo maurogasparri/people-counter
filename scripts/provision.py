@@ -225,6 +225,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     # Install systemd services and logrotate
     config_dir = Path(__file__).resolve().parent.parent / "config"
     for config_file in [
+        "wifi-monitor.service",
         "people-counter.service",
         "people-counter-reset.service",
         "people-counter-reset.timer",
@@ -240,7 +241,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
         _ssh(host, "sudo mv /tmp/people-counter-logrotate /etc/logrotate.d/people-counter")
 
     _ssh(host, "sudo systemctl daemon-reload")
-    _ssh(host, "sudo systemctl enable people-counter people-counter-reset.timer")
+    _ssh(host, "sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer")
     logger.info("Systemd services and logrotate installed")
 
     logger.info("Device %s deployed to %s", device_id, args.host)
