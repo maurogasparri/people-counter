@@ -54,7 +54,7 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 - **Counting**: Virtual line in depth coordinates. Crossing direction = ingress/egress event. Publish immediately via MQTT.
 
 ### WiFi/BLE Capture
-- **WiFi**: CYW43455 in monitor mode via nexmon. Capture probe requests on 2.4 AND 5 GHz. **WiFi is EXCLUSIVE for probing — network connectivity is Ethernet only.**
+- **WiFi**: CYW43455 in monitor mode via nexmon (firmware-nexmon + brcmfmac-nexmon-dkms from Kali packages) + airmon-ng. Capture probe requests on 2.4 AND 5 GHz. **WiFi is EXCLUSIVE for probing — network connectivity is Ethernet only.**
 - **BLE**: Same CYW43455, passive advertising on channels 37/38/39.
 - **Hashing**: SHA-256 truncated to 16 bytes on every MAC before storage. Never store raw MACs.
 - **Dedup L1 (intra-protocol)**: SQLite set of hashes per day per protocol. Reset at business day start.
@@ -78,7 +78,7 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 
 ## Code Conventions
 
-- **Language**: Python 3.11+ (RPi OS Bookworm)
+- **Language**: Python 3.13 (RPi OS Trixie)
 - **Formatter**: Black, 88 chars
 - **Linter**: Ruff
 - **Type hints**: Required on all function signatures
@@ -106,8 +106,8 @@ people-counter/
 │   │   ├── tracker.py     ← 3D Euclidean tracker
 │   │   └── counter.py     ← virtual line crossing logic
 │   ├── wifi_ble/
-│   │   ├── wifi_probe.py  ← nexmon monitor mode capture (NOT STARTED)
-│   │   ├── ble_scan.py    ← BLE advertising capture (NOT STARTED)
+│   │   ├── wifi_probe.py  ← nexmon/airmon-ng probe capture (VALIDATED)
+│   │   ├── ble_scan.py    ← BLE advertising capture via bleak (VALIDATED)
 │   │   ├── hasher.py      ← SHA-256 truncated hashing
 │   │   └── dedup.py       ← intra + cross-protocol dedup
 │   ├── mqtt/
@@ -118,39 +118,44 @@ people-counter/
 │   ├── config/
 │   │   └── loader.py      ← YAML config loading + validation
 │   └── main.py            ← full pipeline orchestrator (IMPLEMENTED)
-├── tests/                 ← 98 tests across all modules
+├── tests/                 ← 180 tests across all modules
 ├── scripts/
-│   ├── calibrate.py       ← CLI calibration tool (4 subcommands)
-│   └── provision.py       ← device provisioning (NOT STARTED)
+│   ├── calibrate.py       ← CLI calibration tool (4 subcommands, headless)
+│   └── provision.py       ← device provisioning (create/deploy/list)
 ├── calibration/
+│   └── charuco_board.pdf  ← reference ChArUco pattern (calib.io 5x7 DICT_5X5)
 ├── infra/
+│   └── cloudformation/
+│       └── people-counter.yaml ← full stack (IoT, Timestream, DynamoDB, Lambda)
 ├── docs/
+│   └── setup-guide.md     ← hardware assembly + RPi setup guide
 └── config/
-    └── config.example.yaml
+    ├── config.example.yaml
+    └── people-counter.service ← systemd service file
 ```
 
 ## Sprint Plan (dev-only tasks)
 
 | Sprint | Focus | Deliverable | Status |
 |--------|-------|------------|--------|
-| S3 | PoC | Stereo capture + YOLOv8n on RPi5. Prove it works. | **SOFTWARE READY** — capture.py (live + file replay), detect.py (Hailo + OpenCV backends). Hardware pending. |
-| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **DONE** — calibration.py (362 lines, 15 tests), depth.py (201 lines, 16 tests), scripts/calibrate.py CLI. |
-| S5 | Detection | HEF compilation. Hailo SDK integration. 30+ FPS. | **SOFTWARE READY** — detect.py with Hailo + OpenCV backends, preprocess/postprocess tested (10 tests). HEF compilation pending hardware. |
-| S6 | Tracking | 3D tracker. Virtual line. Ingress/egress events. | **DONE** — tracker.py + counter.py (12 tests). main.py wired E2E. |
-| S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **PARTIAL** — hasher.py + dedup.py done (11 tests). wifi_probe.py + ble_scan.py need hardware. |
+| S3 | PoC | Stereo capture + YOLOv8n on RPi5. Prove it works. | **HARDWARE VALIDATED** — capture.py adapted to picamera2, stereo capture verified on RPi5 with OV5647 pair. detect.py (Hailo + OpenCV backends). |
+| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **READY TO CALIBRATE** — calibration.py adapted to calib.io board (DICT_5X5, 35mm/26mm), calibrate.py headless capture. Pending: run calibration with ChArUco board. |
+| S5 | Detection | HEF compilation. Hailo SDK integration. 30+ FPS. | **SOFTWARE READY** — detect.py with Hailo + OpenCV backends, preprocess/postprocess tested (10 tests). Hailo-8L verified (fw 4.23.0, PCIe Gen 3). HEF compilation pending. |
+| S6 | Tracking | 3D tracker. Virtual line. Ingress/egress events. | **DONE** — tracker.py + counter.py (12 tests). main.py wired E2E (17 tests). |
+| S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **HARDWARE VALIDATED** — wifi_probe.py (nexmon + airmon-ng + scapy, probes captured), ble_scan.py (bleak, 343 adverts/8 unique devices). hasher.py + dedup.py (11 tests). |
 | S8 | MQTT | IoT Core client. SQLite buffer. Reconnect. | **DONE** — client.py with TLS, buffer replay, backoff (7 tests). |
-| S9 | Cloud | Lambda dedup L3. QuickSight. API Gateway. | **PARTIAL** — lambda_dedup.py done (9 tests). CloudFormation/QuickSight/API GW pending. |
-| S10 | Integration | End-to-end. All modules together. | **SOFTWARE READY** — main.py orchestrates full pipeline with --replay-dir for testing. |
+| S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). CloudFormation template with IoT Core, Timestream, DynamoDB, Lambda, IAM. QuickSight/API GW deferred post-MVP. |
+| S10 | Integration | End-to-end. All modules together. | **SOFTWARE READY** — main.py orchestrates full pipeline. provision.py + systemd service ready. Pending: E2E on RPi5 after calibration. |
 | S11 | Pilot | Deploy 3 stores. Monitor. Fix. | PENDING |
 | S12 | Stabilize | Post-pilot fixes. | PENDING |
 
 ## Implementation Status
 
-**98 tests passing.** Modules by status:
+**180 tests passing.** Modules by status:
 
-- ✅ COMPLETE: calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
-- 🔧 SOFTWARE READY (need hardware to finish): capture (has FileCapture for dev), detect (has OpenCV backend for dev)
-- ❌ NOT STARTED: wifi_probe.py, ble_scan.py, scripts/provision.py, infra/ (CloudFormation)
+- ✅ COMPLETE + VALIDATED: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
+- 🔧 INFRA READY: CloudFormation template, systemd service, provision.py, logrotate, daily reset timer
+- ⏳ PENDING: stereo calibration (ChArUco capture), E2E pipeline on RPi5
 
 ## Hard Rules
 
@@ -163,8 +168,9 @@ people-counter/
 
 ## Environment
 
-- Raspberry Pi OS Bookworm 64-bit, Python 3.11
-- Hailo SDK: hailo_platform 4.17+
+- Raspberry Pi OS Trixie 64-bit, Python 3.13
+- Hailo SDK: hailo_platform 4.23+
+- Picamera2: for CSI camera capture (rpicam-* CLI tools)
 - OpenCV: 4.8+ (with contrib for ArUco/ChArUco)
 - MQTT: paho-mqtt 2.0+
 - DB: sqlite3 (stdlib)

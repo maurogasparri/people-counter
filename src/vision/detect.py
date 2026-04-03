@@ -99,34 +99,52 @@ class HailoBackend:
         self._hef = HEF(hef_path)
         self._device = VDevice()
         self._network_group = self._device.configure(
-            self._hef, ConfigureParams.create_from_hef(self._hef)
+            self._hef,
+            ConfigureParams.create_from_hef(
+                self._hef, interface=HailoStreamInterface.PCIe
+            ),
         )[0]
 
         self._input_params = InputVStreamParams.make_from_network_group(
-            self._network_group, quantized=False, format_type=FormatType.FLOAT32
+            self._network_group, quantized=True, format_type=FormatType.UINT8
         )
         self._output_params = OutputVStreamParams.make_from_network_group(
             self._network_group, quantized=False, format_type=FormatType.FLOAT32
         )
 
-        # Store references for cleanup
         self._InferVStreams = InferVStreams
+        self._input_name = self._hef.get_input_vstream_infos()[0].name
 
         logger.info("Hailo backend loaded: %s", hef_path)
 
-    def infer(self, preprocessed: np.ndarray) -> np.ndarray:
-        """Run inference on Hailo-8L."""
-        input_name = self._hef.get_input_vstream_infos()[0].name
+    def infer(self, preprocessed: np.ndarray) -> list:
+        """Run inference on Hailo-8L.
 
-        with self._InferVStreams(
-            self._network_group, self._input_params, self._output_params
-        ) as pipeline:
-            input_data = {input_name: preprocessed}
-            result = pipeline.infer(input_data)
+        The HEF model expects uint8 NHWC input. This method handles the
+        conversion from the float32 NCHW blob produced by preprocess().
 
-        # Get first (and only) output
-        output_name = list(result.keys())[0]
-        return result[output_name]
+        Returns:
+            List of 80 arrays (one per COCO class), each of shape (N, 5)
+            where 5 = [y_min, x_min, y_max, x_max, score] normalized [0,1].
+            N varies per class (ragged).
+        """
+        # preprocess() outputs (1, 3, 640, 640) float32 [0,1]
+        # Hailo expects (1, 640, 640, 3) uint8 [0,255]
+        if preprocessed.ndim == 4 and preprocessed.shape[1] == 3:
+            preprocessed = preprocessed.transpose(0, 2, 3, 1)
+        img = (preprocessed * 255).clip(0, 255).astype(np.uint8)
+
+        with self._network_group.activate():
+            with self._InferVStreams(
+                self._network_group, self._input_params, self._output_params
+            ) as pipeline:
+                result = pipeline.infer(
+                    {self._input_name: np.ascontiguousarray(img)}
+                )
+
+        # Result is {name: [[class0_dets, class1_dets, ...]]}
+        raw = list(result.values())[0][0]
+        return raw  # list of 80 arrays
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +340,84 @@ def postprocess(
 
 
 # ---------------------------------------------------------------------------
+# Post-processing: Hailo NMS output (HEF with built-in NMS)
+# ---------------------------------------------------------------------------
+
+
+def postprocess_hailo_nms(
+    raw_output: list,
+    confidence_threshold: float,
+    scale: float,
+    pad_x: int,
+    pad_y: int,
+    original_size: tuple[int, int],
+) -> list[Detection]:
+    """Post-process Hailo NMS output into person detections.
+
+    Hailo NMS output is a list of 80 arrays (one per COCO class).
+    Each array has shape (N, 5) where:
+        - N: number of detections for that class (variable per class)
+        - 5: [y_min, x_min, y_max, x_max, score] normalized [0, 1]
+
+    Args:
+        raw_output: List of 80 arrays from Hailo inference.
+        confidence_threshold: Minimum confidence to keep.
+        scale: Scale factor from preprocessing.
+        pad_x, pad_y: Padding offsets from preprocessing.
+        original_size: (width, height) of the original image.
+
+    Returns:
+        List of Detection objects for persons only.
+    """
+    # Extract person class (class 0) — shape (N, 5)
+    person_data = np.array(raw_output[COCO_PERSON_CLASS])
+
+    if person_data.ndim != 2 or person_data.shape[0] == 0:
+        return []
+
+    orig_w, orig_h = original_size
+    input_w, input_h = INPUT_SIZE
+
+    detections = []
+    for i in range(person_data.shape[0]):
+        y1_n, x1_n, y2_n, x2_n, score = person_data[i]
+
+        if score < confidence_threshold:
+            continue
+
+        # Convert from normalized to input pixel coords
+        x1 = x1_n * input_w
+        y1 = y1_n * input_h
+        x2 = x2_n * input_w
+        y2 = y2_n * input_h
+
+        # Remove padding and rescale to original image
+        x1 = (x1 - pad_x) / scale
+        y1 = (y1 - pad_y) / scale
+        x2 = (x2 - pad_x) / scale
+        y2 = (y2 - pad_y) / scale
+
+        # Clip to image boundaries
+        x1 = max(0, min(x1, orig_w))
+        y1 = max(0, min(y1, orig_h))
+        x2 = max(0, min(x2, orig_w))
+        y2 = max(0, min(y2, orig_h))
+
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+
+        detections.append(
+            Detection(
+                bbox=(int(x1), int(y1), int(x2), int(y2)),
+                confidence=float(score),
+                centroid=(cx, cy),
+            )
+        )
+
+    return detections
+
+
+# ---------------------------------------------------------------------------
 # Public API (matches original interface + adds backend flexibility)
 # ---------------------------------------------------------------------------
 
@@ -377,11 +473,22 @@ def detect_persons(
         List of Detection objects (person class only).
     """
     backend: DetectionBackend = model["backend"]
+    backend_type = model["type"]
 
     blob, scale, pad_x, pad_y = preprocess(frame)
     raw_output = backend.infer(blob)
 
     orig_h, orig_w = frame.shape[:2]
+
+    if backend_type == "hailo":
+        return postprocess_hailo_nms(
+            raw_output,
+            confidence_threshold,
+            scale,
+            pad_x,
+            pad_y,
+            (orig_w, orig_h),
+        )
 
     return postprocess(
         raw_output,

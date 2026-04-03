@@ -1,0 +1,9 @@
+[Unit]
+Description=People Counter daily reset (dedup counters + counting totals)
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+WorkingDirectory=/usr/src/people-counter
+ExecStart=/usr/src/people-counter/.venv/bin/python3 -c "from src.wifi_ble.dedup import DedupEngine; d = DedupEngine('/var/lib/people-counter/dedup.db'); d.reset_daily(); print('Dedup reset done')"
