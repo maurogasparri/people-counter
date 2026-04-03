@@ -46,7 +46,7 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 ## Key Technical Decisions
 
 ### Vision Pipeline
-- **Stereo calibration**: ChArUco pattern (A4), OpenCV `calibrateCamera` + `stereoCalibrate`. Store intrinsics/extrinsics as `.npz` per device.
+- **Stereo calibration**: ChArUco pattern (A4, calib.io 5x7 DICT_5X5 35mm/26mm), OpenCV `stereoCalibrate` joint (CALIB_RATIONAL_MODEL). Store intrinsics/extrinsics as `.npz` per device. Calibrate at 0.5-1.5m, works at any mounting distance.
 - **Rectification**: Precomputed maps applied per frame pair. Fisheye undistort via `cv2.fisheye`.
 - **Depth**: Semi-Global Block Matching (`cv2.StereoSGBM`) on rectified pair.
 - **Detection**: YOLOv8n compiled to HEF via Hailo Model Zoo. Run on Hailo-8L at 30+ FPS. Use `hailo_platform` Python SDK.
@@ -139,7 +139,7 @@ people-counter/
 | Sprint | Focus | Deliverable | Status |
 |--------|-------|------------|--------|
 | S3 | PoC | Stereo capture + YOLOv8n on RPi5. Prove it works. | **HARDWARE VALIDATED** — capture.py adapted to picamera2, stereo capture verified on RPi5 with OV5647 pair. detect.py (Hailo + OpenCV backends). |
-| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **READY TO CALIBRATE** — calibration.py adapted to calib.io board (DICT_5X5, 35mm/26mm), calibrate.py headless capture. Pending: run calibration with ChArUco board. |
+| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **DONE** — calibration.py (joint stereoCalibrate, CALIB_RATIONAL_MODEL). Stereo RMS 0.48, baseline 137.8mm. Verified with epipolar lines. |
 | S5 | Detection | HEF compilation. Hailo SDK integration. 30+ FPS. | **SOFTWARE READY** — detect.py with Hailo + OpenCV backends, preprocess/postprocess tested (10 tests). Hailo-8L verified (fw 4.23.0, PCIe Gen 3). HEF compilation pending. |
 | S6 | Tracking | 3D tracker. Virtual line. Ingress/egress events. | **DONE** — tracker.py + counter.py (12 tests). main.py wired E2E (17 tests). |
 | S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **HARDWARE VALIDATED** — wifi_probe.py (nexmon + airmon-ng + scapy, probes captured), ble_scan.py (bleak, 343 adverts/8 unique devices). hasher.py + dedup.py (11 tests). |
@@ -155,7 +155,7 @@ people-counter/
 
 - ✅ COMPLETE + VALIDATED: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
 - 🔧 INFRA READY: CloudFormation template, systemd service, provision.py, logrotate, daily reset timer
-- ⏳ PENDING: stereo calibration (ChArUco capture), cenital detection test, E2E pipeline on RPi5
+- ⏳ PENDING: cenital detection test, E2E pipeline on RPi5
 
 ## Hard Rules
 

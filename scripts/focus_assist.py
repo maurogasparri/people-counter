@@ -1,89 +1,97 @@
 #!/usr/bin/env python3
 """Focus assist tool for OV5647 cameras.
 
-Continuously captures frames and prints a focus score (Laplacian variance).
-Higher score = sharper image. Adjust the lens ring until the score peaks.
-
-Also saves the latest frame to /tmp for SCP verification.
+Continuously captures frames, prints a focus score (Laplacian variance),
+and serves a live preview via HTTP for headless devices.
 
 Usage:
-    # Focus left camera (CAM1)
-    PYTHONPATH=. python3 scripts/focus_assist.py --camera 1
+    PYTHONPATH=. python3 scripts/focus_assist.py
 
-    # Focus right camera (CAM0)
-    PYTHONPATH=. python3 scripts/focus_assist.py --camera 0
+    Then open: http://people-counter.local:8080
 
-    # Both cameras side by side
-    PYTHONPATH=. python3 scripts/focus_assist.py --camera both
+    Adjust the lens rings while watching the score in the terminal
+    and the live image in the browser. Ctrl+C to stop and save final frames.
 """
 
 import argparse
-import sys
+import threading
 import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import cv2
 import numpy as np
 
+latest_jpeg: bytes = b""
+jpeg_lock = threading.Lock()
+shutting_down = False
+
 
 def focus_score(frame: np.ndarray) -> float:
-    """Compute focus score using Laplacian variance.
-
-    Higher value = sharper image.
-    """
+    """Compute focus score using Laplacian variance."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
-def run_single(cam_id: int) -> None:
-    from picamera2 import Picamera2
+class MJPEGHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path == "/":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html>
+<html><head><title>Focus Assist</title>
+<style>body{background:#111;margin:0;display:flex;justify-content:center;
+align-items:center;height:100vh}img{max-width:100%;max-height:100vh}</style>
+</head><body><img src="/stream"></body></html>""")
+        elif self.path == "/stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.end_headers()
+            try:
+                while not shutting_down:
+                    with jpeg_lock:
+                        frame = latest_jpeg
+                    if frame:
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
+                        self.wfile.write(frame)
+                        self.wfile.write(b"\r\n")
+                    time.sleep(0.1)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-    cam = Picamera2(cam_id)
-    config = cam.create_still_configuration(
-        main={"size": (1296, 972), "format": "BGR888"},
-    )
-    cam.configure(config)
-    cam.start()
-    time.sleep(1)  # let auto-exposure settle
-
-    name = "left" if cam_id == 1 else "right"
-    print(f"Focusing camera {cam_id} ({name}). Adjust lens ring and watch the score.")
-    print(f"Latest frame saved to /tmp/focus_{name}.jpg — Ctrl+C to stop.\n")
-
-    best = 0.0
-    try:
-        while True:
-            frame = cam.capture_array("main")
-            score = focus_score(frame)
-            if score > best:
-                best = score
-            bar = "#" * min(int(score / 10), 50)
-            print(f"\r  cam{cam_id} ({name}): {score:8.1f}  best: {best:8.1f}  [{bar:<50s}]", end="", flush=True)
-            cv2.imwrite(f"/tmp/focus_{name}.jpg", frame)
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        print(f"\n\nFinal best score: {best:.1f}")
-    finally:
-        cam.stop()
-        cam.close()
+    def log_message(self, format, *args) -> None:
+        pass
 
 
-def run_both() -> None:
+def main() -> None:
+    global latest_jpeg
+
+    parser = argparse.ArgumentParser(description="Focus assist with live HTTP preview")
+    parser.add_argument("--port", type=int, default=8080)
+    args = parser.parse_args()
+
     from picamera2 import Picamera2
 
     cam_l = Picamera2(1)
     cam_r = Picamera2(0)
-
     for cam in [cam_l, cam_r]:
         config = cam.create_still_configuration(
-            main={"size": (1296, 972), "format": "BGR888"},
+            main={"size": (648, 486), "format": "BGR888"},
         )
         cam.configure(config)
         cam.start()
-
     time.sleep(1)
-    print("Focusing both cameras. Adjust lens rings and watch the scores.")
-    print("Latest frames saved to /tmp/focus_left.jpg and /tmp/focus_right.jpg")
-    print("Ctrl+C to stop.\n")
+
+    # Start HTTP server in background
+    server = HTTPServer(("0.0.0.0", args.port), MJPEGHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    print(f"Focus assist — live preview: http://people-counter.local:{args.port}")
+    print("Adjust lens rings and watch the scores. Ctrl+C to stop.\n")
 
     best_l = 0.0
     best_r = 0.0
@@ -91,41 +99,47 @@ def run_both() -> None:
         while True:
             frame_l = cam_l.capture_array("main")
             frame_r = cam_r.capture_array("main")
-            score_l = focus_score(frame_l)
-            score_r = focus_score(frame_r)
+            # Score only center 50% to ignore fingers adjusting the lens
+            h, w = frame_l.shape[:2]
+            cy1, cy2 = h // 4, 3 * h // 4
+            cx1, cx2 = w // 4, 3 * w // 4
+            score_l = focus_score(frame_l[cy1:cy2, cx1:cx2])
+            score_r = focus_score(frame_r[cy1:cy2, cx1:cx2])
             if score_l > best_l:
                 best_l = score_l
             if score_r > best_r:
                 best_r = score_r
+
+            # Draw rectangle showing the scored region on full image
+            cv2.rectangle(frame_l, (cx1, cy1), (cx2, cy2), (0, 255, 0), 2)
+            cv2.rectangle(frame_r, (cx1, cy1), (cx2, cy2), (0, 255, 0), 2)
+            cv2.putText(frame_l, f"LEFT  score:{score_l:.0f}", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(frame_r, f"RIGHT score:{score_r:.0f}", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            combined = np.hstack([frame_l, frame_r])
+
+            _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            with jpeg_lock:
+                latest_jpeg = jpeg.tobytes()
+
             print(
                 f"\r  LEFT: {score_l:8.1f} (best {best_l:8.1f})  |  RIGHT: {score_r:8.1f} (best {best_r:8.1f})",
                 end="", flush=True,
             )
-            cv2.imwrite("/tmp/focus_left.jpg", frame_l)
-            cv2.imwrite("/tmp/focus_right.jpg", frame_r)
-            time.sleep(0.5)
+            time.sleep(0.3)
+
     except KeyboardInterrupt:
+        shutting_down = True
         print(f"\n\nBest — LEFT: {best_l:.1f}  RIGHT: {best_r:.1f}")
-    finally:
-        cam_l.stop()
-        cam_l.close()
-        cam_r.stop()
-        cam_r.close()
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Focus assist for OV5647 cameras")
-    parser.add_argument(
-        "--camera",
-        default="both",
-        help="Camera to focus: 0 (right), 1 (left), or both",
-    )
-    args = parser.parse_args()
-
-    if args.camera == "both":
-        run_both()
-    else:
-        run_single(int(args.camera))
+        print("Saving final frames...")
+        cv2.imwrite("/tmp/focus_left.jpg", cam_l.capture_array("main"))
+        cv2.imwrite("/tmp/focus_right.jpg", cam_r.capture_array("main"))
+        print("Saved to /tmp/focus_left.jpg and /tmp/focus_right.jpg")
+        cam_l.stop(); cam_l.close()
+        cam_r.stop(); cam_r.close()
+        import os
+        os._exit(0)
 
 
 if __name__ == "__main__":
