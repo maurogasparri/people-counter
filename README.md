@@ -41,7 +41,7 @@ Edge Device (per store door)          AWS Cloud
 
 | Area | Status | Details |
 |------|--------|---------|
-| Source code | ✅ 22 files | All modules implemented |
+| Source code | ✅ 22 modules | All modules implemented and validated on hardware |
 | Tests | ✅ 180/180 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
 | Config | ✅ Local + Cloud | YAML (hardware) + IoT Shadow (business) |
 | Hardware | ✅ Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2× OV5647 |
@@ -51,7 +51,8 @@ Edge Device (per store door)          AWS Cloud
 | WiFi probe | ✅ Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
 | BLE scan | ✅ Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |
 | Cloud infra | ✅ CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
-| Deployment | ✅ Ready | provision.py, systemd service, logrotate, daily reset timer |
+| Deployment | ✅ Ready | provision.py, systemd services (pipeline + wifi-monitor + daily reset), logrotate |
+| Setup guide | ✅ Complete | 16-step guide from MicroSD to calibration (docs/setup-guide.md) |
 | TFG document | ✅ 90+ pages | 27 references, 13 tables, 6 figures |
 
 ## Quick start

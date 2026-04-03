@@ -55,7 +55,7 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 
 ### WiFi/BLE Capture
 - **WiFi**: CYW43455 in monitor mode via nexmon (firmware-nexmon + brcmfmac-nexmon-dkms from Kali packages) + airmon-ng. Capture probe requests on 2.4 AND 5 GHz. **WiFi is EXCLUSIVE for probing — network connectivity is Ethernet only.**
-- **BLE**: Same CYW43455, passive advertising on channels 37/38/39.
+- **BLE**: Same CYW43455 via bleak (BlueZ D-Bus API). Passive advertising scan.
 - **Hashing**: SHA-256 truncated to 16 bytes on every MAC before storage. Never store raw MACs.
 - **Dedup L1 (intra-protocol)**: SQLite set of hashes per day per protocol. Reset at business day start.
 - **Dedup L2 (cross-protocol)**: WiFi + BLE within 2s window AND RSSI delta ≤ 5dBm → unified hash.
@@ -155,7 +155,7 @@ people-counter/
 
 - ✅ COMPLETE + VALIDATED: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
 - 🔧 INFRA READY: CloudFormation template, systemd service, provision.py, logrotate, daily reset timer
-- ⏳ PENDING: stereo calibration (ChArUco capture), E2E pipeline on RPi5
+- ⏳ PENDING: stereo calibration (ChArUco capture), cenital detection test, E2E pipeline on RPi5
 
 ## Hard Rules
 
