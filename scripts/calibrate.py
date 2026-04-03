@@ -225,8 +225,8 @@ def main() -> None:
 
     # --- capture ---
     p_cap = sub.add_parser("capture", help="Capture stereo image pairs")
-    p_cap.add_argument("--left", type=int, default=1, help="Left camera index")
-    p_cap.add_argument("--right", type=int, default=0, help="Right camera index")
+    p_cap.add_argument("--left", type=int, default=0, help="Left camera index")
+    p_cap.add_argument("--right", type=int, default=1, help="Right camera index")
     p_cap.add_argument("--resolution", type=int, nargs=2, default=[1296, 972])
     p_cap.add_argument("--fps", type=int, default=15)
     p_cap.add_argument("--output-dir", default="./calibration/captures")

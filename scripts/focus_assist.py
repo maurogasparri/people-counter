@@ -75,8 +75,8 @@ def main() -> None:
 
     from picamera2 import Picamera2
 
-    cam_l = Picamera2(1)
-    cam_r = Picamera2(0)
+    cam_l = Picamera2(0)
+    cam_r = Picamera2(1)
     for cam in [cam_l, cam_r]:
         config = cam.create_still_configuration(
             main={"size": (648, 486), "format": "BGR888"},
@@ -99,10 +99,11 @@ def main() -> None:
         while True:
             frame_l = cam_l.capture_array("main")
             frame_r = cam_r.capture_array("main")
-            # Score only center 50% to ignore fingers adjusting the lens
+            # Score center 25% only (ignores fingers on the lens edges)
             h, w = frame_l.shape[:2]
-            cy1, cy2 = h // 4, 3 * h // 4
-            cx1, cx2 = w // 4, 3 * w // 4
+            margin = 3 * h // 8  # 37.5% margin each side = 25% center
+            cy1, cy2 = margin, h - margin
+            cx1, cx2 = 3 * w // 8, w - 3 * w // 8
             score_l = focus_score(frame_l[cy1:cy2, cx1:cx2])
             score_r = focus_score(frame_r[cy1:cy2, cx1:cx2])
             if score_l > best_l:
@@ -110,14 +111,14 @@ def main() -> None:
             if score_r > best_r:
                 best_r = score_r
 
-            # Draw rectangle showing the scored region on full image
-            cv2.rectangle(frame_l, (cx1, cy1), (cx2, cy2), (0, 255, 0), 2)
-            cv2.rectangle(frame_r, (cx1, cy1), (cx2, cy2), (0, 255, 0), 2)
-            cv2.putText(frame_l, f"LEFT  score:{score_l:.0f}", (10, 25),
+            # Zoom: crop center 25% and scale up for preview
+            zoom_l = cv2.resize(frame_l[cy1:cy2, cx1:cx2], (w, h))
+            zoom_r = cv2.resize(frame_r[cy1:cy2, cx1:cx2], (w, h))
+            cv2.putText(zoom_l, f"LEFT  score:{score_l:.0f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(frame_r, f"RIGHT score:{score_r:.0f}", (10, 25),
+            cv2.putText(zoom_r, f"RIGHT score:{score_r:.0f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            combined = np.hstack([frame_l, frame_r])
+            combined = np.hstack([zoom_l, zoom_r])
 
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 70])
             with jpeg_lock:

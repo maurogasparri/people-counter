@@ -63,8 +63,8 @@ def main() -> None:
 
     from picamera2 import Picamera2
 
-    cam_l = Picamera2(1)
-    cam_r = Picamera2(0)
+    cam_l = Picamera2(0)
+    cam_r = Picamera2(1)
     for cam in [cam_l, cam_r]:
         config = cam.create_still_configuration(
             main={"size": (2592, 1944), "format": "BGR888"},
