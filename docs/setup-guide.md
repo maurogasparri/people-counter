@@ -117,9 +117,8 @@ sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/peop
 sudo chown -R pi:pi /usr/src/people-counter
 cd /usr/src/people-counter
 
-# Instalar dependencias del proyecto + captura WiFi/BLE
+# Instalar el proyecto y todas las dependencias
 sudo pip install --break-system-packages --root-user-action=ignore -e ".[dev]"
-sudo pip install --break-system-packages --root-user-action=ignore scapy bleak
 
 # Descargar modelo YOLOv8n para Hailo-8L
 PYTHONPATH=. python3 scripts/download_model.py hef
