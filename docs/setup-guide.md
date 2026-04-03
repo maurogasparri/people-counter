@@ -7,7 +7,7 @@ Desde tu PC con Windows:
 1. Descargar Raspberry Pi Imager: https://www.raspberrypi.com/software/
 2. Insertar la MicroSD de 64GB
 3. En Imager:
-   - OS: Raspberry Pi OS (64-bit) — Bookworm
+   - OS: Raspberry Pi OS (64-bit) — Trixie
    - Storage: tu MicroSD
    - Settings (engranaje):
      - Hostname: `people-counter`
@@ -194,7 +194,7 @@ Referencia: https://www.kali.org/blog/raspberry-pi-wi-fi-glow-up/
 
 ```bash
 # Instalar dependencias
-sudo apt install -y dkms aircrack-ng
+sudo apt install -y dkms aircrack-ng tcpdump
 
 # Descargar los paquetes de nexmon (no agregar el repo de Kali)
 wget http://http.kali.org/pool/non-free-firmware/f/firmware-nexmon/firmware-nexmon_0.2_all.deb
@@ -273,12 +273,13 @@ sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/peop
 sudo chown -R pi:pi /usr/src/people-counter
 cd /usr/src/people-counter
 
-# Crear virtualenv
-python3 -m venv .venv
+# Crear virtualenv (--system-site-packages para acceder a picamera2 y libcamera)
+python3 -m venv .venv --system-site-packages
 source .venv/bin/activate
 
-# Instalar dependencias
+# Instalar dependencias del proyecto + captura WiFi/BLE
 pip install -e ".[dev]"
+pip install scapy bleak
 
 # Verificar tests
 pytest -v
@@ -287,40 +288,38 @@ pytest -v
 ## 14. Instalar servicios del sistema
 
 ```bash
-# Logrotate (rotación de logs)
-sudo cp /usr/src/people-counter/config/logrotate.conf /etc/logrotate.d/people-counter
-
-# WiFi monitor mode (arranca antes del pipeline, pone wlan0 en monitor)
-sudo cp /usr/src/people-counter/config/wifi-monitor.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable wifi-monitor
-
-# Servicio principal (pipeline)
-sudo cp /usr/src/people-counter/config/people-counter.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable people-counter
-
-# Timer de reset diario (dedup counters a las 04:00)
-sudo cp /usr/src/people-counter/config/people-counter-reset.service /etc/systemd/system/
-sudo cp /usr/src/people-counter/config/people-counter-reset.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable people-counter-reset.timer
-
 # Crear directorios de datos
 sudo mkdir -p /etc/people-counter/certs /var/lib/people-counter /var/log/people-counter
 sudo chown -R pi:pi /etc/people-counter /var/lib/people-counter /var/log/people-counter
+
+# Copiar todos los servicios y configs
+sudo cp /usr/src/people-counter/config/wifi-monitor.service /etc/systemd/system/
+sudo cp /usr/src/people-counter/config/people-counter.service /etc/systemd/system/
+sudo cp /usr/src/people-counter/config/people-counter-reset.service /etc/systemd/system/
+sudo cp /usr/src/people-counter/config/people-counter-reset.timer /etc/systemd/system/
+sudo cp /usr/src/people-counter/config/logrotate.conf /etc/logrotate.d/people-counter
+
+# Habilitar servicios
+sudo systemctl daemon-reload
+sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
 ```
 
-## 15. PoC — Siguiente paso
+## 15. Siguiente paso
 
-Una vez que todo lo anterior funciona, abrí Claude Code en el directorio
-del repo y pedile:
+Una vez que todo lo anterior funciona, el siguiente paso es la **calibración estéreo**:
 
-"Implementá capture.py para captura estéreo sincronizada
-de las dos cámaras OV5647 vía libcamera/picamera2.
-Leé CLAUDE.md para contexto."
+```bash
+cd /usr/src/people-counter
+source .venv/bin/activate
+PYTHONPATH=. python3 scripts/calibrate.py capture --count 30 --interval 5
+```
 
-A partir de ahí, sprint por sprint según el plan del CLAUDE.md.
+Mover el patrón ChArUco entre capturas a distintas distancias (2.5-4m), ángulos y
+posiciones. Después calibrar:
+
+```bash
+PYTHONPATH=. python3 scripts/calibrate.py calibrate --input-dir ./calibration/captures --output /etc/people-counter/calibration.npz
+```
 
 ## Troubleshooting
 
@@ -331,3 +330,10 @@ A partir de ahí, sprint por sprint según el plan del CLAUDE.md.
   el HAT. Correr `lspci` y buscar Hailo.
 - **Boot loop**: sacar el HAT y bootear solo con la Pi para descartar
   problemas de alimentación. La fuente USB-C debe ser de 5V/5A.
+- **WiFi monitor mode no funciona**: verificar que nexmon se instaló
+  correctamente con `dmesg | grep nexmon`. Debe mostrar la versión
+  de firmware nexmon. Si no aparece, reinstalar firmware-nexmon.
+- **picamera2 no importa en el venv**: recrear el venv con
+  `python3 -m venv .venv --system-site-packages`.
+- **"Unknown error 524" en airmon-ng**: es esperado con nexmon en RPi5,
+  no afecta la captura.
