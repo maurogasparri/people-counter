@@ -105,7 +105,3 @@ docs/
 - [CLAUDE.md](CLAUDE.md) — Full architecture documentation for Claude Code
 - [docs/setup-guide.md](docs/setup-guide.md) — Hardware assembly + RPi setup guide
 - [config/config.example.yaml](config/config.example.yaml) — Annotated configuration with strategy
-
-## License
-
-MIT — Copyright (c) 2026 Mauro Gasparri
