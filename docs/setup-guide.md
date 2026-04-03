@@ -30,131 +30,54 @@ Orden recomendado:
    - Orientar ambas igual (el conector flat tiene un lado con contactos expuestos)
 4. **Disipador** → montar sobre el SoC de la Pi
 5. **MicroSD** → insertar la tarjeta ya flasheada
-6. **Batería RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO)
+6. **Batería RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO).
+   Usar una batería recargable LiMnO2 como la ML2032 (no confundir con CR2032 que no es recargable).
 7. **NO conectar PoE todavía** — para el PoC usá la fuente USB-C estándar
 
-## 3. Primer boot
+## 3. Primer boot y actualización
 
-1. Conectar monitor HDMI + teclado, o acceder por SSH (`ssh pi@people-counter.local`)
+1. Conectar por Ethernet + SSH (`ssh pi@people-counter.local`), o monitor HDMI + teclado
 2. Esperar que termine el primer boot (puede tardar 2-3 min)
-3. Verificar que arranca:
 
 ```bash
-uname -a
-# Debe decir aarch64
+# Verificar que arranca
+uname -a  # Debe decir aarch64
 
-df -h
-# Verificar espacio en disco
-```
-
-## 4. Actualizar el sistema
-
-```bash
+# Actualizar sistema
 sudo apt update && sudo apt full-upgrade -y
 sudo reboot
 ```
 
-Después del reinicio, verificar kernel:
+## 4. Configurar sistema (headless + config.txt)
 
 ```bash
-uname -r
-# Debe ser 6.6.31 o superior
-```
-
-## 5. Deshabilitar entorno gráfico
-
-Los dispositivos corren headless. Deshabilitar el desktop libera ~200MB de RAM y reduce
-el uso de CPU, importante con solo 4GB de RAM.
-
-```bash
+# Deshabilitar entorno gráfico (libera ~200MB de RAM)
 sudo raspi-config nonint do_boot_behaviour B1
-sudo reboot
-```
 
-Esto configura el boot directo a consola (CLI). Para revertir temporalmente si necesitás
-escritorio: `sudo raspi-config nonint do_boot_behaviour B4`.
-
-## 6. Reducir memoria de GPU
-
-Al correr headless, la GPU no necesita los 76MB por defecto. Reducirlo libera RAM
-para OpenCV y el pipeline. Esto se configura en config.txt junto con los otros parámetros.
-
-## 7. Habilitar watchdog
-
-La RPi5 tiene un watchdog por hardware (BCM2712). Si el sistema se cuelga, el watchdog
-lo reinicia automáticamente. Crítico para dispositivos que corren sin atención.
-
-```bash
+# Habilitar watchdog (reinicio automático si se cuelga)
 sudo apt install -y watchdog
-```
-
-Editar la configuración del watchdog:
-
-```bash
-sudo nano /etc/watchdog.conf
-```
-
-Descomentar/agregar estas líneas:
-
-```
-watchdog-device = /dev/watchdog
-max-load-1 = 24
-watchdog-timeout = 15
-```
-
-Habilitar el servicio:
-
-```bash
+sudo sed -i 's/^#watchdog-device/watchdog-device/' /etc/watchdog.conf
+sudo sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
 sudo systemctl enable watchdog
 sudo systemctl start watchdog
-```
 
-## 8. Configurar RTC y PCIe Gen 3
-
-### 8.1. Batería RTC
-
-La RPi5 tiene un RTC integrado con conector J5 para batería de respaldo. Esto permite
-mantener la hora cuando el dispositivo está apagado o sin red (importante para timestamps
-de los eventos de conteo).
-
-Usar una batería recargable LiMnO2 como la ML2032 (no confundir con CR2032 que no es recargable).
-Por defecto la RPi5 **no carga** la batería. Hay que habilitarlo en config.txt.
-
-Referencia: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#add-a-backup-battery
-
-### 8.2. PCIe Gen 3
-
-El Hailo-8L requiere PCIe Gen 3 para alcanzar los 13 TOPS. Por defecto la RPi5 usa Gen 2.
-
-Referencia: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#pcie-gen-3-0
-
-### 8.3. Aplicar todos los cambios
-
-```bash
-sudo nano /boot/firmware/config.txt
-
-# Agregar al final del archivo:
+# Configurar GPU, RTC y PCIe Gen 3
+sudo tee -a /boot/firmware/config.txt > /dev/null << 'CONF'
 gpu_mem=16
 dtparam=rtc_bbat_vchg=3000000
 dtparam=pciex1_gen=3
+CONF
+
+sudo reboot
 ```
 
 Si usás una pila no recargable (CR2032), **no agregar la línea de rtc_bbat_vchg**.
 
-Reiniciar:
+Referencias:
+- RTC: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#add-a-backup-battery
+- PCIe Gen 3: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#pcie-gen-3-0
 
-```bash
-sudo reboot
-```
-
-Verificar PCIe Gen 3:
-
-```bash
-# Debe decir "Speed 8GT/s" (Gen 3) y no "5GT/s" (Gen 2)
-sudo lspci -vv | grep -i "lnksta"
-```
-
-## 9. Instalar y verificar Hailo
+## 5. Instalar Hailo
 
 Referencia: https://www.raspberrypi.com/documentation/computers/ai.html#update
 
@@ -163,29 +86,7 @@ sudo apt install -y hailo-all
 sudo reboot
 ```
 
-Esto instala:
-- Driver de kernel y firmware del Hailo
-- HailoRT (runtime middleware)
-- hailo_platform (Python SDK que usamos en detect.py)
-
-Verificar:
-
-```bash
-# Verificar que el dispositivo se detecta por PCIe
-lspci | grep Hailo
-# Debe mostrar: "Co-processor: Hailo Technologies Ltd."
-
-# Identificar el dispositivo y versión de firmware
-hailortcli fw-control identify
-# Debe mostrar: Hailo-8L, firmware version, etc.
-# Anotar la versión de firmware para verificar que esté al día.
-# Se actualiza automáticamente con: sudo apt update && sudo apt upgrade
-```
-
-**Importante**: el driver y el runtime de HailoRT deben tener la misma versión.
-Si hay mismatch (ej. 4.20 vs 4.21), reinstalar con `sudo apt install hailo-all`.
-
-## 10. Instalar nexmon (WiFi monitor mode)
+## 6. Instalar nexmon (WiFi monitor mode)
 
 El CYW43455 integrado no soporta monitor mode por defecto. Los paquetes de nexmon
 (originalmente de Kali Linux) parchean el firmware y el driver para habilitarlo.
@@ -193,75 +94,18 @@ El CYW43455 integrado no soporta monitor mode por defecto. Los paquetes de nexmo
 Referencia: https://www.kali.org/blog/raspberry-pi-wi-fi-glow-up/
 
 ```bash
-# Instalar dependencias
 sudo apt install -y dkms aircrack-ng tcpdump
-
-# Descargar los paquetes de nexmon (no agregar el repo de Kali)
 wget http://http.kali.org/pool/non-free-firmware/f/firmware-nexmon/firmware-nexmon_0.2_all.deb
 wget http://http.kali.org/pool/contrib/b/brcmfmac-nexmon-dkms/brcmfmac-nexmon-dkms_6.12.2_all.deb
-
-# Instalar (--force-overwrite por conflicto con firmware-brcm80211)
 sudo dpkg -i --force-overwrite firmware-nexmon_0.2_all.deb
 sudo dpkg -i brcmfmac-nexmon-dkms_6.12.2_all.deb
-
 sudo reboot
 ```
 
-Verificar después del reinicio:
+## 7. Instalar el proyecto
 
 ```bash
-# Debe listar "monitor" como modo soportado
-iw phy phy0 info | grep -i monitor
-
-# Probar captura de probe requests (15 segundos)
-sudo airmon-ng start wlan0
-sudo timeout 15 tcpdump -i wlan0mon -e -c 10 'subtype probe-req'
-sudo airmon-ng stop wlan0mon
-```
-
-**Nota**: el error "Unknown error 524" de airmon-ng es esperado y no afecta la captura.
-
-## 11. Verificar cámaras
-
-```bash
-# Verificar que se detectan las dos cámaras
-rpicam-hello --list-cameras
-# Debe listar 2 cámaras
-
-# Capturar una imagen de cada cámara
-rpicam-still -o test_cam0.jpg --camera 0
-rpicam-still -o test_cam1.jpg --camera 1
-```
-
-Como el dispositivo corre headless, bajar las imágenes a tu PC para verificarlas:
-
-```bash
-# Desde tu PC (PowerShell o terminal)
-scp pi@people-counter.local:test_cam0.jpg .
-scp pi@people-counter.local:test_cam1.jpg .
-```
-
-Verificar que ambas imágenes se ven bien, que el ángulo y la orientación son correctos,
-y que las dos cámaras apuntan a la misma zona.
-
-## 12. Verificación final
-
-```bash
-# Batería RTC: verificar que está cargando
-cat /sys/devices/platform/soc*/soc*:rpi_rtc/rtc/rtc0/charging_voltage
-# Debe mostrar 3000000 (3V)
-
-# Temperatura CPU
-vcgencmd measure_temp
-```
-
-La temperatura en idle debería estar por debajo de 60°C.
-Si está muy alta, verificar que el disipador esté bien montado.
-
-## 13. Instalar dependencias y el proyecto
-
-```bash
-# Instalar dependencias del sistema
+# Dependencias del sistema
 sudo apt install -y \
   python3-pip python3-venv \
   python3-opencv python3-numpy \
@@ -288,13 +132,15 @@ PYTHONPATH=. python3 scripts/download_model.py hef
 pytest -v
 ```
 
-## 14. Configurar el dispositivo
+## 8. Configurar el dispositivo
 
 ```bash
+# Crear directorios
+sudo mkdir -p /etc/people-counter/certs /var/lib/people-counter /var/log/people-counter
+sudo chown -R pi:pi /etc/people-counter /var/lib/people-counter /var/log/people-counter
+
 # Copiar config de ejemplo y personalizarlo
 sudo cp /usr/src/people-counter/config/config.example.yaml /etc/people-counter/config.yaml
-
-# Editar con los datos del dispositivo (device id, store id, endpoint MQTT, etc.)
 sudo nano /etc/people-counter/config.yaml
 ```
 
@@ -307,13 +153,9 @@ Campos que hay que personalizar por dispositivo:
 
 Alternativamente, usar `scripts/provision.py` que genera el config automáticamente.
 
-## 15. Instalar servicios del sistema
+## 9. Instalar servicios del sistema
 
 ```bash
-# Crear directorios de datos
-sudo mkdir -p /etc/people-counter/certs /var/lib/people-counter /var/log/people-counter
-sudo chown -R pi:pi /etc/people-counter /var/lib/people-counter /var/log/people-counter
-
 # Copiar todos los servicios y configs
 sudo cp /usr/src/people-counter/config/wifi-monitor.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/people-counter.service /etc/systemd/system/
@@ -326,9 +168,27 @@ sudo systemctl daemon-reload
 sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
 ```
 
-## 16. Siguiente paso
+## 10. Verificar todo
 
-Una vez que todo lo anterior funciona, el siguiente paso es la **calibración estéreo**:
+```bash
+cd /usr/src/people-counter
+sudo PYTHONPATH=. .venv/bin/python3 scripts/verify_hardware.py
+```
+
+Este script verifica: kernel, config.txt, PCIe Gen 3, Hailo, cámaras, RTC, temperatura,
+watchdog, nexmon, BLE, Python + dependencias, modelo HEF, config, y servicios systemd.
+
+Para verificar las cámaras visualmente (headless):
+
+```bash
+source .venv/bin/activate
+rpicam-still -o /tmp/test_cam0.jpg --camera 0
+rpicam-still -o /tmp/test_cam1.jpg --camera 1
+# Desde tu PC:
+scp pi@people-counter.local:/tmp/test_cam*.jpg .
+```
+
+## 11. Calibración estéreo
 
 ```bash
 cd /usr/src/people-counter
@@ -337,10 +197,12 @@ PYTHONPATH=. python3 scripts/calibrate.py capture --count 30 --interval 5
 ```
 
 Mover el patrón ChArUco entre capturas a distintas distancias (2.5-4m), ángulos y
-posiciones. Después calibrar:
+posiciones. Buena iluminación, sin reflejos directos sobre el papel. Después calibrar:
 
 ```bash
-PYTHONPATH=. python3 scripts/calibrate.py calibrate --input-dir ./calibration/captures --output /etc/people-counter/calibration.npz
+PYTHONPATH=. python3 scripts/calibrate.py calibrate \
+  --input-dir ./calibration/captures \
+  --output /etc/people-counter/calibration.npz
 ```
 
 ## Troubleshooting
@@ -352,9 +214,8 @@ PYTHONPATH=. python3 scripts/calibrate.py calibrate --input-dir ./calibration/ca
   el HAT. Correr `lspci` y buscar Hailo.
 - **Boot loop**: sacar el HAT y bootear solo con la Pi para descartar
   problemas de alimentación. La fuente USB-C debe ser de 5V/5A.
-- **WiFi monitor mode no funciona**: verificar que nexmon se instaló
-  correctamente con `dmesg | grep nexmon`. Debe mostrar la versión
-  de firmware nexmon. Si no aparece, reinstalar firmware-nexmon.
+- **WiFi monitor mode no funciona**: verificar con `dmesg | grep nexmon`
+  que el firmware nexmon está cargado. Si no aparece, reinstalar firmware-nexmon.
 - **picamera2 no importa en el venv**: recrear el venv con
   `python3 -m venv .venv --system-site-packages`.
 - **"Unknown error 524" en airmon-ng**: es esperado con nexmon en RPi5,
