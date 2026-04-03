@@ -48,7 +48,8 @@ Edge Device (per store door)          AWS Cloud
 | Stereo capture | ✅ Validated | picamera2 on RPi5, both cameras working |
 | Detection | ✅ Validated | YOLOv8n HEF on Hailo-8L, person detected at 91% confidence |
 | Calibration | 🔧 Ready to run | `scripts/calibrate.py` headless — pending ChArUco capture |
-| WiFi/BLE capture | 🔧 Skeletons | wifi_probe.py + ble_scan.py with tests, needs hardware validation |
+| WiFi probe | ✅ Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
+| BLE scan | ✅ Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |
 | Cloud infra | ✅ CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
 | Deployment | ✅ Ready | provision.py, systemd service, logrotate, daily reset timer |
 | TFG document | ✅ 90+ pages | 27 references, 13 tables, 6 figures |

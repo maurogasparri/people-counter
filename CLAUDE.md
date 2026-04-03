@@ -54,7 +54,7 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 - **Counting**: Virtual line in depth coordinates. Crossing direction = ingress/egress event. Publish immediately via MQTT.
 
 ### WiFi/BLE Capture
-- **WiFi**: CYW43455 in monitor mode via nexmon. Capture probe requests on 2.4 AND 5 GHz. **WiFi is EXCLUSIVE for probing — network connectivity is Ethernet only.**
+- **WiFi**: CYW43455 in monitor mode via nexmon (firmware-nexmon + brcmfmac-nexmon-dkms from Kali packages) + airmon-ng. Capture probe requests on 2.4 AND 5 GHz. **WiFi is EXCLUSIVE for probing — network connectivity is Ethernet only.**
 - **BLE**: Same CYW43455, passive advertising on channels 37/38/39.
 - **Hashing**: SHA-256 truncated to 16 bytes on every MAC before storage. Never store raw MACs.
 - **Dedup L1 (intra-protocol)**: SQLite set of hashes per day per protocol. Reset at business day start.
@@ -106,8 +106,8 @@ people-counter/
 │   │   ├── tracker.py     ← 3D Euclidean tracker
 │   │   └── counter.py     ← virtual line crossing logic
 │   ├── wifi_ble/
-│   │   ├── wifi_probe.py  ← nexmon monitor mode capture (SKELETON)
-│   │   ├── ble_scan.py    ← BLE advertising capture (SKELETON)
+│   │   ├── wifi_probe.py  ← nexmon/airmon-ng probe capture (VALIDATED)
+│   │   ├── ble_scan.py    ← BLE advertising capture via bleak (VALIDATED)
 │   │   ├── hasher.py      ← SHA-256 truncated hashing
 │   │   └── dedup.py       ← intra + cross-protocol dedup
 │   ├── mqtt/
@@ -142,7 +142,7 @@ people-counter/
 | S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **READY TO CALIBRATE** — calibration.py adapted to calib.io board (DICT_5X5, 35mm/26mm), calibrate.py headless capture. Pending: run calibration with ChArUco board. |
 | S5 | Detection | HEF compilation. Hailo SDK integration. 30+ FPS. | **SOFTWARE READY** — detect.py with Hailo + OpenCV backends, preprocess/postprocess tested (10 tests). Hailo-8L verified (fw 4.23.0, PCIe Gen 3). HEF compilation pending. |
 | S6 | Tracking | 3D tracker. Virtual line. Ingress/egress events. | **DONE** — tracker.py + counter.py (12 tests). main.py wired E2E (17 tests). |
-| S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **SOFTWARE READY** — hasher.py + dedup.py (11 tests). wifi_probe.py + ble_scan.py skeletons with tests (33 tests). Need hardware validation. |
+| S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **HARDWARE VALIDATED** — wifi_probe.py (nexmon + airmon-ng + scapy, probes captured), ble_scan.py (bleak, 343 adverts/8 unique devices). hasher.py + dedup.py (11 tests). |
 | S8 | MQTT | IoT Core client. SQLite buffer. Reconnect. | **DONE** — client.py with TLS, buffer replay, backoff (7 tests). |
 | S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). CloudFormation template with IoT Core, Timestream, DynamoDB, Lambda, IAM. QuickSight/API GW deferred post-MVP. |
 | S10 | Integration | End-to-end. All modules together. | **SOFTWARE READY** — main.py orchestrates full pipeline. provision.py + systemd service ready. Pending: E2E on RPi5 after calibration. |
@@ -151,12 +151,11 @@ people-counter/
 
 ## Implementation Status
 
-**179 tests passing.** Modules by status:
+**180 tests passing.** Modules by status:
 
-- ✅ COMPLETE: calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main (17 tests), wifi_probe (14 tests), ble_scan (19 tests)
-- 🔧 SOFTWARE READY (need hardware validation): capture (picamera2 verified on RPi5), detect (OpenCV backend for dev, Hailo pending HEF)
-- 🔧 INFRA READY: CloudFormation template, systemd service, provision.py
-- ⏳ PENDING: stereo calibration (ChArUco capture), HEF model compilation, E2E pipeline on RPi5
+- ✅ COMPLETE + VALIDATED: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
+- 🔧 INFRA READY: CloudFormation template, systemd service, provision.py, logrotate, daily reset timer
+- ⏳ PENDING: stereo calibration (ChArUco capture), E2E pipeline on RPi5
 
 ## Hard Rules
 
