@@ -107,7 +107,7 @@ sudo reboot
 ```bash
 # Dependencias del sistema
 sudo apt install -y \
-  python3-pip python3-venv \
+  python3-pip \
   python3-opencv python3-numpy \
   libopencv-dev \
   git
@@ -117,13 +117,9 @@ sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/peop
 sudo chown -R pi:pi /usr/src/people-counter
 cd /usr/src/people-counter
 
-# Crear virtualenv (--system-site-packages para acceder a picamera2 y libcamera)
-python3 -m venv .venv --system-site-packages
-source .venv/bin/activate
-
 # Instalar dependencias del proyecto + captura WiFi/BLE
-pip install -e ".[dev]"
-pip install scapy bleak
+sudo pip install --break-system-packages --root-user-action=ignore -e ".[dev]"
+sudo pip install --break-system-packages --root-user-action=ignore scapy bleak
 
 # Descargar modelo YOLOv8n para Hailo-8L
 PYTHONPATH=. python3 scripts/download_model.py hef
@@ -172,7 +168,7 @@ sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
 
 ```bash
 cd /usr/src/people-counter
-sudo PYTHONPATH=. .venv/bin/python3 scripts/verify_hardware.py
+sudo PYTHONPATH=. python3 scripts/verify_hardware.py
 ```
 
 Este script verifica: kernel, config.txt, PCIe Gen 3, Hailo, cámaras, RTC, temperatura,
@@ -181,7 +177,6 @@ watchdog, nexmon, BLE, Python + dependencias, modelo HEF, config, y servicios sy
 Para verificar las cámaras visualmente (headless):
 
 ```bash
-source .venv/bin/activate
 rpicam-still -o /tmp/test_cam0.jpg --camera 0
 rpicam-still -o /tmp/test_cam1.jpg --camera 1
 # Desde tu PC:
@@ -192,7 +187,6 @@ scp pi@people-counter.local:/tmp/test_cam*.jpg .
 
 ```bash
 cd /usr/src/people-counter
-source .venv/bin/activate
 PYTHONPATH=. python3 scripts/calibrate.py capture --count 30 --interval 5
 ```
 
@@ -216,7 +210,7 @@ PYTHONPATH=. python3 scripts/calibrate.py calibrate \
   problemas de alimentación. La fuente USB-C debe ser de 5V/5A.
 - **WiFi monitor mode no funciona**: verificar con `dmesg | grep nexmon`
   que el firmware nexmon está cargado. Si no aparece, reinstalar firmware-nexmon.
-- **picamera2 no importa en el venv**: recrear el venv con
-  `python3 -m venv .venv --system-site-packages`.
+- **picamera2 no importa**: verificar que está instalado con
+  `sudo apt install python3-picamera2`.
 - **"Unknown error 524" en airmon-ng**: es esperado con nexmon en RPi5,
   no afecta la captura.
