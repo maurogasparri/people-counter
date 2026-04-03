@@ -48,6 +48,16 @@ sudo apt update && sudo apt full-upgrade -y
 sudo reboot
 ```
 
+Los pasos 4 a 9 se pueden ejecutar automáticamente:
+
+```bash
+sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/people-counter
+sudo chown -R pi:pi /usr/src/people-counter
+sudo bash /usr/src/people-counter/scripts/setup_device.sh
+```
+
+O seguir el paso a paso manual a continuación.
+
 ## 4. Configurar sistema (headless + config.txt)
 
 ```bash
