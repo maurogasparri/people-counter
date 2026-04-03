@@ -85,7 +85,8 @@ def main() -> None:
     # --- Cameras ---
     print("\n[Cameras]")
     rc, out = run(["rpicam-hello", "--list-cameras"])
-    cam_count = out.count("ov5647")
+    # Count lines starting with a camera index (e.g. "0 : ov5647" or "1 : ov5647")
+    cam_count = sum(1 for line in out.splitlines() if line.strip()[:1].isdigit() and "ov5647" in line.lower())
     failures += not check("OV5647 cameras", cam_count >= 2, f"{cam_count} found")
 
     # --- RTC Battery ---

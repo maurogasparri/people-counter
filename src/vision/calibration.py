@@ -201,43 +201,35 @@ def calibrate_stereo(
             f"board visible in both cameras."
         )
 
-    # --- Individual camera calibration ---
+    # --- Object points (same for both cameras since we use common IDs) ---
     obj_points_per_image = _build_object_points(all_ids_l, board)
-    obj_points_per_image_r = _build_object_points(all_ids_r, board)
 
-    calib_flags = cv2.CALIB_RATIONAL_MODEL  # 8 dist coeffs for wide-angle
-
-    rms_l, camera_matrix_l, dist_coeffs_l, _, _ = cv2.calibrateCamera(
-        obj_points_per_image,
-        all_corners_l,
-        image_size,
-        None,
-        None,
-        flags=calib_flags,
+    # --- Stereo calibration (joint — calibrates both cameras together) ---
+    # Let stereoCalibrate estimate intrinsics and extrinsics jointly.
+    # This is more robust for wide-angle/fisheye lenses than calibrating
+    # each camera individually and then fixing intrinsics.
+    stereo_flags = (
+        cv2.CALIB_RATIONAL_MODEL  # 8 dist coeffs for wide-angle
     )
-    logger.info("Left camera RMS: %.4f", rms_l)
 
-    rms_r, camera_matrix_r, dist_coeffs_r, _, _ = cv2.calibrateCamera(
-        obj_points_per_image_r,
-        all_corners_r,
-        image_size,
-        None,
-        None,
-        flags=calib_flags,
-    )
-    logger.info("Right camera RMS: %.4f", rms_r)
-
-    # --- Stereo calibration ---
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC  # Reuse intrinsics from above
-
-    rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
-        obj_points_per_image,  # Common object points (left IDs as ref)
-        all_corners_l,
-        all_corners_r,
+    (
+        rms_stereo,
         camera_matrix_l,
         dist_coeffs_l,
         camera_matrix_r,
         dist_coeffs_r,
+        R,
+        T,
+        E,
+        F,
+    ) = cv2.stereoCalibrate(
+        obj_points_per_image,
+        all_corners_l,
+        all_corners_r,
+        None,
+        None,
+        None,
+        None,
         image_size,
         flags=stereo_flags,
     )
