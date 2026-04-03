@@ -6,7 +6,7 @@ Designed to run on the RPi5 after setup-guide steps are complete.
 
 Usage:
     cd /usr/src/people-counter
-    sudo PYTHONPATH=. .venv/bin/python3 scripts/verify_hardware.py
+    sudo PYTHONPATH=. python3 scripts/verify_hardware.py
 """
 
 import glob
@@ -130,7 +130,7 @@ def main() -> None:
     ble_up = "UP RUNNING" in out
     failures += not check("BLE adapter (hci0)", ble_up)
 
-    # --- Python / venv ---
+    # --- Python ---
     print("\n[Software]")
     failures += not check("Python", True, f"{sys.version.split()[0]}")
 
@@ -150,7 +150,7 @@ def main() -> None:
         from picamera2 import Picamera2
         failures += not check("picamera2", True)
     except ImportError:
-        failures += not check("picamera2", False, "not installed — venv needs --system-site-packages")
+        failures += not check("picamera2", False, "not installed — sudo apt install python3-picamera2")
 
     try:
         import hailo_platform
