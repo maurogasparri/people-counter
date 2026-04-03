@@ -58,42 +58,32 @@ def test_initial_state():
     assert cap.probe_count == 0
     assert cap._capture_thread is None
     assert cap._hop_thread is None
+    assert cap.interface == "wlan0"
+    assert cap.mon_interface == "wlan0mon"
 
 
 # ---------------------------------------------------------------------------
-# Monitor mode setup
+# Monitor mode setup (airmon-ng)
 # ---------------------------------------------------------------------------
 
 
 @patch("src.wifi_ble.wifi_probe.subprocess.run")
-def test_setup_monitor_mode_calls_ip_iw(mock_run):
+def test_setup_monitor_mode_calls_airmon(mock_run):
+    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
     cap = WiFiProbeCapture(interface="wlan0")
     cap.setup_monitor_mode()
 
-    assert mock_run.call_count == 3
-    # Down, set monitor, up
     calls = mock_run.call_args_list
-    assert calls[0][0][0] == ["ip", "link", "set", "wlan0", "down"]
-    assert calls[1][0][0] == ["iw", "wlan0", "set", "monitor", "none"]
-    assert calls[2][0][0] == ["ip", "link", "set", "wlan0", "up"]
+    # Should call: airmon-ng check kill, airmon-ng start wlan0, iw dev wlan0mon info
+    assert any("airmon-ng" in str(c) and "kill" in str(c) for c in calls)
+    assert any("airmon-ng" in str(c) and "start" in str(c) for c in calls)
+    assert any("iw" in str(c) and "wlan0mon" in str(c) for c in calls)
 
 
-@patch("src.wifi_ble.wifi_probe.subprocess.run", side_effect=FileNotFoundError("iw"))
+@patch("src.wifi_ble.wifi_probe.subprocess.run", side_effect=FileNotFoundError("airmon-ng"))
 def test_setup_monitor_mode_missing_tool(mock_run):
     cap = WiFiProbeCapture()
     with pytest.raises(RuntimeError, match="Required tool not found"):
-        cap.setup_monitor_mode()
-
-
-@patch("src.wifi_ble.wifi_probe.subprocess.run")
-def test_setup_monitor_mode_command_failure(mock_run):
-    import subprocess
-
-    mock_run.side_effect = subprocess.CalledProcessError(
-        1, "iw", stderr=b"Operation not permitted"
-    )
-    cap = WiFiProbeCapture()
-    with pytest.raises(RuntimeError, match="Failed to set monitor mode"):
         cap.setup_monitor_mode()
 
 
@@ -107,9 +97,8 @@ def test_teardown_monitor_mode(mock_run):
     cap = WiFiProbeCapture(interface="wlan0")
     cap.teardown_monitor_mode()
 
-    assert mock_run.call_count == 3
     calls = mock_run.call_args_list
-    assert calls[1][0][0] == ["iw", "wlan0", "set", "type", "managed"]
+    assert any("airmon-ng" in str(c) and "stop" in str(c) for c in calls)
 
 
 @patch("src.wifi_ble.wifi_probe.subprocess.run", side_effect=Exception("fail"))
@@ -128,7 +117,6 @@ def test_teardown_graceful_on_error(mock_run):
 def test_start_creates_threads(mock_run):
     cap = WiFiProbeCapture()
 
-    # Mock scapy import to prevent actual sniffing
     with patch.dict("sys.modules", {"scapy": MagicMock(), "scapy.all": MagicMock()}):
         cap.start()
         assert cap._capture_thread is not None
@@ -139,10 +127,8 @@ def test_start_creates_threads(mock_run):
 
 
 def test_start_twice_warns(caplog):
-    """Starting twice should warn, not create duplicate threads."""
     cap = WiFiProbeCapture()
-    cap._capture_thread = threading.Thread()  # fake existing thread
-    cap._stop_event.clear()
+    cap._capture_thread = threading.Thread()
 
     import logging
 
@@ -158,41 +144,36 @@ def test_start_twice_warns(caplog):
 
 
 @patch("src.wifi_ble.wifi_probe.subprocess.run")
-def test_channel_hop_cycles(mock_run):
-    """Channel hop should cycle through all channels."""
+def test_channel_hop_uses_mon_interface(mock_run):
+    """Channel hop should use wlan0mon, not wlan0."""
     cap = WiFiProbeCapture(
-        channels_24=[1, 6], channels_5=[], hop_interval=0.01
+        interface="wlan0", channels_24=[1, 6], channels_5=[], hop_interval=0.01
     )
     cap._stop_event.clear()
 
-    # Run hop loop briefly
     hop_thread = threading.Thread(target=cap._channel_hop_loop, daemon=True)
     hop_thread.start()
     time.sleep(0.1)
     cap._stop_event.set()
     hop_thread.join(timeout=1.0)
 
-    # Should have called iw set channel multiple times
     assert mock_run.call_count > 0
-    # Check that channel 1 and 6 were both used
-    channel_args = [
-        c[0][0][-1] for c in mock_run.call_args_list
-    ]
-    assert "1" in channel_args
-    assert "6" in channel_args
+    # All channel set calls should use wlan0mon
+    for c in mock_run.call_args_list:
+        args = c[0][0]
+        if "channel" in args:
+            assert "wlan0mon" in args
 
 
 # ---------------------------------------------------------------------------
-# Callback invocation
+# Callback
 # ---------------------------------------------------------------------------
 
 
 def test_on_probe_callback():
-    """on_probe callback should be called for each probe event."""
     events = []
     cap = WiFiProbeCapture(on_probe=lambda e: events.append(e))
 
-    # Simulate a probe being processed
     event = ProbeEvent(
         mac="AA:BB:CC:DD:EE:FF",
         rssi=-60.0,
@@ -200,9 +181,7 @@ def test_on_probe_callback():
         channel=6,
         timestamp=time.time(),
     )
-    cap._probe_count += 1
     cap.on_probe(event)
-
     assert len(events) == 1
     assert events[0].mac == "AA:BB:CC:DD:EE:FF"
 

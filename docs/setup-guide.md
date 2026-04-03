@@ -185,7 +185,43 @@ hailortcli fw-control identify
 **Importante**: el driver y el runtime de HailoRT deben tener la misma versión.
 Si hay mismatch (ej. 4.20 vs 4.21), reinstalar con `sudo apt install hailo-all`.
 
-## 10. Verificar cámaras
+## 10. Instalar nexmon (WiFi monitor mode)
+
+El CYW43455 integrado no soporta monitor mode por defecto. Los paquetes de nexmon
+(originalmente de Kali Linux) parchean el firmware y el driver para habilitarlo.
+
+Referencia: https://www.kali.org/blog/raspberry-pi-wi-fi-glow-up/
+
+```bash
+# Instalar dependencias
+sudo apt install -y dkms aircrack-ng
+
+# Descargar los paquetes de nexmon (no agregar el repo de Kali)
+wget http://http.kali.org/pool/non-free-firmware/f/firmware-nexmon/firmware-nexmon_0.2_all.deb
+wget http://http.kali.org/pool/contrib/b/brcmfmac-nexmon-dkms/brcmfmac-nexmon-dkms_6.12.2_all.deb
+
+# Instalar (--force-overwrite por conflicto con firmware-brcm80211)
+sudo dpkg -i --force-overwrite firmware-nexmon_0.2_all.deb
+sudo dpkg -i brcmfmac-nexmon-dkms_6.12.2_all.deb
+
+sudo reboot
+```
+
+Verificar después del reinicio:
+
+```bash
+# Debe listar "monitor" como modo soportado
+iw phy phy0 info | grep -i monitor
+
+# Probar captura de probe requests (15 segundos)
+sudo airmon-ng start wlan0
+sudo timeout 15 tcpdump -i wlan0mon -e -c 10 'subtype probe-req'
+sudo airmon-ng stop wlan0mon
+```
+
+**Nota**: el error "Unknown error 524" de airmon-ng es esperado y no afecta la captura.
+
+## 11. Verificar cámaras
 
 ```bash
 # Verificar que se detectan las dos cámaras
@@ -208,7 +244,7 @@ scp pi@people-counter.local:test_cam1.jpg .
 Verificar que ambas imágenes se ven bien, que el ángulo y la orientación son correctos,
 y que las dos cámaras apuntan a la misma zona.
 
-## 11. Verificación final
+## 12. Verificación final
 
 ```bash
 # Batería RTC: verificar que está cargando
@@ -222,7 +258,7 @@ vcgencmd measure_temp
 La temperatura en idle debería estar por debajo de 60°C.
 Si está muy alta, verificar que el disipador esté bien montado.
 
-## 12. Instalar dependencias y el proyecto
+## 13. Instalar dependencias y el proyecto
 
 ```bash
 # Instalar dependencias del sistema
@@ -248,7 +284,7 @@ pip install -e ".[dev]"
 pytest -v
 ```
 
-## 13. Instalar servicios del sistema
+## 14. Instalar servicios del sistema
 
 ```bash
 # Logrotate (rotación de logs)
@@ -270,7 +306,7 @@ sudo mkdir -p /etc/people-counter/certs /var/lib/people-counter /var/log/people-
 sudo chown -R pi:pi /etc/people-counter /var/lib/people-counter /var/log/people-counter
 ```
 
-## 14. PoC — Siguiente paso
+## 15. PoC — Siguiente paso
 
 Una vez que todo lo anterior funciona, abrí Claude Code en el directorio
 del repo y pedile:
