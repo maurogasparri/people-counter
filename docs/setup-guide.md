@@ -281,11 +281,33 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 pip install scapy bleak
 
+# Descargar modelo YOLOv8n para Hailo-8L
+PYTHONPATH=. python3 scripts/download_model.py hef
+
 # Verificar tests
 pytest -v
 ```
 
-## 14. Instalar servicios del sistema
+## 14. Configurar el dispositivo
+
+```bash
+# Copiar config de ejemplo y personalizarlo
+sudo cp /usr/src/people-counter/config/config.example.yaml /etc/people-counter/config.yaml
+
+# Editar con los datos del dispositivo (device id, store id, endpoint MQTT, etc.)
+sudo nano /etc/people-counter/config.yaml
+```
+
+Campos que hay que personalizar por dispositivo:
+- `device.id` — identificador único (ej: `store-001-cam-01`)
+- `device.store_id` — identificador del local (ej: `store-001`)
+- `device.store_name` — nombre legible del local
+- `mqtt.endpoint` — endpoint de AWS IoT Core
+- `vision.calibration_file` — path al `.npz` de calibración (después de calibrar)
+
+Alternativamente, usar `scripts/provision.py` que genera el config automáticamente.
+
+## 15. Instalar servicios del sistema
 
 ```bash
 # Crear directorios de datos
@@ -304,7 +326,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
 ```
 
-## 15. Siguiente paso
+## 16. Siguiente paso
 
 Una vez que todo lo anterior funciona, el siguiente paso es la **calibración estéreo**:
 
