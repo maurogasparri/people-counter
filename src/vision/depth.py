@@ -1,7 +1,7 @@
 """Disparity map computation from rectified stereo pairs.
 
 Uses Semi-Global Block Matching (SGBM) as described by Hirschmuller (2008),
-with parameters tuned for ceiling-mounted OV5647 stereo pair at ~2.5-4m range
+with parameters tuned for ceiling-mounted OV5647 stereo pair at ~2-4m range
 and 14cm baseline.
 
 The depth (Z) at each pixel is: Z = f * B / disparity
@@ -12,16 +12,16 @@ import cv2
 import numpy as np
 
 
-# Default SGBM parameters tuned for OV5647 160deg, 14cm baseline, 2.5-4m range.
-# These are starting points; real tuning happens during PoC with actual frames.
-DEFAULT_NUM_DISPARITIES = 128  # Must be divisible by 16
-DEFAULT_BLOCK_SIZE = 5  # Odd number, 3-11
-DEFAULT_P1_FACTOR = 8  # P1 = P1_FACTOR * channels * block_size^2
-DEFAULT_P2_FACTOR = 32  # P2 = P2_FACTOR * channels * block_size^2
-DEFAULT_DISP12_MAX_DIFF = 1
-DEFAULT_UNIQUENESS_RATIO = 10
-DEFAULT_SPECKLE_WINDOW_SIZE = 100
-DEFAULT_SPECKLE_RANGE = 32
+# SGBM parameters for OV5647 160-170° fisheye, 14cm baseline, 2-4m range.
+# Disparity range: Z=4m → ~35px, Z=1.5m → ~95px (depends on rectified fx).
+DEFAULT_NUM_DISPARITIES = 128  # Covers ~1.5-6m range
+DEFAULT_BLOCK_SIZE = 9  # Larger block for robust matching on wide-angle images
+DEFAULT_P1_FACTOR = 12  # Smoothness penalty for ±1 disparity change
+DEFAULT_P2_FACTOR = 96  # Smoothness penalty for large discontinuities (8× P1)
+DEFAULT_DISP12_MAX_DIFF = 2  # Allow ±2px left-right mismatch (fisheye residual)
+DEFAULT_UNIQUENESS_RATIO = 5  # Lower for IR-filter cameras with good contrast
+DEFAULT_SPECKLE_WINDOW_SIZE = 150  # Filter small noise blobs
+DEFAULT_SPECKLE_RANGE = 16  # Max disparity variation within a speckle
 DEFAULT_PRE_FILTER_CAP = 63
 DEFAULT_MIN_DISPARITY = 0
 
@@ -43,11 +43,10 @@ def create_sgbm(
     Args:
         num_disparities: Maximum disparity minus minimum disparity.
             Must be divisible by 16.
-        block_size: Matched block size. Must be odd, in range [1, 11].
+        block_size: Matched block size. Must be odd.
         p1_factor: Multiplier for P1 smoothness penalty.
         p2_factor: Multiplier for P2 smoothness penalty (must be > p1_factor).
         disp12_max_diff: Max allowed difference in left-right disparity check.
-            Set to -1 to disable.
         uniqueness_ratio: Margin (%) by which best match must beat second best.
         speckle_window_size: Max area of connected component to filter.
         speckle_range: Max disparity variation within a connected component.
@@ -57,8 +56,7 @@ def create_sgbm(
     Returns:
         Configured StereoSGBM instance.
     """
-    # P1 and P2 are computed relative to block size and assumed grayscale
-    channels = 1  # We convert to grayscale before matching
+    channels = 1
     p1 = p1_factor * channels * block_size * block_size
     p2 = p2_factor * channels * block_size * block_size
 
@@ -78,66 +76,73 @@ def create_sgbm(
     return sgbm
 
 
+def _to_gray(image: np.ndarray, use_green_channel: bool = False) -> np.ndarray:
+    """Convert image to grayscale.
+
+    Args:
+        image: BGR or grayscale image.
+        use_green_channel: If True, extract green channel only (better for
+            NoIR cameras where IR contaminates red and blue channels).
+    """
+    if len(image.shape) != 3:
+        return image
+    if use_green_channel:
+        return image[:, :, 1]  # Green in BGR
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+
 def compute_disparity(
     left_rect: np.ndarray,
     right_rect: np.ndarray,
     num_disparities: int = DEFAULT_NUM_DISPARITIES,
     block_size: int = DEFAULT_BLOCK_SIZE,
     sgbm: cv2.StereoSGBM | None = None,
-    use_wls_filter: bool = True,
+    use_wls_filter: bool = False,
+    use_green_channel: bool = False,
+    use_clahe: bool = True,
 ) -> np.ndarray:
-    """Compute disparity map using SGBM with optional WLS filtering.
-
-    Uses left+right matchers and a Weighted Least Squares (WLS) filter
-    to reduce noise and fill holes. This significantly improves depth
-    map quality, especially with fisheye lenses.
+    """Compute disparity map using SGBM.
 
     Args:
         left_rect: Left rectified image (BGR or grayscale).
         right_rect: Right rectified image (BGR or grayscale).
         num_disparities: Max disparity range. Ignored if sgbm is provided.
         block_size: Block size for matching. Ignored if sgbm is provided.
-        sgbm: Pre-created SGBM matcher. If None, one is created with
-            the given num_disparities and block_size.
-        use_wls_filter: Apply WLS filter with right matcher (default True).
+        sgbm: Pre-created SGBM matcher. If None, one is created.
+        use_wls_filter: Apply WLS filter (default False — too aggressive
+            for NoIR cameras with weak edges).
+        use_green_channel: Use green channel only (for NoIR cameras).
+        use_clahe: Apply CLAHE contrast enhancement before matching.
 
     Returns:
         Disparity map as float32 in pixels. Invalid pixels are -1.0.
-        Raw SGBM output is in fixed-point (Q4 = value/16), this function
-        converts to true pixel disparity.
     """
-    # Convert to grayscale if needed
-    if len(left_rect.shape) == 3:
-        gray_l = cv2.cvtColor(left_rect, cv2.COLOR_BGR2GRAY)
-    else:
-        gray_l = left_rect
+    gray_l = _to_gray(left_rect, use_green_channel)
+    gray_r = _to_gray(right_rect, use_green_channel)
 
-    if len(right_rect.shape) == 3:
-        gray_r = cv2.cvtColor(right_rect, cv2.COLOR_BGR2GRAY)
-    else:
-        gray_r = right_rect
+    if use_clahe:
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        gray_l = clahe.apply(gray_l)
+        gray_r = clahe.apply(gray_r)
 
     if sgbm is None:
         sgbm = create_sgbm(num_disparities=num_disparities, block_size=block_size)
 
-    # Left disparity
     raw_disp_l = sgbm.compute(gray_l, gray_r)
 
     if use_wls_filter:
-        # Right matcher + WLS filter for cleaner disparity
         right_matcher = cv2.ximgproc.createRightMatcher(sgbm)
         raw_disp_r = right_matcher.compute(gray_r, gray_l)
 
         wls = cv2.ximgproc.createDisparityWLSFilter(sgbm)
-        wls.setLambda(8000.0)
-        wls.setSigmaColor(1.5)
+        wls.setLambda(4000.0)
+        wls.setSigmaColor(1.0)
 
         filtered = wls.filter(raw_disp_l, gray_l, disparity_map_right=raw_disp_r)
         disparity = filtered.astype(np.float32) / 16.0
     else:
         disparity = raw_disp_l.astype(np.float32) / 16.0
 
-    # Mark invalid pixels
     disparity[disparity < 0] = -1.0
 
     return disparity
@@ -157,9 +162,9 @@ def disparity_to_depth(
     Args:
         disparity: Disparity map from compute_disparity() (float32, pixels).
         focal_length_px: Focal length in pixels (from calibration P1[0,0]).
-        baseline_mm: Stereo baseline in mm (140mm for our rig).
-        min_depth_mm: Minimum valid depth. Closer points are clipped.
-        max_depth_mm: Maximum valid depth. Farther points are clipped.
+        baseline_mm: Stereo baseline in mm.
+        min_depth_mm: Minimum valid depth.
+        max_depth_mm: Maximum valid depth.
 
     Returns:
         Depth map in mm as float32. Invalid pixels are 0.0.
@@ -169,7 +174,6 @@ def disparity_to_depth(
     valid = disparity > 0
     depth[valid] = (focal_length_px * baseline_mm) / disparity[valid]
 
-    # Clip to valid range
     out_of_range = (depth < min_depth_mm) | (depth > max_depth_mm)
     depth[out_of_range & valid] = 0.0
     depth[~valid] = 0.0
@@ -185,8 +189,7 @@ def depth_at_bbox(
     """Estimate depth of a detected person from their bounding box.
 
     Uses the median (or specified percentile) of valid depth values
-    within the lower-center region of the bbox, which corresponds
-    to the person's head/shoulders in a ceiling-mounted camera.
+    within the center 50% of the bbox.
 
     Args:
         depth_map: Depth map in mm from disparity_to_depth().
@@ -198,7 +201,6 @@ def depth_at_bbox(
     """
     x1, y1, x2, y2 = bbox
 
-    # Use center 50% of the bbox to avoid edges
     cx = (x1 + x2) // 2
     cy = (y1 + y2) // 2
     hw = (x2 - x1) // 4

@@ -30,6 +30,10 @@ def main() -> None:
                         help="Actual distance to object in mm")
     parser.add_argument("--calibration", default="/etc/people-counter/calibration.npz")
     parser.add_argument("--no-wls", action="store_true", help="Disable WLS filter")
+    parser.add_argument("--wls", action="store_true", help="Enable WLS filter (off by default)")
+    parser.add_argument("--green", action="store_true",
+                        help="Use green channel only (for NoIR cameras)")
+    parser.add_argument("--no-clahe", action="store_true", help="Disable CLAHE")
     parser.add_argument("--delay", type=int, default=0,
                         help="Countdown in seconds before capture")
     args = parser.parse_args()
@@ -116,8 +120,14 @@ def main() -> None:
     print(f"Rectified: {rect_l.shape}")
 
     # --- Disparity ---
+    use_wls = args.wls and not args.no_wls  # off by default
     sgbm = create_sgbm()
-    disparity = compute_disparity(rect_l, rect_r, sgbm=sgbm, use_wls_filter=not args.no_wls)
+    disparity = compute_disparity(
+        rect_l, rect_r, sgbm=sgbm,
+        use_wls_filter=use_wls,
+        use_green_channel=args.green,
+        use_clahe=not args.no_clahe,
+    )
 
     # Center ROI analysis
     h, w = disparity.shape

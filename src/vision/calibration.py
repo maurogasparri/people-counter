@@ -1,11 +1,15 @@
 """Stereo calibration using ChArUco patterns.
 
-Implements the full pipeline: ChArUco detection → individual camera
-calibration → stereo calibration → rectification map generation.
+Implements a hybrid pipeline for wide-angle (160-170°) fisheye lenses:
+
+  1. Individual camera calibration with cv2.fisheye (handles extreme distortion).
+  2. Undistort detected corners to ideal pinhole coordinates.
+  3. Standard cv2.stereoCalibrate on undistorted points (handles variable
+     point counts per pair, gives better stereo RMS than fisheye.stereoCalibrate).
+  4. Rectification maps via cv2.fisheye.initUndistortRectifyMap (composes
+     fisheye undistortion + stereo rectification rotation in one remap).
 
 Compatible with OpenCV 4.8+ (contrib) which uses the refactored ArUco API.
-Uses the OpenCV fisheye model (cv2.fisheye) for the OV5647 160° lenses,
-which handles wide-angle distortion much better than the pinhole model.
 
 References:
     - Zhang (2000): Flexible camera calibration technique.
@@ -104,7 +108,7 @@ def detect_charuco_corners(
         detector.detectBoard(gray)
     )
 
-    if charuco_ids is None or len(charuco_ids) < 8:
+    if charuco_ids is None or len(charuco_ids) < 6:
         return None, None
 
     return charuco_corners, charuco_ids
@@ -165,7 +169,7 @@ def calibrate_stereo(
 
         # Keep only corner IDs present in BOTH images
         common_ids = np.intersect1d(ids_l.flatten(), ids_r.flatten())
-        if len(common_ids) < 8:
+        if len(common_ids) < 6:
             logger.debug(
                 "Pair %d: only %d common corners, skipping", idx, len(common_ids)
             )
@@ -195,9 +199,11 @@ def calibrate_stereo(
     valid_pairs = len(all_corners_l)
     logger.info("Valid calibration pairs: %d / %d", valid_pairs, len(image_pairs))
 
-    if valid_pairs < 10:
+    min_pairs = 15 if use_fisheye else 10
+    if valid_pairs < min_pairs:
         raise ValueError(
-            f"Need at least 10 valid pairs for stereo calibration, "
+            f"Need at least {min_pairs} valid pairs for "
+            f"{'fisheye' if use_fisheye else 'pinhole'} stereo calibration, "
             f"got {valid_pairs}. Capture more images with the ChArUco "
             f"board visible in both cameras."
         )
