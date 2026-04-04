@@ -301,47 +301,38 @@ def _calibrate_fisheye(
     img_points_l = [img_points_l[i] for i in keep]
     img_points_r = [img_points_r[i] for i in keep]
 
-    # fisheye.stereoCalibrate requires all pairs to have the same point count.
-    # Drop pairs with too few points, then truncate the rest to the new minimum.
-    counts = [o.shape[1] for o in obj_points]
-    median_n = int(np.median(counts))
-    threshold = max(12, median_n // 2)  # at least 12 points
-    keep2 = [i for i, c in enumerate(counts) if c >= threshold]
-    if len(keep2) < len(obj_points):
-        logger.info(
-            "Dropping %d pairs with fewer than %d points",
-            len(obj_points) - len(keep2), threshold,
-        )
-        obj_points = [obj_points[i] for i in keep2]
-        img_points_l = [img_points_l[i] for i in keep2]
-        img_points_r = [img_points_r[i] for i in keep2]
-    trunc_n = min(o.shape[1] for o in obj_points)
-    obj_points = [o[:, :trunc_n, :] for o in obj_points]
-    img_points_l = [p[:, :trunc_n, :] for p in img_points_l]
-    img_points_r = [p[:, :trunc_n, :] for p in img_points_r]
-    logger.info("Stereo calibration: %d pairs, %d points each", len(obj_points), trunc_n)
+    # Strategy: undistort image points with fisheye model, then use
+    # standard stereoCalibrate with zero distortion. This separates
+    # the well-calibrated fisheye distortion (RMS ~0.4) from the
+    # stereo geometry, and allows variable point counts per pair.
+    undist_pts_l = []
+    undist_pts_r = []
+    obj_pts_std = []
+    for i in range(len(obj_points)):
+        pts_l = img_points_l[i].reshape(-1, 1, 2).astype(np.float64)
+        pts_r = img_points_r[i].reshape(-1, 1, 2).astype(np.float64)
+        ud_l = cv2.fisheye.undistortPoints(pts_l, K_l, D_l, P=K_l)
+        ud_r = cv2.fisheye.undistortPoints(pts_r, K_r, D_r, P=K_r)
+        undist_pts_l.append(ud_l.reshape(-1, 2).astype(np.float32))
+        undist_pts_r.append(ud_r.reshape(-1, 2).astype(np.float32))
+        obj_pts_std.append(obj_points[i].reshape(-1, 3).astype(np.float32))
 
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
-    stereo_result = cv2.fisheye.stereoCalibrate(
-        obj_points, img_points_l, img_points_r,
-        K_l.copy(), D_l.copy(), K_r.copy(), D_r.copy(),
-        image_size,
-        flags=cv2.fisheye.CALIB_FIX_INTRINSIC | cv2.fisheye.CALIB_FIX_SKEW,
-        criteria=criteria,
+    # Standard stereo calibration with undistorted points, zero distortion
+    zero_dist = np.zeros(5)
+    stereo_flags = cv2.CALIB_FIX_INTRINSIC
+    rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
+        obj_pts_std, undist_pts_l, undist_pts_r,
+        K_l, zero_dist, K_r, zero_dist, image_size,
+        flags=stereo_flags,
     )
-    # OpenCV returns: rms, K1, D1, K2, D2, R, T [, rvecs, tvecs]
-    rms_stereo = stereo_result[0]
-    R = stereo_result[5]
-    T = stereo_result[6]
-    logger.info("Stereo RMS (fisheye): %.4f", rms_stereo)
+    logger.info("Stereo RMS (fisheye+pinhole): %.4f (%d pairs)", rms_stereo, len(obj_pts_std))
 
-    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
-        K_l, D_l, K_r, D_r, image_size, R, T,
-        flags=cv2.CALIB_ZERO_DISPARITY,
-        balance=0.5,
-        fov_scale=1.0,
+    # Rectify using standard stereoRectify with fisheye K but zero distortion
+    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+        K_l, zero_dist, K_r, zero_dist, image_size, R, T, alpha=0.0,
     )
 
+    # Rectification maps: compose fisheye undistortion + rectification rotation
     map_l_x, map_l_y = cv2.fisheye.initUndistortRectifyMap(
         K_l, D_l, R1, P1, image_size, cv2.CV_32FC1
     )
@@ -353,7 +344,7 @@ def _calibrate_fisheye(
         "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
         "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
         "R": R, "T": T,
-        "E": np.zeros((3, 3)), "F": np.zeros((3, 3)),
+        "E": E, "F": F,
         "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
         "map_l_x": map_l_x, "map_l_y": map_l_y,
         "map_r_x": map_r_x, "map_r_y": map_r_y,
