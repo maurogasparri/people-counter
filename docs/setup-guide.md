@@ -222,11 +222,16 @@ scp pi@people-counter.local:/tmp/focus_right.jpg .
 
 ```bash
 cd /usr/src/people-counter
-PYTHONPATH=. python3 scripts/calibrate.py capture --count 30 --interval 5
+PYTHONPATH=. python3 scripts/calibrate.py capture --count 30
 ```
 
-Mover el patrón ChArUco entre capturas a distintas distancias (2.5-4m), ángulos y
-posiciones. Buena iluminación, sin reflejos directos sobre el papel. Después calibrar:
+Abrir **http://people-counter.local:8080** para ver el preview en vivo con detección
+de corners y grilla de cobertura. El script captura automáticamente cada 3 segundos
+cuando el board es detectado.
+
+Mover el patrón ChArUco entre capturas a distintas posiciones (centro, bordes, esquinas),
+ángulos (inclinado, rotado) y distancias (0.7-1.5m). Cubrir toda la grilla.
+Buena iluminación, sin reflejos directos sobre el papel. Después calibrar:
 
 ```bash
 PYTHONPATH=. python3 scripts/calibrate.py calibrate \
