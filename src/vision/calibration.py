@@ -231,7 +231,6 @@ def _calibrate_fisheye(
 
     fisheye_flags = (
         cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-        | cv2.fisheye.CALIB_CHECK_COND
         | cv2.fisheye.CALIB_FIX_SKEW
     )
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
