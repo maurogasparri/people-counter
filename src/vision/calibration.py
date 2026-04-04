@@ -205,18 +205,6 @@ def calibrate_stereo(
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
     if use_fisheye:
-        # Filter pairs that crash fisheye calibration individually
-        obj_points_per_image, all_corners_l, all_corners_r = _filter_fisheye_pairs(
-            obj_points_per_image, all_corners_l, all_corners_r, image_size
-        )
-
-    if len(obj_points_per_image) < 10:
-        raise ValueError(
-            f"Need at least 10 valid pairs after filtering, "
-            f"got {len(obj_points_per_image)}."
-        )
-
-    if use_fisheye:
         result = _calibrate_fisheye(
             obj_points_per_image, all_corners_l, all_corners_r, image_size
         )
@@ -229,38 +217,55 @@ def calibrate_stereo(
     return result
 
 
-def _filter_fisheye_pairs(
+
+def _fisheye_calibrate_robust(
     obj_points: list[np.ndarray],
-    corners_l: list[np.ndarray],
-    corners_r: list[np.ndarray],
+    img_points: list[np.ndarray],
     image_size: tuple[int, int],
-) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
-    """Test each pair individually with fisheye.calibrate and discard failures."""
-    keep = []
-    flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC | cv2.fisheye.CALIB_FIX_SKEW
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-4)
+    label: str,
+) -> tuple[float, np.ndarray, np.ndarray, list[int]]:
+    """Iteratively calibrate fisheye, removing ill-conditioned pairs.
 
-    for i in range(len(obj_points)):
-        obj = [obj_points[i].reshape(1, -1, 3)]
-        img = [corners_l[i].reshape(1, -1, 2)]
-        try:
-            K = np.zeros((3, 3))
-            D = np.zeros((4, 1))
-            cv2.fisheye.calibrate(obj, img, image_size, K, D,
-                                  flags=flags, criteria=criteria)
-            keep.append(i)
-        except cv2.error:
-            logger.debug("Pair %d: fisheye calibration failed, skipping", i)
+    Returns (rms, K, D, kept_indices).
+    """
+    import re
 
-    removed = len(obj_points) - len(keep)
-    if removed > 0:
-        logger.info("Fisheye filter: kept %d, removed %d degenerate pairs", len(keep), removed)
-
-    return (
-        [obj_points[i] for i in keep],
-        [corners_l[i] for i in keep],
-        [corners_r[i] for i in keep],
+    flags = (
+        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
+        | cv2.fisheye.CALIB_CHECK_COND
+        | cv2.fisheye.CALIB_FIX_SKEW
     )
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
+
+    indices = list(range(len(obj_points)))
+
+    while len(indices) >= 10:
+        cur_obj = [obj_points[i] for i in indices]
+        cur_img = [img_points[i] for i in indices]
+        K = np.zeros((3, 3))
+        D = np.zeros((4, 1))
+        try:
+            rms, _, _, _, _ = cv2.fisheye.calibrate(
+                cur_obj, cur_img, image_size, K, D,
+                flags=flags, criteria=criteria,
+            )
+            logger.info("%s RMS (fisheye): %.4f (%d pairs)", label, rms, len(indices))
+            return rms, K, D, indices
+        except cv2.error as e:
+            msg = str(e)
+            # Try to extract bad array index from error message
+            m = re.search(r'array (\d+)', msg)
+            if m:
+                bad_local = int(m.group(1))
+                bad_global = indices[bad_local]
+                logger.debug("%s: removing pair %d (local %d): %s", label, bad_global, bad_local, msg.split('\n')[0])
+                indices.pop(bad_local)
+            else:
+                # Can't identify which pair — remove last and retry
+                removed = indices.pop()
+                logger.debug("%s: removing pair %d (unknown cause): %s", label, removed, msg.split('\n')[0])
+
+    raise ValueError(f"{label}: fewer than 10 pairs remaining after filtering")
 
 
 def _calibrate_fisheye(
@@ -275,29 +280,21 @@ def _calibrate_fisheye(
     img_points_l = [c.reshape(1, -1, 2) for c in all_corners_l]
     img_points_r = [c.reshape(1, -1, 2) for c in all_corners_r]
 
-    fisheye_flags = (
-        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-        | cv2.fisheye.CALIB_FIX_SKEW
+    rms_l, K_l, D_l, keep_l = _fisheye_calibrate_robust(
+        obj_points, img_points_l, image_size, "Left",
     )
+    rms_r, K_r, D_r, keep_r = _fisheye_calibrate_robust(
+        obj_points, img_points_r, image_size, "Right",
+    )
+
+    # Use only pairs that passed both cameras
+    keep = sorted(set(keep_l) & set(keep_r))
+    logger.info("Pairs valid for both cameras: %d", len(keep))
+    obj_points = [obj_points[i] for i in keep]
+    img_points_l = [img_points_l[i] for i in keep]
+    img_points_r = [img_points_r[i] for i in keep]
+
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
-
-    K_l = np.zeros((3, 3))
-    D_l = np.zeros((4, 1))
-    K_r = np.zeros((3, 3))
-    D_r = np.zeros((4, 1))
-
-    rms_l, _, _, _, _ = cv2.fisheye.calibrate(
-        obj_points, img_points_l, image_size, K_l, D_l,
-        flags=fisheye_flags, criteria=criteria,
-    )
-    logger.info("Left camera RMS (fisheye): %.4f", rms_l)
-
-    rms_r, _, _, _, _ = cv2.fisheye.calibrate(
-        obj_points, img_points_r, image_size, K_r, D_r,
-        flags=fisheye_flags, criteria=criteria,
-    )
-    logger.info("Right camera RMS (fisheye): %.4f", rms_r)
-
     rms_stereo, _, _, _, _, R, T = cv2.fisheye.stereoCalibrate(
         obj_points, img_points_l, img_points_r,
         K_l.copy(), D_l.copy(), K_r.copy(), D_r.copy(),
