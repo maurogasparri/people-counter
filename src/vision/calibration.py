@@ -205,25 +205,10 @@ def calibrate_stereo(
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
     if use_fisheye:
-        # Filter out pairs with nearly-collinear corners (cause fisheye to crash)
-        keep = []
-        for i in range(len(all_corners_l)):
-            pts = all_corners_l[i].reshape(-1, 2).astype(np.float32)
-            if len(pts) >= 4:
-                hull = cv2.convexHull(pts)
-                area = cv2.contourArea(hull)
-                if area > 100:  # enough spatial spread
-                    keep.append(i)
-                else:
-                    logger.debug("Pair %d: corners nearly collinear (area=%.0f), skipping", i, area)
-            else:
-                logger.debug("Pair %d: too few corners (%d), skipping", i, len(pts))
-        if len(keep) < valid_pairs:
-            logger.info("Filtered to %d pairs (removed %d degenerate)", len(keep), valid_pairs - len(keep))
-        obj_points_per_image = [obj_points_per_image[i] for i in keep]
-        all_corners_l = [all_corners_l[i] for i in keep]
-        all_corners_r = [all_corners_r[i] for i in keep]
-        all_ids_l = [all_ids_l[i] for i in keep]
+        # Filter pairs that crash fisheye calibration individually
+        obj_points_per_image, all_corners_l, all_corners_r = _filter_fisheye_pairs(
+            obj_points_per_image, all_corners_l, all_corners_r, image_size
+        )
 
     if len(obj_points_per_image) < 10:
         raise ValueError(
@@ -242,6 +227,40 @@ def calibrate_stereo(
 
     result["image_size"] = np.array(list(image_size))
     return result
+
+
+def _filter_fisheye_pairs(
+    obj_points: list[np.ndarray],
+    corners_l: list[np.ndarray],
+    corners_r: list[np.ndarray],
+    image_size: tuple[int, int],
+) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    """Test each pair individually with fisheye.calibrate and discard failures."""
+    keep = []
+    flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC | cv2.fisheye.CALIB_FIX_SKEW
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-4)
+
+    for i in range(len(obj_points)):
+        obj = [obj_points[i].reshape(1, -1, 3)]
+        img = [corners_l[i].reshape(1, -1, 2)]
+        try:
+            K = np.zeros((3, 3))
+            D = np.zeros((4, 1))
+            cv2.fisheye.calibrate(obj, img, image_size, K, D,
+                                  flags=flags, criteria=criteria)
+            keep.append(i)
+        except cv2.error:
+            logger.debug("Pair %d: fisheye calibration failed, skipping", i)
+
+    removed = len(obj_points) - len(keep)
+    if removed > 0:
+        logger.info("Fisheye filter: kept %d, removed %d degenerate pairs", len(keep), removed)
+
+    return (
+        [obj_points[i] for i in keep],
+        [corners_l[i] for i in keep],
+        [corners_r[i] for i in keep],
+    )
 
 
 def _calibrate_fisheye(
