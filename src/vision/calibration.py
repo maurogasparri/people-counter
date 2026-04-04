@@ -317,10 +317,10 @@ def _calibrate_fisheye(
         flags=cv2.fisheye.CALIB_FIX_INTRINSIC | cv2.fisheye.CALIB_FIX_SKEW,
         criteria=criteria,
     )
-    # OpenCV 4.13 returns 10 values, earlier versions return 7
+    # OpenCV returns: rms, K1, D1, K2, D2, R, T [, rvecs, tvecs]
     rms_stereo = stereo_result[0]
-    R = stereo_result[-2]
-    T = stereo_result[-1]
+    R = stereo_result[5]
+    T = stereo_result[6]
     logger.info("Stereo RMS (fisheye): %.4f", rms_stereo)
 
     R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
