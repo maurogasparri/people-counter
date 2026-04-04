@@ -204,7 +204,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
     logger.info("Target: %d pairs. Move the ChArUco to cover all grid cells.", args.count)
-    logger.info("Board is auto-captured every %d seconds when detected.", args.interval)
+    logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
 
     try:
@@ -262,9 +262,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 70])
             _update_preview(jpeg.tobytes())
 
-            # Auto-capture
+            # Auto-capture when board detected, with cooldown
             now = time.time()
-            if detected and (now - last_capture_time) >= args.interval:
+            if detected and (now - last_capture_time) >= args.cooldown:
                 left_path = output_dir / f"left_{count:03d}.png"
                 right_path = output_dir / f"right_{count:03d}.png"
                 cv2.imwrite(str(left_path), frame_l)
@@ -407,7 +407,8 @@ def main() -> None:
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")
     p_cap.add_argument("--count", type=int, default=30, help="Number of pairs")
-    p_cap.add_argument("--interval", type=int, default=3, help="Min seconds between captures")
+    p_cap.add_argument("--cooldown", type=float, default=1.5,
+                        help="Seconds to wait after each capture before next one")
     p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
     p_cap.add_argument("--columns", type=int, default=7)
     p_cap.add_argument("--rows", type=int, default=5)
