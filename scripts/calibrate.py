@@ -97,36 +97,58 @@ def _update_preview(jpeg_bytes: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _compute_coverage_center(corners: np.ndarray, w: int, h: int) -> tuple[int, int]:
+def _crop_rect(w: int, h: int, crop_pct: float) -> tuple[int, int, int, int]:
+    """Compute crop rectangle (x1, y1, x2, y2) from crop percentage."""
+    mx = int(w * crop_pct / 100)
+    my = int(h * crop_pct / 100)
+    return mx, my, w - mx, h - my
+
+
+def _compute_coverage_center(
+    corners: np.ndarray, w: int, h: int, crop_pct: float = 0,
+) -> tuple[int, int]:
     """Get grid cell (row, col) for the center of detected corners."""
     cx = np.mean(corners[:, 0, 0])
     cy = np.mean(corners[:, 0, 1])
+    x1, y1, x2, y2 = _crop_rect(w, h, crop_pct)
+    # Map corner center to grid cell within the crop region
     grid_cols, grid_rows = 5, 4
-    col = int(cx / w * grid_cols)
-    row = int(cy / h * grid_rows)
-    return min(row, grid_rows - 1), min(col, grid_cols - 1)
+    col = int((cx - x1) / (x2 - x1) * grid_cols)
+    row = int((cy - y1) / (y2 - y1) * grid_rows)
+    col = max(0, min(col, grid_cols - 1))
+    row = max(0, min(row, grid_rows - 1))
+    return row, col
 
 
-def _draw_coverage(frame: np.ndarray, coverage: np.ndarray) -> None:
-    """Draw coverage grid overlay on frame."""
+def _draw_coverage(
+    frame: np.ndarray, coverage: np.ndarray, crop_pct: float = 0,
+) -> None:
+    """Draw coverage grid overlay on frame, within the crop region."""
     h, w = frame.shape[:2]
+    cx1, cy1, cx2, cy2 = _crop_rect(w, h, crop_pct)
+    crop_w = cx2 - cx1
+    crop_h = cy2 - cy1
     grid_rows, grid_cols = coverage.shape
-    cell_h = h // grid_rows
-    cell_w = w // grid_cols
+    cell_h = crop_h // grid_rows
+    cell_w = crop_w // grid_cols
 
     for r in range(grid_rows):
         for c in range(grid_cols):
-            x1, y1 = c * cell_w, r * cell_h
-            x2, y2 = x1 + cell_w, y1 + cell_h
+            x1 = cx1 + c * cell_w
+            y1 = cy1 + r * cell_h
+            x2 = x1 + cell_w
+            y2 = y1 + cell_h
             if coverage[r, c] > 0:
-                # Green overlay for covered cells
                 overlay = frame[y1:y2, x1:x2].copy()
                 green = np.full_like(overlay, (0, 80, 0))
                 cv2.addWeighted(green, 0.3, overlay, 0.7, 0, frame[y1:y2, x1:x2])
                 cv2.putText(frame, str(int(coverage[r, c])),
                             (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            # Grid lines
             cv2.rectangle(frame, (x1, y1), (x2, y2), (100, 100, 100), 1)
+
+    # Draw crop boundary
+    if crop_pct > 0:
+        cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 200, 255), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +242,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 detected = n_common >= 8
 
             # Draw coverage grid on left preview
-            _draw_coverage(vis_l, coverage)
+            _draw_coverage(vis_l, coverage, crop_pct=args.crop)
 
             # Status text
             color = (0, 255, 0) if detected else (0, 0, 255)
@@ -249,7 +271,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 cv2.imwrite(str(right_path), frame_r)
 
                 # Update coverage
-                row, col = _compute_coverage_center(corners_l, frame_l.shape[1], frame_l.shape[0])
+                row, col = _compute_coverage_center(
+                    corners_l, frame_l.shape[1], frame_l.shape[0], crop_pct=args.crop,
+                )
                 coverage[row, col] += 1
 
                 count += 1
@@ -389,6 +413,8 @@ def main() -> None:
     p_cap.add_argument("--rows", type=int, default=5)
     p_cap.add_argument("--square-length", type=float, default=35.0)
     p_cap.add_argument("--marker-length", type=float, default=26.0)
+    p_cap.add_argument("--crop", type=float, default=0,
+                        help="Crop percentage from each edge for coverage grid (e.g. 15 for 170° lenses)")
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
