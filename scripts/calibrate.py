@@ -97,17 +97,35 @@ def _update_preview(jpeg_bytes: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _compute_coverage_center(corners: np.ndarray, w: int, h: int) -> tuple[int, int]:
+GRID_RECTANGULAR = np.ones((4, 5), dtype=np.int32)
+
+GRID_CIRCULAR = np.array([
+    [0, 0, 1, 1, 0, 0],
+    [0, 1, 1, 1, 1, 0],
+    [0, 1, 1, 1, 1, 0],
+    [0, 1, 1, 1, 1, 0],
+    [0, 1, 1, 1, 1, 0],
+    [0, 0, 1, 1, 0, 0],
+], dtype=np.int32)
+
+
+def _compute_coverage_center(
+    corners: np.ndarray, w: int, h: int, grid_mask: np.ndarray,
+) -> tuple[int, int]:
     """Get grid cell (row, col) for the center of detected corners."""
     cx = np.mean(corners[:, 0, 0])
     cy = np.mean(corners[:, 0, 1])
-    grid_cols, grid_rows = 5, 4
+    grid_rows, grid_cols = grid_mask.shape
     col = int(cx / w * grid_cols)
     row = int(cy / h * grid_rows)
-    return min(row, grid_rows - 1), min(col, grid_cols - 1)
+    col = max(0, min(col, grid_cols - 1))
+    row = max(0, min(row, grid_rows - 1))
+    return row, col
 
 
-def _draw_coverage(frame: np.ndarray, coverage: np.ndarray) -> None:
+def _draw_coverage(
+    frame: np.ndarray, coverage: np.ndarray, grid_mask: np.ndarray,
+) -> None:
     """Draw coverage grid overlay on frame."""
     h, w = frame.shape[:2]
     grid_rows, grid_cols = coverage.shape
@@ -118,14 +136,18 @@ def _draw_coverage(frame: np.ndarray, coverage: np.ndarray) -> None:
         for c in range(grid_cols):
             x1, y1 = c * cell_w, r * cell_h
             x2, y2 = x1 + cell_w, y1 + cell_h
+            if grid_mask[r, c] == 0:
+                # Inactive cell — dim overlay
+                overlay = frame[y1:y2, x1:x2].copy()
+                dark = np.full_like(overlay, (0, 0, 0))
+                cv2.addWeighted(dark, 0.5, overlay, 0.5, 0, frame[y1:y2, x1:x2])
+                continue
             if coverage[r, c] > 0:
-                # Green overlay for covered cells
                 overlay = frame[y1:y2, x1:x2].copy()
                 green = np.full_like(overlay, (0, 80, 0))
                 cv2.addWeighted(green, 0.3, overlay, 0.7, 0, frame[y1:y2, x1:x2])
                 cv2.putText(frame, str(int(coverage[r, c])),
                             (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            # Grid lines
             cv2.rectangle(frame, (x1, y1), (x2, y2), (100, 100, 100), 1)
 
 
@@ -174,19 +196,23 @@ def cmd_capture(args: argparse.Namespace) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    # Coverage grid (4 rows × 5 cols)
-    coverage = np.zeros((4, 5), dtype=np.int32)
+    # Coverage grid
+    grid_mask = GRID_CIRCULAR if args.grid == "circular" else GRID_RECTANGULAR
+    grid_rows, grid_cols = grid_mask.shape
+    coverage = np.zeros((grid_rows, grid_cols), dtype=np.int32)
 
     count = 0
     last_capture_time = 0.0
 
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
+    logger.info("Grid: %s (%d×%d, %d valid cells)", args.grid, grid_rows, grid_cols, int(grid_mask.sum()))
     logger.info("Target: %d pairs. Move the ChArUco to cover all grid cells.", args.count)
-    logger.info("Board is auto-captured every %d seconds when detected.", args.interval)
+    logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
 
+    valid_cells = int(grid_mask.sum())
     try:
-        while count < args.count:
+        while count < args.count or np.count_nonzero(coverage * grid_mask) < valid_cells:
             frame_l, frame_r = cap.read()
 
             # Detect corners
@@ -220,7 +246,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 detected = n_common >= 8
 
             # Draw coverage grid on left preview
-            _draw_coverage(vis_l, coverage)
+            _draw_coverage(vis_l, coverage, grid_mask)
 
             # Status text
             color = (0, 255, 0) if detected else (0, 0, 255)
@@ -228,9 +254,11 @@ def cmd_capture(args: argparse.Namespace) -> None:
             cv2.putText(vis_l, status, (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            coverage_pct = int(np.count_nonzero(coverage) / coverage.size * 100)
-            cv2.putText(vis_r, f"Coverage: {coverage_pct}%", (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            covered_cells = int(np.count_nonzero(coverage * grid_mask))
+            coverage_pct = int(covered_cells / valid_cells * 100)
+            cov_color = (0, 255, 0) if covered_cells == valid_cells else (0, 200, 255)
+            cv2.putText(vis_r, f"Coverage: {covered_cells}/{valid_cells} ({coverage_pct}%)", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, cov_color, 2)
 
             if detected:
                 cv2.putText(vis_r, "BOARD DETECTED", (10, 55),
@@ -240,16 +268,18 @@ def cmd_capture(args: argparse.Namespace) -> None:
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 70])
             _update_preview(jpeg.tobytes())
 
-            # Auto-capture
+            # Auto-capture when board detected, with cooldown
             now = time.time()
-            if detected and (now - last_capture_time) >= args.interval:
+            if detected and (now - last_capture_time) >= args.cooldown:
                 left_path = output_dir / f"left_{count:03d}.png"
                 right_path = output_dir / f"right_{count:03d}.png"
                 cv2.imwrite(str(left_path), frame_l)
                 cv2.imwrite(str(right_path), frame_r)
 
                 # Update coverage
-                row, col = _compute_coverage_center(corners_l, frame_l.shape[1], frame_l.shape[0])
+                row, col = _compute_coverage_center(
+                    corners_l, frame_l.shape[1], frame_l.shape[0], grid_mask,
+                )
                 coverage[row, col] += 1
 
                 count += 1
@@ -259,8 +289,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     count, args.count, n_common, coverage_pct,
                 )
 
+            remaining = f" | Missing {valid_cells - covered_cells} cells!" if count >= args.count and covered_cells < valid_cells else ""
             print(
-                f"\r  Pairs: {count}/{args.count} | Common: {n_common:2d} | Coverage: {coverage_pct}%",
+                f"\r  Pairs: {count}/{args.count} | Common: {n_common:2d} | Coverage: {covered_cells}/{valid_cells}{remaining}   ",
                 end="", flush=True,
             )
             time.sleep(0.2)
@@ -271,7 +302,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
     _shutting_down = True
     cap.close()
     print(f"\n\nCaptured {count} pairs in {output_dir}")
-    print(f"Coverage: {int(np.count_nonzero(coverage) / coverage.size * 100)}%")
+    print(f"Coverage: {int(np.count_nonzero(coverage * grid_mask))}/{valid_cells} cells")
     print("\nCoverage grid:")
     print(coverage)
     import os
@@ -383,12 +414,15 @@ def main() -> None:
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")
     p_cap.add_argument("--count", type=int, default=30, help="Number of pairs")
-    p_cap.add_argument("--interval", type=int, default=3, help="Min seconds between captures")
+    p_cap.add_argument("--cooldown", type=float, default=1.5,
+                        help="Seconds to wait after each capture before next one")
     p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
     p_cap.add_argument("--columns", type=int, default=7)
     p_cap.add_argument("--rows", type=int, default=5)
     p_cap.add_argument("--square-length", type=float, default=35.0)
     p_cap.add_argument("--marker-length", type=float, default=26.0)
+    p_cap.add_argument("--grid", choices=["rectangular", "circular"], default="rectangular",
+                        help="Coverage grid shape (circular for 170°+ barrel vignetting)")
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
