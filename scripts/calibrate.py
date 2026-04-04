@@ -97,17 +97,21 @@ def _update_preview(jpeg_bytes: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 
-GRID_ROWS, GRID_COLS = 4, 4
-# Circular mask: corners excluded (lens barrel on 4:3 sensor)
-# _ X X _
-# X X X X
-# X X X X
-# _ X X _
+GRID_ROWS, GRID_COLS = 6, 6
+# Circular mask: approximates fisheye image circle on 4:3 sensor
+# _ _ X X _ _
+# _ X X X X _
+# X X X X X X
+# X X X X X X
+# _ X X X X _
+# _ _ X X _ _
 GRID_MASK = np.array([
-    [0, 1, 1, 0],
-    [1, 1, 1, 1],
-    [1, 1, 1, 1],
-    [0, 1, 1, 0],
+    [0, 0, 1, 1, 0, 0],
+    [0, 1, 1, 1, 1, 0],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [0, 1, 1, 1, 1, 0],
+    [0, 0, 1, 1, 0, 0],
 ], dtype=np.int32)
 
 
