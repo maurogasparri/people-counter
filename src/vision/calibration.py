@@ -302,12 +302,24 @@ def _calibrate_fisheye(
     img_points_r = [img_points_r[i] for i in keep]
 
     # fisheye.stereoCalibrate requires all pairs to have the same point count.
-    # Truncate all pairs to the minimum count.
-    min_n = min(o.shape[1] for o in obj_points)
-    obj_points = [o[:, :min_n, :] for o in obj_points]
-    img_points_l = [p[:, :min_n, :] for p in img_points_l]
-    img_points_r = [p[:, :min_n, :] for p in img_points_r]
-    logger.info("Stereo calibration: %d pairs, %d points each", len(obj_points), min_n)
+    # Drop pairs with too few points, then truncate the rest to the new minimum.
+    counts = [o.shape[1] for o in obj_points]
+    median_n = int(np.median(counts))
+    threshold = max(12, median_n // 2)  # at least 12 points
+    keep2 = [i for i, c in enumerate(counts) if c >= threshold]
+    if len(keep2) < len(obj_points):
+        logger.info(
+            "Dropping %d pairs with fewer than %d points",
+            len(obj_points) - len(keep2), threshold,
+        )
+        obj_points = [obj_points[i] for i in keep2]
+        img_points_l = [img_points_l[i] for i in keep2]
+        img_points_r = [img_points_r[i] for i in keep2]
+    trunc_n = min(o.shape[1] for o in obj_points)
+    obj_points = [o[:, :trunc_n, :] for o in obj_points]
+    img_points_l = [p[:, :trunc_n, :] for p in img_points_l]
+    img_points_r = [p[:, :trunc_n, :] for p in img_points_r]
+    logger.info("Stereo calibration: %d pairs, %d points each", len(obj_points), trunc_n)
 
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
     stereo_result = cv2.fisheye.stereoCalibrate(
