@@ -30,6 +30,8 @@ def main() -> None:
                         help="Actual distance to object in mm")
     parser.add_argument("--calibration", default="/etc/people-counter/calibration.npz")
     parser.add_argument("--no-wls", action="store_true", help="Disable WLS filter")
+    parser.add_argument("--delay", type=int, default=0,
+                        help="Countdown in seconds before capture")
     args = parser.parse_args()
 
     cal = load_calibration(args.calibration)
@@ -97,6 +99,14 @@ def main() -> None:
 
     cap = StereoCapture(cam_left_id=0, cam_right_id=1, resolution=(2592, 1944), fps=5)
     cap.open()
+
+    if args.delay > 0:
+        import time
+        for i in range(args.delay, 0, -1):
+            print(f"  Capturing in {i}...", end="\r", flush=True)
+            time.sleep(1)
+        print()
+
     left, right = cap.read()
     cap.close()
     print(f"Captured: {left.shape}")
