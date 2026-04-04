@@ -75,6 +75,29 @@ class StereoCapture:
             cam.configure(config)
             cam.start()
 
+        # Lock exposure, gain and white balance so both cameras match.
+        # Let auto-exposure settle first, then fix the values.
+        import time as _time
+        _time.sleep(1.0)
+        for cam, name in [
+            (self._cam_left, "left"),
+            (self._cam_right, "right"),
+        ]:
+            metadata = cam.capture_metadata()
+            cam.set_controls({
+                "AeEnable": False,
+                "AwbEnable": False,
+                "ExposureTime": metadata.get("ExposureTime", 30000),
+                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+            })
+            logger.info(
+                "%s camera locked: exposure=%d gain=%.1f",
+                name,
+                metadata.get("ExposureTime", 0),
+                metadata.get("AnalogueGain", 0),
+            )
+
         logger.info(
             "Stereo capture opened: left=%d, right=%d, res=%s, fps=%d",
             self.cam_left_id,
