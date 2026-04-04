@@ -97,47 +97,50 @@ def _update_preview(jpeg_bytes: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _crop_rect(w: int, h: int, crop_pct: float) -> tuple[int, int, int, int]:
-    """Compute crop rectangle (x1, y1, x2, y2) from crop percentage."""
-    mx = int(w * crop_pct / 100)
-    my = int(h * crop_pct / 100)
-    return mx, my, w - mx, h - my
+GRID_ROWS, GRID_COLS = 4, 4
+# Circular mask: corners excluded (lens barrel on 4:3 sensor)
+# _ X X _
+# X X X X
+# X X X X
+# _ X X _
+GRID_MASK = np.array([
+    [0, 1, 1, 0],
+    [1, 1, 1, 1],
+    [1, 1, 1, 1],
+    [0, 1, 1, 0],
+], dtype=np.int32)
 
 
 def _compute_coverage_center(
-    corners: np.ndarray, w: int, h: int, crop_pct: float = 0,
+    corners: np.ndarray, w: int, h: int,
 ) -> tuple[int, int]:
     """Get grid cell (row, col) for the center of detected corners."""
     cx = np.mean(corners[:, 0, 0])
     cy = np.mean(corners[:, 0, 1])
-    x1, y1, x2, y2 = _crop_rect(w, h, crop_pct)
-    # Map corner center to grid cell within the crop region
-    grid_cols, grid_rows = 5, 4
-    col = int((cx - x1) / (x2 - x1) * grid_cols)
-    row = int((cy - y1) / (y2 - y1) * grid_rows)
-    col = max(0, min(col, grid_cols - 1))
-    row = max(0, min(row, grid_rows - 1))
+    col = int(cx / w * GRID_COLS)
+    row = int(cy / h * GRID_ROWS)
+    col = max(0, min(col, GRID_COLS - 1))
+    row = max(0, min(row, GRID_ROWS - 1))
     return row, col
 
 
-def _draw_coverage(
-    frame: np.ndarray, coverage: np.ndarray, crop_pct: float = 0,
-) -> None:
-    """Draw coverage grid overlay on frame, within the crop region."""
+def _draw_coverage(frame: np.ndarray, coverage: np.ndarray) -> None:
+    """Draw circular coverage grid overlay on frame."""
     h, w = frame.shape[:2]
-    cx1, cy1, cx2, cy2 = _crop_rect(w, h, crop_pct)
-    crop_w = cx2 - cx1
-    crop_h = cy2 - cy1
     grid_rows, grid_cols = coverage.shape
-    cell_h = crop_h // grid_rows
-    cell_w = crop_w // grid_cols
+    cell_h = h // grid_rows
+    cell_w = w // grid_cols
 
     for r in range(grid_rows):
         for c in range(grid_cols):
-            x1 = cx1 + c * cell_w
-            y1 = cy1 + r * cell_h
-            x2 = x1 + cell_w
-            y2 = y1 + cell_h
+            x1, y1 = c * cell_w, r * cell_h
+            x2, y2 = x1 + cell_w, y1 + cell_h
+            if GRID_MASK[r, c] == 0:
+                # Inactive cell — dim overlay
+                overlay = frame[y1:y2, x1:x2].copy()
+                dark = np.full_like(overlay, (0, 0, 0))
+                cv2.addWeighted(dark, 0.5, overlay, 0.5, 0, frame[y1:y2, x1:x2])
+                continue
             if coverage[r, c] > 0:
                 overlay = frame[y1:y2, x1:x2].copy()
                 green = np.full_like(overlay, (0, 80, 0))
@@ -145,10 +148,6 @@ def _draw_coverage(
                 cv2.putText(frame, str(int(coverage[r, c])),
                             (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (100, 100, 100), 1)
-
-    # Draw crop boundary
-    if crop_pct > 0:
-        cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 200, 255), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +195,8 @@ def cmd_capture(args: argparse.Namespace) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    # Coverage grid (4 rows × 5 cols)
-    coverage = np.zeros((4, 5), dtype=np.int32)
+    # Circular coverage grid
+    coverage = np.zeros((GRID_ROWS, GRID_COLS), dtype=np.int32)
 
     count = 0
     last_capture_time = 0.0
@@ -207,9 +206,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
     logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
 
-    grid_total = coverage.size
+    valid_cells = int(GRID_MASK.sum())
     try:
-        while count < args.count or np.count_nonzero(coverage) < grid_total:
+        while count < args.count or np.count_nonzero(coverage * GRID_MASK) < valid_cells:
             frame_l, frame_r = cap.read()
 
             # Detect corners
@@ -243,7 +242,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 detected = n_common >= 8
 
             # Draw coverage grid on left preview
-            _draw_coverage(vis_l, coverage, crop_pct=args.crop)
+            _draw_coverage(vis_l, coverage)
 
             # Status text
             color = (0, 255, 0) if detected else (0, 0, 255)
@@ -251,10 +250,10 @@ def cmd_capture(args: argparse.Namespace) -> None:
             cv2.putText(vis_l, status, (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            covered_cells = int(np.count_nonzero(coverage))
-            coverage_pct = int(covered_cells / grid_total * 100)
-            cov_color = (0, 255, 0) if covered_cells == grid_total else (0, 200, 255)
-            cv2.putText(vis_r, f"Coverage: {covered_cells}/{grid_total} ({coverage_pct}%)", (10, 25),
+            covered_cells = int(np.count_nonzero(coverage * GRID_MASK))
+            coverage_pct = int(covered_cells / valid_cells * 100)
+            cov_color = (0, 255, 0) if covered_cells == valid_cells else (0, 200, 255)
+            cv2.putText(vis_r, f"Coverage: {covered_cells}/{valid_cells} ({coverage_pct}%)", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, cov_color, 2)
 
             if detected:
@@ -275,7 +274,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
                 # Update coverage
                 row, col = _compute_coverage_center(
-                    corners_l, frame_l.shape[1], frame_l.shape[0], crop_pct=args.crop,
+                    corners_l, frame_l.shape[1], frame_l.shape[0],
                 )
                 coverage[row, col] += 1
 
@@ -286,10 +285,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     count, args.count, n_common, coverage_pct,
                 )
 
-            done = count >= args.count and covered_cells == grid_total
-            remaining = f" | Missing {grid_total - covered_cells} cells!" if count >= args.count and covered_cells < grid_total else ""
+            remaining = f" | Missing {valid_cells - covered_cells} cells!" if count >= args.count and covered_cells < valid_cells else ""
             print(
-                f"\r  Pairs: {count}/{args.count} | Common: {n_common:2d} | Coverage: {covered_cells}/{grid_total}{remaining}   ",
+                f"\r  Pairs: {count}/{args.count} | Common: {n_common:2d} | Coverage: {covered_cells}/{valid_cells}{remaining}   ",
                 end="", flush=True,
             )
             time.sleep(0.2)
@@ -300,7 +298,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
     _shutting_down = True
     cap.close()
     print(f"\n\nCaptured {count} pairs in {output_dir}")
-    print(f"Coverage: {int(np.count_nonzero(coverage) / coverage.size * 100)}%")
+    print(f"Coverage: {int(np.count_nonzero(coverage * GRID_MASK))}/{valid_cells} cells")
     print("\nCoverage grid:")
     print(coverage)
     import os
@@ -419,8 +417,6 @@ def main() -> None:
     p_cap.add_argument("--rows", type=int, default=5)
     p_cap.add_argument("--square-length", type=float, default=35.0)
     p_cap.add_argument("--marker-length", type=float, default=26.0)
-    p_cap.add_argument("--crop", type=float, default=0,
-                        help="Crop percentage from each edge for coverage grid (e.g. 15 for 170° lenses)")
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
