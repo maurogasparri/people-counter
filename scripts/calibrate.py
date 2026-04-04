@@ -207,8 +207,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
     logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
 
+    grid_total = coverage.size
     try:
-        while count < args.count:
+        while count < args.count or np.count_nonzero(coverage) < grid_total:
             frame_l, frame_r = cap.read()
 
             # Detect corners
@@ -250,9 +251,11 @@ def cmd_capture(args: argparse.Namespace) -> None:
             cv2.putText(vis_l, status, (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            coverage_pct = int(np.count_nonzero(coverage) / coverage.size * 100)
-            cv2.putText(vis_r, f"Coverage: {coverage_pct}%", (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            covered_cells = int(np.count_nonzero(coverage))
+            coverage_pct = int(covered_cells / grid_total * 100)
+            cov_color = (0, 255, 0) if covered_cells == grid_total else (0, 200, 255)
+            cv2.putText(vis_r, f"Coverage: {covered_cells}/{grid_total} ({coverage_pct}%)", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, cov_color, 2)
 
             if detected:
                 cv2.putText(vis_r, "BOARD DETECTED", (10, 55),
@@ -283,8 +286,10 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     count, args.count, n_common, coverage_pct,
                 )
 
+            done = count >= args.count and covered_cells == grid_total
+            remaining = f" | Missing {grid_total - covered_cells} cells!" if count >= args.count and covered_cells < grid_total else ""
             print(
-                f"\r  Pairs: {count}/{args.count} | Common: {n_common:2d} | Coverage: {coverage_pct}%",
+                f"\r  Pairs: {count}/{args.count} | Common: {n_common:2d} | Coverage: {covered_cells}/{grid_total}{remaining}   ",
                 end="", flush=True,
             )
             time.sleep(0.2)
