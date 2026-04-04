@@ -302,28 +302,25 @@ def _calibrate_fisheye(
     img_points_r = [img_points_r[i] for i in keep]
 
     # fisheye.stereoCalibrate requires all pairs to have the same point count.
-    # Group by count and use the largest group.
-    from collections import Counter
-    counts = [obj_points[i].shape[1] for i in range(len(obj_points))]
-    most_common_n, _ = Counter(counts).most_common(1)[0]
-    same_n = [i for i, c in enumerate(counts) if c == most_common_n]
-    if len(same_n) < len(obj_points):
-        logger.info(
-            "Filtering to %d pairs with %d points each (from %d pairs)",
-            len(same_n), most_common_n, len(obj_points),
-        )
-        obj_points = [obj_points[i] for i in same_n]
-        img_points_l = [img_points_l[i] for i in same_n]
-        img_points_r = [img_points_r[i] for i in same_n]
+    # Truncate all pairs to the minimum count.
+    min_n = min(o.shape[1] for o in obj_points)
+    obj_points = [o[:, :min_n, :] for o in obj_points]
+    img_points_l = [p[:, :min_n, :] for p in img_points_l]
+    img_points_r = [p[:, :min_n, :] for p in img_points_r]
+    logger.info("Stereo calibration: %d pairs, %d points each", len(obj_points), min_n)
 
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
-    rms_stereo, _, _, _, _, R, T = cv2.fisheye.stereoCalibrate(
+    stereo_result = cv2.fisheye.stereoCalibrate(
         obj_points, img_points_l, img_points_r,
         K_l.copy(), D_l.copy(), K_r.copy(), D_r.copy(),
         image_size,
         flags=cv2.fisheye.CALIB_FIX_INTRINSIC | cv2.fisheye.CALIB_FIX_SKEW,
         criteria=criteria,
     )
+    # OpenCV 4.13 returns 10 values, earlier versions return 7
+    rms_stereo = stereo_result[0]
+    R = stereo_result[-2]
+    T = stereo_result[-1]
     logger.info("Stereo RMS (fisheye): %.4f", rms_stereo)
 
     R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
