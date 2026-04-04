@@ -205,7 +205,10 @@ def calibrate_stereo(
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
     # --- Individual camera calibration ---
-    calib_flags = 0  # Standard 5-coeff model (rational needs more points)
+    # CALIB_RATIONAL_MODEL uses 8 distortion coefficients, better for
+    # wide-angle/fisheye lenses (160°+). Requires enough corners per image
+    # (min 8, enforced in detect_charuco_corners).
+    calib_flags = cv2.CALIB_RATIONAL_MODEL
 
     rms_l, camera_matrix_l, dist_coeffs_l, _, _ = cv2.calibrateCamera(
         obj_points_per_image,
@@ -228,7 +231,8 @@ def calibrate_stereo(
     logger.info("Right camera RMS: %.4f", rms_r)
 
     # --- Stereo calibration ---
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC
+    # Fix intrinsics from individual calibration, keep rational model
+    stereo_flags = cv2.CALIB_FIX_INTRINSIC | cv2.CALIB_RATIONAL_MODEL
 
     (
         rms_stereo,
