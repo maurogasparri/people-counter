@@ -205,9 +205,16 @@ def calibrate_stereo(
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
     if use_fisheye:
-        result = _calibrate_fisheye(
-            obj_points_per_image, all_corners_l, all_corners_r, image_size
-        )
+        try:
+            result = _calibrate_fisheye(
+                obj_points_per_image, all_corners_l, all_corners_r, image_size
+            )
+        except ValueError as e:
+            logger.warning("Fisheye calibration failed: %s", e)
+            logger.warning("Falling back to pinhole + rational model")
+            result = _calibrate_pinhole(
+                obj_points_per_image, all_corners_l, all_corners_r, image_size
+            )
     else:
         result = _calibrate_pinhole(
             obj_points_per_image, all_corners_l, all_corners_r, image_size
