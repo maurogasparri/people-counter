@@ -46,7 +46,7 @@ Edge Device (per store door)          AWS Cloud
 | Config | ✅ Local + Cloud | YAML (hardware) + IoT Shadow (business) |
 | Hardware | ✅ Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2× OV5647 |
 | Stereo capture | ✅ Validated | picamera2 on RPi5, both cameras working |
-| Detection | ✅ Validated | YOLOv8n HEF on Hailo-8L, person detected at 91% confidence |
+| Detection | ✅ Validated | YOLOv8n HEF on Hailo-8L, person detected with depth estimation |
 | Calibration | ✅ Validated | Stereo RMS 0.48, baseline 137.8mm, epipolar lines verified |
 | WiFi probe | ✅ Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
 | BLE scan | ✅ Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |

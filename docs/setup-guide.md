@@ -25,9 +25,10 @@ Orden recomendado:
 1. **Hailo-8L** → insertarlo en el slot M.2 del PoE M.2 HAT+
 2. **HAT+** → montarlo sobre la Raspberry Pi 5 (conectores GPIO + FFC)
 3. **Cámaras** → conectar los cables CSI a los puertos CAM0 y CAM1 de la Pi
-   - Cámara derecha → CAM0
-   - Cámara izquierda → CAM1
+   - Cámara izquierda → CAM0
+   - Cámara derecha → CAM1
    - Orientar ambas igual (el conector flat tiene un lado con contactos expuestos)
+   - **Usar OV5647 160° con filtro IR** (NO usar "NoIR" / "night vision" — producen tinte violeta y afectan la profundidad)
 4. **Disipador** → montar sobre el SoC de la Pi
 5. **MicroSD** → insertar la tarjeta ya flasheada
 6. **Batería RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO).

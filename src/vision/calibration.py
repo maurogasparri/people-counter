@@ -104,7 +104,7 @@ def detect_charuco_corners(
         detector.detectBoard(gray)
     )
 
-    if charuco_ids is None or len(charuco_ids) < 6:
+    if charuco_ids is None or len(charuco_ids) < 8:
         return None, None
 
     return charuco_corners, charuco_ids
@@ -164,7 +164,7 @@ def calibrate_stereo(
 
         # Keep only corner IDs present in BOTH images
         common_ids = np.intersect1d(ids_l.flatten(), ids_r.flatten())
-        if len(common_ids) < 6:
+        if len(common_ids) < 8:
             logger.debug(
                 "Pair %d: only %d common corners, skipping", idx, len(common_ids)
             )
@@ -204,20 +204,38 @@ def calibrate_stereo(
     # --- Object points (same for both cameras since we use common IDs) ---
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
-    # --- Stereo calibration (joint — calibrates both cameras together) ---
-    # Let stereoCalibrate estimate intrinsics and extrinsics jointly.
-    # This is more robust for wide-angle/fisheye lenses than calibrating
-    # each camera individually and then fixing intrinsics.
-    stereo_flags = (
-        cv2.CALIB_RATIONAL_MODEL  # 8 dist coeffs for wide-angle
+    # --- Individual camera calibration ---
+    calib_flags = 0  # Standard 5-coeff model (rational needs more points)
+
+    rms_l, camera_matrix_l, dist_coeffs_l, _, _ = cv2.calibrateCamera(
+        obj_points_per_image,
+        all_corners_l,
+        image_size,
+        None,
+        None,
+        flags=calib_flags,
     )
+    logger.info("Left camera RMS: %.4f", rms_l)
+
+    rms_r, camera_matrix_r, dist_coeffs_r, _, _ = cv2.calibrateCamera(
+        obj_points_per_image,
+        all_corners_r,
+        image_size,
+        None,
+        None,
+        flags=calib_flags,
+    )
+    logger.info("Right camera RMS: %.4f", rms_r)
+
+    # --- Stereo calibration ---
+    stereo_flags = cv2.CALIB_FIX_INTRINSIC
 
     (
         rms_stereo,
-        camera_matrix_l,
-        dist_coeffs_l,
-        camera_matrix_r,
-        dist_coeffs_r,
+        _,
+        _,
+        _,
+        _,
         R,
         T,
         E,
@@ -226,10 +244,10 @@ def calibrate_stereo(
         obj_points_per_image,
         all_corners_l,
         all_corners_r,
-        None,
-        None,
-        None,
-        None,
+        camera_matrix_l,
+        dist_coeffs_l,
+        camera_matrix_r,
+        dist_coeffs_r,
         image_size,
         flags=stereo_flags,
     )
@@ -244,7 +262,7 @@ def calibrate_stereo(
         image_size,
         R,
         T,
-        alpha=0,  # Crop to valid pixels only
+        alpha=1.0,  # Keep all pixels (fisheye needs full frame)
     )
 
     map_l_x, map_l_y = cv2.initUndistortRectifyMap(

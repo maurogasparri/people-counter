@@ -193,8 +193,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     capture.open()
 
     # --- Focal length + baseline for depth ---
+    # Use calibration values if available, config as fallback
+    focal_length_px = None
     baseline_mm = vision_cfg.get("baseline_cm", 14) * 10.0
-    focal_length_px = None  # Set from calibration after first frame
 
     # --- Telemetry timer ---
     telem_interval = telem_cfg.get("interval_seconds", 300)
@@ -264,10 +265,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 counter = LineCounter(line_y=actual_line_y)
                 logger.info("Counting line at y=%.1f", actual_line_y)
 
-            # --- Set focal length from calibration ---
+            # --- Set focal length + baseline from calibration ---
             if focal_length_px is None and calibration is not None:
                 focal_length_px = calibration["P1"][0, 0]
-                logger.info("Focal length: %.1f px", focal_length_px)
+                # Use actual baseline from calibration (T vector magnitude)
+                T = calibration["T"]
+                baseline_mm = float(np.linalg.norm(T))
+                logger.info("Focal length: %.1f px, Baseline: %.1f mm", focal_length_px, baseline_mm)
 
             # --- Depth map ---
             if calibration is not None and focal_length_px is not None:
