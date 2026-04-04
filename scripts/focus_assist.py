@@ -79,7 +79,7 @@ def main() -> None:
     cam_r = Picamera2(1)
     for cam in [cam_l, cam_r]:
         config = cam.create_still_configuration(
-            main={"size": (648, 486), "format": "BGR888"},
+            main={"size": (1296, 972), "format": "BGR888"},
         )
         cam.configure(config)
         cam.start()

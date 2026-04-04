@@ -38,6 +38,7 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 ## Hardware per Unit (BOM ~USD 416)
 
 - Raspberry Pi 5 4GB — main SBC
+  **IMPORTANT**: OV5647 cameras must have IR cut filter (NOT "NoIR" / "night vision"). NoIR cameras produce violet tint and reduce SGBM depth accuracy.
 - Hailo-8L 13 TOPS via PoE M.2 HAT+ (Waveshare) — neural accelerator
 - 2× OV5647 160° fisheye cameras via CSI — stereo pair, 14cm baseline
 - PoE 30W injector — power via existing Ethernet cabling
@@ -145,7 +146,7 @@ people-counter/
 | S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **HARDWARE VALIDATED** — wifi_probe.py (nexmon + airmon-ng + scapy, probes captured), ble_scan.py (bleak, 343 adverts/8 unique devices). hasher.py + dedup.py (11 tests). |
 | S8 | MQTT | IoT Core client. SQLite buffer. Reconnect. | **DONE** — client.py with TLS, buffer replay, backoff (7 tests). |
 | S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). CloudFormation template with IoT Core, Timestream, DynamoDB, Lambda, IAM. QuickSight/API GW deferred post-MVP. |
-| S10 | Integration | End-to-end. All modules together. | **SOFTWARE READY** — main.py orchestrates full pipeline. provision.py + systemd service ready. Pending: E2E on RPi5 after calibration. |
+| S10 | Integration | End-to-end. All modules together. | **E2E VALIDATED** — pipeline tested on RPi5: capture → rectify → depth (SGBM) → detect (Hailo) → depth per person. Person detected at 2.2m, depth reported 1.4m (SGBM tuning pending). |
 | S11 | Pilot | Deploy 3 stores. Monitor. Fix. | PENDING |
 | S12 | Stabilize | Post-pilot fixes. | PENDING |
 
@@ -155,7 +156,7 @@ people-counter/
 
 - ✅ COMPLETE + VALIDATED: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
 - 🔧 INFRA READY: CloudFormation template, systemd service, provision.py, logrotate, daily reset timer
-- ⏳ PENDING: cenital detection test, E2E pipeline on RPi5
+- ⏳ PENDING: OV5647 160° with IR filter (current NoIR cameras affect depth), cenital detection test, SGBM tuning
 
 ## Hard Rules
 
