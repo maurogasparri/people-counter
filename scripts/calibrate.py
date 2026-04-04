@@ -97,22 +97,8 @@ def _update_preview(jpeg_bytes: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 
-GRID_ROWS, GRID_COLS = 6, 6
-# Circular mask: approximates fisheye image circle on 4:3 sensor
-# _ _ X X _ _
-# _ X X X X _
-# X X X X X X
-# X X X X X X
-# _ X X X X _
-# _ _ X X _ _
-GRID_MASK = np.array([
-    [0, 0, 1, 1, 0, 0],
-    [0, 1, 1, 1, 1, 0],
-    [0, 1, 1, 1, 1, 0],
-    [0, 1, 1, 1, 1, 0],
-    [0, 1, 1, 1, 1, 0],
-    [0, 0, 1, 1, 0, 0],
-], dtype=np.int32)
+GRID_ROWS, GRID_COLS = 4, 5
+GRID_MASK = np.ones((GRID_ROWS, GRID_COLS), dtype=np.int32)
 
 
 def _compute_coverage_center(
