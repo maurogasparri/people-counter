@@ -205,6 +205,33 @@ def calibrate_stereo(
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
     if use_fisheye:
+        # Filter out pairs with nearly-collinear corners (cause fisheye to crash)
+        keep = []
+        for i in range(len(all_corners_l)):
+            pts = all_corners_l[i].reshape(-1, 2).astype(np.float32)
+            if len(pts) >= 4:
+                hull = cv2.convexHull(pts)
+                area = cv2.contourArea(hull)
+                if area > 100:  # enough spatial spread
+                    keep.append(i)
+                else:
+                    logger.debug("Pair %d: corners nearly collinear (area=%.0f), skipping", i, area)
+            else:
+                logger.debug("Pair %d: too few corners (%d), skipping", i, len(pts))
+        if len(keep) < valid_pairs:
+            logger.info("Filtered to %d pairs (removed %d degenerate)", len(keep), valid_pairs - len(keep))
+        obj_points_per_image = [obj_points_per_image[i] for i in keep]
+        all_corners_l = [all_corners_l[i] for i in keep]
+        all_corners_r = [all_corners_r[i] for i in keep]
+        all_ids_l = [all_ids_l[i] for i in keep]
+
+    if len(obj_points_per_image) < 10:
+        raise ValueError(
+            f"Need at least 10 valid pairs after filtering, "
+            f"got {len(obj_points_per_image)}."
+        )
+
+    if use_fisheye:
         result = _calibrate_fisheye(
             obj_points_per_image, all_corners_l, all_corners_r, image_size
         )
