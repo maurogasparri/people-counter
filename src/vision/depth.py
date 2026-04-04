@@ -84,8 +84,13 @@ def compute_disparity(
     num_disparities: int = DEFAULT_NUM_DISPARITIES,
     block_size: int = DEFAULT_BLOCK_SIZE,
     sgbm: cv2.StereoSGBM | None = None,
+    use_wls_filter: bool = True,
 ) -> np.ndarray:
-    """Compute disparity map using Semi-Global Block Matching.
+    """Compute disparity map using SGBM with optional WLS filtering.
+
+    Uses left+right matchers and a Weighted Least Squares (WLS) filter
+    to reduce noise and fill holes. This significantly improves depth
+    map quality, especially with fisheye lenses.
 
     Args:
         left_rect: Left rectified image (BGR or grayscale).
@@ -94,6 +99,7 @@ def compute_disparity(
         block_size: Block size for matching. Ignored if sgbm is provided.
         sgbm: Pre-created SGBM matcher. If None, one is created with
             the given num_disparities and block_size.
+        use_wls_filter: Apply WLS filter with right matcher (default True).
 
     Returns:
         Disparity map as float32 in pixels. Invalid pixels are -1.0.
@@ -114,13 +120,24 @@ def compute_disparity(
     if sgbm is None:
         sgbm = create_sgbm(num_disparities=num_disparities, block_size=block_size)
 
-    # SGBM returns int16 with values in fixed-point Q4 format (divide by 16)
-    raw_disp = sgbm.compute(gray_l, gray_r)
+    # Left disparity
+    raw_disp_l = sgbm.compute(gray_l, gray_r)
 
-    # Convert to float and scale from Q4
-    disparity = raw_disp.astype(np.float32) / 16.0
+    if use_wls_filter:
+        # Right matcher + WLS filter for cleaner disparity
+        right_matcher = cv2.ximgproc.createRightMatcher(sgbm)
+        raw_disp_r = right_matcher.compute(gray_r, gray_l)
 
-    # Mark invalid pixels (SGBM returns -16 in Q4 for invalid → -1.0 after scale)
+        wls = cv2.ximgproc.createDisparityWLSFilter(sgbm)
+        wls.setLambda(8000.0)
+        wls.setSigmaColor(1.5)
+
+        filtered = wls.filter(raw_disp_l, gray_l, disparity_map_right=raw_disp_r)
+        disparity = filtered.astype(np.float32) / 16.0
+    else:
+        disparity = raw_disp_l.astype(np.float32) / 16.0
+
+    # Mark invalid pixels
     disparity[disparity < 0] = -1.0
 
     return disparity

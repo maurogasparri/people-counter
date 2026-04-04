@@ -4,8 +4,8 @@ Implements the full pipeline: ChArUco detection → individual camera
 calibration → stereo calibration → rectification map generation.
 
 Compatible with OpenCV 4.8+ (contrib) which uses the refactored ArUco API.
-Uses the standard (pinhole) camera model with rational distortion coefficients,
-suitable for the OV5647 160° fisheye lenses after undistortion.
+Uses the OpenCV fisheye model (cv2.fisheye) for the OV5647 160° lenses,
+which handles wide-angle distortion much better than the pinhole model.
 
 References:
     - Zhang (2000): Flexible camera calibration technique.
@@ -120,6 +120,7 @@ def calibrate_stereo(
     board_size: tuple[int, int] = DEFAULT_BOARD_SIZE,
     square_length: float = DEFAULT_SQUARE_LENGTH,
     marker_length: float = DEFAULT_MARKER_LENGTH,
+    use_fisheye: bool = True,
 ) -> dict[str, np.ndarray]:
     """Run stereo calibration from ChArUco image pairs.
 
@@ -201,100 +202,138 @@ def calibrate_stereo(
             f"board visible in both cameras."
         )
 
-    # --- Object points (same for both cameras since we use common IDs) ---
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
-    # --- Individual camera calibration ---
-    # CALIB_RATIONAL_MODEL uses 8 distortion coefficients, better for
-    # wide-angle/fisheye lenses (160°+). Requires enough corners per image
-    # (min 8, enforced in detect_charuco_corners).
-    calib_flags = cv2.CALIB_RATIONAL_MODEL
+    if use_fisheye:
+        result = _calibrate_fisheye(
+            obj_points_per_image, all_corners_l, all_corners_r, image_size
+        )
+    else:
+        result = _calibrate_pinhole(
+            obj_points_per_image, all_corners_l, all_corners_r, image_size
+        )
 
-    rms_l, camera_matrix_l, dist_coeffs_l, _, _ = cv2.calibrateCamera(
-        obj_points_per_image,
-        all_corners_l,
+    result["image_size"] = np.array(list(image_size))
+    return result
+
+
+def _calibrate_fisheye(
+    obj_points_per_image: list[np.ndarray],
+    all_corners_l: list[np.ndarray],
+    all_corners_r: list[np.ndarray],
+    image_size: tuple[int, int],
+) -> dict[str, np.ndarray]:
+    """Calibrate using cv2.fisheye model (for 160°+ lenses)."""
+    # Fisheye needs shape (1, N, 3) and (1, N, 2)
+    obj_points = [pts.reshape(1, -1, 3) for pts in obj_points_per_image]
+    img_points_l = [c.reshape(1, -1, 2) for c in all_corners_l]
+    img_points_r = [c.reshape(1, -1, 2) for c in all_corners_r]
+
+    fisheye_flags = (
+        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
+        | cv2.fisheye.CALIB_CHECK_COND
+        | cv2.fisheye.CALIB_FIX_SKEW
+    )
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
+
+    K_l = np.zeros((3, 3))
+    D_l = np.zeros((4, 1))
+    K_r = np.zeros((3, 3))
+    D_r = np.zeros((4, 1))
+
+    rms_l, _, _, _, _ = cv2.fisheye.calibrate(
+        obj_points, img_points_l, image_size, K_l, D_l,
+        flags=fisheye_flags, criteria=criteria,
+    )
+    logger.info("Left camera RMS (fisheye): %.4f", rms_l)
+
+    rms_r, _, _, _, _ = cv2.fisheye.calibrate(
+        obj_points, img_points_r, image_size, K_r, D_r,
+        flags=fisheye_flags, criteria=criteria,
+    )
+    logger.info("Right camera RMS (fisheye): %.4f", rms_r)
+
+    rms_stereo, _, _, _, _, R, T = cv2.fisheye.stereoCalibrate(
+        obj_points, img_points_l, img_points_r,
+        K_l.copy(), D_l.copy(), K_r.copy(), D_r.copy(),
         image_size,
-        None,
-        None,
-        flags=calib_flags,
+        flags=cv2.fisheye.CALIB_FIX_INTRINSIC | cv2.fisheye.CALIB_FIX_SKEW,
+        criteria=criteria,
     )
-    logger.info("Left camera RMS: %.4f", rms_l)
+    logger.info("Stereo RMS (fisheye): %.4f", rms_stereo)
 
-    rms_r, camera_matrix_r, dist_coeffs_r, _, _ = cv2.calibrateCamera(
-        obj_points_per_image,
-        all_corners_r,
-        image_size,
-        None,
-        None,
-        flags=calib_flags,
-    )
-    logger.info("Right camera RMS: %.4f", rms_r)
-
-    # --- Stereo calibration ---
-    # Fix intrinsics from individual calibration, keep rational model
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC | cv2.CALIB_RATIONAL_MODEL
-
-    (
-        rms_stereo,
-        _,
-        _,
-        _,
-        _,
-        R,
-        T,
-        E,
-        F,
-    ) = cv2.stereoCalibrate(
-        obj_points_per_image,
-        all_corners_l,
-        all_corners_r,
-        camera_matrix_l,
-        dist_coeffs_l,
-        camera_matrix_r,
-        dist_coeffs_r,
-        image_size,
-        flags=stereo_flags,
-    )
-    logger.info("Stereo RMS: %.4f", rms_stereo)
-
-    # --- Rectification ---
-    R1, R2, P1, P2, Q, roi_l, roi_r = cv2.stereoRectify(
-        camera_matrix_l,
-        dist_coeffs_l,
-        camera_matrix_r,
-        dist_coeffs_r,
-        image_size,
-        R,
-        T,
-        alpha=1.0,  # Keep all pixels (fisheye needs full frame)
+    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
+        K_l, D_l, K_r, D_r, image_size, R, T,
+        flags=cv2.CALIB_ZERO_DISPARITY,
+        balance=0.5,
+        fov_scale=1.0,
     )
 
-    map_l_x, map_l_y = cv2.initUndistortRectifyMap(
-        camera_matrix_l, dist_coeffs_l, R1, P1, image_size, cv2.CV_32FC1
+    map_l_x, map_l_y = cv2.fisheye.initUndistortRectifyMap(
+        K_l, D_l, R1, P1, image_size, cv2.CV_32FC1
     )
-    map_r_x, map_r_y = cv2.initUndistortRectifyMap(
-        camera_matrix_r, dist_coeffs_r, R2, P2, image_size, cv2.CV_32FC1
+    map_r_x, map_r_y = cv2.fisheye.initUndistortRectifyMap(
+        K_r, D_r, R2, P2, image_size, cv2.CV_32FC1
     )
 
     return {
-        "camera_matrix_l": camera_matrix_l,
-        "dist_coeffs_l": dist_coeffs_l,
-        "camera_matrix_r": camera_matrix_r,
-        "dist_coeffs_r": dist_coeffs_r,
-        "R": R,
-        "T": T,
-        "E": E,
-        "F": F,
-        "R1": R1,
-        "R2": R2,
-        "P1": P1,
-        "P2": P2,
-        "Q": Q,
-        "map_l_x": map_l_x,
-        "map_l_y": map_l_y,
-        "map_r_x": map_r_x,
-        "map_r_y": map_r_y,
-        "image_size": np.array(list(image_size)),
+        "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
+        "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
+        "R": R, "T": T,
+        "E": np.zeros((3, 3)), "F": np.zeros((3, 3)),
+        "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
+        "map_l_x": map_l_x, "map_l_y": map_l_y,
+        "map_r_x": map_r_x, "map_r_y": map_r_y,
+    }
+
+
+def _calibrate_pinhole(
+    obj_points_per_image: list[np.ndarray],
+    all_corners_l: list[np.ndarray],
+    all_corners_r: list[np.ndarray],
+    image_size: tuple[int, int],
+) -> dict[str, np.ndarray]:
+    """Calibrate using standard pinhole model with rational distortion."""
+    calib_flags = cv2.CALIB_RATIONAL_MODEL
+
+    rms_l, K_l, D_l, _, _ = cv2.calibrateCamera(
+        obj_points_per_image, all_corners_l, image_size, None, None,
+        flags=calib_flags,
+    )
+    logger.info("Left camera RMS (pinhole): %.4f", rms_l)
+
+    rms_r, K_r, D_r, _, _ = cv2.calibrateCamera(
+        obj_points_per_image, all_corners_r, image_size, None, None,
+        flags=calib_flags,
+    )
+    logger.info("Right camera RMS (pinhole): %.4f", rms_r)
+
+    stereo_flags = cv2.CALIB_FIX_INTRINSIC | cv2.CALIB_RATIONAL_MODEL
+    rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
+        obj_points_per_image, all_corners_l, all_corners_r,
+        K_l, D_l, K_r, D_r, image_size,
+        flags=stereo_flags,
+    )
+    logger.info("Stereo RMS (pinhole): %.4f", rms_stereo)
+
+    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+        K_l, D_l, K_r, D_r, image_size, R, T, alpha=1.0,
+    )
+
+    map_l_x, map_l_y = cv2.initUndistortRectifyMap(
+        K_l, D_l, R1, P1, image_size, cv2.CV_32FC1
+    )
+    map_r_x, map_r_y = cv2.initUndistortRectifyMap(
+        K_r, D_r, R2, P2, image_size, cv2.CV_32FC1
+    )
+
+    return {
+        "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
+        "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
+        "R": R, "T": T, "E": E, "F": F,
+        "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
+        "map_l_x": map_l_x, "map_l_y": map_l_y,
+        "map_r_x": map_r_x, "map_r_y": map_r_y,
     }
 
 
