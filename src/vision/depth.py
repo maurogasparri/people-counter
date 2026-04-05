@@ -100,8 +100,14 @@ def compute_disparity(
     use_wls_filter: bool = False,
     use_green_channel: bool = False,
     use_clahe: bool = True,
+    downscale: int = 1,
 ) -> np.ndarray:
     """Compute disparity map using SGBM.
+
+    Calibration is resolution-independent (K, D don't change), so we can
+    match at lower resolution for speed and noise reduction, then upscale
+    the disparity map. The disparity values are scaled back to correspond
+    to the original resolution.
 
     Args:
         left_rect: Left rectified image (BGR or grayscale).
@@ -113,12 +119,27 @@ def compute_disparity(
             for NoIR cameras with weak edges).
         use_green_channel: Use green channel only (for NoIR cameras).
         use_clahe: Apply CLAHE contrast enhancement before matching.
+        downscale: Factor to reduce resolution before matching (1=full,
+            2=half, 4=quarter). Disparity is upscaled back and values
+            are multiplied by the factor so depth calculations remain
+            correct. Higher = faster but less detail.
 
     Returns:
-        Disparity map as float32 in pixels. Invalid pixels are -1.0.
+        Disparity map as float32 in pixels (at original resolution).
+        Invalid pixels are -1.0.
     """
     gray_l = _to_gray(left_rect, use_green_channel)
     gray_r = _to_gray(right_rect, use_green_channel)
+
+    if downscale > 1:
+        gray_l = cv2.resize(
+            gray_l, (gray_l.shape[1] // downscale, gray_l.shape[0] // downscale),
+            interpolation=cv2.INTER_AREA,
+        )
+        gray_r = cv2.resize(
+            gray_r, (gray_r.shape[1] // downscale, gray_r.shape[0] // downscale),
+            interpolation=cv2.INTER_AREA,
+        )
 
     if use_clahe:
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
@@ -126,7 +147,9 @@ def compute_disparity(
         gray_r = clahe.apply(gray_r)
 
     if sgbm is None:
-        sgbm = create_sgbm(num_disparities=num_disparities, block_size=block_size)
+        # Scale numDisparities down for reduced resolution
+        nd = max(16, (num_disparities // downscale // 16) * 16) if downscale > 1 else num_disparities
+        sgbm = create_sgbm(num_disparities=nd, block_size=block_size)
 
     raw_disp_l = sgbm.compute(gray_l, gray_r)
 
@@ -144,6 +167,23 @@ def compute_disparity(
         disparity = raw_disp_l.astype(np.float32) / 16.0
 
     disparity[disparity < 0] = -1.0
+
+    if downscale > 1:
+        # Upscale disparity to original resolution.
+        # Disparity values scale linearly with resolution, so multiply
+        # by the downscale factor: Z = fx * B / d, and both fx and d
+        # scale together, but we need d at original resolution.
+        orig_h, orig_w = left_rect.shape[:2]
+        valid_mask = disparity > 0
+        disparity = cv2.resize(
+            disparity, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR,
+        )
+        upscaled_mask = cv2.resize(
+            valid_mask.astype(np.uint8), (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST,
+        ).astype(bool)
+        disparity[upscaled_mask] *= downscale
+        disparity[~upscaled_mask] = -1.0
 
     return disparity
 
