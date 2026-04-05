@@ -34,6 +34,8 @@ def main() -> None:
     parser.add_argument("--green", action="store_true",
                         help="Use green channel only (for NoIR cameras)")
     parser.add_argument("--no-clahe", action="store_true", help="Disable CLAHE")
+    parser.add_argument("--downscale", type=int, default=1, choices=[1, 2, 4],
+                        help="Downscale factor for SGBM matching (1=full, 2=half, 4=quarter)")
     parser.add_argument("--delay", type=int, default=0,
                         help="Countdown in seconds before capture")
     args = parser.parse_args()
@@ -127,6 +129,7 @@ def main() -> None:
         use_wls_filter=use_wls,
         use_green_channel=args.green,
         use_clahe=not args.no_clahe,
+        downscale=args.downscale,
     )
 
     # Center ROI analysis
