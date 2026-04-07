@@ -240,8 +240,23 @@ def cmd_capture(args: argparse.Namespace) -> None:
     valid_cells = int(np.count_nonzero(grid_mask))
     total_target = int(cell_target.sum()) if cell_target is not None else args.count
 
+    # Distance recommendation based on FOV
+    # Wider FOV → board can be closer (it still fills enough of the frame)
+    cols, rows = args.columns, args.rows
+    board_w_mm = cols * args.square_length
+    board_h_mm = rows * args.square_length
+    board_diag = f"{board_w_mm:.0f}×{board_h_mm:.0f}mm"
+    if args.grid == "170":
+        dist_range = "0.3–1.0m"
+    elif args.grid == "circular":
+        dist_range = "0.4–1.2m"
+    else:
+        dist_range = "0.5–1.5m"
+
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
+    logger.info("Board: %s (%s). Recommended distance: %s", board_diag, f"{cols}×{rows}", dist_range)
     logger.info("Grid: %s (%d×%d, %d active cells, %d total captures)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
+    logger.info("IMPORTANT: Tilt the board 20-30° in every capture. Never hold it flat/frontal.")
     logger.info("Move the ChArUco to cover all grid cells. Vary angles (pitch/yaw/roll) in each cell.")
     logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
