@@ -237,15 +237,14 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
     count = 0
     last_capture_time = 0.0
+    valid_cells = int(np.count_nonzero(grid_mask))
+    total_target = int(cell_target.sum()) if cell_target is not None else args.count
 
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
     logger.info("Grid: %s (%d×%d, %d active cells, %d total captures)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
     logger.info("Move the ChArUco to cover all grid cells. Vary angles (pitch/yaw/roll) in each cell.")
     logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
-
-    valid_cells = int(np.count_nonzero(grid_mask))
-    total_target = int(cell_target.sum()) if cell_target is not None else args.count
     try:
         while True:
             # Stop condition
