@@ -295,10 +295,28 @@ def _calibrate_fisheye(
     img_points_l = [img_points_l[i] for i in keep]
     img_points_r = [img_points_r[i] for i in keep]
 
-    # Truncate all pairs to the minimum point count (fisheye stereo
-    # requires uniform sizes across all pairs)
+    # fisheye.stereoCalibrate requires uniform point counts across all
+    # pairs. Instead of truncating to the global minimum (which can be
+    # very low, e.g. 8), filter out pairs with few points first.
+    point_counts = [o.shape[1] for o in obj_points]
+    median_pts = int(np.median(point_counts))
+    min_acceptable = max(12, median_pts // 2)
+    good = [i for i, n in enumerate(point_counts) if n >= min_acceptable]
+    if len(good) < 15:
+        # Relax threshold if too few pairs survive
+        min_acceptable = min(point_counts)
+        good = list(range(len(obj_points)))
+    logger.info(
+        "Filtering pairs: %d/%d have >= %d points",
+        len(good), len(obj_points), min_acceptable,
+    )
+    obj_points = [obj_points[i] for i in good]
+    img_points_l = [img_points_l[i] for i in good]
+    img_points_r = [img_points_r[i] for i in good]
+
+    # Now truncate to the minimum of the filtered set
     min_pts = min(o.shape[1] for o in obj_points)
-    logger.info("Truncating pairs to %d points (min common)", min_pts)
+    logger.info("Truncating %d pairs to %d points each", len(obj_points), min_pts)
     obj_points = [o[:, :min_pts, :] for o in obj_points]
     img_points_l = [p[:, :min_pts, :] for p in img_points_l]
     img_points_r = [p[:, :min_pts, :] for p in img_points_r]
