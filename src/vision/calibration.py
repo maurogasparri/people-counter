@@ -214,6 +214,37 @@ def calibrate_stereo(
 
 
 
+def _find_bad_pair(
+    obj_points: list[np.ndarray],
+    img_points: list[np.ndarray],
+    image_size: tuple[int, int],
+    indices: list[int],
+    flags: int,
+    criteria: tuple,
+) -> int | None:
+    """Find which pair causes InitExtrinsics failure by leave-one-out probing.
+
+    Tries calibrating without each pair individually. The first pair whose
+    removal allows calibration to succeed is the culprit.
+    Returns local index into indices, or None if not found.
+    """
+    # Try calibrating each single pair alone first — if it fails alone,
+    # it's definitely bad. This is O(n) and catches most cases.
+    for local_idx in range(len(indices)):
+        i = indices[local_idx]
+        try:
+            K = np.zeros((3, 3))
+            D = np.zeros((4, 1))
+            cv2.fisheye.calibrate(
+                [obj_points[i]], [img_points[i]], image_size, K, D,
+                flags=flags & ~cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC,
+                criteria=criteria,
+            )
+        except cv2.error:
+            return local_idx
+    return None
+
+
 def _fisheye_calibrate_robust(
     obj_points: list[np.ndarray],
     img_points: list[np.ndarray],
@@ -260,9 +291,15 @@ def _fisheye_calibrate_robust(
                 logger.warning("%s: removing pair %d (local %d): %s", label, bad_global, bad_local, msg.split('\n')[0])
                 indices.pop(bad_local)
             else:
-                # Can't identify which pair — remove last and retry
-                removed = indices.pop()
-                logger.warning("%s: removing pair %d (unknown cause): %s", label, removed, msg.split('\n')[0])
+                # Can't identify which pair — probe each one to find culprit
+                bad_found = _find_bad_pair(obj_points, img_points, image_size, indices, flags, criteria)
+                if bad_found is not None:
+                    bad_global = indices[bad_found]
+                    logger.warning("%s: removing pair %d (probed): %s", label, bad_global, msg.split('\n')[0])
+                    indices.pop(bad_found)
+                else:
+                    removed = indices.pop()
+                    logger.warning("%s: removing pair %d (fallback): %s", label, removed, msg.split('\n')[0])
 
     raise ValueError(f"{label}: fewer than {min_pairs} pairs remaining after filtering")
 
