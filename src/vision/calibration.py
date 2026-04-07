@@ -236,6 +236,8 @@ def _fisheye_calibrate_robust(
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
     indices = list(range(len(obj_points)))
+
+    while len(indices) >= 10:
         cur_obj = [obj_points[i] for i in indices]
         cur_img = [img_points[i] for i in indices]
         K = np.zeros((3, 3))
