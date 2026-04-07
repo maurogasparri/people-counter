@@ -99,8 +99,8 @@ def main() -> None:
     best_r = 0.0
     try:
         while True:
-            frame_l = cam_l.capture_array("main")
-            frame_r = cam_r.capture_array("main")
+            frame_l = cv2.cvtColor(cam_l.capture_array("main"), cv2.COLOR_RGB2BGR)
+            frame_r = cv2.cvtColor(cam_r.capture_array("main"), cv2.COLOR_RGB2BGR)
             # Score center 25% only (ignores fingers on the lens edges)
             h, w = frame_l.shape[:2]
             margin = 3 * h // 8  # 37.5% margin each side = 25% center
@@ -140,8 +140,8 @@ def main() -> None:
         shutting_down = True
         print(f"\n\nBest — LEFT: {best_l:.1f}  RIGHT: {best_r:.1f}")
         print("Saving final frames...")
-        cv2.imwrite("/tmp/focus_left.jpg", cam_l.capture_array("main"))
-        cv2.imwrite("/tmp/focus_right.jpg", cam_r.capture_array("main"))
+        cv2.imwrite("/tmp/focus_left.jpg", cv2.cvtColor(cam_l.capture_array("main"), cv2.COLOR_RGB2BGR))
+        cv2.imwrite("/tmp/focus_right.jpg", cv2.cvtColor(cam_r.capture_array("main"), cv2.COLOR_RGB2BGR))
         print("Saved to /tmp/focus_left.jpg and /tmp/focus_right.jpg")
         cam_l.stop(); cam_l.close()
         cam_r.stop(); cam_r.close()
