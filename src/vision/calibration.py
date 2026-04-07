@@ -237,7 +237,8 @@ def _fisheye_calibrate_robust(
 
     indices = list(range(len(obj_points)))
 
-    while len(indices) >= 10:
+    min_pairs = 6 if not check_cond else 10
+    while len(indices) >= min_pairs:
         cur_obj = [obj_points[i] for i in indices]
         cur_img = [img_points[i] for i in indices]
         K = np.zeros((3, 3))
@@ -256,14 +257,14 @@ def _fisheye_calibrate_robust(
             if m:
                 bad_local = int(m.group(1))
                 bad_global = indices[bad_local]
-                logger.debug("%s: removing pair %d (local %d): %s", label, bad_global, bad_local, msg.split('\n')[0])
+                logger.warning("%s: removing pair %d (local %d): %s", label, bad_global, bad_local, msg.split('\n')[0])
                 indices.pop(bad_local)
             else:
                 # Can't identify which pair — remove last and retry
                 removed = indices.pop()
-                logger.debug("%s: removing pair %d (unknown cause): %s", label, removed, msg.split('\n')[0])
+                logger.warning("%s: removing pair %d (unknown cause): %s", label, removed, msg.split('\n')[0])
 
-    raise ValueError(f"{label}: fewer than 10 pairs remaining after filtering")
+    raise ValueError(f"{label}: fewer than {min_pairs} pairs remaining after filtering")
 
 
 def _calibrate_fisheye(
