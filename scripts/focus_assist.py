@@ -71,6 +71,8 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Focus assist with live HTTP preview")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--no-zoom", action="store_true",
+                        help="Show full frame instead of zoomed center")
     args = parser.parse_args()
 
     from picamera2 import Picamera2
@@ -111,14 +113,18 @@ def main() -> None:
             if score_r > best_r:
                 best_r = score_r
 
-            # Zoom: crop center 25% and scale up for preview
-            zoom_l = cv2.resize(frame_l[cy1:cy2, cx1:cx2], (w, h))
-            zoom_r = cv2.resize(frame_r[cy1:cy2, cx1:cx2], (w, h))
-            cv2.putText(zoom_l, f"LEFT  score:{score_l:.0f}", (10, 25),
+            # Preview: zoomed center (default) or full frame
+            if args.no_zoom:
+                preview_l = frame_l.copy()
+                preview_r = frame_r.copy()
+            else:
+                preview_l = cv2.resize(frame_l[cy1:cy2, cx1:cx2], (w, h))
+                preview_r = cv2.resize(frame_r[cy1:cy2, cx1:cx2], (w, h))
+            cv2.putText(preview_l, f"LEFT  score:{score_l:.0f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(zoom_r, f"RIGHT score:{score_r:.0f}", (10, 25),
+            cv2.putText(preview_r, f"RIGHT score:{score_r:.0f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            combined = np.hstack([zoom_l, zoom_r])
+            combined = np.hstack([preview_l, preview_r])
 
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 70])
             with jpeg_lock:
