@@ -373,23 +373,52 @@ def _calibrate_fisheye(
     # Step 3: Filter by per-view monocular reprojection error.
     # This is critical for stereo — views with high monocular error
     # will poison the stereo R/T estimation.
-    # Fix intrinsics (already calibrated) — only solve for extrinsics per view.
-    flags_proj = (
+    # Compute rvecs/tvecs per-view to avoid InitExtrinsics failures on 170°+.
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
+    flags_single = (
         cv2.fisheye.CALIB_FIX_INTRINSIC
         | cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
         | cv2.fisheye.CALIB_FIX_SKEW
     )
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
-    # Get rvecs/tvecs for reprojection error computation
-    _, _, _, rvecs_l, tvecs_l = cv2.fisheye.calibrate(
-        obj_points, img_points_l, image_size,
-        K_l.copy(), D_l.copy(), flags=flags_proj, criteria=criteria,
-    )
-    _, _, _, rvecs_r, tvecs_r = cv2.fisheye.calibrate(
-        obj_points, img_points_r, image_size,
-        K_r.copy(), D_r.copy(), flags=flags_proj, criteria=criteria,
-    )
+    def _get_per_view_extrinsics(
+        obj_pts: list[np.ndarray],
+        img_pts: list[np.ndarray],
+        K: np.ndarray,
+        D: np.ndarray,
+    ) -> tuple[list, list, list[int]]:
+        rvecs, tvecs, valid = [], [], []
+        for i in range(len(obj_pts)):
+            try:
+                _, _, _, rv, tv = cv2.fisheye.calibrate(
+                    [obj_pts[i]], [img_pts[i]], image_size,
+                    K.copy(), D.copy(), flags=flags_single, criteria=criteria,
+                )
+                rvecs.append(rv[0])
+                tvecs.append(tv[0])
+                valid.append(i)
+            except cv2.error:
+                logger.debug("View %d: InitExtrinsics failed, skipping for scoring", i)
+        return rvecs, tvecs, valid
+
+    rvecs_l, tvecs_l, valid_l = _get_per_view_extrinsics(obj_points, img_points_l, K_l, D_l)
+    rvecs_r, tvecs_r, valid_r = _get_per_view_extrinsics(obj_points, img_points_r, K_r, D_r)
+
+    # Keep only views valid for both cameras
+    valid_both = sorted(set(valid_l) & set(valid_r))
+    logger.info("Views with valid extrinsics: L=%d, R=%d, both=%d",
+                len(valid_l), len(valid_r), len(valid_both))
+
+    # Re-index rvecs/tvecs to match valid_both
+    l_idx_map = {v: i for i, v in enumerate(valid_l)}
+    r_idx_map = {v: i for i, v in enumerate(valid_r)}
+    rvecs_l = [rvecs_l[l_idx_map[i]] for i in valid_both]
+    tvecs_l = [tvecs_l[l_idx_map[i]] for i in valid_both]
+    rvecs_r = [rvecs_r[r_idx_map[i]] for i in valid_both]
+    tvecs_r = [tvecs_r[r_idx_map[i]] for i in valid_both]
+    obj_points = [obj_points[i] for i in valid_both]
+    img_points_l = [img_points_l[i] for i in valid_both]
+    img_points_r = [img_points_r[i] for i in valid_both]
 
     # Compute per-view scores: reprojection error + geometric metrics
     w_img, h_img = image_size
