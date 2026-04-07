@@ -1,12 +1,11 @@
 """Stereo calibration using ChArUco patterns.
 
-Implements a hybrid pipeline for wide-angle (160-170°) fisheye lenses:
+Implements a pure fisheye pipeline for wide-angle (160-170°) lenses:
 
   1. Individual camera calibration with cv2.fisheye (handles extreme distortion).
-  2. Undistort detected corners to ideal pinhole coordinates.
-  3. Standard cv2.stereoCalibrate on undistorted points (handles variable
-     point counts per pair, gives better stereo RMS than fisheye.stereoCalibrate).
-  4. Rectification maps via cv2.fisheye.initUndistortRectifyMap (composes
+  2. Stereo calibration with cv2.fisheye.stereoCalibrate (requires uniform
+     point counts — pairs are truncated to the minimum common count).
+  3. Rectification maps via cv2.fisheye.initUndistortRectifyMap (composes
      fisheye undistortion + stereo rectification rotation in one remap).
 
 Compatible with OpenCV 4.8+ (contrib) which uses the refactored ArUco API.
@@ -124,7 +123,6 @@ def calibrate_stereo(
     board_size: tuple[int, int] = DEFAULT_BOARD_SIZE,
     square_length: float = DEFAULT_SQUARE_LENGTH,
     marker_length: float = DEFAULT_MARKER_LENGTH,
-    use_fisheye: bool = True,
 ) -> dict[str, np.ndarray]:
     """Run stereo calibration from ChArUco image pairs.
 
@@ -199,32 +197,18 @@ def calibrate_stereo(
     valid_pairs = len(all_corners_l)
     logger.info("Valid calibration pairs: %d / %d", valid_pairs, len(image_pairs))
 
-    min_pairs = 15 if use_fisheye else 10
-    if valid_pairs < min_pairs:
+    if valid_pairs < 15:
         raise ValueError(
-            f"Need at least {min_pairs} valid pairs for "
-            f"{'fisheye' if use_fisheye else 'pinhole'} stereo calibration, "
+            f"Need at least 15 valid pairs for fisheye stereo calibration, "
             f"got {valid_pairs}. Capture more images with the ChArUco "
             f"board visible in both cameras."
         )
 
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
-    if use_fisheye:
-        try:
-            result = _calibrate_fisheye(
-                obj_points_per_image, all_corners_l, all_corners_r, image_size
-            )
-        except ValueError as e:
-            logger.warning("Fisheye calibration failed: %s", e)
-            logger.warning("Falling back to pinhole + rational model")
-            result = _calibrate_pinhole(
-                obj_points_per_image, all_corners_l, all_corners_r, image_size
-            )
-    else:
-        result = _calibrate_pinhole(
-            obj_points_per_image, all_corners_l, all_corners_r, image_size
-        )
+    result = _calibrate_fisheye(
+        obj_points_per_image, all_corners_l, all_corners_r, image_size
+    )
 
     result["image_size"] = np.array(list(image_size))
     return result
@@ -287,7 +271,11 @@ def _calibrate_fisheye(
     all_corners_r: list[np.ndarray],
     image_size: tuple[int, int],
 ) -> dict[str, np.ndarray]:
-    """Calibrate using cv2.fisheye model (for 160°+ lenses)."""
+    """Calibrate using pure cv2.fisheye model (for 160°+ lenses).
+
+    cv2.fisheye.stereoCalibrate requires all point arrays to have the
+    same size. We truncate each pair to the minimum common count.
+    """
     # Fisheye needs shape (1, N, 3) and (1, N, 2)
     obj_points = [pts.reshape(1, -1, 3) for pts in obj_points_per_image]
     img_points_l = [c.reshape(1, -1, 2) for c in all_corners_l]
@@ -307,35 +295,32 @@ def _calibrate_fisheye(
     img_points_l = [img_points_l[i] for i in keep]
     img_points_r = [img_points_r[i] for i in keep]
 
-    # Strategy: undistort image points with fisheye model, then use
-    # standard stereoCalibrate with zero distortion. This separates
-    # the well-calibrated fisheye distortion (RMS ~0.4) from the
-    # stereo geometry, and allows variable point counts per pair.
-    undist_pts_l = []
-    undist_pts_r = []
-    obj_pts_std = []
-    for i in range(len(obj_points)):
-        pts_l = img_points_l[i].reshape(-1, 1, 2).astype(np.float64)
-        pts_r = img_points_r[i].reshape(-1, 1, 2).astype(np.float64)
-        ud_l = cv2.fisheye.undistortPoints(pts_l, K_l, D_l, P=K_l)
-        ud_r = cv2.fisheye.undistortPoints(pts_r, K_r, D_r, P=K_r)
-        undist_pts_l.append(ud_l.reshape(-1, 2).astype(np.float32))
-        undist_pts_r.append(ud_r.reshape(-1, 2).astype(np.float32))
-        obj_pts_std.append(obj_points[i].reshape(-1, 3).astype(np.float32))
+    # Truncate all pairs to the minimum point count (fisheye stereo
+    # requires uniform sizes across all pairs)
+    min_pts = min(o.shape[1] for o in obj_points)
+    logger.info("Truncating pairs to %d points (min common)", min_pts)
+    obj_points = [o[:, :min_pts, :] for o in obj_points]
+    img_points_l = [p[:, :min_pts, :] for p in img_points_l]
+    img_points_r = [p[:, :min_pts, :] for p in img_points_r]
 
-    # Standard stereo calibration with undistorted points, zero distortion
-    zero_dist = np.zeros(5)
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC
-    rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
-        obj_pts_std, undist_pts_l, undist_pts_r,
-        K_l, zero_dist, K_r, zero_dist, image_size,
-        flags=stereo_flags,
+    # Pure fisheye stereo calibration
+    stereo_flags = (
+        cv2.fisheye.CALIB_FIX_INTRINSIC
+        | cv2.fisheye.CALIB_FIX_SKEW
     )
-    logger.info("Stereo RMS (fisheye+pinhole): %.4f (%d pairs)", rms_stereo, len(obj_pts_std))
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
-    # Rectify using standard stereoRectify with fisheye K but zero distortion
-    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-        K_l, zero_dist, K_r, zero_dist, image_size, R, T, alpha=0.0,
+    rms_stereo, _, _, _, _, R, T = cv2.fisheye.stereoCalibrate(
+        obj_points, img_points_l, img_points_r,
+        K_l, D_l, K_r, D_r, image_size,
+        flags=stereo_flags, criteria=criteria,
+    )
+    logger.info("Stereo RMS (fisheye): %.4f (%d pairs)", rms_stereo, len(obj_points))
+
+    # Fisheye stereo rectification
+    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
+        K_l, D_l, K_r, D_r, image_size, R, T,
+        flags=cv2.CALIB_ZERO_DISPARITY,
     )
 
     # Rectification maps: compose fisheye undistortion + rectification rotation
@@ -350,61 +335,11 @@ def _calibrate_fisheye(
         "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
         "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
         "R": R, "T": T,
-        "E": E, "F": F,
         "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
         "map_l_x": map_l_x, "map_l_y": map_l_y,
         "map_r_x": map_r_x, "map_r_y": map_r_y,
     }
 
-
-def _calibrate_pinhole(
-    obj_points_per_image: list[np.ndarray],
-    all_corners_l: list[np.ndarray],
-    all_corners_r: list[np.ndarray],
-    image_size: tuple[int, int],
-) -> dict[str, np.ndarray]:
-    """Calibrate using standard pinhole model with rational distortion."""
-    calib_flags = cv2.CALIB_RATIONAL_MODEL
-
-    rms_l, K_l, D_l, _, _ = cv2.calibrateCamera(
-        obj_points_per_image, all_corners_l, image_size, None, None,
-        flags=calib_flags,
-    )
-    logger.info("Left camera RMS (pinhole): %.4f", rms_l)
-
-    rms_r, K_r, D_r, _, _ = cv2.calibrateCamera(
-        obj_points_per_image, all_corners_r, image_size, None, None,
-        flags=calib_flags,
-    )
-    logger.info("Right camera RMS (pinhole): %.4f", rms_r)
-
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC | cv2.CALIB_RATIONAL_MODEL
-    rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
-        obj_points_per_image, all_corners_l, all_corners_r,
-        K_l, D_l, K_r, D_r, image_size,
-        flags=stereo_flags,
-    )
-    logger.info("Stereo RMS (pinhole): %.4f", rms_stereo)
-
-    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-        K_l, D_l, K_r, D_r, image_size, R, T, alpha=1.0,
-    )
-
-    map_l_x, map_l_y = cv2.initUndistortRectifyMap(
-        K_l, D_l, R1, P1, image_size, cv2.CV_32FC1
-    )
-    map_r_x, map_r_y = cv2.initUndistortRectifyMap(
-        K_r, D_r, R2, P2, image_size, cv2.CV_32FC1
-    )
-
-    return {
-        "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
-        "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
-        "R": R, "T": T, "E": E, "F": F,
-        "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
-        "map_l_x": map_l_x, "map_l_y": map_l_y,
-        "map_r_x": map_r_x, "map_r_y": map_r_y,
-    }
 
 
 def _build_object_points(

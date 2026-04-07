@@ -212,7 +212,13 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
     valid_cells = int(grid_mask.sum())
     try:
-        while count < args.count or np.count_nonzero(coverage * grid_mask) < valid_cells:
+        while True:
+            # Stop when all cells have per_cell captures (if set), otherwise use count + coverage
+            if args.per_cell > 0:
+                if np.all(coverage[grid_mask > 0] >= args.per_cell):
+                    break
+            elif count >= args.count and np.count_nonzero(coverage * grid_mask) >= valid_cells:
+                break
             frame_l, frame_r = cap.read()
 
             # Detect corners
@@ -271,23 +277,29 @@ def cmd_capture(args: argparse.Namespace) -> None:
             # Auto-capture when board detected, with cooldown
             now = time.time()
             if detected and (now - last_capture_time) >= args.cooldown:
-                left_path = output_dir / f"left_{count:03d}.png"
-                right_path = output_dir / f"right_{count:03d}.png"
-                cv2.imwrite(str(left_path), frame_l)
-                cv2.imwrite(str(right_path), frame_r)
-
-                # Update coverage
+                # Check if this cell is already full
                 row, col = _compute_coverage_center(
                     corners_l, frame_l.shape[1], frame_l.shape[0], grid_mask,
                 )
-                coverage[row, col] += 1
+                if args.per_cell > 0 and coverage[row, col] >= args.per_cell:
+                    # Cell full — skip but show feedback
+                    cv2.putText(vis_r, f"Cell ({row},{col}) full ({args.per_cell}/{args.per_cell})", (10, 85),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                else:
+                    left_path = output_dir / f"left_{count:03d}.png"
+                    right_path = output_dir / f"right_{count:03d}.png"
+                    cv2.imwrite(str(left_path), frame_l)
+                    cv2.imwrite(str(right_path), frame_r)
 
-                count += 1
-                last_capture_time = now
-                logger.info(
-                    "Pair %d/%d saved — %d common corners, coverage %d%%",
-                    count, args.count, n_common, coverage_pct,
-                )
+                    coverage[row, col] += 1
+                    count += 1
+                    last_capture_time = now
+                    logger.info(
+                        "Pair %d/%d saved — %d common corners, coverage %d%%, cell (%d,%d): %d/%s",
+                        count, args.count, n_common, coverage_pct,
+                        row, col, coverage[row, col],
+                        args.per_cell if args.per_cell > 0 else "∞",
+                    )
 
             remaining = f" | Missing {valid_cells - covered_cells} cells!" if count >= args.count and covered_cells < valid_cells else ""
             print(
@@ -413,7 +425,9 @@ def main() -> None:
     p_cap.add_argument("--resolution", type=int, nargs=2, default=[2592, 1944])
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")
-    p_cap.add_argument("--count", type=int, default=30, help="Number of pairs")
+    p_cap.add_argument("--count", type=int, default=30, help="Minimum number of pairs")
+    p_cap.add_argument("--per-cell", type=int, default=0,
+                        help="Max captures per grid cell (0=unlimited). Stops cell when reached.")
     p_cap.add_argument("--cooldown", type=float, default=1.5,
                         help="Seconds to wait after each capture before next one")
     p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
