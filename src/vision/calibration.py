@@ -373,9 +373,10 @@ def _calibrate_fisheye(
     # Step 3: Filter by per-view monocular reprojection error.
     # This is critical for stereo — views with high monocular error
     # will poison the stereo R/T estimation.
+    # Fix intrinsics (already calibrated) — only solve for extrinsics per view.
     flags_proj = (
-        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-        | cv2.fisheye.CALIB_CHECK_COND
+        cv2.fisheye.CALIB_FIX_INTRINSIC
+        | cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
         | cv2.fisheye.CALIB_FIX_SKEW
     )
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
