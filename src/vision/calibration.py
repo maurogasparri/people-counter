@@ -337,15 +337,53 @@ def _calibrate_fisheye(
         undist_pts_r.append(ud_r.reshape(-1, 2).astype(np.float32))
         obj_pts_std.append(obj_points[i].reshape(-1, 3).astype(np.float32))
 
-    # Step 4: Standard stereo calibration on undistorted points
+    # Step 4: Iterative stereo calibration — calibrate, measure per-pair
+    # reprojection error, discard outliers, repeat.
     zero_dist = np.zeros(5)
     stereo_flags = cv2.CALIB_FIX_INTRINSIC
-    rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
-        obj_pts_std, undist_pts_l, undist_pts_r,
-        K_new_l, zero_dist, K_new_r, zero_dist, image_size,
-        flags=stereo_flags,
-    )
-    logger.info("Stereo RMS (hybrid): %.4f (%d pairs)", rms_stereo, len(obj_pts_std))
+
+    for iteration in range(3):
+        rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
+            obj_pts_std, undist_pts_l, undist_pts_r,
+            K_new_l, zero_dist, K_new_r, zero_dist, image_size,
+            flags=stereo_flags,
+        )
+        logger.info("Stereo RMS (iteration %d): %.4f (%d pairs)",
+                     iteration + 1, rms_stereo, len(obj_pts_std))
+
+        if rms_stereo < 1.0 or len(obj_pts_std) <= 20:
+            break
+
+        # Compute per-pair reprojection error
+        per_pair_err = []
+        for i in range(len(obj_pts_std)):
+            pts_3d = obj_pts_std[i].reshape(-1, 1, 3)
+            # Project to left
+            proj_l, _ = cv2.projectPoints(pts_3d, np.zeros(3), np.zeros(3),
+                                           K_new_l, zero_dist)
+            err_l = np.mean(np.linalg.norm(
+                proj_l.reshape(-1, 2) - undist_pts_l[i], axis=1))
+            # Project to right
+            proj_r, _ = cv2.projectPoints(pts_3d, cv2.Rodrigues(R)[0].flatten(),
+                                           T.flatten(), K_new_r, zero_dist)
+            err_r = np.mean(np.linalg.norm(
+                proj_r.reshape(-1, 2) - undist_pts_r[i], axis=1))
+            per_pair_err.append((err_l + err_r) / 2)
+
+        # Remove pairs with error > 2x median
+        median_err = np.median(per_pair_err)
+        threshold = max(2.0 * median_err, 3.0)
+        good = [i for i, e in enumerate(per_pair_err) if e <= threshold]
+
+        if len(good) == len(obj_pts_std):
+            break  # No outliers to remove
+
+        removed = len(obj_pts_std) - len(good)
+        logger.info("Removing %d outlier pairs (threshold=%.1f, median=%.1f)",
+                     removed, threshold, median_err)
+        obj_pts_std = [obj_pts_std[i] for i in good]
+        undist_pts_l = [undist_pts_l[i] for i in good]
+        undist_pts_r = [undist_pts_r[i] for i in good]
 
     # Step 5: Standard stereo rectification using the new K matrices
     R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
