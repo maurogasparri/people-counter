@@ -429,12 +429,14 @@ def _calibrate_fisheye(
             obj_points, img_points_r, image_size, "Right (filtered)",
         )
 
-    # Step 4: Filter views with too few points (keep >= 16 corners)
+    # Step 4: Filter views with too few points, then truncate to uniform size.
+    # fisheye.stereoCalibrate requires uniform point counts across all views.
+    # Since points are sorted by corner ID within each view, truncating to
+    # min_pts takes the same physical corner IDs across all views.
     min_pts_per_view = 16
     good_pts = [i for i in range(len(obj_points))
                 if obj_points[i].shape[1] >= min_pts_per_view]
     if len(good_pts) < 15:
-        # Relax if too few survive
         min_pts_per_view = 12
         good_pts = [i for i in range(len(obj_points))
                     if obj_points[i].shape[1] >= min_pts_per_view]
@@ -447,13 +449,15 @@ def _calibrate_fisheye(
     img_points_l = [img_points_l[i] for i in good_pts]
     img_points_r = [img_points_r[i] for i in good_pts]
 
-    pt_counts = [o.shape[1] for o in obj_points]
-    logger.info("Point counts: min=%d, max=%d, median=%d",
-                min(pt_counts), max(pt_counts), int(np.median(pt_counts)))
+    # Truncate to uniform size (required by fisheye.stereoCalibrate)
+    min_pts = min(o.shape[1] for o in obj_points)
+    logger.info("Truncating %d pairs to %d points (sorted by corner ID)",
+                len(obj_points), min_pts)
+    obj_points = [o[:, :min_pts, :] for o in obj_points]
+    img_points_l = [p[:, :min_pts, :] for p in img_points_l]
+    img_points_r = [p[:, :min_pts, :] for p in img_points_r]
 
     # Step 5: Pure fisheye stereo calibration
-    # Each view can have a different number of points — fisheye.stereoCalibrate
-    # handles this as long as obj/img arrays are consistent within each view.
     stereo_flags = (
         cv2.fisheye.CALIB_FIX_INTRINSIC
         | cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
