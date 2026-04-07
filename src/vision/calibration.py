@@ -335,38 +335,75 @@ def _calibrate_fisheye(
         K_r.copy(), D_r.copy(), flags=flags_proj, criteria=criteria,
     )
 
-    # Compute per-view reprojection error
-    errors_l = []
-    errors_r = []
+    # Compute per-view scores: reprojection error + geometric metrics
+    w_img, h_img = image_size
+    img_area = w_img * h_img
+    min_dim = min(w_img, h_img)
+    scores = []
     for i in range(len(obj_points)):
+        # Reprojection error
         proj_l, _ = cv2.fisheye.projectPoints(
             obj_points[i], rvecs_l[i], tvecs_l[i], K_l, D_l)
         err_l = cv2.norm(img_points_l[i], proj_l, cv2.NORM_L2) / len(proj_l)
-        errors_l.append(err_l)
-
         proj_r, _ = cv2.fisheye.projectPoints(
             obj_points[i], rvecs_r[i], tvecs_r[i], K_r, D_r)
         err_r = cv2.norm(img_points_r[i], proj_r, cv2.NORM_L2) / len(proj_r)
-        errors_r.append(err_r)
 
-    errors_l = np.array(errors_l)
-    errors_r = np.array(errors_r)
-    errors_max = np.maximum(errors_l, errors_r)
+        # Bbox area and border margin for each camera
+        def _bbox_metrics(pts: np.ndarray) -> tuple[float, float]:
+            p = pts.reshape(-1, 2)
+            x0, y0 = p.min(axis=0)
+            x1, y1 = p.max(axis=0)
+            area = max(1.0, x1 - x0) * max(1.0, y1 - y0) / img_area
+            margin = min(x0, y0, w_img - x1, h_img - y1) / min_dim
+            return area, margin
 
-    # Filter: keep pairs below threshold (start at 1.0, relax if needed)
-    threshold = 1.0
-    while threshold <= 3.0:
-        good = [i for i in range(len(obj_points)) if errors_max[i] < threshold]
-        if len(good) >= 20:
-            break
-        threshold += 0.5
+        area_l, margin_l = _bbox_metrics(img_points_l[i])
+        area_r, margin_r = _bbox_metrics(img_points_r[i])
+
+        # L/R area ratio (detect asymmetry)
+        lr_ratio = min(area_l, area_r) / max(area_l, area_r, 1e-9)
+
+        # Hard filters
+        if err_l > 1.0 or err_r > 1.0:
+            scores.append((i, float('inf')))
+            continue
+        if area_l < 0.02 or area_r < 0.02:
+            scores.append((i, float('inf')))
+            continue
+        if margin_l < 0.015 or margin_r < 0.015:
+            scores.append((i, float('inf')))
+            continue
+        if lr_ratio < 0.7:
+            scores.append((i, float('inf')))
+            continue
+
+        # Weighted score (lower = better)
+        score = (3.0 * err_l + 3.0 * err_r
+                 + 2.0 * max(0.0, 0.03 - area_l) * 20.0
+                 + 2.0 * max(0.0, 0.03 - area_r) * 20.0
+                 + 2.5 * max(0.0, 0.04 - margin_l) * 20.0
+                 + 2.5 * max(0.0, 0.04 - margin_r) * 20.0
+                 + 2.0 * (1.0 - lr_ratio))
+        scores.append((i, score))
+
+    # Sort by score, keep best 50% (or at least 20)
+    scores.sort(key=lambda x: x[1])
+    valid_scores = [(i, s) for i, s in scores if s < float('inf')]
+    n_keep = max(20, len(valid_scores) // 2)
+    good = [i for i, _ in valid_scores[:n_keep]]
+
+    # If too few pass hard filters, relax to reprojection-only filter
+    if len(good) < 15:
+        logger.warning("Only %d pairs pass geometric filters, relaxing to reproj-only", len(good))
+        good = [i for i, s in scores if s < float('inf')]
+        if len(good) < 15:
+            good = [i for i, _ in sorted(scores, key=lambda x: x[1])[:max(15, len(scores) // 2)]]
 
     removed = len(obj_points) - len(good)
     logger.info(
-        "Reprojection filter: keeping %d/%d pairs (threshold=%.1f, "
-        "median_err_l=%.3f, median_err_r=%.3f)",
-        len(good), len(obj_points), threshold,
-        float(np.median(errors_l)), float(np.median(errors_r)),
+        "View scoring: keeping %d/%d pairs (removed %d)",
+        len(good), len(obj_points), removed,
     )
     obj_points = [obj_points[i] for i in good]
     img_points_l = [img_points_l[i] for i in good]
