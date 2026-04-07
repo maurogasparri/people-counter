@@ -367,7 +367,7 @@ def _calibrate_fisheye(
 
         # Hard filters (relaxed for 160° fisheye)
         reject_reason = None
-        if err_l > 1.5 or err_r > 1.5:
+        if err_l > 2.0 or err_r > 2.0:
             reject_reason = "reproj"
         elif area_l < 0.01 or area_r < 0.01:
             reject_reason = "area"
