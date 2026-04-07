@@ -310,11 +310,16 @@ def _calibrate_fisheye(
     )
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
-    rms_stereo, _, _, _, _, R, T = cv2.fisheye.stereoCalibrate(
+    retval = cv2.fisheye.stereoCalibrate(
         obj_points, img_points_l, img_points_r,
         K_l, D_l, K_r, D_r, image_size,
         flags=stereo_flags, criteria=criteria,
     )
+    # OpenCV returns (rms, K1, D1, K2, D2, R, T[, rvecs, tvecs])
+    # depending on version. R and T are always at indices 5 and 6.
+    rms_stereo = retval[0]
+    R = retval[5]
+    T = retval[6]
     logger.info("Stereo RMS (fisheye): %.4f (%d pairs)", rms_stereo, len(obj_points))
 
     # Fisheye stereo rectification
