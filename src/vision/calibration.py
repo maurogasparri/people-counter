@@ -367,7 +367,7 @@ def _calibrate_fisheye(
 
         # Hard filters (relaxed for 160° fisheye)
         reject_reason = None
-        if err_l > 1.0 or err_r > 1.0:
+        if err_l > 1.5 or err_r > 1.5:
             reject_reason = "reproj"
         elif area_l < 0.01 or area_r < 0.01:
             reject_reason = "area"
@@ -376,7 +376,7 @@ def _calibrate_fisheye(
         elif lr_ratio < 0.6:
             reject_reason = "lr_ratio"
         if reject_reason:
-            scores.append((i, float('inf')))
+            scores.append((i, float('inf'), reject_reason))
             continue
 
         # Weighted score (lower = better)
@@ -389,14 +389,12 @@ def _calibrate_fisheye(
         scores.append((i, score))
 
     # Log rejection reasons
-    rejected = [s for s in scores if s[1] == float('inf') and len(s) > 2]
+    from collections import Counter
+    rejected = [s for s in scores if s[1] == float('inf')]
     if rejected:
-        from collections import Counter
-        reasons = Counter(s[2] for s in rejected)
-        logger.info("Hard filter rejections: %s", dict(reasons))
-    n_rejected = sum(1 for s in scores if s[1] == float('inf'))
-    if n_rejected:
-        logger.info("Total hard-rejected: %d/%d", n_rejected, len(scores))
+        reasons = Counter(s[2] if len(s) > 2 else "unknown" for s in rejected)
+        logger.info("Hard filter rejections: %s (total %d/%d)",
+                    dict(reasons), len(rejected), len(scores))
 
     # Sort by score, keep best 50% (or at least 20)
     scores.sort(key=lambda x: x[1])
@@ -406,7 +404,8 @@ def _calibrate_fisheye(
 
     # If too few pass hard filters, relax
     if len(good) < 15:
-        logger.warning("Only %d pairs pass geometric filters, relaxing", len(good))
+        logger.warning("Only %d pairs pass hard filters, using best %d by score",
+                       len(valid_scores), max(15, len(scores) // 2))
         good = [s[0] for s in valid_scores]
         if len(good) < 15:
             good = [s[0] for s in sorted(scores, key=lambda x: x[1])[:max(15, len(scores) // 2)]]
