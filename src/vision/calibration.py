@@ -106,7 +106,7 @@ def detect_charuco_corners(
         detector.detectBoard(gray)
     )
 
-    if charuco_ids is None or len(charuco_ids) < 6:
+    if charuco_ids is None or len(charuco_ids) < 12:
         return None, None
 
     return charuco_corners, charuco_ids
@@ -166,7 +166,7 @@ def calibrate_stereo(
 
         # Keep only corner IDs present in BOTH images
         common_ids = np.intersect1d(ids_l.flatten(), ids_r.flatten())
-        if len(common_ids) < 6:
+        if len(common_ids) < 12:
             logger.debug(
                 "Pair %d: only %d common corners, skipping", idx, len(common_ids)
             )
@@ -206,7 +206,7 @@ def calibrate_stereo(
     obj_points_per_image = _build_object_points(all_ids_l, board)
 
     result = _calibrate_fisheye(
-        obj_points_per_image, all_corners_l, all_corners_r, image_size
+        obj_points_per_image, all_corners_l, all_corners_r, image_size,
     )
 
     result["image_size"] = np.array(list(image_size))
@@ -241,7 +241,7 @@ def _fisheye_calibrate_robust(
         K = np.zeros((3, 3))
         D = np.zeros((4, 1))
         try:
-            rms, _, _, _, _ = cv2.fisheye.calibrate(
+            rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
                 cur_obj, cur_img, image_size, K, D,
                 flags=flags, criteria=criteria,
             )
@@ -275,9 +275,10 @@ def _calibrate_fisheye(
     Single geometric model end-to-end (no pinhole mixing):
     1. Robust fisheye intrinsic calibration per camera.
     2. Intersect kept pairs, re-calibrate on common set.
-    3. Filter by per-view monocular reprojection error.
-    4. Truncate to uniform point count for fisheye.stereoCalibrate.
+    3. Filter by per-view monocular reprojection error + geometric scoring.
+    4. Filter views with too few points (keep >= 16).
     5. fisheye.stereoCalibrate with RECOMPUTE_EXTRINSIC + CHECK_COND.
+       Each view can have a different number of points.
     6. fisheye.stereoRectify + fisheye.initUndistortRectifyMap.
     """
     # Fisheye needs shape (1, N, 3) and (1, N, 2)
@@ -364,17 +365,17 @@ def _calibrate_fisheye(
         # L/R area ratio (detect asymmetry)
         lr_ratio = min(area_l, area_r) / max(area_l, area_r, 1e-9)
 
-        # Hard filters
+        # Hard filters (relaxed for 160° fisheye)
+        reject_reason = None
         if err_l > 1.0 or err_r > 1.0:
-            scores.append((i, float('inf')))
-            continue
-        if area_l < 0.02 or area_r < 0.02:
-            scores.append((i, float('inf')))
-            continue
-        if margin_l < 0.015 or margin_r < 0.015:
-            scores.append((i, float('inf')))
-            continue
-        if lr_ratio < 0.7:
+            reject_reason = "reproj"
+        elif area_l < 0.01 or area_r < 0.01:
+            reject_reason = "area"
+        elif margin_l < 0.005 or margin_r < 0.005:
+            reject_reason = "margin"
+        elif lr_ratio < 0.6:
+            reject_reason = "lr_ratio"
+        if reject_reason:
             scores.append((i, float('inf')))
             continue
 
@@ -387,18 +388,25 @@ def _calibrate_fisheye(
                  + 2.0 * (1.0 - lr_ratio))
         scores.append((i, score))
 
+    # Log rejection reasons
+    rejected = [s for s in scores if s[1] == float('inf')]
+    if rejected:
+        from collections import Counter
+        reasons = Counter(s[2] for s in rejected)
+        logger.info("Hard filter rejections: %s", dict(reasons))
+
     # Sort by score, keep best 50% (or at least 20)
     scores.sort(key=lambda x: x[1])
-    valid_scores = [(i, s) for i, s in scores if s < float('inf')]
+    valid_scores = [s for s in scores if s[1] < float('inf')]
     n_keep = max(20, len(valid_scores) // 2)
-    good = [i for i, _ in valid_scores[:n_keep]]
+    good = [s[0] for s in valid_scores[:n_keep]]
 
-    # If too few pass hard filters, relax to reprojection-only filter
+    # If too few pass hard filters, relax
     if len(good) < 15:
-        logger.warning("Only %d pairs pass geometric filters, relaxing to reproj-only", len(good))
-        good = [i for i, s in scores if s < float('inf')]
+        logger.warning("Only %d pairs pass geometric filters, relaxing", len(good))
+        good = [s[0] for s in valid_scores]
         if len(good) < 15:
-            good = [i for i, _ in sorted(scores, key=lambda x: x[1])[:max(15, len(scores) // 2)]]
+            good = [s[0] for s in sorted(scores, key=lambda x: x[1])[:max(15, len(scores) // 2)]]
 
     removed = len(obj_points) - len(good)
     logger.info(
@@ -418,28 +426,31 @@ def _calibrate_fisheye(
             obj_points, img_points_r, image_size, "Right (filtered)",
         )
 
-    # Step 4: Truncate to uniform point count for fisheye.stereoCalibrate.
-    # Filter out pairs with few points first (keep >= median/2 or >= 12).
-    point_counts = [o.shape[1] for o in obj_points]
-    median_pts = int(np.median(point_counts))
-    min_acceptable = max(12, median_pts // 2)
-    good_pts = [i for i, n in enumerate(point_counts) if n >= min_acceptable]
+    # Step 4: Filter views with too few points (keep >= 16 corners)
+    min_pts_per_view = 16
+    good_pts = [i for i in range(len(obj_points))
+                if obj_points[i].shape[1] >= min_pts_per_view]
     if len(good_pts) < 15:
-        min_acceptable = min(point_counts)
+        # Relax if too few survive
+        min_pts_per_view = 12
+        good_pts = [i for i in range(len(obj_points))
+                    if obj_points[i].shape[1] >= min_pts_per_view]
+    if len(good_pts) < 15:
         good_pts = list(range(len(obj_points)))
-    logger.info("Point count filter: %d/%d pairs have >= %d points",
-                len(good_pts), len(obj_points), min_acceptable)
+        min_pts_per_view = 0
+    logger.info("Min points filter: %d/%d pairs with >= %d points",
+                len(good_pts), len(obj_points), min_pts_per_view)
     obj_points = [obj_points[i] for i in good_pts]
     img_points_l = [img_points_l[i] for i in good_pts]
     img_points_r = [img_points_r[i] for i in good_pts]
 
-    min_pts = min(o.shape[1] for o in obj_points)
-    logger.info("Truncating %d pairs to %d points each", len(obj_points), min_pts)
-    obj_points = [o[:, :min_pts, :] for o in obj_points]
-    img_points_l = [p[:, :min_pts, :] for p in img_points_l]
-    img_points_r = [p[:, :min_pts, :] for p in img_points_r]
+    pt_counts = [o.shape[1] for o in obj_points]
+    logger.info("Point counts: min=%d, max=%d, median=%d",
+                min(pt_counts), max(pt_counts), int(np.median(pt_counts)))
 
     # Step 5: Pure fisheye stereo calibration
+    # Each view can have a different number of points — fisheye.stereoCalibrate
+    # handles this as long as obj/img arrays are consistent within each view.
     stereo_flags = (
         cv2.fisheye.CALIB_FIX_INTRINSIC
         | cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
@@ -454,8 +465,8 @@ def _calibrate_fisheye(
     rms_stereo = retval[0]
     R = retval[5]
     T = retval[6]
-    logger.info("Stereo RMS (fisheye): %.4f (%d pairs, %d pts each)",
-                rms_stereo, len(obj_points), min_pts)
+    logger.info("Stereo RMS (fisheye): %.4f (%d pairs)",
+                rms_stereo, len(obj_points))
 
     # Step 6: Fisheye stereo rectification
     R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
