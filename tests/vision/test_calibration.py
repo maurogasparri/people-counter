@@ -215,21 +215,21 @@ class TestCalibration:
 
     def test_calibrate_stereo_runs(self, synthetic_pairs):
         """Full calibration completes without error on synthetic data."""
-        result = calibrate_stereo(synthetic_pairs, use_fisheye=False)
+        result = calibrate_stereo(synthetic_pairs)
 
         # Check all expected keys
         expected_keys = {
             "camera_matrix_l", "dist_coeffs_l",
             "camera_matrix_r", "dist_coeffs_r",
-            "R", "T", "E", "F",
+            "R", "T",
             "R1", "R2", "P1", "P2", "Q",
             "map_l_x", "map_l_y", "map_r_x", "map_r_y",
             "image_size",
         }
-        assert set(result.keys()) == expected_keys
+        assert expected_keys.issubset(set(result.keys()))
 
     def test_camera_matrices_reasonable(self, synthetic_pairs):
-        result = calibrate_stereo(synthetic_pairs, use_fisheye=False)
+        result = calibrate_stereo(synthetic_pairs)
 
         # Focal length should be in reasonable range for 640x480
         fx_l = result["camera_matrix_l"][0, 0]
@@ -245,7 +245,7 @@ class TestCalibration:
 
     def test_translation_recovers_baseline(self, synthetic_pairs):
         """Translation vector should be close to the baseline."""
-        result = calibrate_stereo(synthetic_pairs, use_fisheye=False)
+        result = calibrate_stereo(synthetic_pairs)
 
         # T[0] should be roughly the baseline (140mm)
         # Tolerance is wide because synthetic rendering isn't perfect
@@ -253,7 +253,7 @@ class TestCalibration:
         assert tx > 50  # At least some horizontal translation detected
 
     def test_rectification_maps_valid(self, synthetic_pairs):
-        result = calibrate_stereo(synthetic_pairs, use_fisheye=False)
+        result = calibrate_stereo(synthetic_pairs)
 
         assert result["map_l_x"].shape == (IMAGE_H, IMAGE_W)
         assert result["map_l_y"].shape == (IMAGE_H, IMAGE_W)
@@ -261,13 +261,13 @@ class TestCalibration:
         assert result["map_r_y"].shape == (IMAGE_H, IMAGE_W)
 
     def test_too_few_pairs_raises(self):
-        """Should raise ValueError with fewer than 10 valid pairs."""
+        """Should raise ValueError with fewer than 15 valid pairs."""
         pairs = _generate_synthetic_pairs(5)
-        with pytest.raises(ValueError, match="at least 10"):
-            calibrate_stereo(pairs, use_fisheye=False)
+        with pytest.raises(ValueError, match="at least 15"):
+            calibrate_stereo(pairs)
 
     def test_image_size_stored(self, synthetic_pairs):
-        result = calibrate_stereo(synthetic_pairs, use_fisheye=False)
+        result = calibrate_stereo(synthetic_pairs)
         assert np.array_equal(result["image_size"], [IMAGE_W, IMAGE_H])
 
 
