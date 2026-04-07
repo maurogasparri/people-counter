@@ -389,11 +389,14 @@ def _calibrate_fisheye(
         scores.append((i, score))
 
     # Log rejection reasons
-    rejected = [s for s in scores if s[1] == float('inf')]
+    rejected = [s for s in scores if s[1] == float('inf') and len(s) > 2]
     if rejected:
         from collections import Counter
         reasons = Counter(s[2] for s in rejected)
         logger.info("Hard filter rejections: %s", dict(reasons))
+    n_rejected = sum(1 for s in scores if s[1] == float('inf'))
+    if n_rejected:
+        logger.info("Total hard-rejected: %d/%d", n_rejected, len(scores))
 
     # Sort by score, keep best 50% (or at least 20)
     scores.sort(key=lambda x: x[1])
