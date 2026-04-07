@@ -312,17 +312,27 @@ def _calibrate_fisheye(
         obj_points, img_points_r, image_size, "Right (final)",
     )
 
-    # Step 3: Undistort all corners to ideal pinhole coordinates
+    # Step 3: Estimate new camera matrices for undistorted images.
+    # Using the fisheye K directly would amplify errors at the periphery
+    # (tan(80°) ≈ 5.67x), so we estimate a K_new with balance=0 that
+    # crops to the valid region.
+    K_new_l = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+        K_l, D_l, image_size, np.eye(3), balance=0.0,
+    )
+    K_new_r = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+        K_r, D_r, image_size, np.eye(3), balance=0.0,
+    )
+    logger.info("K_new_l fx=%.1f, K_new_r fx=%.1f", K_new_l[0, 0], K_new_r[0, 0])
+
+    # Undistort corners using the new camera matrices
     undist_pts_l = []
     undist_pts_r = []
     obj_pts_std = []
     for i in range(len(obj_points)):
         pts_l = img_points_l[i].reshape(-1, 1, 2).astype(np.float64)
         pts_r = img_points_r[i].reshape(-1, 1, 2).astype(np.float64)
-        # Undistort with P=K: removes fisheye distortion, re-projects
-        # to the same camera matrix (ideal pinhole coordinates)
-        ud_l = cv2.fisheye.undistortPoints(pts_l, K_l, D_l, P=K_l)
-        ud_r = cv2.fisheye.undistortPoints(pts_r, K_r, D_r, P=K_r)
+        ud_l = cv2.fisheye.undistortPoints(pts_l, K_l, D_l, P=K_new_l)
+        ud_r = cv2.fisheye.undistortPoints(pts_r, K_r, D_r, P=K_new_r)
         undist_pts_l.append(ud_l.reshape(-1, 2).astype(np.float32))
         undist_pts_r.append(ud_r.reshape(-1, 2).astype(np.float32))
         obj_pts_std.append(obj_points[i].reshape(-1, 3).astype(np.float32))
@@ -332,14 +342,14 @@ def _calibrate_fisheye(
     stereo_flags = cv2.CALIB_FIX_INTRINSIC
     rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
         obj_pts_std, undist_pts_l, undist_pts_r,
-        K_l, zero_dist, K_r, zero_dist, image_size,
+        K_new_l, zero_dist, K_new_r, zero_dist, image_size,
         flags=stereo_flags,
     )
     logger.info("Stereo RMS (hybrid): %.4f (%d pairs)", rms_stereo, len(obj_pts_std))
 
-    # Step 5: Standard stereo rectification
+    # Step 5: Standard stereo rectification using the new K matrices
     R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-        K_l, zero_dist, K_r, zero_dist, image_size, R, T, alpha=0.0,
+        K_new_l, zero_dist, K_new_r, zero_dist, image_size, R, T, alpha=0.0,
     )
 
     # Step 6: Rectification maps using fisheye model (composes
