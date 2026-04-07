@@ -1,14 +1,11 @@
 """Stereo calibration using ChArUco patterns.
 
-Implements a hybrid fisheye pipeline for wide-angle (160-170°) lenses:
+Implements a pure fisheye pipeline for wide-angle (160-170°) lenses:
 
-  1. Robust fisheye intrinsic calibration per camera, then re-calibrate
-     on the intersection of kept pairs (both K/D on same data).
-  2. Undistort detected corners to ideal pinhole coordinates.
-  3. Standard cv2.stereoCalibrate on undistorted points (handles variable
-     point counts per pair, avoids fisheye.stereoCalibrate truncation).
-  4. Rectification maps via cv2.fisheye.initUndistortRectifyMap (composes
-     fisheye undistortion + stereo rectification rotation in one remap).
+  1. Robust fisheye intrinsic calibration per camera, intersect kept pairs.
+  2. Filter by per-view monocular reprojection error (quality > quantity).
+  3. cv2.fisheye.stereoCalibrate with RECOMPUTE_EXTRINSIC + CHECK_COND.
+  4. cv2.fisheye.stereoRectify + cv2.fisheye.initUndistortRectifyMap.
 
 Compatible with OpenCV 4.8+ (contrib) which uses the refactored ArUco API.
 
@@ -273,23 +270,22 @@ def _calibrate_fisheye(
     all_corners_r: list[np.ndarray],
     image_size: tuple[int, int],
 ) -> dict[str, np.ndarray]:
-    """Hybrid fisheye calibration pipeline for 160°+ lenses.
+    """Pure fisheye stereo calibration pipeline for 160°+ lenses.
 
-    1. Robust fisheye intrinsic calibration for each camera independently.
-    2. Intersect kept pairs, then RE-CALIBRATE intrinsics on common pairs
-       so both K/D are optimized for the same data.
-    3. Undistort corner points to ideal pinhole coordinates.
-    4. Standard stereoCalibrate on undistorted points (handles variable
-       point counts, avoids fisheye.stereoCalibrate truncation issues).
-    5. Rectification maps via fisheye.initUndistortRectifyMap (composes
-       fisheye undistortion + stereo rectification in one remap).
+    Single geometric model end-to-end (no pinhole mixing):
+    1. Robust fisheye intrinsic calibration per camera.
+    2. Intersect kept pairs, re-calibrate on common set.
+    3. Filter by per-view monocular reprojection error.
+    4. Truncate to uniform point count for fisheye.stereoCalibrate.
+    5. fisheye.stereoCalibrate with RECOMPUTE_EXTRINSIC + CHECK_COND.
+    6. fisheye.stereoRectify + fisheye.initUndistortRectifyMap.
     """
     # Fisheye needs shape (1, N, 3) and (1, N, 2)
     obj_points = [pts.reshape(1, -1, 3) for pts in obj_points_per_image]
     img_points_l = [c.reshape(1, -1, 2) for c in all_corners_l]
     img_points_r = [c.reshape(1, -1, 2) for c in all_corners_r]
 
-    # Step 1: Initial robust calibration to find bad pairs
+    # Step 1: Initial robust calibration to find ill-conditioned pairs
     _, _, _, keep_l = _fisheye_calibrate_robust(
         obj_points, img_points_l, image_size, "Left (initial)",
     )
@@ -304,94 +300,134 @@ def _calibrate_fisheye(
     img_points_l = [img_points_l[i] for i in keep]
     img_points_r = [img_points_r[i] for i in keep]
 
-    # Re-calibrate intrinsics on the SAME pair set
-    rms_l, K_l, D_l, _ = _fisheye_calibrate_robust(
+    rms_l, K_l, D_l, keep2_l = _fisheye_calibrate_robust(
         obj_points, img_points_l, image_size, "Left (final)",
     )
-    rms_r, K_r, D_r, _ = _fisheye_calibrate_robust(
+    rms_r, K_r, D_r, keep2_r = _fisheye_calibrate_robust(
         obj_points, img_points_r, image_size, "Right (final)",
     )
 
-    # Step 3: Estimate new camera matrices for undistorted images.
-    # Using the fisheye K directly would amplify errors at the periphery
-    # (tan(80°) ≈ 5.67x), so we estimate a K_new with balance=0 that
-    # crops to the valid region.
-    K_new_l = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-        K_l, D_l, image_size, np.eye(3), balance=0.0,
-    )
-    K_new_r = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-        K_r, D_r, image_size, np.eye(3), balance=0.0,
-    )
-    logger.info("K_new_l fx=%.1f, K_new_r fx=%.1f", K_new_l[0, 0], K_new_r[0, 0])
+    # Intersect again after re-calibration
+    keep2 = sorted(set(keep2_l) & set(keep2_r))
+    if len(keep2) < len(obj_points):
+        logger.info("Re-calibration removed %d more pairs", len(obj_points) - len(keep2))
+        obj_points = [obj_points[i] for i in keep2]
+        img_points_l = [img_points_l[i] for i in keep2]
+        img_points_r = [img_points_r[i] for i in keep2]
 
-    # Undistort corners using the new camera matrices
-    undist_pts_l = []
-    undist_pts_r = []
-    obj_pts_std = []
+    # Step 3: Filter by per-view monocular reprojection error.
+    # This is critical for stereo — views with high monocular error
+    # will poison the stereo R/T estimation.
+    flags_proj = (
+        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
+        | cv2.fisheye.CALIB_CHECK_COND
+        | cv2.fisheye.CALIB_FIX_SKEW
+    )
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
+
+    # Get rvecs/tvecs for reprojection error computation
+    _, _, _, rvecs_l, tvecs_l = cv2.fisheye.calibrate(
+        obj_points, img_points_l, image_size,
+        K_l.copy(), D_l.copy(), flags=flags_proj, criteria=criteria,
+    )
+    _, _, _, rvecs_r, tvecs_r = cv2.fisheye.calibrate(
+        obj_points, img_points_r, image_size,
+        K_r.copy(), D_r.copy(), flags=flags_proj, criteria=criteria,
+    )
+
+    # Compute per-view reprojection error
+    errors_l = []
+    errors_r = []
     for i in range(len(obj_points)):
-        pts_l = img_points_l[i].reshape(-1, 1, 2).astype(np.float64)
-        pts_r = img_points_r[i].reshape(-1, 1, 2).astype(np.float64)
-        ud_l = cv2.fisheye.undistortPoints(pts_l, K_l, D_l, P=K_new_l)
-        ud_r = cv2.fisheye.undistortPoints(pts_r, K_r, D_r, P=K_new_r)
-        undist_pts_l.append(ud_l.reshape(-1, 2).astype(np.float32))
-        undist_pts_r.append(ud_r.reshape(-1, 2).astype(np.float32))
-        obj_pts_std.append(obj_points[i].reshape(-1, 3).astype(np.float32))
+        proj_l, _ = cv2.fisheye.projectPoints(
+            obj_points[i], rvecs_l[i], tvecs_l[i], K_l, D_l)
+        err_l = cv2.norm(img_points_l[i], proj_l, cv2.NORM_L2) / len(proj_l)
+        errors_l.append(err_l)
 
-    # Step 4: Iterative stereo calibration — calibrate, measure per-pair
-    # reprojection error, discard outliers, repeat.
-    zero_dist = np.zeros(5)
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC
+        proj_r, _ = cv2.fisheye.projectPoints(
+            obj_points[i], rvecs_r[i], tvecs_r[i], K_r, D_r)
+        err_r = cv2.norm(img_points_r[i], proj_r, cv2.NORM_L2) / len(proj_r)
+        errors_r.append(err_r)
 
-    for iteration in range(3):
-        rms_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
-            obj_pts_std, undist_pts_l, undist_pts_r,
-            K_new_l, zero_dist, K_new_r, zero_dist, image_size,
-            flags=stereo_flags,
-        )
-        logger.info("Stereo RMS (iteration %d): %.4f (%d pairs)",
-                     iteration + 1, rms_stereo, len(obj_pts_std))
+    errors_l = np.array(errors_l)
+    errors_r = np.array(errors_r)
+    errors_max = np.maximum(errors_l, errors_r)
 
-        if rms_stereo < 1.0 or len(obj_pts_std) <= 20:
+    # Filter: keep pairs below threshold (start at 1.0, relax if needed)
+    threshold = 1.0
+    while threshold <= 3.0:
+        good = [i for i in range(len(obj_points)) if errors_max[i] < threshold]
+        if len(good) >= 20:
             break
+        threshold += 0.5
 
-        # Compute per-pair reprojection error
-        per_pair_err = []
-        for i in range(len(obj_pts_std)):
-            pts_3d = obj_pts_std[i].reshape(-1, 1, 3)
-            # Project to left
-            proj_l, _ = cv2.projectPoints(pts_3d, np.zeros(3), np.zeros(3),
-                                           K_new_l, zero_dist)
-            err_l = np.mean(np.linalg.norm(
-                proj_l.reshape(-1, 2) - undist_pts_l[i], axis=1))
-            # Project to right
-            proj_r, _ = cv2.projectPoints(pts_3d, cv2.Rodrigues(R)[0].flatten(),
-                                           T.flatten(), K_new_r, zero_dist)
-            err_r = np.mean(np.linalg.norm(
-                proj_r.reshape(-1, 2) - undist_pts_r[i], axis=1))
-            per_pair_err.append((err_l + err_r) / 2)
+    removed = len(obj_points) - len(good)
+    logger.info(
+        "Reprojection filter: keeping %d/%d pairs (threshold=%.1f, "
+        "median_err_l=%.3f, median_err_r=%.3f)",
+        len(good), len(obj_points), threshold,
+        float(np.median(errors_l)), float(np.median(errors_r)),
+    )
+    obj_points = [obj_points[i] for i in good]
+    img_points_l = [img_points_l[i] for i in good]
+    img_points_r = [img_points_r[i] for i in good]
 
-        # Remove pairs with error > 2x median
-        median_err = np.median(per_pair_err)
-        threshold = max(2.0 * median_err, 3.0)
-        good = [i for i, e in enumerate(per_pair_err) if e <= threshold]
+    # Re-calibrate intrinsics on the filtered set
+    if removed > 0:
+        rms_l, K_l, D_l, _ = _fisheye_calibrate_robust(
+            obj_points, img_points_l, image_size, "Left (filtered)",
+        )
+        rms_r, K_r, D_r, _ = _fisheye_calibrate_robust(
+            obj_points, img_points_r, image_size, "Right (filtered)",
+        )
 
-        if len(good) == len(obj_pts_std):
-            break  # No outliers to remove
+    # Step 4: Truncate to uniform point count for fisheye.stereoCalibrate.
+    # Filter out pairs with few points first (keep >= median/2 or >= 12).
+    point_counts = [o.shape[1] for o in obj_points]
+    median_pts = int(np.median(point_counts))
+    min_acceptable = max(12, median_pts // 2)
+    good_pts = [i for i, n in enumerate(point_counts) if n >= min_acceptable]
+    if len(good_pts) < 15:
+        min_acceptable = min(point_counts)
+        good_pts = list(range(len(obj_points)))
+    logger.info("Point count filter: %d/%d pairs have >= %d points",
+                len(good_pts), len(obj_points), min_acceptable)
+    obj_points = [obj_points[i] for i in good_pts]
+    img_points_l = [img_points_l[i] for i in good_pts]
+    img_points_r = [img_points_r[i] for i in good_pts]
 
-        removed = len(obj_pts_std) - len(good)
-        logger.info("Removing %d outlier pairs (threshold=%.1f, median=%.1f)",
-                     removed, threshold, median_err)
-        obj_pts_std = [obj_pts_std[i] for i in good]
-        undist_pts_l = [undist_pts_l[i] for i in good]
-        undist_pts_r = [undist_pts_r[i] for i in good]
+    min_pts = min(o.shape[1] for o in obj_points)
+    logger.info("Truncating %d pairs to %d points each", len(obj_points), min_pts)
+    obj_points = [o[:, :min_pts, :] for o in obj_points]
+    img_points_l = [p[:, :min_pts, :] for p in img_points_l]
+    img_points_r = [p[:, :min_pts, :] for p in img_points_r]
 
-    # Step 5: Standard stereo rectification using the new K matrices
-    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-        K_new_l, zero_dist, K_new_r, zero_dist, image_size, R, T, alpha=0.0,
+    # Step 5: Pure fisheye stereo calibration
+    stereo_flags = (
+        cv2.fisheye.CALIB_FIX_INTRINSIC
+        | cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
+        | cv2.fisheye.CALIB_CHECK_COND
+        | cv2.fisheye.CALIB_FIX_SKEW
+    )
+    retval = cv2.fisheye.stereoCalibrate(
+        obj_points, img_points_l, img_points_r,
+        K_l, D_l, K_r, D_r, image_size,
+        flags=stereo_flags, criteria=criteria,
+    )
+    rms_stereo = retval[0]
+    R = retval[5]
+    T = retval[6]
+    logger.info("Stereo RMS (fisheye): %.4f (%d pairs, %d pts each)",
+                rms_stereo, len(obj_points), min_pts)
+
+    # Step 6: Fisheye stereo rectification
+    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
+        K_l, D_l, K_r, D_r, image_size, R, T,
+        flags=cv2.CALIB_ZERO_DISPARITY,
+        balance=0.0,
     )
 
-    # Step 6: Rectification maps using fisheye model (composes
-    # fisheye undistortion + rectification rotation in one remap)
+    # Rectification maps: compose fisheye undistortion + rectification
     map_l_x, map_l_y = cv2.fisheye.initUndistortRectifyMap(
         K_l, D_l, R1, P1, image_size, cv2.CV_32FC1
     )
@@ -402,7 +438,7 @@ def _calibrate_fisheye(
     return {
         "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
         "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
-        "R": R, "T": T, "E": E, "F": F,
+        "R": R, "T": T,
         "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
         "map_l_x": map_l_x, "map_l_y": map_l_y,
         "map_r_x": map_r_x, "map_r_y": map_r_y,
