@@ -259,7 +259,7 @@ def _fisheye_calibrate_robust(
     """
     import re
 
-    flags = cv2.fisheye.CALIB_FIX_SKEW
+    flags = cv2.fisheye.CALIB_FIX_SKEW | cv2.fisheye.CALIB_USE_INTRINSIC_GUESS
     if recompute_extrinsic:
         flags |= cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
     if check_cond:
@@ -268,11 +268,22 @@ def _fisheye_calibrate_robust(
 
     indices = list(range(len(obj_points)))
 
+    # Initialize K with a reasonable estimate for wide fisheye.
+    # For equidistant projection: f = (w/2) / (FOV/2 in radians).
+    # Assume ~160° FOV as safe default; actual value will be refined.
+    w, h = image_size
+    f_init = (w / 2) / (80 * np.pi / 180)  # ~160° half-FOV = 80°
+    K_init = np.array([
+        [f_init, 0, w / 2.0],
+        [0, f_init, h / 2.0],
+        [0, 0, 1],
+    ], dtype=np.float64)
+
     min_pairs = 6 if not check_cond else 10
     while len(indices) >= min_pairs:
         cur_obj = [obj_points[i] for i in indices]
         cur_img = [img_points[i] for i in indices]
-        K = np.zeros((3, 3))
+        K = K_init.copy()
         D = np.zeros((4, 1))
         try:
             rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
@@ -326,15 +337,15 @@ def _calibrate_fisheye(
     img_points_l = [c.reshape(1, -1, 2) for c in all_corners_l]
     img_points_r = [c.reshape(1, -1, 2) for c in all_corners_r]
 
-    # Step 1: Initial robust calibration (relaxed — no CHECK_COND, no RECOMPUTE_EXTRINSIC)
-    # RECOMPUTE_EXTRINSIC triggers InitExtrinsics which fails on 170°+ fisheye
+    # Step 1: Initial robust calibration (relaxed — no CHECK_COND)
+    # K is initialized with FOV-based estimate so InitExtrinsics succeeds.
     _, _, _, keep_l = _fisheye_calibrate_robust(
         obj_points, img_points_l, image_size, "Left (initial)",
-        check_cond=False, recompute_extrinsic=False,
+        check_cond=False,
     )
     _, _, _, keep_r = _fisheye_calibrate_robust(
         obj_points, img_points_r, image_size, "Right (initial)",
-        check_cond=False, recompute_extrinsic=False,
+        check_cond=False,
     )
 
     # Step 2: Intersect and re-calibrate on common pairs
