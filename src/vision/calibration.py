@@ -219,6 +219,7 @@ def _fisheye_calibrate_robust(
     img_points: list[np.ndarray],
     image_size: tuple[int, int],
     label: str,
+    check_cond: bool = True,
 ) -> tuple[float, np.ndarray, np.ndarray, list[int]]:
     """Iteratively calibrate fisheye, removing ill-conditioned pairs.
 
@@ -228,14 +229,13 @@ def _fisheye_calibrate_robust(
 
     flags = (
         cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-        | cv2.fisheye.CALIB_CHECK_COND
         | cv2.fisheye.CALIB_FIX_SKEW
     )
+    if check_cond:
+        flags |= cv2.fisheye.CALIB_CHECK_COND
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
     indices = list(range(len(obj_points)))
-
-    while len(indices) >= 10:
         cur_obj = [obj_points[i] for i in indices]
         cur_img = [img_points[i] for i in indices]
         K = np.zeros((3, 3))
@@ -286,12 +286,12 @@ def _calibrate_fisheye(
     img_points_l = [c.reshape(1, -1, 2) for c in all_corners_l]
     img_points_r = [c.reshape(1, -1, 2) for c in all_corners_r]
 
-    # Step 1: Initial robust calibration to find ill-conditioned pairs
+    # Step 1: Initial robust calibration (relaxed — no CHECK_COND)
     _, _, _, keep_l = _fisheye_calibrate_robust(
-        obj_points, img_points_l, image_size, "Left (initial)",
+        obj_points, img_points_l, image_size, "Left (initial)", check_cond=False,
     )
     _, _, _, keep_r = _fisheye_calibrate_robust(
-        obj_points, img_points_r, image_size, "Right (initial)",
+        obj_points, img_points_r, image_size, "Right (initial)", check_cond=False,
     )
 
     # Step 2: Intersect and re-calibrate on common pairs
