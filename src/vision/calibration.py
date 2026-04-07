@@ -373,13 +373,8 @@ def _calibrate_fisheye(
     # Step 3: Filter by per-view monocular reprojection error.
     # This is critical for stereo — views with high monocular error
     # will poison the stereo R/T estimation.
-    # Compute rvecs/tvecs per-view to avoid InitExtrinsics failures on 170°+.
+    # Use solvePnP on fisheye-undistorted points to avoid InitExtrinsics failures.
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
-    flags_single = (
-        cv2.fisheye.CALIB_FIX_INTRINSIC
-        | cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-        | cv2.fisheye.CALIB_FIX_SKEW
-    )
 
     def _get_per_view_extrinsics(
         obj_pts: list[np.ndarray],
@@ -389,16 +384,21 @@ def _calibrate_fisheye(
     ) -> tuple[list, list, list[int]]:
         rvecs, tvecs, valid = [], [], []
         for i in range(len(obj_pts)):
-            try:
-                _, _, _, rv, tv = cv2.fisheye.calibrate(
-                    [obj_pts[i]], [img_pts[i]], image_size,
-                    K.copy(), D.copy(), flags=flags_single, criteria=criteria,
-                )
-                rvecs.append(rv[0])
-                tvecs.append(tv[0])
+            # Undistort fisheye points → ideal pinhole coordinates
+            pts_2d = img_pts[i].reshape(-1, 1, 2).astype(np.float64)
+            pts_undist = cv2.fisheye.undistortPoints(pts_2d, K, D, P=K)
+            pts_3d = obj_pts[i].reshape(-1, 1, 3).astype(np.float64)
+
+            success, rvec, tvec = cv2.solvePnP(
+                pts_3d, pts_undist, K, None,  # None dist — already undistorted
+                flags=cv2.SOLVEPNP_ITERATIVE,
+            )
+            if success:
+                rvecs.append(rvec)
+                tvecs.append(tvec)
                 valid.append(i)
-            except cv2.error:
-                logger.debug("View %d: InitExtrinsics failed, skipping for scoring", i)
+            else:
+                logger.debug("View %d: solvePnP failed", i)
         return rvecs, tvecs, valid
 
     rvecs_l, tvecs_l, valid_l = _get_per_view_extrinsics(obj_points, img_points_l, K_l, D_l)
