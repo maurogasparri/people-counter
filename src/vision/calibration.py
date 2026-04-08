@@ -1,11 +1,9 @@
 """Stereo calibration using ChArUco patterns.
 
-Implements a pure fisheye pipeline for wide-angle (160-170°) lenses:
-
-  1. Robust fisheye intrinsic calibration per camera, intersect kept pairs.
-  2. Filter by per-view monocular reprojection error (quality > quantity).
-  3. cv2.fisheye.stereoCalibrate with RECOMPUTE_EXTRINSIC + CHECK_COND.
-  4. cv2.fisheye.stereoRectify + cv2.fisheye.initUndistortRectifyMap.
+Supports two modes:
+  - Pinhole (default): Crops center of image, uses standard cv2.calibrateCamera
+    and cv2.stereoCalibrate. Robust for any FOV (crops away extreme distortion).
+  - Fisheye: Full cv2.fisheye pipeline for lenses where full FOV is needed.
 
 Compatible with OpenCV 4.8+ (contrib) which uses the refactored ArUco API.
 
@@ -113,6 +111,29 @@ def detect_charuco_corners(
 
 
 # ---------------------------------------------------------------------------
+# Image cropping for wide-angle lenses
+# ---------------------------------------------------------------------------
+
+
+def _crop_center(image: np.ndarray, crop_ratio: float) -> np.ndarray:
+    """Crop the center portion of an image.
+
+    Args:
+        image: Input image (HxW or HxWxC).
+        crop_ratio: Fraction of each dimension to keep (0.6 = center 60%).
+
+    Returns:
+        Cropped image.
+    """
+    h, w = image.shape[:2]
+    new_h = int(h * crop_ratio)
+    new_w = int(w * crop_ratio)
+    y0 = (h - new_h) // 2
+    x0 = (w - new_w) // 2
+    return image[y0:y0 + new_h, x0:x0 + new_w]
+
+
+# ---------------------------------------------------------------------------
 # Stereo calibration pipeline
 # ---------------------------------------------------------------------------
 
@@ -122,41 +143,42 @@ def calibrate_stereo(
     board_size: tuple[int, int] = DEFAULT_BOARD_SIZE,
     square_length: float = DEFAULT_SQUARE_LENGTH,
     marker_length: float = DEFAULT_MARKER_LENGTH,
+    crop_ratio: float = 0.6,
 ) -> dict[str, np.ndarray]:
     """Run stereo calibration from ChArUco image pairs.
 
-    Detects ChArUco corners in each image pair, calibrates each camera
-    individually, then performs stereo calibration and computes
-    rectification maps.
+    Crops the center of each image (controlled by crop_ratio) to remove
+    extreme fisheye distortion, then uses standard pinhole calibration.
 
     Args:
         image_pairs: List of (left_image, right_image) tuples.
-            Images can be BGR or grayscale.
         board_size: (columns, rows) of chessboard squares.
         square_length: Square side length in mm.
         marker_length: Marker side length in mm.
+        crop_ratio: Center crop fraction (0.6 = keep center 60%).
+            Set to 1.0 to disable cropping.
 
     Returns:
-        Dict with keys:
-            camera_matrix_l, dist_coeffs_l,
-            camera_matrix_r, dist_coeffs_r,
-            R, T, E, F,
-            R1, R2, P1, P2, Q,
-            map_l_x, map_l_y, map_r_x, map_r_y,
-            image_size (as [w, h] array).
+        Dict with calibration parameters including rectification maps.
 
     Raises:
-        ValueError: If fewer than 10 valid pairs are found.
+        ValueError: If fewer than 15 valid pairs are found.
     """
     board = create_charuco_board(board_size, square_length, marker_length)
 
+    all_obj: list[np.ndarray] = []
     all_corners_l: list[np.ndarray] = []
-    all_ids_l: list[np.ndarray] = []
     all_corners_r: list[np.ndarray] = []
-    all_ids_r: list[np.ndarray] = []
-    image_size: Optional[tuple[int, int]] = None  # (w, h)
+    image_size: Optional[tuple[int, int]] = None  # (w, h) of cropped image
+
+    board_corners_3d = board.getChessboardCorners()  # (N, 3) float32
 
     for idx, (img_l, img_r) in enumerate(image_pairs):
+        # Crop center to avoid extreme fisheye distortion
+        if crop_ratio < 1.0:
+            img_l = _crop_center(img_l, crop_ratio)
+            img_r = _crop_center(img_r, crop_ratio)
+
         corners_l, ids_l = detect_charuco_corners(img_l, board)
         corners_r, ids_r = detect_charuco_corners(img_r, board)
 
@@ -166,7 +188,7 @@ def calibrate_stereo(
 
         # Keep only corner IDs present in BOTH images
         common_ids = np.intersect1d(ids_l.flatten(), ids_r.flatten())
-        if len(common_ids) < 12:
+        if len(common_ids) < 8:
             logger.debug(
                 "Pair %d: only %d common corners, skipping", idx, len(common_ids)
             )
@@ -175,434 +197,91 @@ def calibrate_stereo(
         mask_l = np.isin(ids_l.flatten(), common_ids)
         mask_r = np.isin(ids_r.flatten(), common_ids)
 
-        filtered_corners_l = corners_l[mask_l]
-        filtered_ids_l = ids_l[mask_l]
-        filtered_corners_r = corners_r[mask_r]
-        filtered_ids_r = ids_r[mask_r]
+        c_l = corners_l[mask_l]
+        i_l = ids_l[mask_l]
+        c_r = corners_r[mask_r]
+        i_r = ids_r[mask_r]
 
         # Sort by ID so both arrays align
-        order_l = np.argsort(filtered_ids_l.flatten())
-        order_r = np.argsort(filtered_ids_r.flatten())
+        order_l = np.argsort(i_l.flatten())
+        order_r = np.argsort(i_r.flatten())
 
-        all_corners_l.append(filtered_corners_l[order_l])
-        all_ids_l.append(filtered_ids_l[order_l])
-        all_corners_r.append(filtered_corners_r[order_r])
-        all_ids_r.append(filtered_ids_r[order_r])
+        # Build 3D object points from corner IDs
+        obj_pts = board_corners_3d[common_ids].astype(np.float32)
+
+        all_obj.append(obj_pts)
+        all_corners_l.append(c_l[order_l].reshape(-1, 1, 2).astype(np.float32))
+        all_corners_r.append(c_r[order_r].reshape(-1, 1, 2).astype(np.float32))
 
         if image_size is None:
             h, w = img_l.shape[:2]
             image_size = (w, h)
 
-    valid_pairs = len(all_corners_l)
-    logger.info("Valid calibration pairs: %d / %d", valid_pairs, len(image_pairs))
+    valid_pairs = len(all_obj)
+    logger.info("Valid pairs (after crop %.0f%%): %d / %d",
+                crop_ratio * 100, valid_pairs, len(image_pairs))
 
     if valid_pairs < 15:
         raise ValueError(
-            f"Need at least 15 valid pairs for fisheye stereo calibration, "
-            f"got {valid_pairs}. Capture more images with the ChArUco "
-            f"board visible in both cameras."
+            f"Need at least 15 valid pairs, got {valid_pairs}. "
+            f"Try a smaller crop_ratio or capture more images."
         )
 
-    obj_points_per_image = _build_object_points(all_ids_l, board)
-
-    result = _calibrate_fisheye(
-        obj_points_per_image, all_corners_l, all_corners_r, image_size,
-    )
-
-    result["image_size"] = np.array(list(image_size))
-    return result
-
-
-
-def _find_bad_pair(
-    obj_points: list[np.ndarray],
-    img_points: list[np.ndarray],
-    image_size: tuple[int, int],
-    indices: list[int],
-    flags: int,
-    criteria: tuple,
-) -> int | None:
-    """Find which pair causes InitExtrinsics failure by leave-one-out probing.
-
-    Tries calibrating without each pair individually. The first pair whose
-    removal allows calibration to succeed is the culprit.
-    Returns local index into indices, or None if not found.
-    """
-    # Try calibrating each single pair alone first — if it fails alone,
-    # it's definitely bad. This is O(n) and catches most cases.
-    for local_idx in range(len(indices)):
-        i = indices[local_idx]
-        try:
-            K = np.zeros((3, 3))
-            D = np.zeros((4, 1))
-            cv2.fisheye.calibrate(
-                [obj_points[i]], [img_points[i]], image_size, K, D,
-                flags=flags & ~cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC,
-                criteria=criteria,
-            )
-        except cv2.error:
-            return local_idx
-    return None
-
-
-def _fisheye_calibrate_robust(
-    obj_points: list[np.ndarray],
-    img_points: list[np.ndarray],
-    image_size: tuple[int, int],
-    label: str,
-    check_cond: bool = True,
-    recompute_extrinsic: bool = True,
-) -> tuple[float, np.ndarray, np.ndarray, list[int]]:
-    """Iteratively calibrate fisheye, removing ill-conditioned pairs.
-
-    Returns (rms, K, D, kept_indices).
-    """
-    import re
-
-    flags = cv2.fisheye.CALIB_FIX_SKEW | cv2.fisheye.CALIB_USE_INTRINSIC_GUESS
-    if recompute_extrinsic:
-        flags |= cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-    if check_cond:
-        flags |= cv2.fisheye.CALIB_CHECK_COND
+    # --- Pinhole calibration per camera ---
+    calib_flags = cv2.CALIB_RATIONAL_MODEL  # k1-k6 for wide angle
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
-    indices = list(range(len(obj_points)))
-
-    # K_init for fisheye: overestimate f so InitExtrinsics can compute
-    # a valid homography. The optimizer will refine downward.
-    w, h = image_size
-    f_init = (w / 2) / (80 * np.pi / 180)  # ~928 for 2592 wide
-    K_init = np.array([
-        [f_init, 0, w / 2.0],
-        [0, f_init, h / 2.0],
-        [0, 0, 1],
-    ], dtype=np.float64)
-
-    min_pairs = 6 if not check_cond else 10
-    while len(indices) >= min_pairs:
-        cur_obj = [obj_points[i] for i in indices]
-        cur_img = [img_points[i] for i in indices]
-        K = K_init.copy()
-        D = np.zeros((4, 1))
-        try:
-            rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
-                cur_obj, cur_img, image_size, K, D,
-                flags=flags, criteria=criteria,
-            )
-            logger.info("%s RMS (fisheye): %.4f (%d pairs)", label, rms, len(indices))
-            return rms, K, D, indices
-        except cv2.error as e:
-            msg = str(e)
-            # Try to extract bad array index from error message
-            m = re.search(r'array (\d+)', msg)
-            if m:
-                bad_local = int(m.group(1))
-                bad_global = indices[bad_local]
-                logger.warning("%s: removing pair %d (local %d): %s", label, bad_global, bad_local, msg.split('\n')[0])
-                indices.pop(bad_local)
-            else:
-                # Can't identify which pair — probe each one to find culprit
-                bad_found = _find_bad_pair(obj_points, img_points, image_size, indices, flags, criteria)
-                if bad_found is not None:
-                    bad_global = indices[bad_found]
-                    logger.warning("%s: removing pair %d (probed): %s", label, bad_global, msg.split('\n')[0])
-                    indices.pop(bad_found)
-                else:
-                    removed = indices.pop()
-                    logger.warning("%s: removing pair %d (fallback): %s", label, removed, msg.split('\n')[0])
-
-    raise ValueError(f"{label}: fewer than {min_pairs} pairs remaining after filtering")
-
-
-def _calibrate_fisheye(
-    obj_points_per_image: list[np.ndarray],
-    all_corners_l: list[np.ndarray],
-    all_corners_r: list[np.ndarray],
-    image_size: tuple[int, int],
-) -> dict[str, np.ndarray]:
-    """Pure fisheye stereo calibration pipeline for 160°+ lenses.
-
-    Single geometric model end-to-end (no pinhole mixing):
-    1. Robust fisheye intrinsic calibration per camera.
-    2. Intersect kept pairs, re-calibrate on common set.
-    3. Filter by per-view monocular reprojection error + geometric scoring.
-    4. Filter views with too few points (keep >= 16).
-    5. fisheye.stereoCalibrate with RECOMPUTE_EXTRINSIC + CHECK_COND.
-       Each view can have a different number of points.
-    6. fisheye.stereoRectify + fisheye.initUndistortRectifyMap.
-    """
-    # Fisheye needs shape (1, N, 3) and (1, N, 2)
-    obj_points = [pts.reshape(1, -1, 3) for pts in obj_points_per_image]
-    img_points_l = [c.reshape(1, -1, 2) for c in all_corners_l]
-    img_points_r = [c.reshape(1, -1, 2) for c in all_corners_r]
-
-    # Step 1: Initial robust calibration (relaxed — no CHECK_COND)
-    # K is initialized with FOV-based estimate so InitExtrinsics succeeds.
-    _, _, _, keep_l = _fisheye_calibrate_robust(
-        obj_points, img_points_l, image_size, "Left (initial)",
-        check_cond=False,
+    rms_l, K_l, D_l, rvecs_l, tvecs_l = cv2.calibrateCamera(
+        all_obj, all_corners_l, image_size, None, None,
+        flags=calib_flags, criteria=criteria,
     )
-    _, _, _, keep_r = _fisheye_calibrate_robust(
-        obj_points, img_points_r, image_size, "Right (initial)",
-        check_cond=False,
+    logger.info("Left RMS: %.4f (pinhole, %d pairs)", rms_l, valid_pairs)
+
+    rms_r, K_r, D_r, rvecs_r, tvecs_r = cv2.calibrateCamera(
+        all_obj, all_corners_r, image_size, None, None,
+        flags=calib_flags, criteria=criteria,
     )
+    logger.info("Right RMS: %.4f (pinhole, %d pairs)", rms_r, valid_pairs)
 
-    # Step 2: Intersect and re-calibrate on common pairs
-    keep = sorted(set(keep_l) & set(keep_r))
-    logger.info("Pairs valid for both cameras: %d", len(keep))
-    obj_points = [obj_points[i] for i in keep]
-    img_points_l = [img_points_l[i] for i in keep]
-    img_points_r = [img_points_r[i] for i in keep]
-
-    # Final pass also without CHECK_COND — solvePnP scoring handles quality.
-    # CHECK_COND was removing too many pairs on 170° fisheye.
-    rms_l, K_l, D_l, keep2_l = _fisheye_calibrate_robust(
-        obj_points, img_points_l, image_size, "Left (final)",
-        check_cond=False,
-    )
-    rms_r, K_r, D_r, keep2_r = _fisheye_calibrate_robust(
-        obj_points, img_points_r, image_size, "Right (final)",
-        check_cond=False,
-    )
-
-    # Intersect again after re-calibration
-    keep2 = sorted(set(keep2_l) & set(keep2_r))
-    if len(keep2) < len(obj_points):
-        logger.info("Re-calibration removed %d more pairs", len(obj_points) - len(keep2))
-        obj_points = [obj_points[i] for i in keep2]
-        img_points_l = [img_points_l[i] for i in keep2]
-        img_points_r = [img_points_r[i] for i in keep2]
-
-    # Step 3: Filter by per-view monocular reprojection error.
-    # This is critical for stereo — views with high monocular error
-    # will poison the stereo R/T estimation.
-    # Use solvePnP on fisheye-undistorted points to avoid InitExtrinsics failures.
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
-
-    def _get_per_view_extrinsics(
-        obj_pts: list[np.ndarray],
-        img_pts: list[np.ndarray],
-        K: np.ndarray,
-        D: np.ndarray,
-    ) -> tuple[list, list, list[int]]:
-        rvecs, tvecs, valid = [], [], []
-        for i in range(len(obj_pts)):
-            # Undistort fisheye points → ideal pinhole coordinates
-            pts_2d = img_pts[i].reshape(-1, 1, 2).astype(np.float64)
-            pts_undist = cv2.fisheye.undistortPoints(pts_2d, K, D, P=K)
-            pts_3d = obj_pts[i].reshape(-1, 1, 3).astype(np.float64)
-
-            success, rvec, tvec = cv2.solvePnP(
-                pts_3d, pts_undist, K, None,  # None dist — already undistorted
-                flags=cv2.SOLVEPNP_ITERATIVE,
-            )
-            if success:
-                rvecs.append(rvec)
-                tvecs.append(tvec)
-                valid.append(i)
-            else:
-                logger.debug("View %d: solvePnP failed", i)
-        return rvecs, tvecs, valid
-
-    rvecs_l, tvecs_l, valid_l = _get_per_view_extrinsics(obj_points, img_points_l, K_l, D_l)
-    rvecs_r, tvecs_r, valid_r = _get_per_view_extrinsics(obj_points, img_points_r, K_r, D_r)
-
-    # Keep only views valid for both cameras
-    valid_both = sorted(set(valid_l) & set(valid_r))
-    logger.info("Views with valid extrinsics: L=%d, R=%d, both=%d",
-                len(valid_l), len(valid_r), len(valid_both))
-
-    # Re-index rvecs/tvecs to match valid_both
-    l_idx_map = {v: i for i, v in enumerate(valid_l)}
-    r_idx_map = {v: i for i, v in enumerate(valid_r)}
-    rvecs_l = [rvecs_l[l_idx_map[i]] for i in valid_both]
-    tvecs_l = [tvecs_l[l_idx_map[i]] for i in valid_both]
-    rvecs_r = [rvecs_r[r_idx_map[i]] for i in valid_both]
-    tvecs_r = [tvecs_r[r_idx_map[i]] for i in valid_both]
-    obj_points = [obj_points[i] for i in valid_both]
-    img_points_l = [img_points_l[i] for i in valid_both]
-    img_points_r = [img_points_r[i] for i in valid_both]
-
-    # Compute per-view scores: reprojection error + geometric metrics
-    w_img, h_img = image_size
-    img_area = w_img * h_img
-    min_dim = min(w_img, h_img)
-    scores = []
-    for i in range(len(obj_points)):
-        # Reprojection error
-        proj_l, _ = cv2.fisheye.projectPoints(
-            obj_points[i], rvecs_l[i], tvecs_l[i], K_l, D_l)
-        err_l = cv2.norm(img_points_l[i], proj_l, cv2.NORM_L2) / len(proj_l)
-        proj_r, _ = cv2.fisheye.projectPoints(
-            obj_points[i], rvecs_r[i], tvecs_r[i], K_r, D_r)
-        err_r = cv2.norm(img_points_r[i], proj_r, cv2.NORM_L2) / len(proj_r)
-
-        # Bbox area and border margin for each camera
-        def _bbox_metrics(pts: np.ndarray) -> tuple[float, float]:
-            p = pts.reshape(-1, 2)
-            x0, y0 = p.min(axis=0)
-            x1, y1 = p.max(axis=0)
-            area = max(1.0, x1 - x0) * max(1.0, y1 - y0) / img_area
-            margin = min(x0, y0, w_img - x1, h_img - y1) / min_dim
-            return area, margin
-
-        area_l, margin_l = _bbox_metrics(img_points_l[i])
-        area_r, margin_r = _bbox_metrics(img_points_r[i])
-
-        # L/R area ratio (detect asymmetry)
-        lr_ratio = min(area_l, area_r) / max(area_l, area_r, 1e-9)
-
-        # Hard filters (relaxed for 160° fisheye)
-        reject_reason = None
-        if err_l > 2.0 or err_r > 2.0:
-            reject_reason = "reproj"
-        elif area_l < 0.01 or area_r < 0.01:
-            reject_reason = "area"
-        elif margin_l < 0.005 or margin_r < 0.005:
-            reject_reason = "margin"
-        elif lr_ratio < 0.6:
-            reject_reason = "lr_ratio"
-        if reject_reason:
-            scores.append((i, float('inf'), reject_reason))
-            continue
-
-        # Weighted score (lower = better)
-        score = (3.0 * err_l + 3.0 * err_r
-                 + 2.0 * max(0.0, 0.03 - area_l) * 20.0
-                 + 2.0 * max(0.0, 0.03 - area_r) * 20.0
-                 + 2.5 * max(0.0, 0.04 - margin_l) * 20.0
-                 + 2.5 * max(0.0, 0.04 - margin_r) * 20.0
-                 + 2.0 * (1.0 - lr_ratio))
-        scores.append((i, score))
-
-    # Log rejection reasons
-    from collections import Counter
-    rejected = [s for s in scores if s[1] == float('inf')]
-    if rejected:
-        reasons = Counter(s[2] if len(s) > 2 else "unknown" for s in rejected)
-        logger.info("Hard filter rejections: %s (total %d/%d)",
-                    dict(reasons), len(rejected), len(scores))
-
-    # Sort by score, keep best 50% (or at least 20)
-    scores.sort(key=lambda x: x[1])
-    valid_scores = [s for s in scores if s[1] < float('inf')]
-    n_keep = max(20, len(valid_scores) // 2)
-    good = [s[0] for s in valid_scores[:n_keep]]
-
-    # If too few pass hard filters, relax
-    if len(good) < 15:
-        logger.warning("Only %d pairs pass hard filters, using best %d by score",
-                       len(valid_scores), max(15, len(scores) // 2))
-        good = [s[0] for s in valid_scores]
-        if len(good) < 15:
-            good = [s[0] for s in sorted(scores, key=lambda x: x[1])[:max(15, len(scores) // 2)]]
-
-    removed = len(obj_points) - len(good)
-    logger.info(
-        "View scoring: keeping %d/%d pairs (removed %d)",
-        len(good), len(obj_points), removed,
-    )
-    obj_points = [obj_points[i] for i in good]
-    img_points_l = [img_points_l[i] for i in good]
-    img_points_r = [img_points_r[i] for i in good]
-
-    # Re-calibrate intrinsics on the filtered set
-    if removed > 0:
-        rms_l, K_l, D_l, _ = _fisheye_calibrate_robust(
-            obj_points, img_points_l, image_size, "Left (filtered)",
-        )
-        rms_r, K_r, D_r, _ = _fisheye_calibrate_robust(
-            obj_points, img_points_r, image_size, "Right (filtered)",
-        )
-
-    # Step 4: Filter views with too few points, then truncate to uniform size.
-    # fisheye.stereoCalibrate requires uniform point counts across all views.
-    # Since points are sorted by corner ID within each view, truncating to
-    # min_pts takes the same physical corner IDs across all views.
-    min_pts_per_view = 16
-    good_pts = [i for i in range(len(obj_points))
-                if obj_points[i].shape[1] >= min_pts_per_view]
-    if len(good_pts) < 15:
-        min_pts_per_view = 12
-        good_pts = [i for i in range(len(obj_points))
-                    if obj_points[i].shape[1] >= min_pts_per_view]
-    if len(good_pts) < 15:
-        good_pts = list(range(len(obj_points)))
-        min_pts_per_view = 0
-    logger.info("Min points filter: %d/%d pairs with >= %d points",
-                len(good_pts), len(obj_points), min_pts_per_view)
-    obj_points = [obj_points[i] for i in good_pts]
-    img_points_l = [img_points_l[i] for i in good_pts]
-    img_points_r = [img_points_r[i] for i in good_pts]
-
-    # Truncate to uniform size (required by fisheye.stereoCalibrate)
-    min_pts = min(o.shape[1] for o in obj_points)
-    logger.info("Truncating %d pairs to %d points (sorted by corner ID)",
-                len(obj_points), min_pts)
-    obj_points = [o[:, :min_pts, :] for o in obj_points]
-    img_points_l = [p[:, :min_pts, :] for p in img_points_l]
-    img_points_r = [p[:, :min_pts, :] for p in img_points_r]
-
-    # Step 5: Pure fisheye stereo calibration
+    # --- Stereo calibration ---
     stereo_flags = (
-        cv2.fisheye.CALIB_FIX_INTRINSIC
-        | cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-        | cv2.fisheye.CALIB_CHECK_COND
-        | cv2.fisheye.CALIB_FIX_SKEW
+        cv2.CALIB_FIX_INTRINSIC
+        | cv2.CALIB_RATIONAL_MODEL
     )
-    retval = cv2.fisheye.stereoCalibrate(
-        obj_points, img_points_l, img_points_r,
+    rms_stereo, K_l, D_l, K_r, D_r, R, T, E, F = cv2.stereoCalibrate(
+        all_obj, all_corners_l, all_corners_r,
         K_l, D_l, K_r, D_r, image_size,
         flags=stereo_flags, criteria=criteria,
     )
-    rms_stereo = retval[0]
-    R = retval[5]
-    T = retval[6]
-    logger.info("Stereo RMS (fisheye): %.4f (%d pairs)",
-                rms_stereo, len(obj_points))
+    logger.info("Stereo RMS: %.4f (%d pairs)", rms_stereo, valid_pairs)
 
-    # Step 6: Fisheye stereo rectification
-    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
+    # --- Rectification ---
+    R1, R2, P1, P2, Q, roi_l, roi_r = cv2.stereoRectify(
         K_l, D_l, K_r, D_r, image_size, R, T,
         flags=cv2.CALIB_ZERO_DISPARITY,
-        balance=0.0,
+        alpha=0,
     )
 
-    # Rectification maps: compose fisheye undistortion + rectification
-    map_l_x, map_l_y = cv2.fisheye.initUndistortRectifyMap(
-        K_l, D_l, R1, P1, image_size, cv2.CV_32FC1
+    map_l_x, map_l_y = cv2.initUndistortRectifyMap(
+        K_l, D_l, R1, P1, image_size, cv2.CV_32FC1,
     )
-    map_r_x, map_r_y = cv2.fisheye.initUndistortRectifyMap(
-        K_r, D_r, R2, P2, image_size, cv2.CV_32FC1
+    map_r_x, map_r_y = cv2.initUndistortRectifyMap(
+        K_r, D_r, R2, P2, image_size, cv2.CV_32FC1,
     )
+
+    logger.info("Focal: fx=%.1f fy=%.1f | Baseline: %.1f mm",
+                K_l[0, 0], K_l[1, 1], abs(T[0, 0]))
 
     return {
         "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
         "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
-        "R": R, "T": T,
+        "R": R, "T": T, "E": E, "F": F,
         "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
         "map_l_x": map_l_x, "map_l_y": map_l_y,
         "map_r_x": map_r_x, "map_r_y": map_r_y,
+        "image_size": np.array(list(image_size)),
+        "crop_ratio": np.array([crop_ratio]),
     }
-
-
-
-def _build_object_points(
-    all_ids: list[np.ndarray],
-    board: cv2.aruco.CharucoBoard,
-) -> list[np.ndarray]:
-    """Build 3D object points for each image from detected corner IDs.
-
-    Each ChArUco corner has a known 3D position on the board plane (Z=0).
-    """
-    board_corners = board.getChessboardCorners()  # (N, 3) float32
-
-    obj_points = []
-    for ids in all_ids:
-        pts = board_corners[ids.flatten()]
-        obj_points.append(pts.astype(np.float32))
-
-    return obj_points
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +296,9 @@ def rectify_pair(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply rectification maps to a stereo image pair.
 
+    If calibration includes a crop_ratio < 1.0, images are center-cropped
+    first to match the calibration image size.
+
     Args:
         img_l: Left image (BGR or grayscale).
         img_r: Right image (BGR or grayscale).
@@ -625,6 +307,11 @@ def rectify_pair(
     Returns:
         (rectified_left, rectified_right).
     """
+    crop_ratio = float(calibration.get("crop_ratio", [1.0])[0])
+    if crop_ratio < 1.0:
+        img_l = _crop_center(img_l, crop_ratio)
+        img_r = _crop_center(img_r, crop_ratio)
+
     rect_l = cv2.remap(
         img_l,
         calibration["map_l_x"],

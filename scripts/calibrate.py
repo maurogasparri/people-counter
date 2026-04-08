@@ -402,6 +402,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             board_size=(args.columns, args.rows),
             square_length=args.square_length,
             marker_length=args.marker_length,
+            crop_ratio=args.crop_ratio,
         )
     except ValueError as e:
         logger.error("Calibration failed: %s", e)
@@ -497,6 +498,8 @@ def main() -> None:
     p_cal.add_argument("--rows", type=int, default=5)
     p_cal.add_argument("--square-length", type=float, default=35.0)
     p_cal.add_argument("--marker-length", type=float, default=26.0)
+    p_cal.add_argument("--crop-ratio", type=float, default=0.6,
+                        help="Center crop ratio (0.6=60%% center). Use 1.0 for no crop.")
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---
