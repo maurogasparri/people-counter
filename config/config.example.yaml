@@ -30,21 +30,13 @@ vision:
   calibration_file: "/etc/people-counter/calibration.npz"  # ChArUco stereo cal output
   mounting_height_m: 3.5          # Ceiling height in meters (FC equivalent: Ceiling Height)
   counting_line_y: 0.5            # Virtual line position (0.0=top, 1.0=bottom)
-
-# --- LOCAL: SGBM depth parameters (tuned per installation) ---
-sgbm:
-  num_disparities: 64             # Must be divisible by 16
+  # SGBM depth parameters (tuned per installation)
+  num_disparities: 128            # Must be divisible by 16. Covers ~1.5-6m range.
   block_size: 9                   # Odd number, typically 5-15
-  p1: 216                         # 8 * channels * blockSize^2
-  p2: 864                         # 32 * channels * blockSize^2
-  disp12_max_diff: 1
-  uniqueness_ratio: 10
-  speckle_window_size: 100
-  speckle_range: 2
 
 # --- LOCAL: Detection model (compiled for Hailo-8L, won't change remotely) ---
 detection:
-  model_path: "/opt/hailo/models/yolov8n.hef"  # HEF compiled for Hailo-8L 13T
+  model_path: "/usr/src/people-counter/models/yolov8n.hef"  # HEF compiled for Hailo-8L 13T
   confidence_threshold: 0.5       # Person detection confidence (FC: Detection Sensitivity 0.8)
   nms_threshold: 0.45             # Non-maximum suppression IoU threshold
 
