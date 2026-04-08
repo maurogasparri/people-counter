@@ -268,10 +268,10 @@ def _fisheye_calibrate_robust(
 
     indices = list(range(len(obj_points)))
 
-    # K_init for 170°+ fisheye: f ≈ w/5 (empirically close to actual f
-    # for OV5647 170° on 2592×1944; equidistant model overestimates f).
+    # K_init for fisheye: overestimate f so InitExtrinsics can compute
+    # a valid homography. The optimizer will refine downward.
     w, h = image_size
-    f_init = w / 5.0
+    f_init = (w / 2) / (80 * np.pi / 180)  # ~928 for 2592 wide
     K_init = np.array([
         [f_init, 0, w / 2.0],
         [0, f_init, h / 2.0],
@@ -354,11 +354,15 @@ def _calibrate_fisheye(
     img_points_l = [img_points_l[i] for i in keep]
     img_points_r = [img_points_r[i] for i in keep]
 
+    # Final pass also without CHECK_COND — solvePnP scoring handles quality.
+    # CHECK_COND was removing too many pairs on 170° fisheye.
     rms_l, K_l, D_l, keep2_l = _fisheye_calibrate_robust(
         obj_points, img_points_l, image_size, "Left (final)",
+        check_cond=False,
     )
     rms_r, K_r, D_r, keep2_r = _fisheye_calibrate_robust(
         obj_points, img_points_r, image_size, "Right (final)",
+        check_cond=False,
     )
 
     # Intersect again after re-calibration
