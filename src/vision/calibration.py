@@ -259,7 +259,7 @@ def _fisheye_calibrate_robust(
     """
     import re
 
-    flags = cv2.fisheye.CALIB_FIX_SKEW
+    flags = cv2.fisheye.CALIB_FIX_SKEW | cv2.fisheye.CALIB_USE_INTRINSIC_GUESS
     if recompute_extrinsic:
         flags |= cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
     if check_cond:
@@ -268,11 +268,21 @@ def _fisheye_calibrate_robust(
 
     indices = list(range(len(obj_points)))
 
+    # K_init for 170°+ fisheye: f ≈ w/5 (empirically close to actual f
+    # for OV5647 170° on 2592×1944; equidistant model overestimates f).
+    w, h = image_size
+    f_init = w / 5.0
+    K_init = np.array([
+        [f_init, 0, w / 2.0],
+        [0, f_init, h / 2.0],
+        [0, 0, 1],
+    ], dtype=np.float64)
+
     min_pairs = 6 if not check_cond else 10
     while len(indices) >= min_pairs:
         cur_obj = [obj_points[i] for i in indices]
         cur_img = [img_points[i] for i in indices]
-        K = np.zeros((3, 3))
+        K = K_init.copy()
         D = np.zeros((4, 1))
         try:
             rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
