@@ -47,8 +47,8 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 ## Key Technical Decisions
 
 ### Vision Pipeline
-- **Stereo calibration**: ChArUco pattern (A4, calib.io 5x7 DICT_5X5 35mm/26mm), OpenCV `cv2.fisheye` module (calibrate + stereoCalibrate + stereoRectify). Store intrinsics/extrinsics as `.npz` per device. Calibrate at 0.5-1.5m, works at any mounting distance.
-- **Rectification**: Precomputed maps via `cv2.fisheye.initUndistortRectifyMap`. Applied per frame pair.
+- **Stereo calibration**: ChArUco pattern (A4, calib.io 5x7 DICT_5X5), `--mode pinhole` (default, center-crop + `cv2.calibrateCamera` with CALIB_RATIONAL_MODEL) or `--mode fisheye` (full FOV, `cv2.fisheye`). Board params (columns, rows, square-length, marker-length) required on all CLI subcommands. Store intrinsics/extrinsics as `.npz` per device. Calibrate at 0.5-1.5m.
+- **Rectification**: Precomputed maps via `cv2.initUndistortRectifyMap` (pinhole) or `cv2.fisheye.initUndistortRectifyMap` (fisheye). Applied per frame pair. Pinhole mode auto-crops frames by stored crop_ratio before rectification.
 - **Depth**: Semi-Global Block Matching (`cv2.StereoSGBM`) on rectified pair + right matcher + WLS filter (`cv2.ximgproc.DisparityWLSFilter`).
 - **Detection**: YOLOv8n compiled to HEF via Hailo Model Zoo. Run on Hailo-8L at 30+ FPS. Use `hailo_platform` Python SDK.
 - **Tracking**: Euclidean distance tracker in 3D space (x, y, depth). Unique ID per trajectory.
@@ -122,7 +122,11 @@ people-counter/
 ├── tests/                 ← 180 tests across all modules
 ├── scripts/
 │   ├── calibrate.py       ← CLI calibration tool (4 subcommands, headless)
-│   └── provision.py       ← device provisioning (create/deploy/list)
+│   ├── focus_assist.py    ← live focus scoring with HTTP preview
+│   ├── diagnose_depth.py  ← depth estimation diagnostic
+│   ├── provision.py       ← device provisioning (create/deploy/list)
+│   ├── verify_hardware.py ← hardware verification
+│   └── setup_device.sh    ← automated device setup (steps 4-9)
 ├── calibration/
 │   └── charuco_board.pdf  ← reference ChArUco pattern (calib.io 5x7 DICT_5X5)
 ├── infra/
@@ -140,7 +144,7 @@ people-counter/
 | Sprint | Focus | Deliverable | Status |
 |--------|-------|------------|--------|
 | S3 | PoC | Stereo capture + YOLOv8n on RPi5. Prove it works. | **HARDWARE VALIDATED** — capture.py adapted to picamera2, stereo capture verified on RPi5 with OV5647 pair. detect.py (Hailo + OpenCV backends). |
-| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **DONE** — calibration.py (cv2.fisheye model, WLS disparity filter). Stereo RMS 0.185, baseline 142.7mm. Verified with epipolar lines. |
+| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **DONE** — calibration.py dual mode: pinhole (center crop, CALIB_RATIONAL_MODEL) + fisheye (full FOV). Board params required on CLI. Baseline 142.8mm. Depth accuracy pending good-light validation. |
 | S5 | Detection | HEF compilation. Hailo SDK integration. 30+ FPS. | **SOFTWARE READY** — detect.py with Hailo + OpenCV backends, preprocess/postprocess tested (10 tests). Hailo-8L verified (fw 4.23.0, PCIe Gen 3). HEF compilation pending. |
 | S6 | Tracking | 3D tracker. Virtual line. Ingress/egress events. | **DONE** — tracker.py + counter.py (12 tests). main.py wired E2E (17 tests). |
 | S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **HARDWARE VALIDATED** — wifi_probe.py (nexmon + airmon-ng + scapy, probes captured), ble_scan.py (bleak, 343 adverts/8 unique devices). hasher.py + dedup.py (11 tests). |

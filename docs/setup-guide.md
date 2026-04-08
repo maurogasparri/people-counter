@@ -5,7 +5,7 @@
 Desde tu PC con Windows:
 
 1. Descargar Raspberry Pi Imager: https://www.raspberrypi.com/software/
-2. Insertar la MicroSD de 64GB
+2. Insertar la MicroSD de 32GB
 3. En Imager:
    - OS: Raspberry Pi OS (64-bit) — Trixie
    - Storage: tu MicroSD
@@ -227,11 +227,18 @@ y correr el asistente de foco:
 
 ```bash
 cd /usr/src/people-counter
-PYTHONPATH=. python3 scripts/focus_assist.py --camera both
+PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
-El script muestra un puntaje de foco en tiempo real (varianza del Laplaciano).
-Girar el anillo hasta que el número sea lo más alto posible. Ctrl+C para salir.
+Abrir **http://people-counter.local:8080** para ver el preview en vivo de ambas
+cámaras lado a lado. El script muestra un puntaje de foco en tiempo real (varianza
+del Laplaciano). Girar el anillo hasta que el número sea lo más alto posible.
+
+Opciones útiles:
+- `--grid` — superpone una grilla 3×3 con puntaje de foco por celda (útil para lentes gran angular)
+- `--no-zoom` — muestra el frame completo en vez del zoom al centro
+
+Ctrl+C para salir y guardar los últimos frames.
 
 Para verificar visualmente, bajar las imágenes a la PC:
 
@@ -242,24 +249,67 @@ scp pi@people-counter.local:/tmp/focus_right.jpg .
 
 ### 12.2. Calibración estéreo
 
+Los parámetros del board ChArUco deben coincidir exactamente con el patrón impreso.
+El board de referencia (calib.io) es 7×5, checker 50mm, marker 37mm.
+
 ```bash
 cd /usr/src/people-counter
-PYTHONPATH=. python3 scripts/calibrate.py capture --count 30
+PYTHONPATH=. python3 scripts/calibrate.py capture \
+  --columns 7 --rows 5 --square-length 50 --marker-length 37 \
+  --count 30
 ```
 
 Abrir **http://people-counter.local:8080** para ver el preview en vivo con detección
-de corners y grilla de cobertura. El script captura automáticamente cada 3 segundos
+de corners y grilla de cobertura. El script captura automáticamente cada ~1.5 segundos
 cuando el board es detectado.
 
 Mover el patrón ChArUco entre capturas a distintas posiciones (centro, bordes, esquinas),
-ángulos (inclinado, rotado) y distancias (0.7-1.5m). Cubrir toda la grilla.
+ángulos (inclinado, rotado) y distancias (0.5-1.5m). Cubrir toda la grilla.
 Buena iluminación, sin reflejos directos sobre el papel. Después calibrar:
 
 ```bash
 PYTHONPATH=. python3 scripts/calibrate.py calibrate \
+  --columns 7 --rows 5 --square-length 50 --marker-length 37 \
   --input-dir ./calibration/captures \
   --output /etc/people-counter/calibration.npz
 ```
+
+El modo por defecto es `pinhole` (recorta el centro de la imagen para evitar distorsión
+de lentes gran angular). Para lentes 160-170° que requieran FOV completo, agregar
+`--mode fisheye`.
+
+## 13. Habilitar overlayfs (protección de la SD)
+
+**Hacer esto como último paso**, después de que todo funcione (calibración verificada,
+servicios corriendo, config definitiva). Una vez activo, la partición root queda
+read-only y los cambios fuera de los paths permitidos se pierden al reiniciar.
+
+```bash
+# Crear los paths read-write antes de activar
+sudo mkdir -p /var/lib/people-counter /var/log/people-counter /tmp
+
+# Activar overlay filesystem
+sudo raspi-config nonint do_overlayroot 0
+```
+
+Esto monta `/` como read-only con una capa de escritura en RAM. Los directorios
+que necesitan persistir entre reinicios ya están en paths separados:
+
+- `/var/lib/people-counter/` — SQLite buffer, dedup DB
+- `/var/log/people-counter/` — logs (rotados, 7 días)
+- `/etc/people-counter/` — config y certificados
+- `/tmp/` — capturas temporales
+
+> **Para desactivar** (ej: actualizar software o reconfigurar):
+> ```bash
+> sudo raspi-config nonint do_overlayroot 1
+> sudo reboot
+> # ... hacer cambios ...
+> sudo raspi-config nonint do_overlayroot 0
+> sudo reboot
+> ```
+
+> **Nota**: `raspi-config` versión GUI también lo ofrece en Performance → Overlay File System.
 
 ## Troubleshooting
 

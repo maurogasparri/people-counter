@@ -52,6 +52,8 @@ systemctl start watchdog
 info "  Configuring config.txt (GPU, RTC, PCIe Gen 3)"
 CONFIG_TXT="/boot/firmware/config.txt"
 grep -q "gpu_mem=16" "$CONFIG_TXT" || echo "gpu_mem=16" >> "$CONFIG_TXT"
+# RTC charging: only for rechargeable ML2032 batteries.
+# If using non-rechargeable CR2032, comment out or remove this line after setup.
 grep -q "dtparam=rtc_bbat_vchg" "$CONFIG_TXT" || echo "dtparam=rtc_bbat_vchg=3000000" >> "$CONFIG_TXT"
 grep -q "dtparam=pciex1_gen=3" "$CONFIG_TXT" || echo "dtparam=pciex1_gen=3" >> "$CONFIG_TXT"
 
@@ -133,7 +135,11 @@ info ""
 info "After reboot:"
 info "  1. Edit /etc/people-counter/config.yaml with device-specific settings"
 info "  2. Run: sudo PYTHONPATH=$REPO_DIR python3 $REPO_DIR/scripts/verify_hardware.py"
-info "  3. Calibrate: PYTHONPATH=$REPO_DIR python3 $REPO_DIR/scripts/calibrate.py capture --count 30"
+info "  3. Focus: PYTHONPATH=. python3 scripts/focus_assist.py --grid"
+info "  4. Calibrate: PYTHONPATH=. python3 scripts/calibrate.py capture \\"
+info "       --columns 7 --rows 5 --square-length 50 --marker-length 37 --count 30"
+info ""
+info "Optional: force Ethernet to 100 Mbps if auto-negotiation fails (see setup-guide.md step 4)"
 info ""
 read -p "Reboot now? [y/N] " -n 1 -r
 echo

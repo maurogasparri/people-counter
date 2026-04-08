@@ -23,7 +23,7 @@ Each unit costs ~USD 416 and consists of:
 | Hailo-8L | 13 TOPS, M.2 via PoE HAT+ | Neural inference |
 | 2× OV5647 | 160° fisheye, CSI, 14cm baseline | Stereo pair |
 | PoE HAT+ | Waveshare, 30W | Power + network |
-| MicroSD | 32GB, overlayfs | Boot + storage |
+| MicroSD | 32GB | Boot + storage |
 
 ## Architecture
 
@@ -47,12 +47,12 @@ Edge Device (per store door)          AWS Cloud
 | Hardware | ✅ Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2× OV5647 |
 | Stereo capture | ✅ Validated | picamera2 on RPi5, both cameras working |
 | Detection | ✅ Validated | YOLOv8n HEF on Hailo-8L, person detected with depth estimation |
-| Calibration | ✅ Validated | Stereo RMS 0.48, baseline 137.8mm, epipolar lines verified |
+| Calibration | ✅ Validated | Pinhole + fisheye modes, baseline 142.8mm, epipolar lines verified |
 | WiFi probe | ✅ Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
 | BLE scan | ✅ Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |
 | Cloud infra | ✅ CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
 | Deployment | ✅ Ready | provision.py, systemd services (pipeline + wifi-monitor + daily reset), logrotate |
-| Setup guide | ✅ Complete | 16-step guide from MicroSD to calibration (docs/setup-guide.md) |
+| Setup guide | ✅ Complete | 13-step guide from MicroSD to overlayfs (docs/setup-guide.md) |
 | TFG document | ✅ 90+ pages | 27 references, 13 tables, 6 figures |
 
 ## Quick start
@@ -86,9 +86,13 @@ src/
 └── main.py          # Pipeline orchestrator (17 tests)
 tests/               # 180 tests mirroring src/ structure
 scripts/
-├── calibrate.py     # CLI: generate-board, capture (headless), calibrate, verify
-├── provision.py     # Device provisioning: create, deploy, list
-└── download_model.py # Download YOLOv8n HEF/ONNX
+├── calibrate.py      # CLI: generate-board, capture (headless), calibrate, verify
+├── focus_assist.py   # Live focus scoring with HTTP preview
+├── diagnose_depth.py # Depth estimation diagnostic tool
+├── provision.py      # Device provisioning: create, deploy, list
+├── download_model.py # Download YOLOv8n HEF/ONNX
+├── verify_hardware.py # Hardware verification script
+└── setup_device.sh   # Automated device setup (steps 4-9)
 config/
 ├── config.example.yaml       # Annotated config with strategy docs
 ├── people-counter.service    # systemd service (auto-restart, hardening)
@@ -97,7 +101,7 @@ config/
 infra/
 └── cloudformation/people-counter.yaml  # Full AWS stack
 docs/
-└── setup-guide.md            # Hardware assembly + RPi setup (14 steps)
+└── setup-guide.md            # Hardware assembly + RPi setup (13 steps)
 ```
 
 ## Key references

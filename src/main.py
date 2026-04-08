@@ -171,7 +171,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # --- Build SGBM ---
     sgbm = create_sgbm(
         num_disparities=vision_cfg.get("num_disparities", 128),
-        block_size=vision_cfg.get("block_size", 5),
+        block_size=vision_cfg.get("block_size", 9),
     )
 
     # --- Build tracker + counter ---
