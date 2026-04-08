@@ -162,6 +162,12 @@ people-counter/
 - 🔧 INFRA READY: CloudFormation template, systemd service, provision.py, logrotate, daily reset timer
 - ⏳ PENDING: OV5647 160° with IR filter (current NoIR cameras affect depth), cenital detection test, SGBM tuning
 
+## Known Limitations (MVP)
+
+- **Tracker**: Greedy matching by 2D pixel distance + depth gating. No histéresis, no multi-state (approaching/crossed/invalidated), no reidentification. Sufficient for single-door ceiling-mount, needs work for wide entrances with occlusion.
+- **Shadow config**: Local cache bootstrap from `.shadow.json` file. No live delta subscription yet — planned post-MVP.
+- **Operating hours fail-open**: If schedule format is invalid, counting continues (prefers false positives over lost data). Configurable fail-closed planned for production.
+
 ## Hard Rules
 
 - **No video/image transmission.** Only metadata.

@@ -22,11 +22,23 @@ class Track:
 
 
 class EuclideanTracker:
-    """Assigns detections to tracks using 3D Euclidean distance."""
+    """Assigns detections to tracks using 2D Euclidean distance + depth gating.
 
-    def __init__(self, max_disappeared: int = 30, max_distance: float = 50.0) -> None:
+    Positions are expected as [cx, cy, z] where cx/cy are in pixels and z is
+    depth in mm.  Matching uses only the 2D pixel coordinates (cx, cy) because
+    pixel and depth units are not comparable.  An optional depth gate rejects
+    associations where the depth difference exceeds ``max_depth_delta`` mm.
+    """
+
+    def __init__(
+        self,
+        max_disappeared: int = 30,
+        max_distance: float = 50.0,
+        max_depth_delta: float = 500.0,
+    ) -> None:
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
+        self.max_depth_delta = max_depth_delta
         self._next_id = 0
         self._tracks: OrderedDict[int, Track] = OrderedDict()
 
@@ -67,9 +79,18 @@ class EuclideanTracker:
         track_centroids = np.array([self._tracks[t].last_position for t in track_ids])
         det_array = np.array(detections)
 
+        # 2D distance (cx, cy only) — avoids mixing pixel and depth units
         distances = np.linalg.norm(
-            track_centroids[:, np.newaxis] - det_array[np.newaxis, :], axis=2
+            track_centroids[:, np.newaxis, :2] - det_array[np.newaxis, :, :2], axis=2
         )
+
+        # Depth delta for gating (z component, index 2)
+        if track_centroids.shape[1] > 2 and det_array.shape[1] > 2:
+            depth_deltas = np.abs(
+                track_centroids[:, np.newaxis, 2] - det_array[np.newaxis, :, 2]
+            )
+        else:
+            depth_deltas = np.zeros_like(distances)
 
         used_dets: set[int] = set()
         matched_tracks: set[int] = set()
@@ -81,6 +102,9 @@ class EuclideanTracker:
                 continue
             if distances[t_idx, d_idx] > self.max_distance:
                 break
+            # Reject if depth difference is too large
+            if depth_deltas[t_idx, d_idx] > self.max_depth_delta:
+                continue
             tid = track_ids[t_idx]
             self._tracks[tid].positions.append(detections[d_idx].copy())
             self._tracks[tid].disappeared = 0

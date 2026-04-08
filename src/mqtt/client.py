@@ -71,6 +71,8 @@ class MQTTClient:
         self._stop_event = threading.Event()
         self._replay_lock = threading.Lock()
         self._reconnect_delay = RECONNECT_MIN_DELAY
+        self._pending_acks: dict[int, int] = {}  # mqtt_mid -> buffer_msg_id
+        self._pending_lock = threading.Lock()
 
         # Validate certificate files exist
         for name, path in [
@@ -230,15 +232,15 @@ class MQTTClient:
         payload: dict[str, Any],
         qos: int,
     ) -> None:
-        """Send a single buffered message and mark as sent on success."""
+        """Send a single buffered message. Marked as sent only on PUBACK."""
         try:
             result = self._client.publish(
                 topic, json.dumps(payload), qos=qos
             )
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                # For QoS 1, mark sent after publish succeeds
-                # (paho handles PUBACK internally in loop)
-                self.buffer.mark_sent(msg_id)
+                # Track mid -> buffer_msg_id; mark_sent happens in _on_publish
+                with self._pending_lock:
+                    self._pending_acks[result.mid] = msg_id
             else:
                 logger.warning(
                     "MQTT publish failed: rc=%d, msg_id=%d",
@@ -295,7 +297,13 @@ class MQTTClient:
         properties: Any = None,
     ) -> None:
         """Called on successful publish (PUBACK for QoS 1)."""
-        logger.debug("MQTT PUBACK received: mid=%d", mid)
+        with self._pending_lock:
+            buf_id = self._pending_acks.pop(mid, None)
+        if buf_id is not None:
+            self.buffer.mark_sent(buf_id)
+            logger.debug("MQTT PUBACK received: mid=%d, buffer_id=%d", mid, buf_id)
+        else:
+            logger.debug("MQTT PUBACK received: mid=%d (no pending buffer entry)", mid)
 
     def _reconnect_with_backoff(self) -> None:
         """Attempt reconnection with exponential backoff."""
