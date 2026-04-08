@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.vision.calibration import (
     calibrate_stereo,
+    calibrate_stereo_fisheye,
     create_charuco_board,
     detect_charuco_corners,
     generate_board_image,
@@ -397,13 +398,21 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     logger.info("Loaded %d image pairs from %s", len(pairs), input_dir)
 
     try:
-        result = calibrate_stereo(
-            pairs,
-            board_size=(args.columns, args.rows),
-            square_length=args.square_length,
-            marker_length=args.marker_length,
-            crop_ratio=args.crop_ratio,
-        )
+        if args.mode == "fisheye":
+            result = calibrate_stereo_fisheye(
+                pairs,
+                board_size=(args.columns, args.rows),
+                square_length=args.square_length,
+                marker_length=args.marker_length,
+            )
+        else:
+            result = calibrate_stereo(
+                pairs,
+                board_size=(args.columns, args.rows),
+                square_length=args.square_length,
+                marker_length=args.marker_length,
+                crop_ratio=args.crop_ratio,
+            )
     except ValueError as e:
         logger.error("Calibration failed: %s", e)
         sys.exit(1)
@@ -461,10 +470,10 @@ def main() -> None:
     # --- generate-board ---
     p_board = sub.add_parser("generate-board", help="Generate printable ChArUco board")
     p_board.add_argument("--output", default="charuco_board.png")
-    p_board.add_argument("--columns", type=int, default=7)
-    p_board.add_argument("--rows", type=int, default=5)
-    p_board.add_argument("--square-length", type=float, default=35.0)
-    p_board.add_argument("--marker-length", type=float, default=26.0)
+    p_board.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
+    p_board.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
+    p_board.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
+    p_board.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
     p_board.add_argument("--width", type=int, default=2480, help="Image width (px)")
     p_board.add_argument("--height", type=int, default=3508, help="Image height (px)")
     p_board.set_defaults(func=cmd_generate_board)
@@ -482,10 +491,10 @@ def main() -> None:
     p_cap.add_argument("--cooldown", type=float, default=1.5,
                         help="Seconds to wait after each capture before next one")
     p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
-    p_cap.add_argument("--columns", type=int, default=7)
-    p_cap.add_argument("--rows", type=int, default=5)
-    p_cap.add_argument("--square-length", type=float, default=35.0)
-    p_cap.add_argument("--marker-length", type=float, default=26.0)
+    p_cap.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
+    p_cap.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
+    p_cap.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
+    p_cap.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
     p_cap.add_argument("--grid", choices=["rectangular", "circular", "170"], default="rectangular",
                         help="Coverage grid: rectangular (4x5), circular (6x6), 170 (6x6 weighted for 170° fisheye)")
     p_cap.set_defaults(func=cmd_capture)
@@ -494,12 +503,14 @@ def main() -> None:
     p_cal = sub.add_parser("calibrate", help="Run stereo calibration")
     p_cal.add_argument("--input-dir", required=True, help="Dir with left_/right_ images")
     p_cal.add_argument("--output", default="calibration.npz")
-    p_cal.add_argument("--columns", type=int, default=7)
-    p_cal.add_argument("--rows", type=int, default=5)
-    p_cal.add_argument("--square-length", type=float, default=35.0)
-    p_cal.add_argument("--marker-length", type=float, default=26.0)
+    p_cal.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
+    p_cal.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
+    p_cal.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
+    p_cal.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
     p_cal.add_argument("--crop-ratio", type=float, default=0.6,
-                        help="Center crop ratio (0.6=60%% center). Use 1.0 for no crop.")
+                        help="Center crop ratio for pinhole mode (0.6=60%%). Ignored in fisheye mode.")
+    p_cal.add_argument("--mode", choices=["pinhole", "fisheye"], default="pinhole",
+                        help="Calibration model: pinhole (center crop, robust) or fisheye (full FOV)")
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---
