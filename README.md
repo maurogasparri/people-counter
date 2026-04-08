@@ -37,6 +37,20 @@ Edge Device (per store door)          AWS Cloud
 └──────────────────────────┘         └─────────────────────────┘
 ```
 
+### Edge processes
+
+The device runs three independent systemd services:
+
+| Service | Process | What it does |
+|---------|---------|-------------|
+| `people-counter.service` | `src/main.py` | Vision pipeline: capture → rectify → depth → detect → track → count → MQTT |
+| `wifi-monitor.service` | `airmon-ng` | Puts WiFi into monitor mode for probe request capture |
+| `people-counter-reset.timer` | Daily at 04:00 | Resets dedup counters and counting totals for the new business day |
+
+WiFi/BLE probing runs as a separate service because it requires exclusive WiFi hardware access (monitor mode). Vision and WiFi never contend for resources. Both publish independently to MQTT, and L3 dedup across cameras happens in the cloud (Lambda).
+
+Cloud config uses a **local shadow cache** strategy: on boot, `main.py` reads a `.shadow.json` file if present (updated by a background process or on previous boot). Live delta subscription via AWS IoT Shadow is planned post-MVP.
+
 ## Project status
 
 | Area | Status | Details |
@@ -63,6 +77,17 @@ cd people-counter
 pip install -e ".[dev]"
 pytest
 ```
+
+### Dependencies
+
+| Package | Install via | Notes |
+|---------|------------|-------|
+| opencv-contrib-python, numpy, paho-mqtt, pyyaml, scapy, bleak | `pip install -e ".[dev]"` | Cross-platform, works on dev machines |
+| picamera2, libcamera | `apt` (python3-picamera2) | RPi only, provided by RPi OS Trixie |
+| hailo_platform | `apt` (hailo-all) | RPi only, requires Hailo-8L + PCIe |
+| aircrack-ng, nexmon | `apt` + `.deb` packages | RPi only, WiFi monitor mode |
+
+On development machines (Windows/Mac/Linux), `pip install -e ".[dev]"` is sufficient to run tests. RPi system packages are only needed on the target device — see [docs/setup-guide.md](docs/setup-guide.md) for full installation.
 
 ## Configuration
 

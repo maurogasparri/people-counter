@@ -23,7 +23,6 @@ import numpy as np
 from src.config.loader import (
     get_scaling_factor,
     is_counting_enabled,
-    is_wifi_ble_enabled,
     is_within_operating_hours,
     load_config,
     merge_cloud_config,
@@ -90,11 +89,12 @@ def build_mqtt(config: dict[str, Any]) -> tuple[MQTTClient, MessageBuffer]:
 
     mqtt_cfg = config["mqtt"]
     store_id = config["device"]["store_id"]
+    device_id = config["device"]["id"]
 
     # Expand topic templates
     topics = {}
     for key, template in mqtt_cfg.get("topics", {}).items():
-        topics[key] = template.replace("{store_id}", store_id)
+        topics[key] = template.replace("{store_id}", store_id).replace("{device_id}", device_id)
 
     client = MQTTClient(
         device_id=config["device"]["id"],
@@ -220,7 +220,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     frame_count = 0
     fps_start = time.time()
+    telem_frame_count = 0
+    telem_fps_start = time.time()
     last_hours_check = 0.0
+    last_purge = time.time()
     within_hours = True  # assume open until first check
 
     try:
@@ -326,6 +329,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
             # --- FPS tracking ---
             frame_count += 1
+            telem_frame_count += 1
             elapsed = time.time() - fps_start
             if elapsed >= 10.0:
                 fps = frame_count / elapsed
@@ -342,15 +346,20 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # --- Telemetry ---
             now = time.time()
             if now - last_telem >= telem_interval:
+                telem_elapsed = now - telem_fps_start
                 telem = get_telemetry()
-                telem["fps"] = frame_count / max(elapsed, 1)
+                telem["fps"] = telem_frame_count / max(telem_elapsed, 1)
                 telem["total_in"] = counter.total_in
                 telem["total_out"] = counter.total_out
                 mqtt_client.publish_event("telemetry", telem)
                 last_telem = now
+                telem_frame_count = 0
+                telem_fps_start = now
 
-            # --- Buffer maintenance ---
-            buffer.purge_old()
+            # --- Buffer maintenance (every 60s, not every frame) ---
+            if now - last_purge >= 60.0:
+                buffer.purge_old()
+                last_purge = now
 
     finally:
         capture.close()
