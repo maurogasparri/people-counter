@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.vision.calibration import (
     calibrate_stereo,
+    calibrate_stereo_fisheye,
     create_charuco_board,
     detect_charuco_corners,
     generate_board_image,
@@ -108,6 +109,20 @@ GRID_CIRCULAR = np.array([
     [0, 0, 1, 1, 0, 0],
 ], dtype=np.int32)
 
+# Weighted grid for 170° fisheye: values = captures per cell.
+# Center (3): most captures — stable intrinsics.
+# Mid ring (2): key for distortion estimation.
+# Edge (1): adds barrel info without detection issues.
+# Corners (0): too distorted, skip.
+GRID_170 = np.array([
+    [0, 0, 2, 2, 0, 0],
+    [0, 2, 4, 4, 2, 0],
+    [0, 2, 6, 6, 2, 0],
+    [0, 2, 6, 6, 2, 0],
+    [0, 2, 4, 4, 2, 0],
+    [0, 0, 2, 2, 0, 0],
+], dtype=np.int32)
+
 
 def _compute_coverage_center(
     corners: np.ndarray, w: int, h: int, grid_mask: np.ndarray,
@@ -125,6 +140,7 @@ def _compute_coverage_center(
 
 def _draw_coverage(
     frame: np.ndarray, coverage: np.ndarray, grid_mask: np.ndarray,
+    cell_target: np.ndarray | None = None,
 ) -> None:
     """Draw coverage grid overlay on frame."""
     h, w = frame.shape[:2]
@@ -142,12 +158,16 @@ def _draw_coverage(
                 dark = np.full_like(overlay, (0, 0, 0))
                 cv2.addWeighted(dark, 0.5, overlay, 0.5, 0, frame[y1:y2, x1:x2])
                 continue
+            target = cell_target[r, c] if cell_target is not None else 0
+            is_full = target > 0 and coverage[r, c] >= target
             if coverage[r, c] > 0:
                 overlay = frame[y1:y2, x1:x2].copy()
-                green = np.full_like(overlay, (0, 80, 0))
-                cv2.addWeighted(green, 0.3, overlay, 0.7, 0, frame[y1:y2, x1:x2])
-                cv2.putText(frame, str(int(coverage[r, c])),
-                            (x1 + 5, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                tint = (0, 80, 0) if is_full else (0, 60, 60)
+                cv2.addWeighted(np.full_like(overlay, tint), 0.3, overlay, 0.7, 0, frame[y1:y2, x1:x2])
+            label = f"{int(coverage[r, c])}/{target}" if target > 0 else str(int(coverage[r, c]))
+            color = (0, 255, 0) if is_full else (0, 200, 255)
+            cv2.putText(frame, label, (x1 + 5, y1 + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (100, 100, 100), 1)
 
 
@@ -197,25 +217,55 @@ def cmd_capture(args: argparse.Namespace) -> None:
     server_thread.start()
 
     # Coverage grid
-    grid_mask = GRID_CIRCULAR if args.grid == "circular" else GRID_RECTANGULAR
+    if args.grid == "170":
+        grid_mask = GRID_170
+    elif args.grid == "circular":
+        grid_mask = GRID_CIRCULAR
+    else:
+        grid_mask = GRID_RECTANGULAR
     grid_rows, grid_cols = grid_mask.shape
     coverage = np.zeros((grid_rows, grid_cols), dtype=np.int32)
 
+    # Per-cell targets: for weighted grids (170) use values directly,
+    # for binary grids use --per-cell if set, else no per-cell limit.
+    is_weighted = grid_mask.max() > 1
+    if is_weighted:
+        cell_target = grid_mask.copy()
+    elif args.per_cell > 0:
+        cell_target = grid_mask * args.per_cell
+    else:
+        cell_target = None  # no per-cell limit
+
     count = 0
     last_capture_time = 0.0
+    valid_cells = int(np.count_nonzero(grid_mask))
+    total_target = int(cell_target.sum()) if cell_target is not None else args.count
+
+    # Distance recommendation based on FOV
+    # Wider FOV → board can be closer (it still fills enough of the frame)
+    cols, rows = args.columns, args.rows
+    board_w_mm = cols * args.square_length
+    board_h_mm = rows * args.square_length
+    board_diag = f"{board_w_mm:.0f}×{board_h_mm:.0f}mm"
+    if args.grid == "170":
+        dist_range = "0.3–1.0m"
+    elif args.grid == "circular":
+        dist_range = "0.4–1.2m"
+    else:
+        dist_range = "0.5–1.5m"
 
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
-    logger.info("Grid: %s (%d×%d, %d valid cells)", args.grid, grid_rows, grid_cols, int(grid_mask.sum()))
-    logger.info("Target: %d pairs. Move the ChArUco to cover all grid cells.", args.count)
+    logger.info("Board: %s (%s). Recommended distance: %s", board_diag, f"{cols}×{rows}", dist_range)
+    logger.info("Grid: %s (%d×%d, %d active cells, %d total captures)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
+    logger.info("IMPORTANT: Tilt the board 20-30° in every capture. Never hold it flat/frontal.")
+    logger.info("Move the ChArUco to cover all grid cells. Vary angles (pitch/yaw/roll) in each cell.")
     logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
-
-    valid_cells = int(grid_mask.sum())
     try:
         while True:
-            # Stop when all cells have per_cell captures (if set), otherwise use count + coverage
-            if args.per_cell > 0:
-                if np.all(coverage[grid_mask > 0] >= args.per_cell):
+            # Stop condition
+            if cell_target is not None:
+                if np.all(coverage[grid_mask > 0] >= cell_target[grid_mask > 0]):
                     break
             elif count >= args.count and np.count_nonzero(coverage * grid_mask) >= valid_cells:
                 break
@@ -252,11 +302,11 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 detected = n_common >= 8
 
             # Draw coverage grid on left preview
-            _draw_coverage(vis_l, coverage, grid_mask)
+            _draw_coverage(vis_l, coverage, grid_mask, cell_target)
 
             # Status text
             color = (0, 255, 0) if detected else (0, 0, 255)
-            status = f"Pair {count}/{args.count} | Common: {n_common}"
+            status = f"Pair {count}/{total_target} | Common: {n_common}"
             cv2.putText(vis_l, status, (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
@@ -281,9 +331,10 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 row, col = _compute_coverage_center(
                     corners_l, frame_l.shape[1], frame_l.shape[0], grid_mask,
                 )
-                if args.per_cell > 0 and coverage[row, col] >= args.per_cell:
+                cell_max = cell_target[row, col] if cell_target is not None else 0
+                if cell_max > 0 and coverage[row, col] >= cell_max:
                     # Cell full — skip but show feedback
-                    cv2.putText(vis_r, f"Cell ({row},{col}) full ({args.per_cell}/{args.per_cell})", (10, 85),
+                    cv2.putText(vis_r, f"Cell ({row},{col}) full ({cell_max}/{cell_max})", (10, 85),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 else:
                     left_path = output_dir / f"left_{count:03d}.png"
@@ -294,16 +345,16 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     coverage[row, col] += 1
                     count += 1
                     last_capture_time = now
+                    cell_limit = cell_target[row, col] if cell_target is not None else "∞"
                     logger.info(
                         "Pair %d/%d saved — %d common corners, coverage %d%%, cell (%d,%d): %d/%s",
-                        count, args.count, n_common, coverage_pct,
-                        row, col, coverage[row, col],
-                        args.per_cell if args.per_cell > 0 else "∞",
+                        count, total_target, n_common, coverage_pct,
+                        row, col, coverage[row, col], cell_limit,
                     )
 
-            remaining = f" | Missing {valid_cells - covered_cells} cells!" if count >= args.count and covered_cells < valid_cells else ""
+            remaining = f" | Missing {valid_cells - covered_cells} cells!" if count >= total_target and covered_cells < valid_cells else ""
             print(
-                f"\r  Pairs: {count}/{args.count} | Common: {n_common:2d} | Coverage: {covered_cells}/{valid_cells}{remaining}   ",
+                f"\r  Pairs: {count}/{total_target} | Common: {n_common:2d} | Coverage: {covered_cells}/{valid_cells}{remaining}   ",
                 end="", flush=True,
             )
             time.sleep(0.2)
@@ -347,12 +398,21 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     logger.info("Loaded %d image pairs from %s", len(pairs), input_dir)
 
     try:
-        result = calibrate_stereo(
-            pairs,
-            board_size=(args.columns, args.rows),
-            square_length=args.square_length,
-            marker_length=args.marker_length,
-        )
+        if args.mode == "fisheye":
+            result = calibrate_stereo_fisheye(
+                pairs,
+                board_size=(args.columns, args.rows),
+                square_length=args.square_length,
+                marker_length=args.marker_length,
+            )
+        else:
+            result = calibrate_stereo(
+                pairs,
+                board_size=(args.columns, args.rows),
+                square_length=args.square_length,
+                marker_length=args.marker_length,
+                crop_ratio=args.crop_ratio,
+            )
     except ValueError as e:
         logger.error("Calibration failed: %s", e)
         sys.exit(1)
@@ -410,10 +470,10 @@ def main() -> None:
     # --- generate-board ---
     p_board = sub.add_parser("generate-board", help="Generate printable ChArUco board")
     p_board.add_argument("--output", default="charuco_board.png")
-    p_board.add_argument("--columns", type=int, default=7)
-    p_board.add_argument("--rows", type=int, default=5)
-    p_board.add_argument("--square-length", type=float, default=35.0)
-    p_board.add_argument("--marker-length", type=float, default=26.0)
+    p_board.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
+    p_board.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
+    p_board.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
+    p_board.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
     p_board.add_argument("--width", type=int, default=2480, help="Image width (px)")
     p_board.add_argument("--height", type=int, default=3508, help="Image height (px)")
     p_board.set_defaults(func=cmd_generate_board)
@@ -431,22 +491,26 @@ def main() -> None:
     p_cap.add_argument("--cooldown", type=float, default=1.5,
                         help="Seconds to wait after each capture before next one")
     p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
-    p_cap.add_argument("--columns", type=int, default=7)
-    p_cap.add_argument("--rows", type=int, default=5)
-    p_cap.add_argument("--square-length", type=float, default=35.0)
-    p_cap.add_argument("--marker-length", type=float, default=26.0)
-    p_cap.add_argument("--grid", choices=["rectangular", "circular"], default="rectangular",
-                        help="Coverage grid shape (circular for 170°+ barrel vignetting)")
+    p_cap.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
+    p_cap.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
+    p_cap.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
+    p_cap.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
+    p_cap.add_argument("--grid", choices=["rectangular", "circular", "170"], default="rectangular",
+                        help="Coverage grid: rectangular (4x5), circular (6x6), 170 (6x6 weighted for 170° fisheye)")
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
     p_cal = sub.add_parser("calibrate", help="Run stereo calibration")
     p_cal.add_argument("--input-dir", required=True, help="Dir with left_/right_ images")
     p_cal.add_argument("--output", default="calibration.npz")
-    p_cal.add_argument("--columns", type=int, default=7)
-    p_cal.add_argument("--rows", type=int, default=5)
-    p_cal.add_argument("--square-length", type=float, default=35.0)
-    p_cal.add_argument("--marker-length", type=float, default=26.0)
+    p_cal.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
+    p_cal.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
+    p_cal.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
+    p_cal.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
+    p_cal.add_argument("--crop-ratio", type=float, default=0.6,
+                        help="Center crop ratio for pinhole mode (0.6=60%%). Ignored in fisheye mode.")
+    p_cal.add_argument("--mode", choices=["pinhole", "fisheye"], default="pinhole",
+                        help="Calibration model: pinhole (center crop, robust) or fisheye (full FOV)")
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---

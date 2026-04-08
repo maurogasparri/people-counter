@@ -59,7 +59,29 @@ sudo bash /usr/src/people-counter/scripts/setup_device.sh
 
 O seguir el paso a paso manual a continuación.
 
-## 4. Configurar sistema (headless + config.txt)
+## 4. Forzar Ethernet a 100 Mbps Full Duplex
+
+Si el switch o inyector PoE tiene problemas de autonegociación, forzar la velocidad:
+
+```bash
+# Verificar nombre de la conexión
+nmcli connection show
+
+# Forzar 100 Mbps Full Duplex (persistente)
+sudo nmcli connection modify "Wired connection 1" \
+  802-3-ethernet.auto-negotiate no \
+  802-3-ethernet.speed 100 \
+  802-3-ethernet.duplex full
+sudo nmcli connection up "Wired connection 1"
+
+# Verificar
+ethtool eth0 | grep -E 'Speed|Duplex|Auto'
+# Speed: 100Mb/s / Duplex: Full / Auto-negotiation: off
+```
+
+> Reemplazar `"Wired connection 1"` por el nombre que muestre `nmcli connection show`.
+
+## 5. Configurar sistema (headless + config.txt)
 
 ```bash
 # Deshabilitar entorno gráfico (libera ~200MB de RAM)
@@ -88,7 +110,7 @@ Referencias:
 - RTC: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#add-a-backup-battery
 - PCIe Gen 3: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#pcie-gen-3-0
 
-## 5. Instalar Hailo
+## 6. Instalar Hailo
 
 Referencia: https://www.raspberrypi.com/documentation/computers/ai.html#update
 
@@ -97,7 +119,7 @@ sudo apt install -y hailo-all
 sudo reboot
 ```
 
-## 6. Instalar nexmon (WiFi monitor mode)
+## 7. Instalar nexmon (WiFi monitor mode)
 
 El CYW43455 integrado no soporta monitor mode por defecto. Los paquetes de nexmon
 (originalmente de Kali Linux) parchean el firmware y el driver para habilitarlo.
@@ -113,7 +135,7 @@ sudo dpkg -i brcmfmac-nexmon-dkms_6.12.2_all.deb
 sudo reboot
 ```
 
-## 7. Instalar el proyecto
+## 8. Instalar el proyecto
 
 ```bash
 # Dependencias del sistema
@@ -138,7 +160,7 @@ PYTHONPATH=. python3 scripts/download_model.py hef
 pytest -v
 ```
 
-## 8. Configurar el dispositivo
+## 9. Configurar el dispositivo
 
 ```bash
 # Crear directorios
@@ -159,7 +181,7 @@ Campos que hay que personalizar por dispositivo:
 
 Alternativamente, usar `scripts/provision.py` que genera el config automáticamente.
 
-## 9. Instalar servicios del sistema
+## 10. Instalar servicios del sistema
 
 ```bash
 # Copiar todos los servicios y configs
@@ -174,7 +196,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
 ```
 
-## 10. Verificar todo
+## 11. Verificar todo
 
 ```bash
 cd /usr/src/people-counter
@@ -193,9 +215,9 @@ rpicam-still -o /tmp/test_cam1.jpg --camera 1
 scp pi@people-counter.local:/tmp/test_cam*.jpg .
 ```
 
-## 11. Ajuste de foco y calibración estéreo
+## 12. Ajuste de foco y calibración estéreo
 
-### 11.1. Ajustar foco
+### 12.1. Ajustar foco
 
 Antes de calibrar, ajustar el foco de ambas cámaras. Las OV5647 tienen un anillo
 de foco manual que se gira con pinza de punta fina.
@@ -218,7 +240,7 @@ scp pi@people-counter.local:/tmp/focus_left.jpg .
 scp pi@people-counter.local:/tmp/focus_right.jpg .
 ```
 
-### 11.2. Calibración estéreo
+### 12.2. Calibración estéreo
 
 ```bash
 cd /usr/src/people-counter

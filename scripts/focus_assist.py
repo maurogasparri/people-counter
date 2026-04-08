@@ -32,6 +32,57 @@ def focus_score(frame: np.ndarray) -> float:
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
+def focus_grid(frame: np.ndarray, rows: int = 3, cols: int = 3) -> np.ndarray:
+    """Compute focus score for each cell in a grid.
+
+    Returns array of shape (rows, cols) with Laplacian variance per cell.
+    """
+    h, w = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    scores = np.zeros((rows, cols), dtype=np.float64)
+    for r in range(rows):
+        for c in range(cols):
+            y1, y2 = r * h // rows, (r + 1) * h // rows
+            x1, x2 = c * w // cols, (c + 1) * w // cols
+            scores[r, c] = cv2.Laplacian(gray[y1:y2, x1:x2], cv2.CV_64F).var()
+    return scores
+
+
+def draw_focus_grid(frame: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    """Overlay focus grid scores on frame with color coding."""
+    out = frame.copy()
+    rows, cols = scores.shape
+    h, w = frame.shape[:2]
+    max_score = scores.max() if scores.max() > 0 else 1.0
+
+    for r in range(rows):
+        for c in range(cols):
+            y1, y2 = r * h // rows, (r + 1) * h // rows
+            x1, x2 = c * w // cols, (c + 1) * w // cols
+
+            # Color: green (good) to red (bad) based on relative score
+            ratio = scores[r, c] / max_score
+            green = int(ratio * 255)
+            red = int((1 - ratio) * 255)
+            color = (0, green, red)
+
+            # Draw cell border
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+
+            # Draw score text
+            text = f"{scores[r, c]:.0f}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            scale = 0.5
+            thick = 2
+            (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+            tx = x1 + (x2 - x1 - tw) // 2
+            ty = y1 + (y2 - y1 + th) // 2
+            cv2.putText(out, text, (tx, ty), font, scale, (0, 0, 0), thick + 2)
+            cv2.putText(out, text, (tx, ty), font, scale, color, thick)
+
+    return out
+
+
 class MJPEGHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/":
@@ -73,6 +124,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--no-zoom", action="store_true",
                         help="Show full frame instead of zoomed center")
+    parser.add_argument("--grid", action="store_true",
+                        help="Show 3x3 focus score grid overlay")
     args = parser.parse_args()
 
     from picamera2 import Picamera2
@@ -120,6 +173,11 @@ def main() -> None:
             else:
                 preview_l = cv2.resize(frame_l[cy1:cy2, cx1:cx2], (w, h))
                 preview_r = cv2.resize(frame_r[cy1:cy2, cx1:cx2], (w, h))
+
+            if args.grid:
+                preview_l = draw_focus_grid(preview_l, focus_grid(preview_l))
+                preview_r = draw_focus_grid(preview_r, focus_grid(preview_r))
+
             cv2.putText(preview_l, f"LEFT  score:{score_l:.0f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             cv2.putText(preview_r, f"RIGHT score:{score_r:.0f}", (10, 25),
