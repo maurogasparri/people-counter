@@ -44,7 +44,7 @@ def main() -> None:
 
     rc, out = run(["uname", "-r"])
     kernel_ok = out.startswith("6.12") or out.startswith("6.13")
-    failures += not check("Kernel ≥ 6.12", kernel_ok, out)
+    failures += not check("Kernel >= 6.12", kernel_ok, out)
 
     rc, out = run(["raspi-config", "nonint", "get_boot_cli"])
     cli_boot = out.strip() == "0"
@@ -85,9 +85,9 @@ def main() -> None:
     # --- Cameras ---
     print("\n[Cameras]")
     rc, out = run(["rpicam-hello", "--list-cameras"])
-    # Count lines starting with a camera index (e.g. "0 : ov5647" or "1 : ov5647")
-    cam_count = sum(1 for line in out.splitlines() if line.strip()[:1].isdigit() and "ov5647" in line.lower())
-    failures += not check("OV5647 cameras", cam_count >= 2, f"{cam_count} found")
+    # Count lines starting with a camera index (e.g. "0 : imx708" or "1 : imx708")
+    cam_count = sum(1 for line in out.splitlines() if line.strip()[:1].isdigit() and "imx708" in line.lower())
+    failures += not check("IMX708 cameras", cam_count >= 2, f"{cam_count} found")
 
     # --- RTC Battery ---
     print("\n[RTC]")
@@ -95,7 +95,7 @@ def main() -> None:
     if rtc_paths:
         try:
             voltage = open(rtc_paths[0]).read().strip()
-            failures += not check("RTC charging", voltage == "3000000", f"{voltage} µV")
+            failures += not check("RTC charging", voltage == "3000000", f"{voltage} uV")
         except Exception:
             failures += not check("RTC charging", False, "read error")
     else:
@@ -106,7 +106,7 @@ def main() -> None:
     rc, out = run(["vcgencmd", "measure_temp"])
     if "temp=" in out:
         temp = float(out.split("=")[1].split("'")[0])
-        failures += not check("CPU temperature", temp < 70, f"{temp}°C")
+        failures += not check("CPU temperature", temp < 70, f"{temp} C")
     else:
         failures += not check("CPU temperature", False, "could not read")
 

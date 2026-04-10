@@ -1,4 +1,4 @@
-# Guía de puesta en marcha — People Counter PoC
+# Guia de puesta en marcha — People Counter PoC
 
 ## 1. Preparar la MicroSD
 
@@ -14,28 +14,28 @@ Desde tu PC con Windows:
      - Enable SSH: ✓ (password o key)
      - Set username: `pi`
      - Set password: [tu password]
-     - Configure WiFi: tu red (solo para el setup inicial, después va por cable)
+     - Configure WiFi: tu red (solo para el setup inicial, despues va por cable)
      - Locale: America/Argentina/Buenos_Aires
 4. Write y esperar
 
-## 2. Ensamblaje físico
+## 2. Ensamblaje fisico
 
 Orden recomendado:
 
 1. **Hailo-8L** → insertarlo en el slot M.2 del PoE M.2 HAT+
 2. **HAT+** → montarlo sobre la Raspberry Pi 5 (conectores GPIO + FFC)
-3. **Cámaras** → conectar los cables CSI a los puertos CAM0 y CAM1 de la Pi
-   - Cámara izquierda → CAM0
-   - Cámara derecha → CAM1
+3. **Camaras** → conectar los cables CSI a los puertos CAM0 y CAM1 de la Pi
+   - Camara izquierda → CAM0
+   - Camara derecha → CAM1
    - Orientar ambas igual (el conector flat tiene un lado con contactos expuestos)
-   - **Usar OV5647 160° con filtro IR** (NO usar "NoIR" / "night vision" — producen tinte violeta y afectan la profundidad)
+   - **Usar Arducam IMX708 120 HFOV con filtro IR** (modelo B0310)
 4. **Disipador** → montar sobre el SoC de la Pi
 5. **MicroSD** → insertar la tarjeta ya flasheada
-6. **Batería RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO).
-   Usar una batería recargable LiMnO2 como la ML2032 (no confundir con CR2032 que no es recargable).
-7. **NO conectar PoE todavía** — para el PoC usá la fuente USB-C estándar
+6. **Bateria RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO).
+   Usar una bateria recargable LiMnO2 como la ML2032 (no confundir con CR2032 que no es recargable).
+7. **NO conectar PoE todavia** — para el PoC usa la fuente USB-C estandar
 
-## 3. Primer boot y actualización
+## 3. Primer boot y actualizacion
 
 1. Conectar por Ethernet + SSH (`ssh pi@people-counter.local`), o monitor HDMI + teclado
 2. Esperar que termine el primer boot (puede tardar 2-3 min)
@@ -49,7 +49,7 @@ sudo apt update && sudo apt full-upgrade -y
 sudo reboot
 ```
 
-Los pasos 4 a 9 se pueden ejecutar automáticamente:
+Los pasos 4 a 9 se pueden ejecutar automaticamente:
 
 ```bash
 sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/people-counter
@@ -57,14 +57,14 @@ sudo chown -R pi:pi /usr/src/people-counter
 sudo bash /usr/src/people-counter/scripts/setup_device.sh
 ```
 
-O seguir el paso a paso manual a continuación.
+O seguir el paso a paso manual a continuacion.
 
 ## 4. Forzar Ethernet a 100 Mbps Full Duplex
 
-Si el switch o inyector PoE tiene problemas de autonegociación, forzar la velocidad:
+Si el switch o inyector PoE tiene problemas de autonegociacion, forzar la velocidad:
 
 ```bash
-# Verificar nombre de la conexión
+# Verificar nombre de la conexion
 nmcli connection show
 
 # Forzar 100 Mbps Full Duplex (persistente)
@@ -84,10 +84,10 @@ ethtool eth0 | grep -E 'Speed|Duplex|Auto'
 ## 5. Configurar sistema (headless + config.txt)
 
 ```bash
-# Deshabilitar entorno gráfico (libera ~200MB de RAM)
+# Deshabilitar entorno grafico (libera ~200MB de RAM)
 sudo raspi-config nonint do_boot_behaviour B1
 
-# Habilitar watchdog (reinicio automático si se cuelga)
+# Habilitar watchdog (reinicio automatico si se cuelga)
 sudo apt install -y watchdog
 sudo sed -i 's/^#watchdog-device/watchdog-device/' /etc/watchdog.conf
 sudo sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
@@ -104,7 +104,7 @@ CONF
 sudo reboot
 ```
 
-Si usás una pila no recargable (CR2032), **no agregar la línea de rtc_bbat_vchg**.
+Si usas una pila no recargable (CR2032), **no agregar la linea de rtc_bbat_vchg**.
 
 Referencias:
 - RTC: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#add-a-backup-battery
@@ -173,13 +173,13 @@ sudo nano /etc/people-counter/config.yaml
 ```
 
 Campos que hay que personalizar por dispositivo:
-- `device.id` — identificador único (ej: `store-001-cam-01`)
+- `device.id` — identificador unico (ej: `store-001-cam-01`)
 - `device.store_id` — identificador del local (ej: `store-001`)
 - `device.store_name` — nombre legible del local
 - `mqtt.endpoint` — endpoint de AWS IoT Core
-- `vision.calibration_file` — path al `.npz` de calibración (después de calibrar)
+- `vision.calibration_file` — path al `.npz` de calibracion (despues de calibrar)
 
-Alternativamente, usar `scripts/provision.py` que genera el config automáticamente.
+Alternativamente, usar `scripts/provision.py` que genera el config automaticamente.
 
 ## 10. Instalar servicios del sistema
 
@@ -203,10 +203,10 @@ cd /usr/src/people-counter
 sudo PYTHONPATH=. python3 scripts/verify_hardware.py
 ```
 
-Este script verifica: kernel, config.txt, PCIe Gen 3, Hailo, cámaras, RTC, temperatura,
+Este script verifica: kernel, config.txt, PCIe Gen 3, Hailo, camaras, RTC, temperatura,
 watchdog, nexmon, BLE, Python + dependencias, modelo HEF, config, y servicios systemd.
 
-Para verificar las cámaras visualmente (headless):
+Para verificar las camaras visualmente (headless):
 
 ```bash
 rpicam-still -o /tmp/test_cam0.jpg --camera 0
@@ -215,14 +215,14 @@ rpicam-still -o /tmp/test_cam1.jpg --camera 1
 scp pi@people-counter.local:/tmp/test_cam*.jpg .
 ```
 
-## 12. Ajuste de foco y calibración estéreo
+## 12. Ajuste de foco y calibracion estereo
 
 ### 12.1. Ajustar foco
 
-Antes de calibrar, ajustar el foco de ambas cámaras. Las OV5647 tienen un anillo
-de foco manual que se gira con pinza de punta fina.
+Antes de calibrar, ajustar el foco de ambas camaras. Las IMX708 tienen un anillo
+de foco manual M12 que se gira con pinza de punta fina.
 
-Poner un objeto con detalle (diario, patrón ChArUco) a la distancia de trabajo (~3m)
+Poner un objeto con detalle (diario, patron ChArUco) a la distancia de trabajo (~3m)
 y correr el asistente de foco:
 
 ```bash
@@ -231,26 +231,26 @@ PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
 Abrir **http://people-counter.local:8080** para ver el preview en vivo de ambas
-cámaras lado a lado. El script muestra un puntaje de foco en tiempo real (varianza
-del Laplaciano). Girar el anillo hasta que el número sea lo más alto posible.
+camaras lado a lado. El script muestra un puntaje de foco en tiempo real (varianza
+del Laplaciano). Girar el anillo hasta que el numero sea lo mas alto posible.
 
-Opciones útiles:
-- `--grid` — superpone una grilla 3×3 con puntaje de foco por celda (útil para lentes gran angular)
+Opciones utiles:
+- `--grid` — superpone una grilla 3x3 con puntaje de foco por celda
 - `--no-zoom` — muestra el frame completo en vez del zoom al centro
 
-Ctrl+C para salir y guardar los últimos frames.
+Ctrl+C para salir y guardar los ultimos frames.
 
-Para verificar visualmente, bajar las imágenes a la PC:
+Para verificar visualmente, bajar las imagenes a la PC:
 
 ```bash
 scp pi@people-counter.local:/tmp/focus_left.jpg .
 scp pi@people-counter.local:/tmp/focus_right.jpg .
 ```
 
-### 12.2. Calibración estéreo
+### 12.2. Calibracion estereo
 
-Los parámetros del board ChArUco deben coincidir exactamente con el patrón impreso.
-El board de referencia (calib.io) es 7×5, checker 50mm, marker 37mm.
+Los parametros del board ChArUco deben coincidir exactamente con el patron impreso.
+El board de referencia (calib.io) es 7x5, checker 50mm, marker 37mm.
 
 ```bash
 cd /usr/src/people-counter
@@ -259,13 +259,13 @@ PYTHONPATH=. python3 scripts/calibrate.py capture \
   --count 30
 ```
 
-Abrir **http://people-counter.local:8080** para ver el preview en vivo con detección
-de corners y grilla de cobertura. El script captura automáticamente cada ~1.5 segundos
+Abrir **http://people-counter.local:8080** para ver el preview en vivo con deteccion
+de corners y grilla de cobertura. El script captura automaticamente cada ~1.5 segundos
 cuando el board es detectado.
 
-Mover el patrón ChArUco entre capturas a distintas posiciones (centro, bordes, esquinas),
-ángulos (inclinado, rotado) y distancias (0.5-1.5m). Cubrir toda la grilla.
-Buena iluminación, sin reflejos directos sobre el papel. Después calibrar:
+Mover el patron ChArUco entre capturas a distintas posiciones (centro, bordes, esquinas),
+angulos (inclinado, rotado) y distancias (0.5-1.5m). Cubrir toda la grilla.
+Buena iluminacion, sin reflejos directos sobre el papel. Despues calibrar:
 
 ```bash
 PYTHONPATH=. python3 scripts/calibrate.py calibrate \
@@ -274,14 +274,10 @@ PYTHONPATH=. python3 scripts/calibrate.py calibrate \
   --output /etc/people-counter/calibration.npz
 ```
 
-El modo por defecto es `pinhole` (recorta el centro de la imagen para evitar distorsión
-de lentes gran angular). Para lentes 160-170° que requieran FOV completo, agregar
-`--mode fisheye`.
+## 13. Habilitar overlayfs (proteccion de la SD)
 
-## 13. Habilitar overlayfs (protección de la SD)
-
-**Hacer esto como último paso**, después de que todo funcione (calibración verificada,
-servicios corriendo, config definitiva). Una vez activo, la partición root queda
+**Hacer esto como ultimo paso**, despues de que todo funcione (calibracion verificada,
+servicios corriendo, config definitiva). Una vez activo, la particion root queda
 read-only y los cambios fuera de los paths permitidos se pierden al reiniciar.
 
 ```bash
@@ -293,10 +289,10 @@ sudo raspi-config nonint do_overlayroot 0
 ```
 
 Esto monta `/` como read-only con una capa de escritura en RAM. Los directorios
-que necesitan persistir entre reinicios ya están en paths separados:
+que necesitan persistir entre reinicios ya estan en paths separados:
 
 - `/var/lib/people-counter/` — SQLite buffer, dedup DB
-- `/var/log/people-counter/` — logs (rotados, 7 días)
+- `/var/log/people-counter/` — logs (rotados, 7 dias)
 - `/etc/people-counter/` — config y certificados
 - `/tmp/` — capturas temporales
 
@@ -309,20 +305,20 @@ que necesitan persistir entre reinicios ya están en paths separados:
 > sudo reboot
 > ```
 
-> **Nota**: `raspi-config` versión GUI también lo ofrece en Performance → Overlay File System.
+> **Nota**: `raspi-config` version GUI tambien lo ofrece en Performance → Overlay File System.
 
 ## Troubleshooting
 
-- **Cámaras no detectadas**: verificar que los cables CSI están bien
+- **Camaras no detectadas**: verificar que los cables CSI estan bien
   insertados. El conector tiene un clip que se levanta, se inserta el
   flat y se baja el clip.
-- **Hailo no detectado**: verificar que el M.2 está bien insertado en
+- **Hailo no detectado**: verificar que el M.2 esta bien insertado en
   el HAT. Correr `lspci` y buscar Hailo.
 - **Boot loop**: sacar el HAT y bootear solo con la Pi para descartar
-  problemas de alimentación. La fuente USB-C debe ser de 5V/5A.
+  problemas de alimentacion. La fuente USB-C debe ser de 5V/5A.
 - **WiFi monitor mode no funciona**: verificar con `dmesg | grep nexmon`
-  que el firmware nexmon está cargado. Si no aparece, reinstalar firmware-nexmon.
-- **picamera2 no importa**: verificar que está instalado con
+  que el firmware nexmon esta cargado. Si no aparece, reinstalar firmware-nexmon.
+- **picamera2 no importa**: verificar que esta instalado con
   `sudo apt install python3-picamera2`.
 - **"Unknown error 524" en airmon-ng**: es esperado con nexmon en RPi5,
   no afecta la captura.

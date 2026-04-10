@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focus assist tool for OV5647 cameras.
+"""Focus assist tool for Arducam IMX708 cameras.
 
 Continuously captures frames, prints a focus score (Laplacian variance),
 and serves a live preview via HTTP for headless devices.

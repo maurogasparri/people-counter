@@ -1,24 +1,28 @@
 """Disparity map computation from rectified stereo pairs.
 
 Uses Semi-Global Block Matching (SGBM) as described by Hirschmuller (2008),
-with parameters tuned for ceiling-mounted OV5647 stereo pair at ~2-4m range
-and 14cm baseline.
+with parameters tuned for ceiling-mounted Arducam IMX708 stereo pair at
+~1.3-6m range and 14cm baseline.
 
 The depth (Z) at each pixel is: Z = f * B / disparity
 where f = focal length in pixels, B = baseline in mm.
+
+Focal length estimate for IMX708 120° HFOV at full resolution:
+  f_px ≈ 4608 / (2 * tan(60°)) ≈ 1330 px
+  disparity at 3m  = 1330 * 140 / 3000 ≈ 62 px
+  disparity at 1.3m = 1330 * 140 / 1300 ≈ 143 px
 """
 
 import cv2
 import numpy as np
 
 
-# SGBM parameters for OV5647 160-170° fisheye, 14cm baseline, 2-4m range.
-# Disparity range: Z=4m → ~35px, Z=1.5m → ~95px (depends on rectified fx).
-DEFAULT_NUM_DISPARITIES = 128  # Covers ~1.5-6m range
-DEFAULT_BLOCK_SIZE = 9  # Larger block for robust matching on wide-angle images
+# SGBM parameters for Arducam IMX708 120° HFOV, 14cm baseline, 1.3-6m range.
+DEFAULT_NUM_DISPARITIES = 192  # Covers disparity range up to ~143px at 1.3m
+DEFAULT_BLOCK_SIZE = 9  # Robust matching on wide-angle images
 DEFAULT_P1_FACTOR = 12  # Smoothness penalty for ±1 disparity change
 DEFAULT_P2_FACTOR = 96  # Smoothness penalty for large discontinuities (8× P1)
-DEFAULT_DISP12_MAX_DIFF = 2  # Allow ±2px left-right mismatch (fisheye residual)
+DEFAULT_DISP12_MAX_DIFF = 2  # Allow ±2px left-right mismatch
 DEFAULT_UNIQUENESS_RATIO = 5  # Lower for IR-filter cameras with good contrast
 DEFAULT_SPECKLE_WINDOW_SIZE = 150  # Filter small noise blobs
 DEFAULT_SPECKLE_RANGE = 16  # Max disparity variation within a speckle
@@ -81,8 +85,7 @@ def _to_gray(image: np.ndarray, use_green_channel: bool = False) -> np.ndarray:
 
     Args:
         image: BGR or grayscale image.
-        use_green_channel: If True, extract green channel only (better for
-            NoIR cameras where IR contaminates red and blue channels).
+        use_green_channel: If True, extract green channel only.
     """
     if len(image.shape) != 3:
         return image
@@ -115,9 +118,8 @@ def compute_disparity(
         num_disparities: Max disparity range. Ignored if sgbm is provided.
         block_size: Block size for matching. Ignored if sgbm is provided.
         sgbm: Pre-created SGBM matcher. If None, one is created.
-        use_wls_filter: Apply WLS filter (default False — too aggressive
-            for NoIR cameras with weak edges).
-        use_green_channel: Use green channel only (for NoIR cameras).
+        use_wls_filter: Apply WLS filter for edge-preserving smoothing.
+        use_green_channel: Use green channel only.
         use_clahe: Apply CLAHE contrast enhancement before matching.
         downscale: Factor to reduce resolution before matching (1=full,
             2=half, 4=quarter). Disparity is upscaled back and values
