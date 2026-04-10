@@ -72,7 +72,12 @@ class DetectionBackend(Protocol):
 
 
 class HailoBackend:
-    """Hailo-8L inference backend using hailo_platform SDK."""
+    """Hailo-8L inference backend using hailo_platform SDK.
+
+    Uses the VStream API with persistent activation — the network group
+    and inference pipeline stay open for the lifetime of the backend,
+    avoiding per-frame setup/teardown overhead.
+    """
 
     def __init__(self, hef_path: str) -> None:
         try:
@@ -80,6 +85,7 @@ class HailoBackend:
                 HEF,
                 ConfigureParams,
                 FormatType,
+                HailoSchedulingAlgorithm,
                 HailoStreamInterface,
                 InferVStreams,
                 InputVStreamParams,
@@ -97,7 +103,13 @@ class HailoBackend:
             raise FileNotFoundError(f"HEF model not found: {hef_path}")
 
         self._hef = HEF(hef_path)
-        self._device = VDevice()
+
+        # Shared VDevice with round-robin scheduling (Hailo best practice)
+        params = VDevice.create_params()
+        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        params.group_id = "SHARED"
+        self._device = VDevice(params)
+
         self._network_group = self._device.configure(
             self._hef,
             ConfigureParams.create_from_hef(
@@ -112,8 +124,16 @@ class HailoBackend:
             self._network_group, quantized=False, format_type=FormatType.FLOAT32
         )
 
-        self._InferVStreams = InferVStreams
         self._input_name = self._hef.get_input_vstream_infos()[0].name
+
+        # Activate network group and open inference pipeline persistently
+        # instead of per-frame. Keeps the HW context warm.
+        self._activation_ctx = self._network_group.activate()
+        self._activation_ctx.__enter__()
+        self._pipeline = InferVStreams(
+            self._network_group, self._input_params, self._output_params
+        )
+        self._pipeline.__enter__()
 
         logger.info("Hailo backend loaded: %s", hef_path)
 
@@ -134,17 +154,25 @@ class HailoBackend:
             preprocessed = preprocessed.transpose(0, 2, 3, 1)
         img = (preprocessed * 255).clip(0, 255).astype(np.uint8)
 
-        with self._network_group.activate():
-            with self._InferVStreams(
-                self._network_group, self._input_params, self._output_params
-            ) as pipeline:
-                result = pipeline.infer(
-                    {self._input_name: np.ascontiguousarray(img)}
-                )
+        result = self._pipeline.infer(
+            {self._input_name: np.ascontiguousarray(img)}
+        )
 
         # Result is {name: [[class0_dets, class1_dets, ...]]}
         raw = list(result.values())[0][0]
         return raw  # list of 80 arrays
+
+    def close(self) -> None:
+        """Release Hailo resources."""
+        try:
+            self._pipeline.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            self._activation_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
+        logger.info("Hailo backend closed")
 
 
 # ---------------------------------------------------------------------------

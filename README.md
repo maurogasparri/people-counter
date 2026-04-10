@@ -2,7 +2,7 @@
 
 Low-cost people counting system for retail stores, based on stereo vision and edge AI.
 
-**TFG (Trabajo Final de Grado)** — Lic. en Administración de Infraestructura Tecnológica, Universidad Siglo 21.
+**TFG (Trabajo Final de Grado)** — Lic. en Administracion de Infraestructura Tecnologica, Universidad Siglo 21.
 
 ## What it does
 
@@ -21,7 +21,7 @@ Each unit costs ~USD 416 and consists of:
 |-----------|------|------|
 | Raspberry Pi 5 | 4GB RAM, ARM Cortex-A76 | Main SBC |
 | Hailo-8L | 13 TOPS, M.2 via PoE HAT+ | Neural inference |
-| 2× OV5647 | 160° fisheye, CSI, 14cm baseline | Stereo pair |
+| 2x Arducam IMX708 | 12MP, 120 HFOV, M12 lens, CSI, 14cm baseline | Stereo pair |
 | PoE HAT+ | Waveshare, 30W | Power + network |
 | MicroSD | 32GB | Boot + storage |
 
@@ -29,12 +29,12 @@ Each unit costs ~USD 416 and consists of:
 
 ```
 Edge Device (per store door)          AWS Cloud
-┌──────────────────────────┐         ┌─────────────────────────┐
-│ Capture → Rectify → SGBM │  MQTT   │ IoT Core → Timestream   │
-│ YOLOv8n → Track → Count  │──TLS──→│ Lambda → DynamoDB       │
-│ WiFi/BLE → Hash → Dedup  │  QoS1  │ API GW → QuickSight     │
-│ SQLite buffer (72h)      │         │ CloudWatch + S3 OTA     │
-└──────────────────────────┘         └─────────────────────────┘
++--------------------------+         +-------------------------+
+| Capture → Rectify → SGBM |  MQTT   | IoT Core → Timestream   |
+| YOLOv8n → Track → Count  |--TLS-->| Lambda → DynamoDB       |
+| WiFi/BLE → Hash → Dedup  |  QoS1  | API GW → QuickSight     |
+| SQLite buffer (72h)      |         | CloudWatch + S3 OTA     |
++--------------------------+         +-------------------------+
 ```
 
 ### Edge processes
@@ -55,19 +55,19 @@ Cloud config uses a **local shadow cache** strategy: on boot, `main.py` reads a 
 
 | Area | Status | Details |
 |------|--------|---------|
-| Source code | ✅ 22 modules | All modules implemented and validated on hardware |
-| Tests | ✅ 180/180 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
-| Config | ✅ Local + Cloud | YAML (hardware) + IoT Shadow (business) |
-| Hardware | ✅ Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2× OV5647 |
-| Stereo capture | ✅ Validated | picamera2 on RPi5, both cameras working |
-| Detection | ✅ Validated | YOLOv8n HEF on Hailo-8L, person detected with depth estimation |
-| Calibration | ✅ Validated | Pinhole + fisheye modes, baseline 142.8mm, epipolar lines verified |
-| WiFi probe | ✅ Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
-| BLE scan | ✅ Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |
-| Cloud infra | ✅ CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
-| Deployment | ✅ Ready | provision.py, systemd services (pipeline + wifi-monitor + daily reset), logrotate |
-| Setup guide | ✅ Complete | 13-step guide from MicroSD to overlayfs (docs/setup-guide.md) |
-| TFG document | ✅ 90+ pages | 27 references, 13 tables, 6 figures |
+| Source code | 22 modules | All modules implemented and validated on hardware |
+| Tests | 180/180 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
+| Config | Local + Cloud | YAML (hardware) + IoT Shadow (business) |
+| Hardware | Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 |
+| Stereo capture | Validated | picamera2 on RPi5, both cameras working |
+| Detection | Validated | YOLOv8n HEF on Hailo-8L, persistent VDevice with ROUND_ROBIN scheduling |
+| Calibration | Validated | Pinhole model (CALIB_RATIONAL_MODEL), baseline 142.8mm, epipolar lines verified |
+| WiFi probe | Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
+| BLE scan | Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |
+| Cloud infra | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
+| Deployment | Ready | provision.py, systemd services (pipeline + wifi-monitor + daily reset), logrotate |
+| Setup guide | Complete | 13-step guide from MicroSD to overlayfs (docs/setup-guide.md) |
+| TFG document | 90+ pages | 27 references, 13 tables, 6 figures |
 
 ## Quick start
 

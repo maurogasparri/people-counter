@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Side-by-side camera comparison tool.
 
-Mounts two different cameras (e.g. 160° vs 170°) and shows a realtime
-comparison via HTTP with metrics to determine viability and NoIR status.
+Mounts two cameras and shows a realtime comparison via HTTP with metrics
+to determine viability and NoIR status.
 
 Metrics per camera:
   - Sensor model and FOV label

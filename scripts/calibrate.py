@@ -4,7 +4,6 @@
 Usage:
     # Step 1: Capture image pairs (interactive, with HTTP preview)
     python scripts/calibrate.py capture --count 30
-    # Open http://people-counter.local:8080 to see live preview
 
     # Step 2: Run calibration from captured pairs
     python scripts/calibrate.py calibrate --input-dir ./calibration/captures --output calibration.npz
@@ -29,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.vision.calibration import (
     calibrate_stereo,
-    calibrate_stereo_fisheye,
     create_charuco_board,
     detect_charuco_corners,
     generate_board_image,
@@ -107,20 +105,6 @@ GRID_CIRCULAR = np.array([
     [0, 1, 1, 1, 1, 0],
     [0, 1, 1, 1, 1, 0],
     [0, 0, 1, 1, 0, 0],
-], dtype=np.int32)
-
-# Weighted grid for 170° fisheye: values = captures per cell.
-# Center (3): most captures — stable intrinsics.
-# Mid ring (2): key for distortion estimation.
-# Edge (1): adds barrel info without detection issues.
-# Corners (0): too distorted, skip.
-GRID_170 = np.array([
-    [0, 0, 2, 2, 0, 0],
-    [0, 2, 4, 4, 2, 0],
-    [0, 2, 6, 6, 2, 0],
-    [0, 2, 6, 6, 2, 0],
-    [0, 2, 4, 4, 2, 0],
-    [0, 0, 2, 2, 0, 0],
 ], dtype=np.int32)
 
 
@@ -217,21 +201,15 @@ def cmd_capture(args: argparse.Namespace) -> None:
     server_thread.start()
 
     # Coverage grid
-    if args.grid == "170":
-        grid_mask = GRID_170
-    elif args.grid == "circular":
+    if args.grid == "circular":
         grid_mask = GRID_CIRCULAR
     else:
         grid_mask = GRID_RECTANGULAR
     grid_rows, grid_cols = grid_mask.shape
     coverage = np.zeros((grid_rows, grid_cols), dtype=np.int32)
 
-    # Per-cell targets: for weighted grids (170) use values directly,
-    # for binary grids use --per-cell if set, else no per-cell limit.
-    is_weighted = grid_mask.max() > 1
-    if is_weighted:
-        cell_target = grid_mask.copy()
-    elif args.per_cell > 0:
+    # Per-cell targets: for binary grids use --per-cell if set, else no per-cell limit.
+    if args.per_cell > 0:
         cell_target = grid_mask * args.per_cell
     else:
         cell_target = None  # no per-cell limit
@@ -241,23 +219,17 @@ def cmd_capture(args: argparse.Namespace) -> None:
     valid_cells = int(np.count_nonzero(grid_mask))
     total_target = int(cell_target.sum()) if cell_target is not None else args.count
 
-    # Distance recommendation based on FOV
-    # Wider FOV → board can be closer (it still fills enough of the frame)
+    # Distance recommendation
     cols, rows = args.columns, args.rows
     board_w_mm = cols * args.square_length
     board_h_mm = rows * args.square_length
-    board_diag = f"{board_w_mm:.0f}×{board_h_mm:.0f}mm"
-    if args.grid == "170":
-        dist_range = "0.3–1.0m"
-    elif args.grid == "circular":
-        dist_range = "0.4–1.2m"
-    else:
-        dist_range = "0.5–1.5m"
+    board_diag = f"{board_w_mm:.0f}x{board_h_mm:.0f}mm"
+    dist_range = "0.5-1.5m"
 
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
-    logger.info("Board: %s (%s). Recommended distance: %s", board_diag, f"{cols}×{rows}", dist_range)
-    logger.info("Grid: %s (%d×%d, %d active cells, %d total captures)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
-    logger.info("IMPORTANT: Tilt the board 20-30° in every capture. Never hold it flat/frontal.")
+    logger.info("Board: %s (%s). Recommended distance: %s", board_diag, f"{cols}x{rows}", dist_range)
+    logger.info("Grid: %s (%dx%d, %d active cells, %d total captures)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
+    logger.info("IMPORTANT: Tilt the board 20-30 deg in every capture. Never hold it flat/frontal.")
     logger.info("Move the ChArUco to cover all grid cells. Vary angles (pitch/yaw/roll) in each cell.")
     logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
@@ -345,7 +317,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     coverage[row, col] += 1
                     count += 1
                     last_capture_time = now
-                    cell_limit = cell_target[row, col] if cell_target is not None else "∞"
+                    cell_limit = cell_target[row, col] if cell_target is not None else "inf"
                     logger.info(
                         "Pair %d/%d saved — %d common corners, coverage %d%%, cell (%d,%d): %d/%s",
                         count, total_target, n_common, coverage_pct,
@@ -398,21 +370,12 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     logger.info("Loaded %d image pairs from %s", len(pairs), input_dir)
 
     try:
-        if args.mode == "fisheye":
-            result = calibrate_stereo_fisheye(
-                pairs,
-                board_size=(args.columns, args.rows),
-                square_length=args.square_length,
-                marker_length=args.marker_length,
-            )
-        else:
-            result = calibrate_stereo(
-                pairs,
-                board_size=(args.columns, args.rows),
-                square_length=args.square_length,
-                marker_length=args.marker_length,
-                crop_ratio=args.crop_ratio,
-            )
+        result = calibrate_stereo(
+            pairs,
+            board_size=(args.columns, args.rows),
+            square_length=args.square_length,
+            marker_length=args.marker_length,
+        )
     except ValueError as e:
         logger.error("Calibration failed: %s", e)
         sys.exit(1)
@@ -482,7 +445,7 @@ def main() -> None:
     p_cap = sub.add_parser("capture", help="Interactive capture with HTTP preview")
     p_cap.add_argument("--left", type=int, default=0, help="Left camera index")
     p_cap.add_argument("--right", type=int, default=1, help="Right camera index")
-    p_cap.add_argument("--resolution", type=int, nargs=2, default=[2592, 1944])
+    p_cap.add_argument("--resolution", type=int, nargs=2, default=[4608, 2592])
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")
     p_cap.add_argument("--count", type=int, default=30, help="Minimum number of pairs")
@@ -495,8 +458,8 @@ def main() -> None:
     p_cap.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
     p_cap.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
     p_cap.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
-    p_cap.add_argument("--grid", choices=["rectangular", "circular", "170"], default="rectangular",
-                        help="Coverage grid: rectangular (4x5), circular (6x6), 170 (6x6 weighted for 170° fisheye)")
+    p_cap.add_argument("--grid", choices=["rectangular", "circular"], default="rectangular",
+                        help="Coverage grid: rectangular (4x5) or circular (6x6)")
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
@@ -507,10 +470,6 @@ def main() -> None:
     p_cal.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
     p_cal.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
     p_cal.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
-    p_cal.add_argument("--crop-ratio", type=float, default=0.6,
-                        help="Center crop ratio for pinhole mode (0.6=60%%). Ignored in fisheye mode.")
-    p_cal.add_argument("--mode", choices=["pinhole", "fisheye"], default="pinhole",
-                        help="Calibration model: pinhole (center crop, robust) or fisheye (full FOV)")
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---

@@ -170,7 +170,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     # --- Build SGBM ---
     sgbm = create_sgbm(
-        num_disparities=vision_cfg.get("num_disparities", 128),
+        num_disparities=vision_cfg.get("num_disparities", 192),
         block_size=vision_cfg.get("block_size", 9),
     )
 
@@ -364,6 +364,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     finally:
         capture.close()
         mqtt_client.disconnect()
+        # Release Hailo resources if backend supports it
+        backend = model.get("backend")
+        if hasattr(backend, "close"):
+            backend.close()
         logger.info(
             "Pipeline stopped. Final counts: in=%d out=%d",
             counter.total_in if counter else 0,
