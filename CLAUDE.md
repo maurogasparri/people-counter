@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Low-cost people counting system for retail stores. Stereo vision + edge AI + passive WiFi/BLE traffic detection. Replaces a commercial Axis/Cognimatics system across 30 stores in Argentina.
+Low-cost people counting system for retail stores. Stereo vision + edge AI + passive WiFi/BLE traffic detection.
 
 **This is a real production project.** Code quality, error handling, and resilience are critical. Devices run unattended 12h/day, 363 days/year.
 
@@ -35,13 +35,14 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 +---------------------------------------------+
 ```
 
-## Hardware per Unit (BOM ~USD 416)
+## Hardware per Unit
 
 - Raspberry Pi 5 4GB — main SBC
-- Hailo-8L 13 TOPS via M.2 (Raspberry Pi AI HAT+) — neural accelerator
+- Raspberry Pi Active Cooler — PWM fan + heatsink for thermal management
+- Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — neural accelerator
 - 2x Arducam IMX708 12MP HDR, M12 lens 120 HFOV (B0310) via CSI — stereo pair, 14cm baseline
 - Waveshare PoE HAT (H) 25.5W (802.3at) wired via dupont (not stacked) — power via Ethernet
-- PETG 3D-printed enclosure — ceiling mount on metal L-bracket
+- SanDisk Extreme 64GB microSD — boot + storage
 
 ## Key Technical Decisions
 
@@ -172,7 +173,7 @@ people-counter/
 - **No video/image transmission.** Only metadata.
 - **No raw MAC storage.** Hash first, always.
 - **WiFi = probe only.** Network = Ethernet.
-- **HAT stack**: AI HAT+ (Hailo M.2) is the only stacked HAT. PoE HAT (H) is wired via dupont.
+- **HAT stack**: AI HAT+ is the only stacked HAT. PoE HAT (H) is wired via dupont.
 - **No hardcoded config.** Everything in YAML.
 - **Always buffer locally.** Assume connectivity will fail.
 
