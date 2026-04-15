@@ -49,24 +49,24 @@ sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
 systemctl enable watchdog
 systemctl start watchdog
 
-info "  Configuring config.txt (GPU, RTC, PCIe Gen 3, USB current, IMX708 cameras)"
+info "  Configuring config.txt (RTC, PCIe Gen 3, USB current, IMX708 cameras)"
 CONFIG_TXT="/boot/firmware/config.txt"
-grep -q "gpu_mem=16" "$CONFIG_TXT" || echo "gpu_mem=16" >> "$CONFIG_TXT"
 # RTC charging: only for rechargeable ML2032 batteries.
 # If using non-rechargeable CR2032, comment out or remove this line after setup.
-grep -q "dtparam=rtc_bbat_vchg" "$CONFIG_TXT" || echo "dtparam=rtc_bbat_vchg=3000000" >> "$CONFIG_TXT"
-grep -q "dtparam=pciex1_gen=3" "$CONFIG_TXT" || echo "dtparam=pciex1_gen=3" >> "$CONFIG_TXT"
+grep -q "^dtparam=rtc_bbat_vchg" "$CONFIG_TXT" || echo "dtparam=rtc_bbat_vchg=3000000" >> "$CONFIG_TXT"
+# PCIe Gen 3: required by AI HAT+
+grep -q "^dtparam=pciex1_gen=3" "$CONFIG_TXT" || echo "dtparam=pciex1_gen=3" >> "$CONFIG_TXT"
 # USB current: required by Waveshare PoE HAT (H) to avoid power-supply prompt
-grep -q "usb_max_current_enable=1" "$CONFIG_TXT" || echo "usb_max_current_enable=1" >> "$CONFIG_TXT"
+grep -q "^usb_max_current_enable=1" "$CONFIG_TXT" || echo "usb_max_current_enable=1" >> "$CONFIG_TXT"
 # IMX708 cameras: disable autodetect and force overlay on both CSI ports
 sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' "$CONFIG_TXT"
-grep -q "dtoverlay=imx708" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708' "$CONFIG_TXT"
+grep -q "^dtoverlay=imx708" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708' "$CONFIG_TXT"
 
 # =========================================================================
 # Step 5: Hailo
 # =========================================================================
-info "Step 5: Installing Hailo..."
-apt install -y hailo-all
+info "Step 5: Installing Hailo (minimal: runtime + PCIe driver + Python bindings)..."
+apt install -y hailort hailort-pcie-driver python3-hailort
 
 # =========================================================================
 # Step 6: Nexmon (WiFi monitor mode)

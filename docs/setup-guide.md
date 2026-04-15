@@ -72,17 +72,18 @@ sudo sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
 sudo systemctl enable watchdog
 sudo systemctl start watchdog
 
-# Configurar GPU, RTC, PCIe Gen 3 y USB current (requerido por el Waveshare PoE HAT (H))
-sudo tee -a /boot/firmware/config.txt > /dev/null << 'CONF'
-gpu_mem=16
-dtparam=rtc_bbat_vchg=3000000
-dtparam=pciex1_gen=3
-usb_max_current_enable=1
-CONF
-
-# Configurar cámaras IMX708 (deshabilitar autodetección y forzar overlay)
-sudo sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' /boot/firmware/config.txt
-sudo sed -i '/^\[all\]/a dtoverlay=imx708' /boot/firmware/config.txt
+# Configurar /boot/firmware/config.txt (idempotente — se puede correr varias veces):
+#   - rtc_bbat_vchg: cargar batería RTC ML2032
+#   - pciex1_gen=3: requerido por AI HAT+
+#   - usb_max_current_enable: requerido por Waveshare PoE HAT (H)
+#   - camera_auto_detect=0 + dtoverlay=imx708: forzar overlay IMX708 en ambas CSI
+# Nota: gpu_mem no aplica en Pi 5 (GPU memory se asigna dinámicamente).
+CFG=/boot/firmware/config.txt
+sudo sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' $CFG
+grep -q "^dtoverlay=imx708" $CFG || sudo sed -i '/^\[all\]/a dtoverlay=imx708' $CFG
+grep -q "^dtparam=rtc_bbat_vchg" $CFG    || echo "dtparam=rtc_bbat_vchg=3000000" | sudo tee -a $CFG > /dev/null
+grep -q "^dtparam=pciex1_gen=3" $CFG     || echo "dtparam=pciex1_gen=3"     | sudo tee -a $CFG > /dev/null
+grep -q "^usb_max_current_enable=1" $CFG || echo "usb_max_current_enable=1" | sudo tee -a $CFG > /dev/null
 
 sudo reboot
 ```
@@ -93,14 +94,27 @@ Referencias:
 - RTC: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#add-a-backup-battery
 - PCIe Gen 3: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#pcie-gen-3-0
 
-## 5. Instalar Hailo
+## 5. Instalar Hailo (mínimo necesario)
 
-Referencia: https://www.raspberrypi.com/documentation/computers/ai.html#update
+Solo instalamos los 3 paquetes que necesitamos para correr inferencia desde
+Python (runtime + driver PCIe + bindings). Evitamos `hailo-all` que arrastra
+TAPPAS, modelos de ejemplo y la integración con rpicam, que no usamos.
 
 ```bash
-sudo apt install -y hailo-all
+sudo apt install -y hailort hailort-pcie-driver python3-hailort
 sudo reboot
 ```
+
+Verificar tras el reboot:
+
+```bash
+hailortcli fw-control identify   # Hailo-8L, fw 4.23.0
+lspci | grep -i hailo            # debe listar el chip
+python3 -c "import hailo_platform; print(hailo_platform.__version__)"
+```
+
+Referencia oficial (recomienda `hailo-all` como path estándar):
+https://www.raspberrypi.com/documentation/computers/ai.html#update
 
 ## 6. Instalar nexmon (WiFi monitor mode)
 

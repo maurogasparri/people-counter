@@ -82,7 +82,7 @@ pytest
 |---------|------------|-------|
 | opencv-contrib-python, numpy, paho-mqtt, pyyaml, scapy, bleak | `pip install -e ".[dev]"` | Cross-platform, works on dev machines |
 | picamera2, libcamera | `apt` (python3-picamera2) | RPi only, provided by RPi OS Trixie |
-| hailo_platform | `apt` (hailo-all) | RPi only, requires Hailo-8L + PCIe |
+| hailo_platform | `apt` (hailort + hailort-pcie-driver + python3-hailort) | RPi only, requires Hailo-8L + PCIe |
 | aircrack-ng, nexmon | `apt` + `.deb` packages | RPi only, WiFi monitor mode |
 
 On development machines (Windows/Mac/Linux), `pip install -e ".[dev]"` is sufficient to run tests. RPi system packages are only needed on the target device — see [docs/setup-guide.md](docs/setup-guide.md) for full installation.
