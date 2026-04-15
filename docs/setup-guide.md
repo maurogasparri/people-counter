@@ -224,8 +224,10 @@ otro factor. Verificar también que el bracket mecánico no flexa — si el base
 cambia entre calibración y operación, el depth deriva.
 
 Las IMX708 tienen un anillo de foco manual M12 que se gira con pinza de punta fina.
-Poner un objeto con detalle (diario, patrón ChArUco) a la distancia de trabajo (~3m)
-y correr el asistente de foco:
+Poner un objeto con detalle (diario, patrón ChArUco) a la **altura de las cabezas**
+de las personas (típicamente ceiling_height - 1.7m, ej: techo a 3.5m → objeto a ~1.8m
+de la cámara). Con M12 fija y 120° HFOV, la depth-of-field a 2m cubre ~1m–infinito.
+Correr el asistente de foco:
 
 ```bash
 cd /usr/src/people-counter
