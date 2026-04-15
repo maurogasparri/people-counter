@@ -76,11 +76,13 @@ sudo systemctl start watchdog
 #   - rtc_bbat_vchg: cargar batería RTC ML2032
 #   - pciex1_gen=3: requerido por AI HAT+
 #   - usb_max_current_enable: requerido por Waveshare PoE HAT (H)
-#   - camera_auto_detect=0 + dtoverlay=imx708: forzar overlay IMX708 en ambas CSI
+#   - camera_auto_detect=0 + dtoverlay=imx708,cam0/cam1: forzar overlay IMX708
+#     en ambos puertos CSI (Pi 5 requiere especificar puerto por cada overlay)
 # Nota: gpu_mem no aplica en Pi 5 (GPU memory se asigna dinámicamente).
 CFG=/boot/firmware/config.txt
 sudo sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' $CFG
-grep -q "^dtoverlay=imx708" $CFG || sudo sed -i '/^\[all\]/a dtoverlay=imx708' $CFG
+grep -q "^dtoverlay=imx708,cam0" $CFG || sudo sed -i '/^\[all\]/a dtoverlay=imx708,cam0' $CFG
+grep -q "^dtoverlay=imx708,cam1" $CFG || sudo sed -i '/^\[all\]/a dtoverlay=imx708,cam1' $CFG
 grep -q "^dtparam=rtc_bbat_vchg" $CFG    || echo "dtparam=rtc_bbat_vchg=3000000" | sudo tee -a $CFG > /dev/null
 grep -q "^dtparam=pciex1_gen=3" $CFG     || echo "dtparam=pciex1_gen=3"     | sudo tee -a $CFG > /dev/null
 grep -q "^usb_max_current_enable=1" $CFG || echo "usb_max_current_enable=1" | sudo tee -a $CFG > /dev/null

@@ -43,7 +43,11 @@ def main() -> None:
     failures += not check("Architecture", out == "aarch64", out)
 
     rc, out = run(["uname", "-r"])
-    kernel_ok = out.startswith("6.12") or out.startswith("6.13")
+    try:
+        major, minor = (int(x) for x in out.split(".")[:2])
+        kernel_ok = (major, minor) >= (6, 12)
+    except (ValueError, IndexError):
+        kernel_ok = False
     failures += not check("Kernel >= 6.12", kernel_ok, out)
 
     rc, out = run(["raspi-config", "nonint", "get_boot_cli"])
@@ -62,7 +66,8 @@ def main() -> None:
     failures += not check("dtparam=rtc_bbat_vchg", "dtparam=rtc_bbat_vchg" in config_txt)
     failures += not check("usb_max_current_enable=1", "usb_max_current_enable=1" in config_txt)
     failures += not check("camera_auto_detect=0", "camera_auto_detect=0" in config_txt)
-    failures += not check("dtoverlay=imx708", "dtoverlay=imx708" in config_txt)
+    failures += not check("dtoverlay=imx708,cam0", "dtoverlay=imx708,cam0" in config_txt)
+    failures += not check("dtoverlay=imx708,cam1", "dtoverlay=imx708,cam1" in config_txt)
 
     # --- PCIe Gen 3 ---
     print("\n[PCIe]")
