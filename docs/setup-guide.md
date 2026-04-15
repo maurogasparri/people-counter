@@ -14,8 +14,9 @@ Desde tu PC con Windows:
      - Enable SSH: ✓ (password o key)
      - Set username: `pi`
      - Set password: [tu password]
-     - Configure WiFi: tu red (solo para el setup inicial, después va por cable)
      - Locale: America/Argentina/Buenos_Aires
+
+(No configurar WiFi — el dispositivo se conecta por Ethernet y el WiFi queda exclusivo para monitor mode/probe capture.)
 4. Write y esperar
 
 ## 2. Ensamblaje físico
@@ -41,15 +42,12 @@ Orden recomendado:
 2. Esperar que termine el primer boot (puede tardar 2-3 min)
 
 ```bash
-# Verificar que arranca
-uname -a  # Debe decir aarch64
-
-# Actualizar sistema
+uname -a
 sudo apt update && sudo apt full-upgrade -y
 sudo reboot
 ```
 
-Los pasos 4 a 9 se pueden ejecutar automáticamente:
+Los pasos 4 a 10 se pueden ejecutar automáticamente:
 
 ```bash
 sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/people-counter
@@ -61,24 +59,19 @@ O seguir el paso a paso manual a continuación.
 
 ## 4. Configurar sistema (headless + config.txt)
 
+Deshabilita el entorno gráfico, instala watchdog y parchea `/boot/firmware/config.txt`
+(RTC, PCIe Gen 3, USB current para el PoE HAT, overlays IMX708 por puerto). El bloque
+de `config.txt` es idempotente.
+
 ```bash
-# Deshabilitar entorno gráfico (libera ~200MB de RAM)
 sudo raspi-config nonint do_boot_behaviour B1
 
-# Habilitar watchdog (reinicio automático si se cuelga)
 sudo apt install -y watchdog
 sudo sed -i 's/^#watchdog-device/watchdog-device/' /etc/watchdog.conf
 sudo sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
 sudo systemctl enable watchdog
 sudo systemctl start watchdog
 
-# Configurar /boot/firmware/config.txt (idempotente — se puede correr varias veces):
-#   - rtc_bbat_vchg: cargar batería RTC ML2032
-#   - pciex1_gen=3: requerido por AI HAT+
-#   - usb_max_current_enable: requerido por Waveshare PoE HAT (H)
-#   - camera_auto_detect=0 + dtoverlay=imx708,cam0/cam1: forzar overlay IMX708
-#     en ambos puertos CSI (Pi 5 requiere especificar puerto por cada overlay)
-# Nota: gpu_mem no aplica en Pi 5 (GPU memory se asigna dinámicamente).
 CFG=/boot/firmware/config.txt
 sudo sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' $CFG
 grep -q "^dtoverlay=imx708,cam0" $CFG || sudo sed -i '/^\[all\]/a dtoverlay=imx708,cam0' $CFG
@@ -86,8 +79,6 @@ grep -q "^dtoverlay=imx708,cam1" $CFG || sudo sed -i '/^\[all\]/a dtoverlay=imx7
 grep -q "^dtparam=rtc_bbat_vchg" $CFG    || echo "dtparam=rtc_bbat_vchg=3000000" | sudo tee -a $CFG > /dev/null
 grep -q "^dtparam=pciex1_gen=3" $CFG     || echo "dtparam=pciex1_gen=3"     | sudo tee -a $CFG > /dev/null
 grep -q "^usb_max_current_enable=1" $CFG || echo "usb_max_current_enable=1" | sudo tee -a $CFG > /dev/null
-
-sudo reboot
 ```
 
 Si usás una pila no recargable (CR2032), **no agregar la línea de rtc_bbat_vchg**.
@@ -104,15 +95,6 @@ TAPPAS, modelos de ejemplo y la integración con rpicam, que no usamos.
 
 ```bash
 sudo apt install -y hailort hailort-pcie-driver python3-hailort
-sudo reboot
-```
-
-Verificar tras el reboot:
-
-```bash
-hailortcli fw-control identify   # Hailo-8L, fw 4.23.0
-lspci | grep -i hailo            # debe listar el chip
-python3 -c "import hailo_platform; print(hailo_platform.__version__)"
 ```
 
 Referencia oficial (recomienda `hailo-all` como path estándar):
@@ -134,39 +116,50 @@ sudo dpkg -i brcmfmac-nexmon-dkms_6.12.2_all.deb
 sudo reboot
 ```
 
-## 7. Instalar el proyecto
+Este reboot aplica también los cambios de los pasos 4 y 5.
+
+## 7. Verificar hardware base
+
+Tras el reboot, verificar que Hailo y las cámaras quedaron operativos antes de seguir:
 
 ```bash
-# Dependencias del sistema
+hailortcli fw-control identify           # Hailo-8L, fw 4.23+
+lspci | grep -i hailo                    # debe listar el chip
+python3 -c "import hailo_platform; print(hailo_platform.__version__)"
+
+rpicam-hello --list-cameras              # deben aparecer 2x imx708 (CAM0 y CAM1)
+
+dmesg | grep nexmon                      # firmware nexmon cargado
+```
+
+Si alguno falla, revisar el Troubleshooting antes de avanzar.
+
+## 8. Instalar el proyecto
+
+```bash
 sudo apt install -y \
   python3-pip \
   python3-opencv python3-numpy \
   libopencv-dev \
   git
 
-# Clonar el repo
 sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/people-counter
 sudo chown -R pi:pi /usr/src/people-counter
 cd /usr/src/people-counter
 
-# Instalar el proyecto y todas las dependencias
 sudo pip install --break-system-packages --root-user-action=ignore -e ".[dev]"
 
-# Descargar modelo YOLOv8n para Hailo-8L
 PYTHONPATH=. python3 scripts/download_model.py hef
 
-# Verificar tests
 pytest -v
 ```
 
-## 8. Configurar el dispositivo
+## 9. Configurar el dispositivo
 
 ```bash
-# Crear directorios
 sudo mkdir -p /etc/people-counter/certs /var/lib/people-counter /var/log/people-counter
 sudo chown -R pi:pi /etc/people-counter /var/lib/people-counter /var/log/people-counter
 
-# Copiar config de ejemplo y personalizarlo
 sudo cp /usr/src/people-counter/config/config.example.yaml /etc/people-counter/config.yaml
 sudo nano /etc/people-counter/config.yaml
 ```
@@ -180,22 +173,20 @@ Campos que hay que personalizar por dispositivo:
 
 Alternativamente, usar `scripts/provision.py` que genera el config automáticamente.
 
-## 9. Instalar servicios del sistema
+## 10. Instalar servicios del sistema
 
 ```bash
-# Copiar todos los servicios y configs
 sudo cp /usr/src/people-counter/config/wifi-monitor.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/people-counter.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/people-counter-reset.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/people-counter-reset.timer /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/logrotate.conf /etc/logrotate.d/people-counter
 
-# Habilitar servicios
 sudo systemctl daemon-reload
 sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
 ```
 
-## 10. Verificar todo
+## 11. Verificar todo
 
 ```bash
 cd /usr/src/people-counter
@@ -210,13 +201,17 @@ Para verificar las cámaras visualmente (headless):
 ```bash
 rpicam-still -o /tmp/test_cam0.jpg --camera 0
 rpicam-still -o /tmp/test_cam1.jpg --camera 1
-# Desde tu PC:
+```
+
+Y desde tu PC:
+
+```bash
 scp pi@people-counter.local:/tmp/test_cam*.jpg .
 ```
 
-## 11. Ajuste de foco y calibración estéreo
+## 12. Ajuste de foco y calibración estéreo
 
-### 11.1. Ajustar foco
+### 12.1. Ajustar foco
 
 **Crítico para estéreo**: ambas cámaras deben tener el foco lo más parejo posible.
 Diferencias de foco entre L y R degradan la calidad del depth map más que cualquier
@@ -251,7 +246,7 @@ scp pi@people-counter.local:/tmp/focus_left.jpg .
 scp pi@people-counter.local:/tmp/focus_right.jpg .
 ```
 
-### 11.2. Calibración estéreo
+### 12.2. Calibración estéreo
 
 Los parámetros del board ChArUco deben coincidir exactamente con el patrón impreso.
 Board recomendado para IMX708: **11x7 squares, checker 35mm, marker 26mm, DICT_5X5_100, A3 landscape** (385x245mm impreso, 60 esquinas internas, 38 markers). Ya generado en `calibration/charuco_11x7_sq35mm_mk26mm_dict5X5_a3_calibio.pdf`. Imprimir desde Adobe Reader con "Actual size" (NO "Fit to page"), pegar sobre foam board rígido. Verificar el ancho total con calibre — debe medir 385mm. Si difiere, usar el valor medido en `--square-length`.
@@ -280,7 +275,7 @@ PYTHONPATH=. python3 scripts/calibrate.py calibrate \
   --output /etc/people-counter/calibration.npz
 ```
 
-### 11.3. Validación post-calibración
+### 12.3. Validación post-calibración
 
 El RMS de reproyección (que reporta `calibrate`) **no es suficiente** para validar
 calidad para depth map. Hay que validar con métrica real:
@@ -296,17 +291,14 @@ calidad para depth map. Hay que validar con métrica real:
 Si la validación falla, recapturar (más poses, mejor cobertura, foco más parejo)
 antes de pasar a producción.
 
-## 12. Habilitar overlayfs (protección de la SD)
+## 13. Habilitar overlayfs (protección de la SD)
 
 **Hacer esto como último paso**, después de que todo funcione (calibración verificada,
 servicios corriendo, config definitiva). Una vez activo, la partición root queda
 read-only y los cambios fuera de los paths permitidos se pierden al reiniciar.
 
 ```bash
-# Crear los paths read-write antes de activar
 sudo mkdir -p /var/lib/people-counter /var/log/people-counter /tmp
-
-# Activar overlay filesystem
 sudo raspi-config nonint do_overlayroot 0
 ```
 
