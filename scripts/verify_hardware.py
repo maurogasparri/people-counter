@@ -61,6 +61,9 @@ def main() -> None:
     failures += not check("gpu_mem=16", "gpu_mem=16" in config_txt)
     failures += not check("dtparam=pciex1_gen=3", "dtparam=pciex1_gen=3" in config_txt)
     failures += not check("dtparam=rtc_bbat_vchg", "dtparam=rtc_bbat_vchg" in config_txt)
+    failures += not check("usb_max_current_enable=1", "usb_max_current_enable=1" in config_txt)
+    failures += not check("camera_auto_detect=0", "camera_auto_detect=0" in config_txt)
+    failures += not check("dtoverlay=imx708", "dtoverlay=imx708" in config_txt)
 
     # --- PCIe Gen 3 ---
     print("\n[PCIe]")

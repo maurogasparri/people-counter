@@ -49,3 +49,12 @@ Thumbs.db
 # Calibration captures (large image sets)
 /calibration_captures/
 /calibration/captures/
+
+# Diagnostic output artifacts (downloaded from device for inspection)
+/diagnose_*.jpg
+/diagnose_*.png
+/verify_*.jpg
+/verify_*.png
+/focus_*.jpg
+/focus_*.png
+.claude/

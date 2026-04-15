@@ -49,13 +49,18 @@ sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
 systemctl enable watchdog
 systemctl start watchdog
 
-info "  Configuring config.txt (GPU, RTC, PCIe Gen 3)"
+info "  Configuring config.txt (GPU, RTC, PCIe Gen 3, USB current, IMX708 cameras)"
 CONFIG_TXT="/boot/firmware/config.txt"
 grep -q "gpu_mem=16" "$CONFIG_TXT" || echo "gpu_mem=16" >> "$CONFIG_TXT"
 # RTC charging: only for rechargeable ML2032 batteries.
 # If using non-rechargeable CR2032, comment out or remove this line after setup.
 grep -q "dtparam=rtc_bbat_vchg" "$CONFIG_TXT" || echo "dtparam=rtc_bbat_vchg=3000000" >> "$CONFIG_TXT"
 grep -q "dtparam=pciex1_gen=3" "$CONFIG_TXT" || echo "dtparam=pciex1_gen=3" >> "$CONFIG_TXT"
+# USB current: required by Waveshare PoE HAT (H) to avoid power-supply prompt
+grep -q "usb_max_current_enable=1" "$CONFIG_TXT" || echo "usb_max_current_enable=1" >> "$CONFIG_TXT"
+# IMX708 cameras: disable autodetect and force overlay on both CSI ports
+sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' "$CONFIG_TXT"
+grep -q "dtoverlay=imx708" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708' "$CONFIG_TXT"
 
 # =========================================================================
 # Step 5: Hailo
@@ -137,9 +142,7 @@ info "  1. Edit /etc/people-counter/config.yaml with device-specific settings"
 info "  2. Run: sudo PYTHONPATH=$REPO_DIR python3 $REPO_DIR/scripts/verify_hardware.py"
 info "  3. Focus: PYTHONPATH=. python3 scripts/focus_assist.py --grid"
 info "  4. Calibrate: PYTHONPATH=. python3 scripts/calibrate.py capture \\"
-info "       --columns 7 --rows 5 --square-length 50 --marker-length 37 --count 30"
-info ""
-info "Optional: force Ethernet to 100 Mbps if auto-negotiation fails (see setup-guide.md step 4)"
+info "       --columns 11 --rows 7 --square-length 35 --marker-length 26 --count 30"
 info ""
 read -p "Reboot now? [y/N] " -n 1 -r
 echo

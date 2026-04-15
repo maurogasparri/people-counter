@@ -22,8 +22,9 @@ Desde tu PC con Windows:
 
 Orden recomendado:
 
-1. **Hailo-8L** → insertarlo en el slot M.2 del PoE M.2 HAT+
-2. **HAT+** → montarlo sobre la Raspberry Pi 5 (conectores GPIO + FFC)
+1. **Hailo-8L** → insertarlo en el slot M.2 del Raspberry Pi AI HAT+
+2. **AI HAT+** → stackearlo sobre la Raspberry Pi 5 (GPIO + FFC al puerto PCIe)
+2b. **Waveshare PoE HAT (H)** → conectar por cables dupont (5V, GND, y los pines PoE del header) — no se stackea
 3. **Camaras** → conectar los cables CSI a los puertos CAM0 y CAM1 de la Pi
    - Camara izquierda → CAM0
    - Camara derecha → CAM1
@@ -59,29 +60,7 @@ sudo bash /usr/src/people-counter/scripts/setup_device.sh
 
 O seguir el paso a paso manual a continuacion.
 
-## 4. Forzar Ethernet a 100 Mbps Full Duplex
-
-Si el switch o inyector PoE tiene problemas de autonegociacion, forzar la velocidad:
-
-```bash
-# Verificar nombre de la conexion
-nmcli connection show
-
-# Forzar 100 Mbps Full Duplex (persistente)
-sudo nmcli connection modify "Wired connection 1" \
-  802-3-ethernet.auto-negotiate no \
-  802-3-ethernet.speed 100 \
-  802-3-ethernet.duplex full
-sudo nmcli connection up "Wired connection 1"
-
-# Verificar
-ethtool eth0 | grep -E 'Speed|Duplex|Auto'
-# Speed: 100Mb/s / Duplex: Full / Auto-negotiation: off
-```
-
-> Reemplazar `"Wired connection 1"` por el nombre que muestre `nmcli connection show`.
-
-## 5. Configurar sistema (headless + config.txt)
+## 4. Configurar sistema (headless + config.txt)
 
 ```bash
 # Deshabilitar entorno grafico (libera ~200MB de RAM)
@@ -94,12 +73,17 @@ sudo sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
 sudo systemctl enable watchdog
 sudo systemctl start watchdog
 
-# Configurar GPU, RTC y PCIe Gen 3
+# Configurar GPU, RTC, PCIe Gen 3 y USB current (requerido por el Waveshare PoE HAT (H))
 sudo tee -a /boot/firmware/config.txt > /dev/null << 'CONF'
 gpu_mem=16
 dtparam=rtc_bbat_vchg=3000000
 dtparam=pciex1_gen=3
+usb_max_current_enable=1
 CONF
+
+# Configurar camaras IMX708 (deshabilitar autodeteccion y forzar overlay)
+sudo sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' /boot/firmware/config.txt
+sudo sed -i '/^\[all\]/a dtoverlay=imx708' /boot/firmware/config.txt
 
 sudo reboot
 ```
@@ -110,7 +94,7 @@ Referencias:
 - RTC: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#add-a-backup-battery
 - PCIe Gen 3: https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#pcie-gen-3-0
 
-## 6. Instalar Hailo
+## 5. Instalar Hailo
 
 Referencia: https://www.raspberrypi.com/documentation/computers/ai.html#update
 
@@ -119,7 +103,7 @@ sudo apt install -y hailo-all
 sudo reboot
 ```
 
-## 7. Instalar nexmon (WiFi monitor mode)
+## 6. Instalar nexmon (WiFi monitor mode)
 
 El CYW43455 integrado no soporta monitor mode por defecto. Los paquetes de nexmon
 (originalmente de Kali Linux) parchean el firmware y el driver para habilitarlo.
@@ -135,7 +119,7 @@ sudo dpkg -i brcmfmac-nexmon-dkms_6.12.2_all.deb
 sudo reboot
 ```
 
-## 8. Instalar el proyecto
+## 7. Instalar el proyecto
 
 ```bash
 # Dependencias del sistema
@@ -160,7 +144,7 @@ PYTHONPATH=. python3 scripts/download_model.py hef
 pytest -v
 ```
 
-## 9. Configurar el dispositivo
+## 8. Configurar el dispositivo
 
 ```bash
 # Crear directorios
@@ -181,7 +165,7 @@ Campos que hay que personalizar por dispositivo:
 
 Alternativamente, usar `scripts/provision.py` que genera el config automaticamente.
 
-## 10. Instalar servicios del sistema
+## 9. Instalar servicios del sistema
 
 ```bash
 # Copiar todos los servicios y configs
@@ -196,7 +180,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
 ```
 
-## 11. Verificar todo
+## 10. Verificar todo
 
 ```bash
 cd /usr/src/people-counter
@@ -215,13 +199,16 @@ rpicam-still -o /tmp/test_cam1.jpg --camera 1
 scp pi@people-counter.local:/tmp/test_cam*.jpg .
 ```
 
-## 12. Ajuste de foco y calibracion estereo
+## 11. Ajuste de foco y calibracion estereo
 
-### 12.1. Ajustar foco
+### 11.1. Ajustar foco
 
-Antes de calibrar, ajustar el foco de ambas camaras. Las IMX708 tienen un anillo
-de foco manual M12 que se gira con pinza de punta fina.
+**Crítico para estéreo**: ambas camaras deben tener el foco lo mas parejo posible.
+Diferencias de foco entre L y R degradan la calidad del depth map mas que cualquier
+otro factor. Verificar tambien que el bracket mecanico no flexa — si el baseline
+cambia entre calibracion y operacion, el depth deriva.
 
+Las IMX708 tienen un anillo de foco manual M12 que se gira con pinza de punta fina.
 Poner un objeto con detalle (diario, patron ChArUco) a la distancia de trabajo (~3m)
 y correr el asistente de foco:
 
@@ -247,15 +234,15 @@ scp pi@people-counter.local:/tmp/focus_left.jpg .
 scp pi@people-counter.local:/tmp/focus_right.jpg .
 ```
 
-### 12.2. Calibracion estereo
+### 11.2. Calibracion estereo
 
 Los parametros del board ChArUco deben coincidir exactamente con el patron impreso.
-El board de referencia (calib.io) es 7x5, checker 50mm, marker 37mm.
+Board recomendado para IMX708: **11x7 squares, checker 35mm, marker 26mm, DICT_5X5_100, A3 landscape** (385x245mm impreso, 60 esquinas internas, 38 markers). Ya generado en `calibration/charuco_11x7_sq35mm_mk26mm_dict5X5_a3_calibio.pdf`. Imprimir desde Adobe Reader con "Actual size" (NO "Fit to page"), pegar sobre foam board rigido. Verificar el ancho total con calibre — debe medir 385mm. Si difiere, usar el valor medido en `--square-length`.
 
 ```bash
 cd /usr/src/people-counter
 PYTHONPATH=. python3 scripts/calibrate.py capture \
-  --columns 7 --rows 5 --square-length 50 --marker-length 37 \
+  --columns 11 --rows 7 --square-length 35 --marker-length 26 \
   --count 30
 ```
 
@@ -264,17 +251,35 @@ de corners y grilla de cobertura. El script captura automaticamente cada ~1.5 se
 cuando el board es detectado.
 
 Mover el patron ChArUco entre capturas a distintas posiciones (centro, bordes, esquinas),
-angulos (inclinado, rotado) y distancias (0.5-1.5m). Cubrir toda la grilla.
-Buena iluminacion, sin reflejos directos sobre el papel. Despues calibrar:
+angulos (inclinado, rotado) y **distancias 0.5-3m** (cubrir todo el rango operativo,
+no solo el de calibracion — el modelo extrapola peor fuera del rango calibrado).
+Cubrir toda la grilla. Buena iluminacion, sin reflejos directos sobre el papel.
+Despues calibrar:
 
 ```bash
 PYTHONPATH=. python3 scripts/calibrate.py calibrate \
-  --columns 7 --rows 5 --square-length 50 --marker-length 37 \
+  --columns 11 --rows 7 --square-length 35 --marker-length 26 \
   --input-dir ./calibration/captures \
   --output /etc/people-counter/calibration.npz
 ```
 
-## 13. Habilitar overlayfs (proteccion de la SD)
+### 11.3. Validacion post-calibracion
+
+El RMS de reproyeccion (que reporta `calibrate`) **no es suficiente** para validar
+calidad para depth map. Hay que validar con metrica real:
+
+1. **Error de profundidad a distancias conocidas**: poner un objeto a 1m, 2m y 3m
+   medidos con cinta. Correr `scripts/diagnose_depth.py` y comparar el depth
+   estimado con la distancia real. Error esperado: <5% a 2m, <10% a 3m.
+2. **Error de altura estimada**: poner un objeto de altura conocida (ej: caja de 1m)
+   a distintas distancias. Verificar que la altura estimada sea consistente.
+3. **Consistencia centro vs bordes**: el error en bordes no deberia ser >2x el del
+   centro. Si lo es, recalibrar con mas capturas en periferia.
+
+Si la validacion falla, recapturar (mas poses, mejor cobertura, foco mas parejo)
+antes de pasar a produccion.
+
+## 12. Habilitar overlayfs (proteccion de la SD)
 
 **Hacer esto como ultimo paso**, despues de que todo funcione (calibracion verificada,
 servicios corriendo, config definitiva). Una vez activo, la particion root queda

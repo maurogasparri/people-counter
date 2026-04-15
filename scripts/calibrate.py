@@ -224,7 +224,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
     board_w_mm = cols * args.square_length
     board_h_mm = rows * args.square_length
     board_diag = f"{board_w_mm:.0f}x{board_h_mm:.0f}mm"
-    dist_range = "0.5-1.5m"
+    dist_range = "0.5-3m (cover full operational range, not just sweet spot)"
 
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
     logger.info("Board: %s (%s). Recommended distance: %s", board_diag, f"{cols}x{rows}", dist_range)
@@ -432,13 +432,13 @@ def main() -> None:
 
     # --- generate-board ---
     p_board = sub.add_parser("generate-board", help="Generate printable ChArUco board")
-    p_board.add_argument("--output", default="charuco_board.png")
-    p_board.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
-    p_board.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
-    p_board.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
-    p_board.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
-    p_board.add_argument("--width", type=int, default=2480, help="Image width (px)")
-    p_board.add_argument("--height", type=int, default=3508, help="Image height (px)")
+    p_board.add_argument("--output", default="calibration/charuco_board.png")
+    p_board.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 11)")
+    p_board.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 7)")
+    p_board.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 35)")
+    p_board.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 26)")
+    p_board.add_argument("--width", type=int, default=4961, help="Image width (px) — default A3 landscape @ 300 DPI")
+    p_board.add_argument("--height", type=int, default=3508, help="Image height (px) — default A3 landscape @ 300 DPI")
     p_board.set_defaults(func=cmd_generate_board)
 
     # --- capture ---
@@ -454,10 +454,10 @@ def main() -> None:
     p_cap.add_argument("--cooldown", type=float, default=1.5,
                         help="Seconds to wait after each capture before next one")
     p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
-    p_cap.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
-    p_cap.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
-    p_cap.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
-    p_cap.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
+    p_cap.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 11)")
+    p_cap.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 7)")
+    p_cap.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 35)")
+    p_cap.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 26)")
     p_cap.add_argument("--grid", choices=["rectangular", "circular"], default="rectangular",
                         help="Coverage grid: rectangular (4x5) or circular (6x6)")
     p_cap.set_defaults(func=cmd_capture)
@@ -466,10 +466,10 @@ def main() -> None:
     p_cal = sub.add_parser("calibrate", help="Run stereo calibration")
     p_cal.add_argument("--input-dir", required=True, help="Dir with left_/right_ images")
     p_cal.add_argument("--output", default="calibration.npz")
-    p_cal.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 7)")
-    p_cal.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 5)")
-    p_cal.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 50)")
-    p_cal.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 37)")
+    p_cal.add_argument("--columns", type=int, required=True, help="Board columns (e.g. 11)")
+    p_cal.add_argument("--rows", type=int, required=True, help="Board rows (e.g. 7)")
+    p_cal.add_argument("--square-length", type=float, required=True, help="Square side in mm (e.g. 35)")
+    p_cal.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 26)")
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---
