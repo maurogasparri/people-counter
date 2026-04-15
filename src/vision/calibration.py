@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 # ChArUco board factory
 # ---------------------------------------------------------------------------
 
-DEFAULT_BOARD_SIZE = (7, 5)  # (columns, rows) of chessboard squares
+DEFAULT_BOARD_SIZE = (11, 7)  # (columns, rows) of chessboard squares — A3 landscape
 DEFAULT_SQUARE_LENGTH = 35.0  # mm
-DEFAULT_MARKER_LENGTH = 26.0  # mm
-ARUCO_DICT_ID = cv2.aruco.DICT_5X5_250
+DEFAULT_MARKER_LENGTH = 26.0  # mm (74% of square)
+ARUCO_DICT_ID = cv2.aruco.DICT_5X5_100
 
 
 def create_charuco_board(
@@ -40,7 +40,7 @@ def create_charuco_board(
 
 def generate_board_image(
     board: cv2.aruco.CharucoBoard,
-    image_size: tuple[int, int] = (2480, 3508),
+    image_size: tuple[int, int] = (4961, 3508),  # A3 landscape @ 300 DPI
     margin: int = 50,
 ) -> np.ndarray:
     img = board.generateImage(image_size, marginSize=margin)

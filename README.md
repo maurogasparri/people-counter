@@ -20,9 +20,9 @@ Each unit costs ~USD 416 and consists of:
 | Component | Spec | Role |
 |-----------|------|------|
 | Raspberry Pi 5 | 4GB RAM, ARM Cortex-A76 | Main SBC |
-| Hailo-8L | 13 TOPS, M.2 via PoE HAT+ | Neural inference |
+| Hailo-8L | 13 TOPS, M.2 via Raspberry Pi AI HAT+ | Neural inference |
 | 2x Arducam IMX708 | 12MP, 120 HFOV, M12 lens, CSI, 14cm baseline | Stereo pair |
-| PoE HAT+ | Waveshare, 30W | Power + network |
+| Waveshare PoE HAT (H) | 25.5W, 802.3at | Power via dupont (no stack) |
 | MicroSD | 32GB | Boot + storage |
 
 ## Architecture
@@ -61,12 +61,12 @@ Cloud config uses a **local shadow cache** strategy: on boot, `main.py` reads a 
 | Hardware | Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 |
 | Stereo capture | Validated | picamera2 on RPi5, both cameras working |
 | Detection | Validated | YOLOv8n HEF on Hailo-8L, persistent VDevice with ROUND_ROBIN scheduling |
-| Calibration | Validated | Pinhole model (CALIB_RATIONAL_MODEL), baseline 142.8mm, epipolar lines verified |
+| Calibration | Validated | Pinhole (CALIB_RATIONAL_MODEL), baseline 142.8mm. ChArUco 11x7/35mm/26mm/DICT_5X5_100 A3 (in `calibration/`). Validated via 5-zone depth check with PASS/FAIL thresholds |
 | WiFi probe | Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
 | BLE scan | Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |
 | Cloud infra | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
 | Deployment | Ready | provision.py, systemd services (pipeline + wifi-monitor + daily reset), logrotate |
-| Setup guide | Complete | 13-step guide from MicroSD to overlayfs (docs/setup-guide.md) |
+| Setup guide | Complete | 12-step guide from MicroSD to overlayfs (docs/setup-guide.md) |
 | TFG document | 90+ pages | 27 references, 13 tables, 6 figures |
 
 ## Quick start
@@ -113,7 +113,7 @@ tests/               # 180 tests mirroring src/ structure
 scripts/
 ├── calibrate.py      # CLI: generate-board, capture (headless), calibrate, verify
 ├── focus_assist.py   # Live focus scoring with HTTP preview
-├── diagnose_depth.py # Depth estimation diagnostic tool
+├── diagnose_depth.py # Depth validation: 5-zone analysis + PASS/FAIL vs known distance
 ├── provision.py      # Device provisioning: create, deploy, list
 ├── download_model.py # Download YOLOv8n HEF/ONNX
 ├── verify_hardware.py # Hardware verification script
@@ -126,7 +126,7 @@ config/
 infra/
 └── cloudformation/people-counter.yaml  # Full AWS stack
 docs/
-└── setup-guide.md            # Hardware assembly + RPi setup (13 steps)
+└── setup-guide.md            # Hardware assembly + RPi setup (12 steps)
 ```
 
 ## Key references

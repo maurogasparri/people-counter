@@ -38,15 +38,15 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 ## Hardware per Unit (BOM ~USD 416)
 
 - Raspberry Pi 5 4GB — main SBC
-- Hailo-8L 13 TOPS via PoE M.2 HAT+ (Waveshare) — neural accelerator
+- Hailo-8L 13 TOPS via M.2 (Raspberry Pi AI HAT+) — neural accelerator
 - 2x Arducam IMX708 12MP HDR, M12 lens 120 HFOV (B0310) via CSI — stereo pair, 14cm baseline
-- PoE 30W injector — power via existing Ethernet cabling
+- Waveshare PoE HAT (H) 25.5W (802.3at) wired via dupont (not stacked) — power via Ethernet
 - PETG 3D-printed enclosure — ceiling mount on metal L-bracket
 
 ## Key Technical Decisions
 
 ### Vision Pipeline
-- **Stereo calibration**: ChArUco pattern (A4, calib.io 5x7 DICT_5X5), pinhole model with `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). Board params (columns, rows, square-length, marker-length) required on all CLI subcommands. Store intrinsics/extrinsics as `.npz` per device. Calibrate at 0.5-1.5m.
+- **Stereo calibration**: ChArUco pattern (A3 landscape, 11x7 squares, 35mm checker / 26mm marker, DICT_5X5_100, 60 internal corners), pinhole model with `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). Board params required on all CLI subcommands. Store intrinsics/extrinsics as `.npz` per device. Capture at 0.5–3m (covering full operational depth range, not just calibration sweet spot). Validate with `scripts/diagnose_depth.py` at multiple distances — checks 5 zones (center + 4 corners), enforces center error <5% at 2m / <10% at 3m and edge/center ratio <2×.
 - **Rectification**: Precomputed maps via `cv2.initUndistortRectifyMap`. Applied per frame pair.
 - **Depth**: Semi-Global Block Matching (`cv2.StereoSGBM`) on rectified pair + right matcher + WLS filter (`cv2.ximgproc.DisparityWLSFilter`).
 - **Detection**: YOLOv8n compiled to HEF via Hailo Model Zoo. Run on Hailo-8L at 30+ FPS. Uses `hailo_platform` VStream API with persistent activation, shared VDevice (`group_id="SHARED"`, `ROUND_ROBIN` scheduling), and on-chip NMS.
@@ -127,7 +127,7 @@ people-counter/
 │   ├── verify_hardware.py <- hardware verification
 │   └── setup_device.sh    <- automated device setup (steps 4-9)
 ├── calibration/
-│   └── charuco_board.pdf  <- reference ChArUco pattern (calib.io 5x7 DICT_5X5)
+│   └── charuco_11x7_sq35mm_mk26mm_dict5X5_a3_calibio.pdf <- ChArUco board (calib.io vector PDF, A3)
 ├── infra/
 │   └── cloudformation/
 │       └── people-counter.yaml <- full stack (IoT, Timestream, DynamoDB, Lambda)
@@ -143,7 +143,7 @@ people-counter/
 | Sprint | Focus | Deliverable | Status |
 |--------|-------|------------|--------|
 | S3 | PoC | Stereo capture + YOLOv8n on RPi5. Prove it works. | **HARDWARE VALIDATED** — capture.py adapted to picamera2, stereo capture verified on RPi5. detect.py (Hailo + OpenCV backends). |
-| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **DONE** — calibration.py pinhole model (CALIB_RATIONAL_MODEL). Board params required on CLI. Baseline 142.8mm. Depth accuracy pending good-light validation. |
+| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **DONE** — calibration.py pinhole model (CALIB_RATIONAL_MODEL). Board: 11x7 / 35mm / 26mm / DICT_5X5_100 (A3, in `calibration/`). Baseline 142.8mm. diagnose_depth.py validates 5 zones with PASS/FAIL thresholds. |
 | S5 | Detection | HEF compilation. Hailo SDK integration. 30+ FPS. | **SOFTWARE READY** — detect.py with Hailo + OpenCV backends, preprocess/postprocess tested (10 tests). Hailo-8L verified (fw 4.23.0, PCIe Gen 3). HEF compilation pending. |
 | S6 | Tracking | 3D tracker. Virtual line. Ingress/egress events. | **DONE** — tracker.py + counter.py (12 tests). main.py wired E2E (17 tests). |
 | S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **HARDWARE VALIDATED** — wifi_probe.py (nexmon + airmon-ng + scapy, probes captured), ble_scan.py (bleak, 343 adverts/8 unique devices). hasher.py + dedup.py (11 tests). |
@@ -172,7 +172,7 @@ people-counter/
 - **No video/image transmission.** Only metadata.
 - **No raw MAC storage.** Hash first, always.
 - **WiFi = probe only.** Network = Ethernet.
-- **No HAT stacking.** PoE M.2 HAT+ is the only HAT.
+- **HAT stack**: AI HAT+ (Hailo M.2) is the only stacked HAT. PoE HAT (H) is wired via dupont.
 - **No hardcoded config.** Everything in YAML.
 - **Always buffer locally.** Assume connectivity will fail.
 
