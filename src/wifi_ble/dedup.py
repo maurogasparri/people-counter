@@ -133,7 +133,7 @@ class DedupEngine:
     ) -> dict:
         """Classify WiFi/BLE detections by RSSI into passersby vs shoppers.
 
-        Based on FootfallCam dual-threshold model:
+        Dual-threshold model:
             - rssi_passerby (-75 dBm): device is "present" (outside traffic)
             - rssi_shopper  (-55 dBm): device is "very close" (entered store)
 

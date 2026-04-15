@@ -2,7 +2,7 @@
 # People Counter — Device Configuration
 # =============================================================================
 #
-# Configuration strategy (based on FootfallCam 3D Pro2 analysis):
+# Configuration strategy:
 #
 # LOCAL (this file) — Hardware-intrinsic settings. Only change with physical
 #   access or SSH. Set once during installation.
@@ -10,7 +10,7 @@
 # CLOUD (AWS IoT Device Shadow) — Business-driven settings. Pushed from the
 #   cloud without touching the device. Shadow values override local defaults.
 #
-# NOT IMPLEMENTED (deferred post-MVP) — Features to add after TFG delivery.
+# NOT IMPLEMENTED (deferred post-MVP) — Features to add later.
 #
 # =============================================================================
 
@@ -18,7 +18,7 @@
 device:
   id: "store-001-cam-01"          # Unique device ID (matches IoT Core thing name)
   store_id: "store-001"           # Site/store identifier
-  store_name: "Abasto Shopping"   # Human-readable (display only)
+  store_name: "Store Name"        # Human-readable (display only)
 
 # --- LOCAL: Camera & stereo hardware (depends on physical installation) ---
 vision:
@@ -28,7 +28,7 @@ vision:
   fps: 15                         # Capture frame rate
   baseline_cm: 14                 # Physical distance between cameras (measured)
   calibration_file: "/etc/people-counter/calibration.npz"  # ChArUco stereo cal output
-  mounting_height_m: 3.5          # Ceiling height in meters (FC equivalent: Ceiling Height)
+  mounting_height_m: 3.5          # Ceiling height in meters
   counting_line_y: 0.5            # Virtual line position (0.0=top, 1.0=bottom)
   # SGBM depth parameters (tuned per installation)
   # f_px ~ 1330 at full res; disparity at 3m ~ 62px, at 1.3m ~ 143px
@@ -38,7 +38,7 @@ vision:
 # --- LOCAL: Detection model (compiled for Hailo-8L, won't change remotely) ---
 detection:
   model_path: "/usr/src/people-counter/models/yolov8n.hef"  # HEF compiled for Hailo-8L 13T
-  confidence_threshold: 0.5       # Person detection confidence (FC: Detection Sensitivity 0.8)
+  confidence_threshold: 0.5       # Person detection confidence
   nms_threshold: 0.45             # Non-maximum suppression IoU threshold
 
 # --- LOCAL: Tracker parameters ---
@@ -52,12 +52,12 @@ wifi_ble:
   wifi_interface: "wlan0"         # Monitor-mode interface for probe capture
   ble_enabled: true               # BLE advertising capture
   probe_interval_seconds: 900     # Aggregation window (15 min)
-  # Dual RSSI thresholds (from FootfallCam WiFi Data Tuning):
-  #   WifiThreshold  = -75 dBm → "passerby" (present in the zone)
-  #   ShopperThreshold = -55 dBm → "shopper" (very close / entered)
+  # Dual RSSI thresholds:
+  #   passerby = -75 dBm → present in the zone
+  #   shopper  = -55 dBm → very close / entered
   #   Turn In Rate = shoppers / passersby
-  rssi_passerby_threshold: -75    # FC equivalent: Street Detection Range
-  rssi_shopper_threshold: -55     # FC equivalent: Entrance Detection Range
+  rssi_passerby_threshold: -75
+  rssi_shopper_threshold: -55
   cross_protocol_window_seconds: 2
   cross_protocol_rssi_delta: 5
 
@@ -101,10 +101,9 @@ telemetry:
 # The device subscribes to shadow/update/delta and applies changes at runtime.
 # =============================================================================
 cloud_defaults:
-  # Operating hours per day of week (FC: Site Operations → Operating Hours)
+  # Operating hours per day of week. Site-level config — the cloud pushes
+  # the same schedule to all devices in a store.
   # Format: "HH:MM-HH:MM" or null for closed
-  # NOTE: In FC this is site-level config. We model it the same way —
-  # the cloud pushes the same schedule to all devices in a store.
   operating_hours:
     monday: "10:00-22:00"
     tuesday: "10:00-22:00"
@@ -114,7 +113,6 @@ cloud_defaults:
     saturday: "10:00-22:00"
     sunday: "10:00-21:00"
 
-  # Footfall scaling factor (FC: Footfall Scaling Factor)
   # Post-calibration correction multiplier. Default 1.0 = no correction.
   footfall_scaling_factor: 1.0
 
@@ -124,21 +122,21 @@ cloud_defaults:
   telemetry_interval_seconds: 300 # Can be reduced for debugging
 
 # =============================================================================
-# NOT IMPLEMENTED — Deferred post-MVP (TFG roadmap)
+# NOT IMPLEMENTED — Deferred post-MVP
 # =============================================================================
 # These features are documented for future reference but NOT active in code.
 #
-# Short-term (0-3 months post delivery):
-# - Local web UI on device (FC has full web interface; our MVP is headless)
+# Short-term:
+# - Local web UI on device (MVP is headless)
 # - Custom operating hours / exceptions for holidays
 #
-# Medium-term (3-6 months):
-# - Audit log of config changes (FC logs who/what/when)
-# - Data Integrity Report (FC auto-generates gap/anomaly reports)
+# Medium-term:
+# - Audit log of config changes
+# - Data integrity report (gap/anomaly detection)
 # - Remote Access toggle
 #
-# Long-term (6-12 months):
-# - Age/Gender/Staff classifiers (FC: age_model, gender_model)
-# - Multi-camera management (FC: up to 4 slave cameras per master)
-# - Dashboard builder (FC: ~40 widget types; we use QuickSight)
+# Long-term:
+# - Age/Gender/Staff classifiers
+# - Multi-camera management (master/slave)
+# - Dashboard builder (currently QuickSight)
 # =============================================================================

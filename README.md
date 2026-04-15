@@ -2,8 +2,6 @@
 
 Low-cost people counting system for retail stores, based on stereo vision and edge AI.
 
-**TFG (Trabajo Final de Grado)** — Lic. en Administracion de Infraestructura Tecnologica, Universidad Siglo 21.
-
 ## What it does
 
 - **Counts people** entering and exiting a store in real-time using stereo camera depth + YOLOv8n on a Hailo-8L accelerator
@@ -15,15 +13,16 @@ Low-cost people counting system for retail stores, based on stereo vision and ed
 
 ## Hardware
 
-Each unit costs ~USD 416 and consists of:
+Each unit consists of:
 
 | Component | Spec | Role |
 |-----------|------|------|
 | Raspberry Pi 5 | 4GB RAM, ARM Cortex-A76 | Main SBC |
-| Hailo-8L | 13 TOPS, M.2 via Raspberry Pi AI HAT+ | Neural inference |
-| 2x Arducam IMX708 | 12MP, 120 HFOV, M12 lens, CSI, 14cm baseline | Stereo pair |
+| Raspberry Pi Active Cooler | PWM fan + heatsink | Thermal management |
+| Raspberry Pi AI HAT+ | 13 TOPS (Hailo-8L) | Neural inference |
+| 2x Arducam IMX708 | 12MP HDR, 120° HFOV, M12 lens, CSI, 14cm baseline | Stereo pair |
 | Waveshare PoE HAT (H) | 25.5W, 802.3at | Power via dupont (no stack) |
-| MicroSD | 32GB | Boot + storage |
+| MicroSD | SanDisk Extreme 64GB | Boot + storage |
 
 ## Architecture
 
@@ -67,7 +66,6 @@ Cloud config uses a **local shadow cache** strategy: on boot, `main.py` reads a 
 | Cloud infra | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
 | Deployment | Ready | provision.py, systemd services (pipeline + wifi-monitor + daily reset), logrotate |
 | Setup guide | Complete | 12-step guide from MicroSD to overlayfs (docs/setup-guide.md) |
-| TFG document | 90+ pages | 27 references, 13 tables, 6 figures |
 
 ## Quick start
 
@@ -91,7 +89,7 @@ On development machines (Windows/Mac/Linux), `pip install -e ".[dev]"` is suffic
 
 ## Configuration
 
-The system uses a dual-config strategy inspired by FootfallCam:
+The system uses a dual-config strategy:
 
 - **Local** (`config/config.yaml`): hardware-intrinsic settings — camera IDs, calibration file, SGBM params, model path, MQTT certs
 - **Cloud** (AWS IoT Device Shadow): business-driven settings — operating hours, scaling factor, enable/disable toggles

@@ -10,7 +10,7 @@ Usage:
     python scripts/provision.py create \
         --device-id store-001-cam-01 \
         --store-id store-001 \
-        --store-name "Abasto Shopping" \
+        --store-name "Store Name" \
         --endpoint xxxxx.iot.us-east-1.amazonaws.com
 
     # Deploy config and certs to a device via SSH

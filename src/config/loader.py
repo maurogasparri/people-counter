@@ -1,6 +1,6 @@
 """Configuration loader with local/cloud merge support.
 
-Strategy (based on FootfallCam 3D Pro2 analysis):
+Strategy:
     - LOCAL config: hardware-intrinsic settings from YAML file.
     - CLOUD config: business-driven settings from AWS IoT Device Shadow.
     - Cloud values override local defaults in the 'cloud_defaults' section.

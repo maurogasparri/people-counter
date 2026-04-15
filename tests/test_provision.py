@@ -113,7 +113,7 @@ def test_create_skip_aws():
 
 def test_create_metadata():
     tmpdir = tempfile.mkdtemp()
-    args = _make_args(skip_aws=True, store_name="Abasto")
+    args = _make_args(skip_aws=True, store_name="TestStore")
 
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
         with patch("provision.CONFIG_TEMPLATE", Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"):
@@ -122,7 +122,7 @@ def test_create_metadata():
     meta = json.loads((Path(tmpdir) / "store-001-cam-01" / "metadata.json").read_text())
     assert meta["device_id"] == "store-001-cam-01"
     assert meta["store_id"] == "store-001"
-    assert meta["store_name"] == "Abasto"
+    assert meta["store_name"] == "TestStore"
 
 
 def test_create_fails_if_exists():
