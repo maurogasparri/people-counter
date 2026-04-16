@@ -1,21 +1,21 @@
 # CLAUDE.md — People Counter Edge System
 
-## Project Overview
+## Descripción general
 
-Low-cost people counting system for retail stores. Stereo vision + edge AI + passive WiFi/BLE traffic detection.
+Sistema de conteo de personas de bajo costo para locales comerciales. Visión estéreo + IA en el borde + detección pasiva de tráfico WiFi/BLE.
 
-**This is a real production project.** Code quality, error handling, and resilience are critical. Devices run unattended 12h/day, 363 days/year.
+**Este es un proyecto de producción real.** La calidad del código, el manejo de errores y la resiliencia son críticos. Los dispositivos operan desatendidos 12h/día, 363 días/año.
 
-## Architecture
+## Arquitectura
 
 ```
 +---------------------------------------------+
-|           Edge Device (per store)            |
+|        Dispositivo edge (por local)          |
 |  RPi5 4GB + Hailo-8L 13T + 2x IMX708       |
 |                                              |
 |  +----------+  +----------+  +--------+     |
-|  |  Vision   |  | WiFi/BLE |  |  MQTT  |    |
-|  |  Module   |  |  Module  |  | Client |    |
+|  |  Visión   |  | WiFi/BLE |  |  MQTT  |    |
+|  |           |  |          |  | Client |    |
 |  |           |  |          |  |        |    |
 |  | Stereo -> |  | Monitor  |  | QoS 1  |    |
 |  | YOLOv8n ->|  | Probe -> |  | Buffer |    |
@@ -28,69 +28,69 @@ Low-cost people counting system for retail stores. Stereo vision + edge AI + pas
 +---------------------------------------------+
 |              AWS Cloud                       |
 |                                              |
-|  IoT Core -> Timestream (time series)        |
+|  IoT Core -> Timestream (series temporales)  |
 |           -> Lambda (WiFi/BLE dedup)         |
-|           -> DynamoDB (dedup hashes)         |
+|           -> DynamoDB (hashes dedup)         |
 |           -> API Gateway -> QuickSight       |
 +---------------------------------------------+
 ```
 
-## Hardware per Unit
+## Hardware por unidad
 
-- Raspberry Pi 5 4GB — main SBC
-- Raspberry Pi Active Cooler — PWM fan + heatsink for thermal management
-- Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — neural accelerator
-- 2x Arducam IMX708 12MP HDR, M12 lens 120 HFOV (B0310) via CSI — stereo pair, 14cm baseline
-- Waveshare PoE HAT (H) 25.5W (802.3at) wired via dupont (not stacked) — power via Ethernet
-- SanDisk Extreme 64GB microSD — boot + storage
+- Raspberry Pi 5 4GB — SBC principal
+- Raspberry Pi Active Cooler — fan PWM + disipador para gestión térmica
+- Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — acelerador neuronal
+- 2x Arducam IMX708 12MP HDR, lente M12 120 HFOV (B0310) vía CSI — par estéreo, baseline 14cm
+- Waveshare PoE HAT (H) 25.5W (802.3at) conectado por dupont (no stackeado) — alimentación por Ethernet
+- SanDisk Extreme 64GB microSD — boot + almacenamiento
 
-## Key Technical Decisions
+## Decisiones técnicas clave
 
-### Vision Pipeline
-- **Stereo calibration**: ChArUco pattern (A3 landscape, 11x7 squares, 35mm checker / 26mm marker, DICT_5X5_100, 60 internal corners), pinhole model with `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). Board params required on all CLI subcommands. Store intrinsics/extrinsics as `.npz` per device. Capture at 0.5–3m (covering full operational depth range, not just calibration sweet spot). Validate with `scripts/diagnose_depth.py` at multiple distances — checks 5 zones (center + 4 corners), enforces center error <5% at 2m / <10% at 3m and edge/center ratio <2×.
-- **Rectification**: Precomputed maps via `cv2.initUndistortRectifyMap`. Applied per frame pair.
-- **Depth**: Semi-Global Block Matching (`cv2.StereoSGBM`) on rectified pair + right matcher + WLS filter (`cv2.ximgproc.DisparityWLSFilter`).
-- **Detection**: YOLOv8n compiled to HEF via Hailo Model Zoo. Run on Hailo-8L at 30+ FPS. Uses `hailo_platform` VStream API with persistent activation, shared VDevice (`group_id="SHARED"`, `ROUND_ROBIN` scheduling), and on-chip NMS.
-- **Tracking**: Euclidean distance tracker in 3D space (x, y, depth). Unique ID per trajectory.
-- **Counting**: Virtual line in depth coordinates. Crossing direction = ingress/egress event. Publish immediately via MQTT.
+### Pipeline de visión
+- **Calibración estéreo**: patrón ChArUco (A3 landscape, 11x7 squares, checker 35mm / marker 26mm, DICT_5X5_100, 60 esquinas internas), modelo pinhole con `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). Los parámetros del board son requeridos en todos los subcomandos CLI. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. Captura a 0.5–3m (cubriendo todo el rango operativo, no solo el sweet spot). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
+- **Rectificación**: mapas precomputados vía `cv2.initUndistortRectifyMap`. Aplicados por par de frames.
+- **Profundidad**: Semi-Global Block Matching (`cv2.StereoSGBM`) sobre par rectificado + matcher derecho + filtro WLS (`cv2.ximgproc.DisparityWLSFilter`).
+- **Detección**: YOLOv8n compilado a HEF vía Hailo Model Zoo. Corre en Hailo-8L a 30+ FPS. Usa API VStream de `hailo_platform` con activación persistente, VDevice compartido (`group_id="SHARED"`, scheduling `ROUND_ROBIN`), y NMS on-chip.
+- **Tracking**: tracker por distancia euclidiana en espacio 3D (x, y, profundidad). ID único por trayectoria.
+- **Conteo**: línea virtual en coordenadas de profundidad. Dirección de cruce = evento ingreso/egreso. Publicación inmediata vía MQTT.
 
-### WiFi/BLE Capture
-- **WiFi**: CYW43455 in monitor mode via nexmon (firmware-nexmon + brcmfmac-nexmon-dkms from Kali packages) + airmon-ng. Capture probe requests on 2.4 AND 5 GHz. **WiFi is EXCLUSIVE for probing — network connectivity is Ethernet only.**
-- **BLE**: Same CYW43455 via bleak (BlueZ D-Bus API). Passive advertising scan.
-- **Hashing**: SHA-256 truncated to 16 bytes on every MAC before storage. Never store raw MACs.
-- **Dedup L1 (intra-protocol)**: SQLite set of hashes per day per protocol. Reset at business day start.
-- **Dedup L2 (cross-protocol)**: WiFi + BLE within 2s window AND RSSI delta <= 5dBm -> unified hash.
-- **Dedup L3 (inter-camera)**: Cloud Lambda + DynamoDB per store_id + date.
+### Captura WiFi/BLE
+- **WiFi**: CYW43455 en monitor mode vía nexmon (firmware-nexmon + brcmfmac-nexmon-dkms de paquetes Kali) + airmon-ng. Captura probe requests en 2.4 Y 5 GHz. **WiFi es EXCLUSIVO para probing — la conectividad de red es solo por Ethernet.**
+- **BLE**: Mismo CYW43455 vía bleak (API D-Bus de BlueZ). Escaneo pasivo de advertising.
+- **Hashing**: SHA-256 truncado a 16 bytes sobre cada MAC antes de almacenar. Nunca se guardan MACs crudas.
+- **Dedup L1 (intra-protocolo)**: set SQLite de hashes por día por protocolo. Reset al inicio del día comercial.
+- **Dedup L2 (cross-protocolo)**: WiFi + BLE dentro de ventana de 2s Y delta RSSI <= 5dBm -> hash unificado.
+- **Dedup L3 (inter-cámara)**: Cloud Lambda + DynamoDB por store_id + fecha.
 
-### Communication
-- **MQTT**: AWS IoT Core, X.509 client certs, QoS 1.
-- **Counting events**: Real-time on each crossing.
-- **WiFi/BLE summaries**: Every 15 min.
-- **Telemetry**: Every 5 min (CPU temp, Hailo temp, RAM, disk, uptime).
-- **SQLite buffer**: All events buffered locally. Replay on reconnect. Mark sent only after PUBACK.
+### Comunicación
+- **MQTT**: AWS IoT Core, certificados cliente X.509, QoS 1.
+- **Eventos de conteo**: en tiempo real en cada cruce.
+- **Resúmenes WiFi/BLE**: cada 15 min.
+- **Telemetría**: cada 5 min (temp CPU, temp Hailo, RAM, disco, uptime).
+- **Buffer SQLite**: todos los eventos se almacenan localmente. Replay al reconectar. Se marca enviado solo después de PUBACK.
 
 ### Cloud (AWS)
-- IoT Core: MQTT broker + rules engine.
-- Timestream: Counting time series. 7-day memory, magnetic for history.
-- Lambda: WiFi/BLE dedup across cameras per store.
-- DynamoDB: Dedup hash table, partitioned by store_id + date.
-- API Gateway: REST API for queries.
-- QuickSight: Dashboards.
+- IoT Core: broker MQTT + rules engine.
+- Timestream: series temporales de conteo. 7 días en memoria, magnético para historial.
+- Lambda: dedup WiFi/BLE entre cámaras por local.
+- DynamoDB: tabla de hashes de dedup, particionada por store_id + fecha.
+- API Gateway: API REST para consultas.
+- QuickSight: dashboards.
 
-## Code Conventions
+## Convenciones de código
 
-- **Language**: Python 3.13 (RPi OS Trixie)
+- **Lenguaje**: Python 3.13 (RPi OS Trixie)
 - **Formatter**: Black, 88 chars
 - **Linter**: Ruff
-- **Type hints**: Required on all function signatures
-- **Logging**: `logging` module, structured JSON. DEBUG for dev, INFO for prod.
-- **Config**: YAML at `/etc/people-counter/config.yaml`. See `config/config.example.yaml`.
-- **Secrets**: X.509 certs in `/etc/people-counter/certs/`. Never commit.
-- **Tests**: pytest, mirroring src structure.
-- **No classes unless stateful.** Tracker and MQTTClient justify classes. Prefer functions elsewhere.
-- **Every I/O must have error handling.** Camera read, MQTT publish, file write — all wrapped.
+- **Type hints**: requeridos en todas las firmas de funciones
+- **Logging**: módulo `logging`, JSON estructurado. DEBUG para dev, INFO para prod.
+- **Config**: YAML en `/etc/people-counter/config.yaml`. Ver `config/config.example.yaml`.
+- **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. Nunca commitear.
+- **Tests**: pytest, estructura espejo de src.
+- **No usar clases salvo que haya estado.** Tracker y MQTTClient justifican clases. Preferir funciones en el resto.
+- **Todo I/O debe tener manejo de errores.** Lectura de cámara, publicación MQTT, escritura de archivo — todo wrapeado.
 
-## Directory Structure
+## Estructura del directorio
 
 ```
 people-counter/
@@ -99,89 +99,89 @@ people-counter/
 ├── pyproject.toml
 ├── src/
 │   ├── vision/
-│   │   ├── capture.py     <- stereo frame acquisition (live CSI + file replay)
-│   │   ├── calibration.py <- ChArUco calibration + rectification (IMPLEMENTED)
-│   │   ├── depth.py       <- SGBM disparity + depth conversion (IMPLEMENTED)
-│   │   └── detect.py      <- YOLOv8n inference (Hailo + OpenCV backends)
+│   │   ├── capture.py     <- adquisición de frames estéreo (CSI en vivo + replay de archivos)
+│   │   ├── calibration.py <- calibración ChArUco + rectificación
+│   │   ├── depth.py       <- disparidad SGBM + conversión a profundidad
+│   │   └── detect.py      <- inferencia YOLOv8n (backends Hailo + OpenCV)
 │   ├── tracking/
-│   │   ├── tracker.py     <- 3D Euclidean tracker
-│   │   └── counter.py     <- virtual line crossing logic
+│   │   ├── tracker.py     <- tracker euclidiano 3D
+│   │   └── counter.py     <- lógica de cruce de línea virtual
 │   ├── wifi_ble/
-│   │   ├── wifi_probe.py  <- nexmon/airmon-ng probe capture (VALIDATED)
-│   │   ├── ble_scan.py    <- BLE advertising capture via bleak (VALIDATED)
-│   │   ├── hasher.py      <- SHA-256 truncated hashing
-│   │   └── dedup.py       <- intra + cross-protocol dedup
+│   │   ├── wifi_probe.py  <- captura nexmon/airmon-ng de probes
+│   │   ├── ble_scan.py    <- captura de advertising BLE vía bleak
+│   │   ├── hasher.py      <- hashing SHA-256 truncado
+│   │   └── dedup.py       <- dedup intra + cross-protocolo
 │   ├── mqtt/
-│   │   ├── client.py      <- AWS IoT Core MQTT client (IMPLEMENTED)
-│   │   └── buffer.py      <- SQLite local buffer
+│   │   ├── client.py      <- cliente MQTT AWS IoT Core
+│   │   └── buffer.py      <- buffer local SQLite
 │   ├── cloud/
-│   │   └── lambda_dedup.py <- inter-camera dedup L3 (IMPLEMENTED)
+│   │   └── lambda_dedup.py <- dedup inter-cámara L3
 │   ├── config/
-│   │   └── loader.py      <- YAML config loading + validation
-│   └── main.py            <- full pipeline orchestrator (IMPLEMENTED)
-├── tests/                 <- 180 tests across all modules
+│   │   └── loader.py      <- carga y validación de config YAML
+│   └── main.py            <- orquestador del pipeline completo
+├── tests/                 <- 180 tests en todos los módulos
 ├── scripts/
-│   ├── calibrate.py       <- CLI calibration tool (4 subcommands, headless)
-│   ├── focus_assist.py    <- live focus scoring with HTTP preview
-│   ├── diagnose_depth.py  <- depth estimation diagnostic
-│   ├── provision.py       <- device provisioning (create/deploy/list)
-│   ├── verify_hardware.py <- hardware verification
-│   └── setup_device.sh    <- automated device setup (steps 4-9)
+│   ├── calibrate.py       <- herramienta CLI de calibración (4 subcomandos, headless)
+│   ├── focus_assist.py    <- asistente de foco guiado con preview HTTP
+│   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad
+│   ├── provision.py       <- provisioning de dispositivos (create/deploy/list)
+│   ├── verify_hardware.py <- verificación de hardware
+│   └── setup_device.sh    <- setup automático del dispositivo (pasos 4-10)
 ├── calibration/
-│   └── charuco_11x7_sq35mm_mk26mm_dict5X5_a3_calibio.pdf <- ChArUco board (calib.io vector PDF, A3)
+│   └── charuco_11x7_sq35mm_mk26mm_dict5X5_a3_calibio.pdf <- board ChArUco (PDF vectorial calib.io, A3)
 ├── infra/
 │   └── cloudformation/
-│       └── people-counter.yaml <- full stack (IoT, Timestream, DynamoDB, Lambda)
+│       └── people-counter.yaml <- stack completo (IoT, Timestream, DynamoDB, Lambda)
 ├── docs/
-│   └── setup-guide.md     <- hardware assembly + RPi setup guide
+│   └── setup-guide.md     <- guía de ensamblaje + setup RPi
 └── config/
     ├── config.example.yaml
-    └── people-counter.service <- systemd service file
+    └── people-counter.service <- servicio systemd
 ```
 
-## Sprint Plan (dev-only tasks)
+## Plan de sprints (tareas de desarrollo)
 
-| Sprint | Focus | Deliverable | Status |
-|--------|-------|------------|--------|
-| S3 | PoC | Stereo capture + YOLOv8n on RPi5. Prove it works. | **HARDWARE VALIDATED** — capture.py adapted to picamera2, stereo capture verified on RPi5. detect.py (Hailo + OpenCV backends). |
-| S4 | Calibration | ChArUco pipeline. Rectification. Depth map. | **DONE** — calibration.py pinhole model (CALIB_RATIONAL_MODEL). Board: 11x7 / 35mm / 26mm / DICT_5X5_100 (A3, in `calibration/`). Baseline 142.8mm. diagnose_depth.py validates 5 zones with PASS/FAIL thresholds. |
-| S5 | Detection | HEF compilation. Hailo SDK integration. 30+ FPS. | **SOFTWARE READY** — detect.py with Hailo + OpenCV backends, preprocess/postprocess tested (10 tests). Hailo-8L verified (fw 4.23.0, PCIe Gen 3). HEF compilation pending. |
-| S6 | Tracking | 3D tracker. Virtual line. Ingress/egress events. | **DONE** — tracker.py + counter.py (12 tests). main.py wired E2E (17 tests). |
-| S7 | WiFi/BLE | nexmon + BLE capture. Hashing. Dedup L1+L2. | **HARDWARE VALIDATED** — wifi_probe.py (nexmon + airmon-ng + scapy, probes captured), ble_scan.py (bleak, 343 adverts/8 unique devices). hasher.py + dedup.py (11 tests). |
-| S8 | MQTT | IoT Core client. SQLite buffer. Reconnect. | **DONE** — client.py with TLS, buffer replay, backoff (7 tests). |
-| S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). CloudFormation template with IoT Core, Timestream, DynamoDB, Lambda, IAM. QuickSight/API GW deferred post-MVP. |
-| S10 | Integration | End-to-end. All modules together. | **E2E VALIDATED** — pipeline tested on RPi5: capture -> rectify -> depth (SGBM) -> detect (Hailo) -> depth per person. |
-| S11 | Pilot | Deploy 3 stores. Monitor. Fix. | PENDING |
-| S12 | Stabilize | Post-pilot fixes. | PENDING |
+| Sprint | Foco | Entregable | Estado |
+|--------|------|-----------|--------|
+| S3 | PoC | Captura estéreo + YOLOv8n en RPi5. Probar que funciona. | **HARDWARE VALIDADO** — capture.py adaptado a picamera2, captura estéreo verificada en RPi5. detect.py (backends Hailo + OpenCV). |
+| S4 | Calibración | Pipeline ChArUco. Rectificación. Mapa de profundidad. | **DONE** — calibration.py modelo pinhole (CALIB_RATIONAL_MODEL). Board: 11x7 / 35mm / 26mm / DICT_5X5_100 (A3, en `calibration/`). Baseline 142.8mm. diagnose_depth.py valida 5 zonas con umbrales PASS/FAIL. |
+| S5 | Detección | Compilación HEF. Integración Hailo SDK. 30+ FPS. | **SOFTWARE READY** — detect.py con backends Hailo + OpenCV, pre/postproceso testeado (10 tests). Hailo-8L verificado (fw 4.23.0, PCIe Gen 3). Compilación HEF pendiente. |
+| S6 | Tracking | Tracker 3D. Línea virtual. Eventos ingreso/egreso. | **DONE** — tracker.py + counter.py (12 tests). main.py conectado E2E (17 tests). |
+| S7 | WiFi/BLE | nexmon + captura BLE. Hashing. Dedup L1+L2. | **HARDWARE VALIDADO** — wifi_probe.py (nexmon + airmon-ng + scapy, probes capturadas), ble_scan.py (bleak, 343 adverts/8 dispositivos únicos). hasher.py + dedup.py (11 tests). |
+| S8 | MQTT | Cliente IoT Core. Buffer SQLite. Reconexión. | **DONE** — client.py con TLS, replay de buffer, backoff (7 tests). |
+| S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). Template CloudFormation con IoT Core, Timestream, DynamoDB, Lambda, IAM. QuickSight/API GW diferidos post-MVP. |
+| S10 | Integración | End-to-end. Todos los módulos juntos. | **E2E VALIDADO** — pipeline testeado en RPi5: capture -> rectify -> depth (SGBM) -> detect (Hailo) -> depth por persona. |
+| S11 | Piloto | Deploy en 3 locales. Monitorear. Corregir. | PENDIENTE |
+| S12 | Estabilización | Correcciones post-piloto. | PENDIENTE |
 
-## Implementation Status
+## Estado de implementación
 
-**180 tests passing.** Modules by status:
+**180 tests pasando.** Módulos por estado:
 
-- COMPLETE + VALIDATED: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
-- INFRA READY: CloudFormation template, systemd service, provision.py, logrotate, daily reset timer
-- PENDING: Cenital detection test, SGBM tuning with IMX708 cameras
+- COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
+- INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
+- PENDIENTE: test de detección cenital, ajuste SGBM con cámaras IMX708
 
-## Known Limitations (MVP)
+## Limitaciones conocidas (MVP)
 
-- **Tracker**: Greedy matching by 2D pixel distance + depth gating. No hysteresis, no multi-state (approaching/crossed/invalidated), no reidentification. Sufficient for single-door ceiling-mount, needs work for wide entrances with occlusion.
-- **Shadow config**: Local cache bootstrap from `.shadow.json` file. No live delta subscription yet — planned post-MVP.
-- **Operating hours fail-open**: If schedule format is invalid, counting continues (prefers false positives over lost data). Configurable fail-closed planned for production.
+- **Tracker**: matching greedy por distancia de píxeles 2D + gating por profundidad. Sin histéresis, sin multi-estado (approaching/crossed/invalidated), sin reidentificación. Suficiente para montaje cenital en puerta simple, necesita trabajo para entradas amplias con oclusión.
+- **Shadow config**: bootstrap con caché local desde archivo `.shadow.json`. Sin suscripción delta en vivo — planificado post-MVP.
+- **Horario operativo fail-open**: si el formato del horario es inválido, el conteo continúa (prefiere falsos positivos a pérdida de datos). Fail-closed configurable planificado para producción.
 
-## Hard Rules
+## Reglas duras
 
-- **No video/image transmission.** Only metadata.
-- **No raw MAC storage.** Hash first, always.
-- **WiFi = probe only.** Network = Ethernet.
-- **HAT stack**: AI HAT+ is the only stacked HAT. PoE HAT (H) is wired via dupont.
-- **No hardcoded config.** Everything in YAML.
-- **Always buffer locally.** Assume connectivity will fail.
+- **No transmitir video/imágenes.** Solo metadatos.
+- **No almacenar MACs crudas.** Hashear primero, siempre.
+- **WiFi = solo probing.** Red = Ethernet.
+- **Stack de HATs**: AI HAT+ es el único HAT stackeado. PoE HAT (H) se conecta por dupont.
+- **No hardcodear config.** Todo en YAML.
+- **Siempre buffear localmente.** Asumir que la conectividad va a fallar.
 
-## Environment
+## Entorno
 
 - Raspberry Pi OS Trixie 64-bit, Python 3.13
 - Hailo SDK: hailo_platform 4.23+
-- Picamera2: for CSI camera capture (rpicam-* CLI tools)
-- OpenCV: 4.8+ (with contrib for ArUco/ChArUco)
+- Picamera2: para captura de cámaras CSI (herramientas CLI rpicam-*)
+- OpenCV: 4.8+ (con contrib para ArUco/ChArUco)
 - MQTT: paho-mqtt 2.0+
 - DB: sqlite3 (stdlib)

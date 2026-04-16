@@ -1,33 +1,33 @@
 # people-counter
 
-Low-cost people counting system for retail stores, based on stereo vision and edge AI.
+Sistema de conteo de personas de bajo costo para locales comerciales, basado en visión estéreo e IA en el borde.
 
-## What it does
+## Qué hace
 
-- **Counts people** entering and exiting a store in real-time using stereo camera depth + YOLOv8n on a Hailo-8L accelerator
-- **Detects exterior foot traffic** via passive WiFi probe request and BLE advertising capture
-- **Classifies traffic** with dual RSSI thresholds: passersby (-75 dBm) vs shoppers (-55 dBm), calculating Turn In Rate
-- **Deduplicates** WiFi/BLE signals across protocols (L1+L2 on device) and across cameras in the same store (L3 in Lambda)
-- **Streams metadata** to AWS via MQTT with local SQLite buffering for offline resilience
-- **Respects operating hours** via AWS IoT Device Shadow (cloud-pushed site config)
+- **Cuenta personas** que entran y salen de un local en tiempo real usando profundidad por cámara estéreo + YOLOv8n en acelerador Hailo-8L
+- **Detecta tráfico exterior** vía captura pasiva de probe requests WiFi y advertising BLE
+- **Clasifica tráfico** con umbrales duales de RSSI: transeúntes (-75 dBm) vs compradores (-55 dBm), calculando Turn In Rate
+- **Deduplica** señales WiFi/BLE entre protocolos (L1+L2 en dispositivo) y entre cámaras del mismo local (L3 en Lambda)
+- **Transmite metadatos** a AWS vía MQTT con buffer local SQLite para resiliencia offline
+- **Respeta horarios operativos** vía AWS IoT Device Shadow (configuración pushada desde la nube)
 
 ## Hardware
 
-Each unit consists of:
+Cada unidad consiste en:
 
-| Component | Spec | Role |
+| Componente | Spec | Rol |
 |-----------|------|------|
-| Raspberry Pi 5 | 4GB RAM, ARM Cortex-A76 | Main SBC |
-| Raspberry Pi Active Cooler | PWM fan + heatsink | Thermal management |
-| Raspberry Pi AI HAT+ | 13 TOPS (Hailo-8L) | Neural inference |
-| 2x Arducam IMX708 | 12MP HDR, 120° HFOV, M12 lens, CSI, 14cm baseline | Stereo pair |
-| Waveshare PoE HAT (H) | 25.5W, 802.3at | Power via dupont (no stack) |
-| MicroSD | SanDisk Extreme 64GB | Boot + storage |
+| Raspberry Pi 5 | 4GB RAM, ARM Cortex-A76 | SBC principal |
+| Raspberry Pi Active Cooler | fan PWM + disipador | Gestión térmica |
+| Raspberry Pi AI HAT+ | 13 TOPS (Hailo-8L) | Inferencia neuronal |
+| 2x Arducam IMX708 | 12MP HDR, 120° HFOV, lente M12, CSI, baseline 14cm | Par estéreo |
+| Waveshare PoE HAT (H) | 25.5W, 802.3at | Alimentación por dupont (no stackeado) |
+| MicroSD | SanDisk Extreme 64GB | Boot + almacenamiento |
 
-## Architecture
+## Arquitectura
 
 ```
-Edge Device (per store door)          AWS Cloud
+Dispositivo edge (por puerta)         AWS Cloud
 +--------------------------+         +-------------------------+
 | Capture → Rectify → SGBM |  MQTT   | IoT Core → Timestream   |
 | YOLOv8n → Track → Count  |--TLS-->| Lambda → DynamoDB       |
@@ -36,36 +36,36 @@ Edge Device (per store door)          AWS Cloud
 +--------------------------+         +-------------------------+
 ```
 
-### Edge processes
+### Procesos en el edge
 
-The device runs three independent systemd services:
+El dispositivo corre tres servicios systemd independientes:
 
-| Service | Process | What it does |
-|---------|---------|-------------|
-| `people-counter.service` | `src/main.py` | Vision pipeline: capture → rectify → depth → detect → track → count → MQTT |
-| `wifi-monitor.service` | `airmon-ng` | Puts WiFi into monitor mode for probe request capture |
-| `people-counter-reset.timer` | Daily at 04:00 | Resets dedup counters and counting totals for the new business day |
+| Servicio | Proceso | Qué hace |
+|---------|---------|----------|
+| `people-counter.service` | `src/main.py` | Pipeline de visión: capture → rectify → depth → detect → track → count → MQTT |
+| `wifi-monitor.service` | `airmon-ng` | Pone el WiFi en monitor mode para captura de probe requests |
+| `people-counter-reset.timer` | Diario a las 04:00 | Resetea contadores de dedup y totales de conteo para el nuevo día comercial |
 
-WiFi/BLE probing runs as a separate service because it requires exclusive WiFi hardware access (monitor mode). Vision and WiFi never contend for resources. Both publish independently to MQTT, and L3 dedup across cameras happens in the cloud (Lambda).
+El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT, y la dedup L3 entre cámaras se hace en la nube (Lambda).
 
-Cloud config uses a **local shadow cache** strategy: on boot, `main.py` reads a `.shadow.json` file if present (updated by a background process or on previous boot). Live delta subscription via AWS IoT Shadow is planned post-MVP.
+La config cloud usa una estrategia de **caché local de shadow**: al bootear, `main.py` lee un archivo `.shadow.json` si existe (actualizado por un proceso de fondo o en el boot anterior). Suscripción delta en vivo vía AWS IoT Shadow planificada post-MVP.
 
-## Project status
+## Estado del proyecto
 
-| Area | Status | Details |
+| Área | Estado | Detalles |
 |------|--------|---------|
-| Source code | 22 modules | All modules implemented and validated on hardware |
-| Tests | 180/180 passing | Vision, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
-| Config | Local + Cloud | YAML (hardware) + IoT Shadow (business) |
-| Hardware | Assembled + verified | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 |
-| Stereo capture | Validated | picamera2 on RPi5, both cameras working |
-| Detection | Validated | YOLOv8n HEF on Hailo-8L, persistent VDevice with ROUND_ROBIN scheduling |
-| Calibration | Validated | Pinhole (CALIB_RATIONAL_MODEL), baseline 142.8mm. ChArUco 11x7/35mm/26mm/DICT_5X5_100 A3 (in `calibration/`). Validated via 5-zone depth check with PASS/FAIL thresholds |
-| WiFi probe | Validated | nexmon + airmon-ng + scapy, probe requests captured on RPi5 |
-| BLE scan | Validated | bleak, 343 adverts, 8 unique devices, dedup + turn-in rate |
-| Cloud infra | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
-| Deployment | Ready | provision.py, systemd services (pipeline + wifi-monitor + daily reset), logrotate |
-| Setup guide | Complete | 12-step guide from MicroSD to overlayfs (docs/setup-guide.md) |
+| Código fuente | 22 módulos | Todos los módulos implementados y validados en hardware |
+| Tests | 180/180 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
+| Config | Local + Cloud | YAML (hardware) + IoT Shadow (negocio) |
+| Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 |
+| Captura estéreo | Validada | picamera2 en RPi5, ambas cámaras funcionando |
+| Detección | Validada | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN |
+| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 142.8mm. ChArUco 11x7/35mm/26mm/DICT_5X5_100 A3 (en `calibration/`). Validada vía chequeo de profundidad en 5 zonas con umbrales PASS/FAIL |
+| WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
+| BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
+| Infra cloud | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
+| Deployment | Listo | provision.py, servicios systemd (pipeline + wifi-monitor + reset diario), logrotate |
+| Guía de setup | Completa | Guía de 13 pasos desde microSD hasta overlayfs (docs/setup-guide.md) |
 
 ## Quick start
 
@@ -76,59 +76,59 @@ pip install -e ".[dev]"
 pytest
 ```
 
-### Dependencies
+### Dependencias
 
-| Package | Install via | Notes |
+| Paquete | Instalar vía | Notas |
 |---------|------------|-------|
-| opencv-contrib-python, numpy, paho-mqtt, pyyaml, scapy, bleak | `pip install -e ".[dev]"` | Cross-platform, works on dev machines |
-| picamera2, libcamera | `apt` (python3-picamera2) | RPi only, provided by RPi OS Trixie |
-| hailo_platform | `apt` (hailort + hailort-pcie-driver + python3-hailort) | RPi only, requires Hailo-8L + PCIe |
-| aircrack-ng, nexmon | `apt` + `.deb` packages | RPi only, WiFi monitor mode |
+| opencv-contrib-python, numpy, paho-mqtt, pyyaml, scapy, bleak | `pip install -e ".[dev]"` | Multiplataforma, funciona en máquinas de desarrollo |
+| picamera2, libcamera | `apt` (python3-picamera2) | Solo RPi, provisto por RPi OS Trixie |
+| hailo_platform | `apt` (hailort + hailort-pcie-driver + python3-hailort) | Solo RPi, requiere Hailo-8L + PCIe |
+| aircrack-ng, nexmon | `apt` + paquetes `.deb` | Solo RPi, WiFi monitor mode |
 
-On development machines (Windows/Mac/Linux), `pip install -e ".[dev]"` is sufficient to run tests. RPi system packages are only needed on the target device — see [docs/setup-guide.md](docs/setup-guide.md) for full installation.
+En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suficiente para correr tests. Los paquetes del sistema RPi solo se necesitan en el dispositivo target — ver [docs/setup-guide.md](docs/setup-guide.md) para la instalación completa.
 
-## Configuration
+## Configuración
 
-The system uses a dual-config strategy:
+El sistema usa una estrategia de doble config:
 
-- **Local** (`config/config.yaml`): hardware-intrinsic settings — camera IDs, calibration file, SGBM params, model path, MQTT certs
-- **Cloud** (AWS IoT Device Shadow): business-driven settings — operating hours, scaling factor, enable/disable toggles
+- **Local** (`config/config.yaml`): settings intrínsecos al hardware — IDs de cámara, archivo de calibración, parámetros SGBM, path del modelo, certificados MQTT
+- **Cloud** (AWS IoT Device Shadow): settings del negocio — horarios operativos, factor de escala, toggles de habilitación
 
-See [`config/config.example.yaml`](config/config.example.yaml) for the full annotated config.
+Ver [`config/config.example.yaml`](config/config.example.yaml) para el config anotado completo.
 
-## Repo structure
+## Estructura del repo
 
 ```
 src/
-├── vision/          # Stereo capture (picamera2), calibration, SGBM depth, YOLOv8n detection (Hailo + OpenCV)
-├── tracking/        # 3D Euclidean tracker + virtual line counter
-├── wifi_ble/        # WiFi probe capture, BLE scan, MAC hashing, dedup (L1+L2)
-├── mqtt/            # AWS IoT Core client + SQLite buffer
-├── cloud/           # Lambda dedup L3 (inter-camera)
-├── config/          # YAML loader + IoT Shadow merge
-└── main.py          # Pipeline orchestrator (17 tests)
-tests/               # 180 tests mirroring src/ structure
+├── vision/          # Captura estéreo (picamera2), calibración, profundidad SGBM, detección YOLOv8n (Hailo + OpenCV)
+├── tracking/        # Tracker euclidiano 3D + contador por línea virtual
+├── wifi_ble/        # Captura de probes WiFi, scan BLE, hashing de MAC, dedup (L1+L2)
+├── mqtt/            # Cliente AWS IoT Core + buffer SQLite
+├── cloud/           # Lambda dedup L3 (inter-cámara)
+├── config/          # Carga de YAML + merge con IoT Shadow
+└── main.py          # Orquestador del pipeline (17 tests)
+tests/               # 180 tests espejando la estructura de src/
 scripts/
 ├── calibrate.py      # CLI: generate-board, capture (headless), calibrate, verify
-├── focus_assist.py   # Live focus scoring with HTTP preview
-├── diagnose_depth.py # Depth validation: 5-zone analysis + PASS/FAIL vs known distance
-├── provision.py      # Device provisioning: create, deploy, list
-├── download_model.py # Download YOLOv8n HEF/ONNX
-├── verify_hardware.py # Hardware verification script
-└── setup_device.sh   # Automated device setup (steps 4-9)
+├── focus_assist.py   # Asistente de foco guiado con preview HTTP
+├── diagnose_depth.py # Validación de profundidad: análisis de 5 zonas + PASS/FAIL vs distancia conocida
+├── provision.py      # Provisioning de dispositivos: create, deploy, list
+├── download_model.py # Descarga YOLOv8n HEF/ONNX
+├── verify_hardware.py # Script de verificación de hardware
+└── setup_device.sh   # Setup automático del dispositivo (pasos 4-10)
 config/
-├── config.example.yaml       # Annotated config with strategy docs
-├── people-counter.service    # systemd service (auto-restart, hardening)
-├── people-counter-reset.*    # Daily dedup reset timer (04:00)
-└── logrotate.conf            # Log rotation
+├── config.example.yaml       # Config anotado con documentación de estrategia
+├── people-counter.service    # Servicio systemd (auto-restart, hardening)
+├── people-counter-reset.*    # Timer de reset diario de dedup (04:00)
+└── logrotate.conf            # Rotación de logs
 infra/
-└── cloudformation/people-counter.yaml  # Full AWS stack
+└── cloudformation/people-counter.yaml  # Stack completo de AWS
 docs/
-└── setup-guide.md            # Hardware assembly + RPi setup (12 steps)
+└── setup-guide.md            # Ensamblaje de hardware + setup RPi (13 pasos)
 ```
 
-## Key references
+## Referencias clave
 
-- [CLAUDE.md](CLAUDE.md) — Full architecture documentation for Claude Code
-- [docs/setup-guide.md](docs/setup-guide.md) — Hardware assembly + RPi setup guide
-- [config/config.example.yaml](config/config.example.yaml) — Annotated configuration with strategy
+- [CLAUDE.md](CLAUDE.md) — Documentación completa de arquitectura para Claude Code
+- [docs/setup-guide.md](docs/setup-guide.md) — Guía de ensamblaje de hardware + setup RPi
+- [config/config.example.yaml](config/config.example.yaml) — Configuración anotada con estrategia
