@@ -219,10 +219,9 @@ otro factor. Verificar también que el bracket mecánico no flexa — si el base
 cambia entre calibración y operación, el depth deriva.
 
 Las IMX708 tienen un anillo de foco manual M12 que se gira con pinza de punta fina.
-Poner un objeto con detalle (diario, patrón ChArUco) a la **altura de las cabezas**
-de las personas (típicamente ceiling_height - 1.7m, ej: techo a 3.5m → objeto a ~1.8m
-de la cámara). Con M12 fija y 120° HFOV, la depth-of-field a 2m cubre ~1m–infinito.
-Correr el asistente de foco:
+Poner un objeto con detalle (diario, patrón ChArUco) a **2.5–3m** de las cámaras
+(distancia operativa real). Con M12 fija y 120° HFOV, la depth-of-field a esa
+distancia cubre ~1m–infinito. Correr el asistente de foco:
 
 ```bash
 cd /usr/src/people-counter
@@ -233,9 +232,15 @@ Abrir **http://people-counter.local:8080** para ver el preview en vivo de ambas
 cámaras lado a lado. El script muestra un puntaje de foco en tiempo real (varianza
 del Laplaciano). Girar el anillo hasta que el número sea lo más alto posible.
 
-Opciones útiles:
-- `--grid` — superpone una grilla 3x3 con puntaje de foco por celda
-- `--no-zoom` — muestra el frame completo en vez del zoom al centro
+Usar siempre `--grid --no-zoom` para ver todas las zonas:
+
+```bash
+PYTHONPATH=. python3 scripts/focus_assist.py --grid --no-zoom
+```
+
+El terminal muestra: L/R diff (objetivo <10%), edge/center ratio (objetivo >0.3).
+Buscar el compromiso donde centro y bordes están ambos aceptables y L ≈ R.
+No maximizar centro a costa de bordes — la periferia es crítica para stereo.
 
 Ctrl+C para salir y guardar los últimos frames.
 
