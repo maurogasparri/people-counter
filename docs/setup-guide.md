@@ -26,8 +26,8 @@ Orden recomendado:
 1. **Raspberry Pi AI HAT+ 13 TOPS** → stackearlo sobre la Raspberry Pi 5 (GPIO + FFC al puerto PCIe)
 2. **Waveshare PoE HAT (H)** → conectar por cables dupont (5V, GND, y los pines PoE del header) — no se stackea
 3. **Cámaras** → conectar los cables CSI a los puertos CAM0 y CAM1 de la Pi
-   - Cámara izquierda → CAM0
-   - Cámara derecha → CAM1
+   - Cámara izquierda (mirando desde la cámara hacia la escena) → CAM1
+   - Cámara derecha (mirando desde la cámara hacia la escena) → CAM0
    - Orientar ambas igual (el conector flat tiene un lado con contactos expuestos)
    - **Usar Arducam IMX708 120 HFOV con filtro IR** (modelo B0310)
 4. **Raspberry Pi Active Cooler** → clip sobre el SoC de la Pi y conectar el cable PWM al header de 4 pines del fan

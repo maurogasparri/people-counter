@@ -443,8 +443,8 @@ def main() -> None:
 
     # --- capture ---
     p_cap = sub.add_parser("capture", help="Interactive capture with HTTP preview")
-    p_cap.add_argument("--left", type=int, default=0, help="Left camera index")
-    p_cap.add_argument("--right", type=int, default=1, help="Right camera index")
+    p_cap.add_argument("--left", type=int, default=1, help="Left camera index (CAM1 — lente izquierda mirando desde la cámara hacia la escena)")
+    p_cap.add_argument("--right", type=int, default=0, help="Right camera index (CAM0 — lente derecha mirando desde la cámara hacia la escena)")
     p_cap.add_argument("--resolution", type=int, nargs=2, default=[4608, 2592])
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")

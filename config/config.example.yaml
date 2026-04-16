@@ -22,8 +22,8 @@ device:
 
 # --- LOCAL: Camera & stereo hardware (depends on physical installation) ---
 vision:
-  camera_left: 0                  # CSI bus ID for left IMX708 (CAM0 = izquierda mirando al local)
-  camera_right: 1                 # CSI bus ID for right IMX708 (CAM1 = derecha mirando al local)
+  camera_left: 1                  # CSI bus ID for left IMX708 (CAM1 = izquierda mirando desde la cámara hacia la escena)
+  camera_right: 0                 # CSI bus ID for right IMX708 (CAM0 = derecha mirando desde la cámara hacia la escena)
   resolution: [4608, 2592]        # Sensor native resolution (IMX708 12MP)
   fps: 15                         # Capture frame rate
   baseline_cm: 14                 # Physical distance between cameras (measured)
