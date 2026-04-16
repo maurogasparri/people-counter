@@ -102,7 +102,7 @@ def main() -> None:
     print("CAPTURING...")
     print("=" * 70)
 
-    cap = StereoCapture(cam_left_id=0, cam_right_id=1, resolution=(4608, 2592), fps=5)
+    cap = StereoCapture(cam_left_id=1, cam_right_id=0, resolution=(4608, 2592), fps=5)
     cap.open()
 
     if args.delay > 0:

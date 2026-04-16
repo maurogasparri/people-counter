@@ -58,9 +58,11 @@ grep -q "^dtparam=rtc_bbat_vchg" "$CONFIG_TXT" || echo "dtparam=rtc_bbat_vchg=30
 grep -q "^dtparam=pciex1_gen=3" "$CONFIG_TXT" || echo "dtparam=pciex1_gen=3" >> "$CONFIG_TXT"
 # USB current: required by Waveshare PoE HAT (H) to avoid power-supply prompt
 grep -q "^usb_max_current_enable=1" "$CONFIG_TXT" || echo "usb_max_current_enable=1" >> "$CONFIG_TXT"
-# IMX708 cameras: disable autodetect and force overlay on both CSI ports
+# IMX708 cameras: disable autodetect, force overlay per CSI port.
+# Pi 5 requires explicit ,cam0/,cam1 — a plain "dtoverlay=imx708" only loads one camera.
 sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' "$CONFIG_TXT"
-grep -q "^dtoverlay=imx708" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708' "$CONFIG_TXT"
+grep -q "^dtoverlay=imx708,cam0" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708,cam0' "$CONFIG_TXT"
+grep -q "^dtoverlay=imx708,cam1" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708,cam1' "$CONFIG_TXT"
 
 # =========================================================================
 # Step 5: Hailo
