@@ -188,10 +188,27 @@ def main() -> None:
             with jpeg_lock:
                 latest_jpeg = jpeg.tobytes()
 
-            print(
-                f"\r  LEFT: {score_l:8.1f} (best {best_l:8.1f})  |  RIGHT: {score_r:8.1f} (best {best_r:8.1f})",
-                end="", flush=True,
-            )
+            # Multi-zone analysis when --grid is active
+            if args.grid:
+                grid_l = focus_grid(frame_l)
+                grid_r = focus_grid(frame_r)
+                center_l, center_r = grid_l[1, 1], grid_r[1, 1]
+                edges_l = np.mean([grid_l[0, 0], grid_l[0, 2], grid_l[2, 0], grid_l[2, 2]])
+                edges_r = np.mean([grid_r[0, 0], grid_r[0, 2], grid_r[2, 0], grid_r[2, 2]])
+                uniformity_l = edges_l / center_l if center_l > 0 else 0
+                uniformity_r = edges_r / center_r if center_r > 0 else 0
+                lr_diff = abs(score_l - score_r) / max(score_l, score_r, 1) * 100
+                print(
+                    f"\r  L:{score_l:7.0f} R:{score_r:7.0f} | "
+                    f"L/R diff:{lr_diff:4.1f}% | "
+                    f"edge/center L:{uniformity_l:.2f} R:{uniformity_r:.2f}   ",
+                    end="", flush=True,
+                )
+            else:
+                print(
+                    f"\r  LEFT: {score_l:8.1f} (best {best_l:8.1f})  |  RIGHT: {score_r:8.1f} (best {best_r:8.1f})",
+                    end="", flush=True,
+                )
             time.sleep(0.3)
 
     except KeyboardInterrupt:
