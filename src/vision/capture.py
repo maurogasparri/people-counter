@@ -118,9 +118,14 @@ class StereoCapture:
         if self._cam_left is None or self._cam_right is None:
             raise RuntimeError("Cameras not opened. Call open() first.")
 
+        from concurrent.futures import ThreadPoolExecutor
+
         try:
-            frame_l = self._cam_left.capture_array("main")
-            frame_r = self._cam_right.capture_array("main")
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                fut_l = ex.submit(self._cam_left.capture_array, "main")
+                fut_r = ex.submit(self._cam_right.capture_array, "main")
+                frame_l = fut_l.result()
+                frame_r = fut_r.result()
         except Exception as e:
             raise RuntimeError(f"Frame capture failed: {e}") from e
 

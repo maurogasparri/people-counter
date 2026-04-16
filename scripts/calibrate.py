@@ -226,12 +226,27 @@ def cmd_capture(args: argparse.Namespace) -> None:
     board_diag = f"{board_w_mm:.0f}x{board_h_mm:.0f}mm"
     dist_range = "0.5-3m (cover full operational range, not just sweet spot)"
 
+    # Manual trigger via stdin: set flag when user presses Enter
+    manual_trigger = {"armed": False}
+    if args.manual:
+        def _stdin_listener():
+            while not _shutting_down:
+                try:
+                    sys.stdin.readline()
+                    manual_trigger["armed"] = True
+                except Exception:
+                    break
+        threading.Thread(target=_stdin_listener, daemon=True).start()
+
     logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
     logger.info("Board: %s (%s). Recommended distance: %s", board_diag, f"{cols}x{rows}", dist_range)
     logger.info("Grid: %s (%dx%d, %d active cells, %d total captures)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
     logger.info("IMPORTANT: Tilt the board 20-30 deg in every capture. Never hold it flat/frontal.")
     logger.info("Move the ChArUco to cover all grid cells. Vary angles (pitch/yaw/roll) in each cell.")
-    logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
+    if args.manual:
+        logger.info("MANUAL mode: place board on rigid support, then press ENTER here to capture.")
+    else:
+        logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
     try:
         while True:
@@ -296,9 +311,16 @@ def cmd_capture(args: argparse.Namespace) -> None:
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 70])
             _update_preview(jpeg.tobytes())
 
-            # Auto-capture when board detected, with cooldown
+            # Trigger: manual (Enter pressed) or auto (detected + cooldown)
             now = time.time()
-            if detected and (now - last_capture_time) >= args.cooldown:
+            if args.manual:
+                should_capture = detected and manual_trigger["armed"]
+                if manual_trigger["armed"] and not detected:
+                    logger.warning("Trigger ignored — board not detected in both cameras.")
+                    manual_trigger["armed"] = False
+            else:
+                should_capture = detected and (now - last_capture_time) >= args.cooldown
+            if should_capture:
                 # Check if this cell is already full
                 row, col = _compute_coverage_center(
                     corners_l, frame_l.shape[1], frame_l.shape[0], grid_mask,
@@ -317,6 +339,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     coverage[row, col] += 1
                     count += 1
                     last_capture_time = now
+                    manual_trigger["armed"] = False
                     cell_limit = cell_target[row, col] if cell_target is not None else "inf"
                     logger.info(
                         "Pair %d/%d saved — %d common corners, coverage %d%%, cell (%d,%d): %d/%s",
@@ -460,6 +483,9 @@ def main() -> None:
     p_cap.add_argument("--marker-length", type=float, required=True, help="Marker side in mm (e.g. 26)")
     p_cap.add_argument("--grid", choices=["rectangular", "circular"], default="rectangular",
                         help="Coverage grid: rectangular (4x5) or circular (6x6)")
+    p_cap.add_argument("--manual", action="store_true",
+                        help="Manual trigger: press Enter in terminal to capture (board must be detected). "
+                             "Use with a rigid support for the board to eliminate motion between L/R frames.")
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
