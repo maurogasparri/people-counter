@@ -49,19 +49,38 @@ logger = logging.getLogger("calibrate")
 _latest_jpeg: bytes = b""
 _jpeg_lock = threading.Lock()
 _shutting_down = False
+_trigger_armed = False
+_manual_enabled = False
 
 
 class _MJPEGHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        global _trigger_armed
+        if self.path == "/capture" and _manual_enabled:
+            _trigger_armed = True
+            self.send_response(204)
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_GET(self) -> None:
         if self.path == "/":
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
+            btn = (
+                b'<button id="cap" onclick="fetch(\'/capture\',{method:\'POST\'})"'
+                b' style="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);'
+                b'padding:16px 32px;font-size:20px;background:#28a745;color:white;'
+                b'border:none;border-radius:8px;cursor:pointer">CAPTURE</button>'
+                if _manual_enabled else b""
+            )
             self.wfile.write(b"""<!DOCTYPE html>
 <html><head><title>Calibration Capture</title>
 <style>body{background:#111;margin:0;display:flex;justify-content:center;
 align-items:center;height:100vh}img{max-width:100%;max-height:100vh}</style>
-</head><body><img src="/stream"></body></html>""")
+</head><body><img src="/stream">""" + btn + b"""</body></html>""")
         elif self.path == "/stream":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -226,14 +245,16 @@ def cmd_capture(args: argparse.Namespace) -> None:
     board_diag = f"{board_w_mm:.0f}x{board_h_mm:.0f}mm"
     dist_range = "0.5-3m (cover full operational range, not just sweet spot)"
 
-    # Manual trigger via stdin: set flag when user presses Enter
-    manual_trigger = {"armed": False}
+    # Manual trigger: Enter on stdin OR POST /capture via web UI
+    global _trigger_armed, _manual_enabled
+    _manual_enabled = args.manual
     if args.manual:
         def _stdin_listener():
+            global _trigger_armed
             while not _shutting_down:
                 try:
                     sys.stdin.readline()
-                    manual_trigger["armed"] = True
+                    _trigger_armed = True
                 except Exception:
                     break
         threading.Thread(target=_stdin_listener, daemon=True).start()
@@ -244,7 +265,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
     logger.info("IMPORTANT: Tilt the board 20-30 deg in every capture. Never hold it flat/frontal.")
     logger.info("Move the ChArUco to cover all grid cells. Vary angles (pitch/yaw/roll) in each cell.")
     if args.manual:
-        logger.info("MANUAL mode: place board on rigid support, then press ENTER here to capture.")
+        logger.info("MANUAL mode: press ENTER here OR click CAPTURE in the web UI to trigger.")
     else:
         logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
     logger.info("Ctrl+C to stop.\n")
@@ -314,10 +335,10 @@ def cmd_capture(args: argparse.Namespace) -> None:
             # Trigger: manual (Enter pressed) or auto (detected + cooldown)
             now = time.time()
             if args.manual:
-                should_capture = detected and manual_trigger["armed"]
-                if manual_trigger["armed"] and not detected:
+                should_capture = detected and _trigger_armed
+                if _trigger_armed and not detected:
                     logger.warning("Trigger ignored — board not detected in both cameras.")
-                    manual_trigger["armed"] = False
+                    _trigger_armed = False
             else:
                 should_capture = detected and (now - last_capture_time) >= args.cooldown
             if should_capture:
@@ -339,7 +360,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     coverage[row, col] += 1
                     count += 1
                     last_capture_time = now
-                    manual_trigger["armed"] = False
+                    _trigger_armed = False
                     cell_limit = cell_target[row, col] if cell_target is not None else "inf"
                     logger.info(
                         "Pair %d/%d saved — %d common corners, coverage %d%%, cell (%d,%d): %d/%s",
