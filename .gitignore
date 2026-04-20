@@ -57,4 +57,9 @@ Thumbs.db
 /verify_*.png
 /focus_*.jpg
 /focus_*.png
+
+# Ad-hoc debug / session artifacts — anything dropped here is ignored.
+# Use this for downloaded reports, screenshots, pasted outputs, etc.
+/debug/
+
 .claude/

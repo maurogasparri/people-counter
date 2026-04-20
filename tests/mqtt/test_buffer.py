@@ -29,3 +29,18 @@ def test_mark_sent():
 
     pending = buf.get_pending()
     assert len(pending) == 0
+
+
+def test_count_unsent_reports_backlog():
+    tmpdir = tempfile.mkdtemp()
+    db_path = str(Path(tmpdir) / "test.db")
+    buf = MessageBuffer(db_path)
+
+    assert buf.count_unsent() == 0
+
+    ids = [buf.enqueue("t", {"i": i}) for i in range(5)]
+    assert buf.count_unsent() == 5
+
+    buf.mark_sent(ids[0])
+    buf.mark_sent(ids[1])
+    assert buf.count_unsent() == 3

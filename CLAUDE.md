@@ -47,7 +47,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 ## Decisiones técnicas clave
 
 ### Pipeline de visión
-- **Calibración estéreo**: patrón ChArUco (A3 landscape, 11x7 squares, checker 35mm / marker 26mm, DICT_5X5_100, 60 esquinas internas), modelo pinhole con `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). Los parámetros del board son requeridos en todos los subcomandos CLI. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. Captura a 0.5–3m (cubriendo todo el rango operativo, no solo el sweet spot). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
+- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), modelo pinhole con `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). Los parámetros del board son requeridos en todos los subcomandos CLI. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. Captura a 0.5–3m (cubriendo todo el rango operativo, no solo el sweet spot). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
 - **Rectificación**: mapas precomputados vía `cv2.initUndistortRectifyMap`. Aplicados por par de frames.
 - **Profundidad**: Semi-Global Block Matching (`cv2.StereoSGBM`) sobre par rectificado + matcher derecho + filtro WLS (`cv2.ximgproc.DisparityWLSFilter`).
 - **Detección**: YOLOv8n compilado a HEF vía Hailo Model Zoo. Corre en Hailo-8L a 30+ FPS. Usa API VStream de `hailo_platform` con activación persistente, VDevice compartido (`group_id="SHARED"`, scheduling `ROUND_ROBIN`), y NMS on-chip.
@@ -128,7 +128,7 @@ people-counter/
 │   ├── verify_hardware.py <- verificación de hardware
 │   └── setup_device.sh    <- setup automático del dispositivo (pasos 4-10)
 ├── calibration/
-│   └── charuco_11x7_sq35mm_mk26mm_dict5X5_a3_calibio.pdf <- board ChArUco (PDF vectorial calib.io, A3)
+│   └── calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf <- board ChArUco (PDF vectorial calib.io, A3 landscape)
 ├── infra/
 │   └── cloudformation/
 │       └── people-counter.yaml <- stack completo (IoT, Timestream, DynamoDB, Lambda)
@@ -144,7 +144,7 @@ people-counter/
 | Sprint | Foco | Entregable | Estado |
 |--------|------|-----------|--------|
 | S3 | PoC | Captura estéreo + YOLOv8n en RPi5. Probar que funciona. | **HARDWARE VALIDADO** — capture.py adaptado a picamera2, captura estéreo verificada en RPi5. detect.py (backends Hailo + OpenCV). |
-| S4 | Calibración | Pipeline ChArUco. Rectificación. Mapa de profundidad. | **DONE** — calibration.py modelo pinhole (CALIB_RATIONAL_MODEL). Board: 11x7 / 35mm / 26mm / DICT_5X5_100 (A3, en `calibration/`). Baseline 142.8mm. diagnose_depth.py valida 5 zonas con umbrales PASS/FAIL. |
+| S4 | Calibración | Pipeline ChArUco. Rectificación. Mapa de profundidad. | **DONE** — calibration.py modelo pinhole (CALIB_RATIONAL_MODEL). Board: 9x6 / 45mm / 33mm / DICT_4X4_100 (A3, en `calibration/`). Baseline 140mm por diseño. diagnose_depth.py valida 5 zonas con umbrales PASS/FAIL. |
 | S5 | Detección | Compilación HEF. Integración Hailo SDK. 30+ FPS. | **SOFTWARE READY** — detect.py con backends Hailo + OpenCV, pre/postproceso testeado (10 tests). Hailo-8L verificado (fw 4.23.0, PCIe Gen 3). Compilación HEF pendiente. |
 | S6 | Tracking | Tracker 3D. Línea virtual. Eventos ingreso/egreso. | **DONE** — tracker.py + counter.py (12 tests). main.py conectado E2E (17 tests). |
 | S7 | WiFi/BLE | nexmon + captura BLE. Hashing. Dedup L1+L2. | **HARDWARE VALIDADO** — wifi_probe.py (nexmon + airmon-ng + scapy, probes capturadas), ble_scan.py (bleak, 343 adverts/8 dispositivos únicos). hasher.py + dedup.py (11 tests). |

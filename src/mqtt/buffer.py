@@ -29,6 +29,13 @@ class MessageBuffer:
                     sent INTEGER DEFAULT 0
                 )
             """)
+            # Speeds up get_pending() on large buffers after extended offline periods.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sent_id ON messages(sent, id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_created_at ON messages(created_at)"
+            )
 
     def enqueue(self, topic: str, payload: dict[str, Any]) -> int:
         """Add message to buffer. Returns message ID."""
@@ -59,3 +66,19 @@ class MessageBuffer:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM messages WHERE created_at < ?", (cutoff,))
             return cursor.rowcount
+
+    def count_unsent(self) -> int:
+        """Return the number of unsent messages currently in the buffer.
+
+        Safe to call frequently — uses the ``idx_sent_id`` index and returns
+        0 on any SQLite error (so telemetry collection never crashes).
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE sent = 0"
+                ).fetchone()
+                return int(row[0]) if row else 0
+        except sqlite3.Error:
+            logger.exception("count_unsent failed")
+            return 0

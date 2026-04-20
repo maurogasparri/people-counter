@@ -61,7 +61,7 @@ class BLEScanner:
     def start(self) -> None:
         """Start asynchronous BLE scanning."""
         if self._scan_thread is not None:
-            logger.warning("BLE scan already running")
+            logger.warning("ble_scan_already_running")
             return
 
         self._stop_event.clear()
@@ -71,7 +71,7 @@ class BLEScanner:
             target=self._scan_thread_main, daemon=True, name="ble-scan"
         )
         self._scan_thread.start()
-        logger.info("BLE scanner started")
+        logger.info("ble_scan_started")
 
     def stop(self) -> None:
         """Stop BLE scanning."""
@@ -79,7 +79,10 @@ class BLEScanner:
         if self._scan_thread is not None:
             self._scan_thread.join(timeout=10.0)
             self._scan_thread = None
-        logger.info("BLE scanner stopped. Total advertisements: %d", self._advert_count)
+        logger.info(
+            "ble_scan_stopped",
+            extra={"count": self._advert_count},
+        )
 
     def _scan_thread_main(self) -> None:
         """Run the async scan loop in a dedicated thread."""
@@ -97,8 +100,8 @@ class BLEScanner:
             from bleak import BleakScanner
         except ImportError:
             logger.error(
-                "bleak not installed. Install with: pip install bleak. "
-                "BLE scanning disabled."
+                "bleak_not_installed",
+                extra={"reason": "BLE scanning disabled"},
             )
             return
 
@@ -128,13 +131,12 @@ class BLEScanner:
         scanner = BleakScanner(detection_callback=_detection_callback)
 
         await scanner.start()
-        logger.info("Bleak BLE scanner active")
+        logger.info("bleak_scanner_active")
 
-        # Wait until stop is requested
+        start_time = time.monotonic()
         while not self._stop_event.is_set():
             await asyncio.sleep(0.5)
-            if self.scan_duration > 0:
-                # For fixed-duration scans, check elapsed time
+            if self.scan_duration > 0 and (time.monotonic() - start_time) >= self.scan_duration:
                 break
 
         await scanner.stop()

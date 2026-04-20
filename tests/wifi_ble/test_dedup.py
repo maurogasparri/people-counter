@@ -119,3 +119,24 @@ def test_traffic_counts_resets_with_daily():
     assert engine.get_traffic_counts()["shoppers"] == 1
     engine.reset_daily()
     assert engine.get_traffic_counts()["shoppers"] == 0
+
+
+def test_traffic_counts_filter_by_protocol():
+    """protocol='wifi' should restrict counts to WiFi detections only."""
+    engine, _ = _make_engine()
+    # 2 WiFi shoppers
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -40.0)
+    engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -45.0)
+    # 1 BLE shopper (different MAC so it's not unified with WiFi)
+    engine.process_detection("11:22:33:44:55:66", "ble", -50.0)
+
+    mixed = engine.get_traffic_counts()
+    wifi_only = engine.get_traffic_counts(protocol="wifi")
+    ble_only = engine.get_traffic_counts(protocol="ble")
+
+    assert mixed["shoppers"] == 3
+    assert wifi_only["shoppers"] == 2
+    assert ble_only["shoppers"] == 1
+    # Turn-in rate per protocol is self-consistent (all shoppers = all passersby)
+    assert wifi_only["turn_in_rate"] == 1.0
+    assert ble_only["turn_in_rate"] == 1.0

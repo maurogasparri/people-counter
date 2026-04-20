@@ -28,7 +28,7 @@ vision:
   fps: 15                         # Capture frame rate
   baseline_cm: 14                 # Physical distance between cameras (measured)
   calibration_file: "/etc/people-counter/calibration.npz"  # ChArUco stereo cal output
-  mounting_height_m: 3.5          # Ceiling height in meters
+  mounting_height_m: 3.0          # Camera mount height from floor in meters. Default 3.0m (our mode door height; cam at threshold level). Adjust per site if mounted higher due to structural constraints.
   counting_line_y: 0.5            # Virtual line position (0.0=top, 1.0=bottom)
   # SGBM depth parameters (tuned per installation)
   # f_px ~ 1330 at full res; disparity at 3m ~ 62px, at 1.3m ~ 143px
@@ -45,6 +45,32 @@ detection:
 tracking:
   max_disappeared: 30             # Frames before dropping a track
   max_distance: 50                # Max pixel distance for track association
+
+# --- LOCAL: Counter (ROI + virtual line) ---
+# Counts a track only when it exits the ROI on the opposite side of where it
+# entered, having crossed the line in between. Tracks that enter and leave on
+# the same side (or never cross the line) are "indeciso" and not counted.
+counter:
+  # Counting ROI (rectangle in image pixel coords)
+  roi:
+    x_min: 100
+    x_max: 540
+    y_min: 180
+    y_max: 300
+  # Virtual line inside the ROI. Must lie strictly inside the ROI bounds.
+  line:
+    orientation: horizontal       # horizontal | vertical
+    position: 240                 # y-coord if horizontal, x-coord if vertical
+  # Event labels for reporting (optional)
+  direction_labels:
+    side_a_to_b: ingress          # entered side_a, exited side_b -> this label
+    side_b_to_a: egress
+  # State machine + re-identification
+  tracker:
+    confirm_frames: 3             # N consecutive hits to promote CANDIDATE -> CONFIRMED
+    pending_max_frames: 5         # max missed frames before PENDING -> LOST
+    reid_gate_px: 60              # max px distance to re-match a PENDING track
+    depth_gate_m: 0.5             # max |dz| (m) for matching across frames
 
 # --- LOCAL: WiFi/BLE probe capture hardware ---
 wifi_ble:
@@ -113,6 +139,15 @@ cloud_defaults:
     saturday: "10:00-22:00"
     sunday: "10:00-21:00"
 
+  # Behavior when operating_hours is malformed (bad HH:MM, end before start,
+  # wrong type, etc.). Default fail_open keeps counting to avoid losing data
+  # on a config typo; fail_closed pauses counting until a valid schedule is
+  # pushed, trading false positives for strict adherence.
+  #   fail_open   — log WARNING once, continue counting (default, back-compat)
+  #   fail_closed — log CRITICAL, pause counting, keep service alive for
+  #                 telemetry and shadow re-config
+  on_invalid_schedule: "fail_open"
+
   # Post-calibration correction multiplier. Default 1.0 = no correction.
   footfall_scaling_factor: 1.0
 
@@ -120,6 +155,13 @@ cloud_defaults:
   counting_enabled: true          # Pause counting during maintenance
   wifi_ble_enabled: true          # Disable WiFi/BLE for legal/privacy reasons
   telemetry_interval_seconds: 300 # Can be reduced for debugging
+
+  # Adult/child classifier based on head height above floor. Derived from
+  # stereo depth + local mounting_height_m. Disabled by default.
+  counter:
+    height_classifier:
+      enabled: false              # Toggle from cloud per-store
+      adult_min_m: 1.55           # Head height (m) — >= threshold → "adult", else "child". 1.55m is near the P25 of adult women in Argentina, so few adults are misclassified as children. Tall children (<12) rarely exceed it. Adjust per site if your demographics differ.
 
 # =============================================================================
 # NOT IMPLEMENTED — Deferred post-MVP

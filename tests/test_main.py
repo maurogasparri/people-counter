@@ -179,6 +179,23 @@ def test_get_telemetry_graceful_on_windows():
     assert isinstance(telem["uptime_s"], (int, float))
 
 
+def test_get_telemetry_forwards_state_to_collect_telemetry():
+    """The shim must pass ``state`` through to collect_telemetry and return
+    the augmented dict (with the new observability keys)."""
+    state = {
+        "frame_latencies_ms": [10.0, 20.0, 30.0],
+        "tracker_confirmed": 2,
+        "tracker_pending": 0,
+        "mqtt_disconnect_count": 1,
+        "buffer_backlog": 5,
+    }
+    telem = get_telemetry(state)
+    assert telem["frame_latency_p50_ms"] == 20.0
+    assert telem["tracker_confirmed_count"] == 2
+    assert telem["mqtt_disconnect_count"] == 1
+    assert telem["buffer_backlog_messages"] == 5
+
+
 # ---------------------------------------------------------------------------
 # run_pipeline — integration with mocks
 # ---------------------------------------------------------------------------
@@ -364,6 +381,189 @@ def test_run_pipeline_publishes_counting_events(mock_build_cap, mock_load_model,
 
     run_pipeline(config, args)
     assert mock_backend.infer.call_count == 2
+
+
+@patch("src.mqtt.client.mqtt.Client")
+@patch("src.main.load_model")
+@patch("src.main.build_capture")
+def test_run_pipeline_invalid_schedule_fail_open_continues(
+    mock_build_cap, mock_load_model, mock_mqtt_cls
+):
+    """Invalid schedule + fail_open: pipeline still counts (calls infer)."""
+    mock_mqtt_cls.return_value = MagicMock()
+
+    mock_backend = MagicMock()
+    mock_backend.infer.return_value = np.zeros((1, 84, 0), dtype=np.float32)
+    mock_load_model.return_value = {"backend": mock_backend, "type": "opencv"}
+
+    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+    mock_build_cap.return_value = _make_mock_capture([(dummy, dummy)])
+
+    tmpdir = tempfile.mkdtemp()
+    config = _make_pipeline_config(tmpdir)
+    config.pop("calibration_file", None)
+    config["_schedule_error"] = "monday: invalid start time '25:00'"
+    config["cloud_defaults"]["on_invalid_schedule"] = "fail_open"
+    args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
+
+    caplog_ctx = _CaplogCtx()
+    with caplog_ctx:
+        run_pipeline(config, args)
+
+    assert mock_backend.infer.call_count == 1
+    assert any(
+        "fail_open" in msg and "Invalid operating_hours" in msg
+        for msg in caplog_ctx.messages
+    )
+
+
+@patch("src.mqtt.client.mqtt.Client")
+@patch("src.main.load_model")
+@patch("src.main.build_capture")
+def test_run_pipeline_invalid_schedule_fail_closed_pauses(
+    mock_build_cap, mock_load_model, mock_mqtt_cls
+):
+    """Invalid schedule + fail_closed: pipeline does NOT call infer."""
+    mock_mqtt_cls.return_value = MagicMock()
+
+    mock_backend = MagicMock()
+    mock_load_model.return_value = {"backend": mock_backend, "type": "opencv"}
+
+    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+    mock_build_cap.return_value = _make_mock_capture([(dummy, dummy)] * 10)
+
+    tmpdir = tempfile.mkdtemp()
+    config = _make_pipeline_config(tmpdir)
+    config["_schedule_error"] = "monday: end '10:00' must be after start '22:00'"
+    config["cloud_defaults"]["on_invalid_schedule"] = "fail_closed"
+    args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
+
+    sleep_count = [0]
+
+    def _fake_sleep(seconds):
+        sleep_count[0] += 1
+        if sleep_count[0] >= 2:
+            raise KeyboardInterrupt()
+
+    caplog_ctx = _CaplogCtx(level=logging.CRITICAL)
+    with caplog_ctx:
+        with patch("src.main.time.sleep", side_effect=_fake_sleep):
+            with patch("src.main.signal.signal"):
+                try:
+                    run_pipeline(config, args)
+                except KeyboardInterrupt:
+                    pass
+
+    mock_backend.infer.assert_not_called()
+    assert any(
+        "fail_closed" in msg and "paused" in msg
+        for msg in caplog_ctx.messages
+    )
+
+
+class _CaplogCtx:
+    """Capture log records across all loggers without pytest's caplog (which
+    only attaches to the root logger and can miss child loggers depending on
+    propagation settings)."""
+
+    def __init__(self, level=logging.WARNING):
+        self.level = level
+        self.records: list[logging.LogRecord] = []
+        self._handler = None
+
+    @property
+    def messages(self) -> list[str]:
+        return [r.getMessage() for r in self.records]
+
+    def __enter__(self):
+        self._handler = logging.Handler(level=self.level)
+        self._handler.emit = self.records.append  # type: ignore[assignment]
+        logging.getLogger().addHandler(self._handler)
+        logging.getLogger().setLevel(self.level)
+        return self
+
+    def __exit__(self, *exc):
+        if self._handler is not None:
+            logging.getLogger().removeHandler(self._handler)
+        return False
+
+
+@patch("src.mqtt.client.mqtt.Client")
+@patch("src.main.load_model")
+@patch("src.main.build_capture")
+def test_run_pipeline_publishes_shadow_reconciliation_on_boot(
+    mock_build_cap, mock_load_model, mock_mqtt_cls
+):
+    """After mqtt.connect() completes the main loop must publish the
+    effective config as shadow ``reported``. We simulate the paho on_connect
+    firing by invoking the hook that main.py wires up.
+    """
+    mock_mqtt_cls.return_value = MagicMock()
+
+    mock_backend = MagicMock()
+    mock_backend.infer.return_value = np.zeros((1, 84, 0), dtype=np.float32)
+    mock_load_model.return_value = {"backend": mock_backend, "type": "opencv"}
+
+    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # Use a one-frame capture so we exit cleanly. Before returning the
+    # capture, trigger the on_connected hook that main.py installed on the
+    # (real) MQTTClient so the reconcile sentinel is enqueued before the
+    # first drain pass.
+    captured_clients: list = []
+
+    real_build_mqtt = None
+
+    from src import main as _main_mod
+
+    real_build_mqtt = _main_mod.build_mqtt
+
+    def _wrap_build_mqtt(config):
+        client, buf = real_build_mqtt(config)
+        captured_clients.append(client)
+        return client, buf
+
+    def _capture_after_hook_fires(*args, **kwargs):
+        # By the time build_capture is called, main.py has already set
+        # on_connected and called connect(). Fire the hook manually to
+        # emulate the paho thread.
+        assert captured_clients, "build_mqtt should have been called first"
+        client = captured_clients[0]
+        assert client.on_connected is not None
+        client.on_connected()
+        return _make_mock_capture([(dummy, dummy)])
+
+    mock_build_cap.side_effect = _capture_after_hook_fires
+
+    tmpdir = tempfile.mkdtemp()
+    config = _make_pipeline_config(tmpdir)
+    config["vision"].pop("calibration_file", None)
+    config["device"]["firmware_version"] = "0.1.0-pilot"
+    args = argparse.Namespace(
+        replay_dir="/fake", detection_backend="opencv", config="/fake/config.yaml"
+    )
+
+    with patch.object(_main_mod, "build_mqtt", side_effect=_wrap_build_mqtt):
+        run_pipeline(config, args)
+
+    # The captured client's paho publish() should have been called with the
+    # shadow update topic and a JSON payload carrying `reported`.
+    assert captured_clients
+    client = captured_clients[0]
+    publish_calls = client._client.publish.call_args_list
+    shadow_calls = [
+        c for c in publish_calls
+        if len(c.args) >= 1 and c.args[0] == "$aws/things/test-001/shadow/update"
+    ]
+    assert shadow_calls, "Expected a shadow reported publish on boot"
+    import json as _json
+
+    payload = _json.loads(shadow_calls[0].args[1])
+    assert "state" in payload and "reported" in payload["state"]
+    reported = payload["state"]["reported"]
+    assert reported["firmware_version"] == "0.1.0-pilot"
+    assert "boot_ts" in reported
+    assert reported["effective_baseline_mm"] is None  # no calibration loaded
 
 
 @patch("src.mqtt.client.mqtt.Client")

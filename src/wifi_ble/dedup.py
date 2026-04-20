@@ -98,8 +98,14 @@ class DedupEngine:
                         ),
                     )
                     logger.debug(
-                        "Cross-protocol match: %s(%s) + %s(%s) → %s",
-                        protocol, mac_hash[:8], other_protocol, other_hash[:8], unified[:8],
+                        "cross_protocol_match",
+                        extra={
+                            "protocol": protocol,
+                            "hash_prefix": mac_hash[:8],
+                            "other_protocol": other_protocol,
+                            "other_hash_prefix": other_hash[:8],
+                            "unified_prefix": unified[:8],
+                        },
                     )
                     return {"is_new": True, "hash": unified, "unified": True}
 
@@ -130,6 +136,7 @@ class DedupEngine:
         self,
         rssi_passerby: float = -75.0,
         rssi_shopper: float = -55.0,
+        protocol: str | None = None,
     ) -> dict:
         """Classify WiFi/BLE detections by RSSI into passersby vs shoppers.
 
@@ -142,19 +149,31 @@ class DedupEngine:
         Args:
             rssi_passerby: Minimum RSSI to count as passerby (default -75 dBm).
             rssi_shopper: Minimum RSSI to count as shopper (default -55 dBm).
+            protocol: If set ("wifi" or "ble"), only count that protocol.
+                WiFi and BLE have different RSSI reference levels and antenna
+                characteristics, so per-protocol breakdowns can be more
+                interpretable than the mixed total.
 
         Returns:
             {"passersby": int, "shoppers": int, "turn_in_rate": float}
         """
+        where = "WHERE rssi >= ?"
+        params_passerby: tuple = (rssi_passerby,)
+        params_shopper: tuple = (rssi_shopper,)
+        if protocol is not None:
+            where += " AND protocol = ?"
+            params_passerby = (rssi_passerby, protocol)
+            params_shopper = (rssi_shopper, protocol)
+
         with sqlite3.connect(self.db_path) as conn:
             passerby_count = conn.execute(
-                "SELECT COUNT(DISTINCT hash) FROM seen_hashes WHERE rssi >= ?",
-                (rssi_passerby,),
+                f"SELECT COUNT(DISTINCT hash) FROM seen_hashes {where}",
+                params_passerby,
             ).fetchone()[0]
 
             shopper_count = conn.execute(
-                "SELECT COUNT(DISTINCT hash) FROM seen_hashes WHERE rssi >= ?",
-                (rssi_shopper,),
+                f"SELECT COUNT(DISTINCT hash) FROM seen_hashes {where}",
+                params_shopper,
             ).fetchone()[0]
 
         turn_in = (shopper_count / passerby_count) if passerby_count > 0 else 0.0
@@ -170,4 +189,4 @@ class DedupEngine:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM seen_hashes")
             conn.execute("DELETE FROM unified_hashes")
-        logger.info("Daily dedup reset")
+        logger.info("dedup_daily_reset")

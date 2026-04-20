@@ -8,16 +8,17 @@ version = "0.1.0"
 description = "Low-cost people counting for retail via stereo vision and edge AI"
 requires-python = ">=3.11"
 dependencies = [
-    "opencv-contrib-python>=4.8",
-    "numpy>=1.24",
-    "paho-mqtt>=2.0",
+    "opencv-contrib-python>=4.10",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "paho-mqtt>=2.1",
     "pyyaml>=6.0",
-    "scapy>=2.5",
-    "bleak>=0.21",
+    "scapy>=2.6",
+    "bleak>=0.22",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov>=4.0", "black>=23.0", "ruff>=0.1"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "black>=24.0", "ruff>=0.5"]
 
 [tool.black]
 line-length = 88

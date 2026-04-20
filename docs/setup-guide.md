@@ -219,63 +219,71 @@ otro factor. Verificar también que el bracket mecánico no flexa — si el base
 cambia entre calibración y operación, el depth deriva.
 
 Las IMX708 tienen un anillo de foco manual M12 que se gira con pinza de punta fina.
-Poner un objeto con detalle (diario, patrón ChArUco) a **2.5–3m** de las cámaras
-(distancia operativa real). Con M12 fija y 120° HFOV, la depth-of-field a esa
-distancia cubre ~1m–infinito. Correr el asistente de foco:
+Poner el **board ChArUco** (el mismo que vas a usar para calibración) a **2.5–3m**
+de las cámaras. El asistente de foco lo detecta automáticamente y valida la
+distancia. Con M12 fija y 120° HFOV, la depth-of-field a esa distancia cubre
+~1m–infinito.
 
 ```bash
 cd /usr/src/people-counter
 PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
-Abrir **http://people-counter.local:8080** para ver el preview en vivo de ambas
-cámaras lado a lado. El script muestra un puntaje de foco en tiempo real (varianza
-del Laplaciano). Girar el anillo hasta que el número sea lo más alto posible.
+Abrir **http://people-counter.local:8080**. La UI muestra:
+- Barras de sharpness por cámara (centro y uniformidad) con zona verde = target
+- Distancia detectada del board (objetivo 2.5-3m)
+- Simetría L/R
+- Warnings de iluminación/glare en vivo
 
-Usar siempre `--grid --no-zoom` para ver todas las zonas:
+Girar los anillos hasta que todas las barras estén verdes. Click **FINALIZAR**
+cuando pase el check global — salva un reporte HTML en `/tmp/focus_report_*.html`
+con todas las métricas y los frames finales embebidos.
 
-```bash
-PYTHONPATH=. python3 scripts/focus_assist.py --grid --no-zoom
-```
+### 12.2. Calibración estéreo (modo wizard guiado)
 
-El terminal muestra: L/R diff (objetivo <10%), edge/center ratio (objetivo >0.3).
-Buscar el compromiso donde centro y bordes están ambos aceptables y L ≈ R.
-No maximizar centro a costa de bordes — la periferia es crítica para stereo.
+Board recomendado para IMX708: **9x6 squares, checker 45mm, marker 33mm, DICT_4X4_100, A3 landscape** (405x270mm impreso, 40 esquinas internas, 27 markers). Ya generado en `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`. Imprimir desde Adobe Reader con "Actual size" (NO "Fit to page"), laminar OPP mate sobre PVC rígido 3mm (foam flexa demasiado en A3). Verificar con calibre — un square debe medir exactamente 45.0mm. Si difiere, pasar el valor medido con `--square-length`.
 
-Ctrl+C para salir y guardar los últimos frames.
-
-Para verificar visualmente, bajar las imágenes a la PC:
-
-```bash
-scp pi@people-counter.local:/tmp/focus_left.jpg .
-scp pi@people-counter.local:/tmp/focus_right.jpg .
-```
-
-### 12.2. Calibración estéreo
-
-Los parámetros del board ChArUco deben coincidir exactamente con el patrón impreso.
-Board recomendado para IMX708: **11x7 squares, checker 35mm, marker 26mm, DICT_5X5_100, A3 landscape** (385x245mm impreso, 60 esquinas internas, 38 markers). Ya generado en `calibration/charuco_11x7_sq35mm_mk26mm_dict5X5_a3_calibio.pdf`. Imprimir desde Adobe Reader con "Actual size" (NO "Fit to page"), pegar sobre foam board rígido. Verificar el ancho total con calibre — debe medir 385mm. Si difiere, usar el valor medido en `--square-length`.
+**Comando de una sola pasada** — pre-flight + captura guiada + calibración + residuales + ground-truth + reporte HTML con QR:
 
 ```bash
 cd /usr/src/people-counter
-PYTHONPATH=. python3 scripts/calibrate.py capture \
-  --columns 11 --rows 7 --square-length 35 --marker-length 26 \
-  --count 30
+PYTHONPATH=. python3 scripts/calibrate.py wizard \
+  --device-id DEV-001 \
+  --output /etc/people-counter/calibration.npz
 ```
 
-Abrir **http://people-counter.local:8080** para ver el preview en vivo con detección
-de corners y grilla de cobertura. El script captura automáticamente cada ~1.5 segundos
-cuando el board es detectado.
+El wizard tiene 5 fases:
 
-Mover el patrón ChArUco entre capturas a distintas posiciones (centro, bordes, esquinas),
-ángulos (inclinado, rotado) y **distancias 0.5-3m** (cubrir todo el rango operativo,
-no solo el de calibración — el modelo extrapola peor fuera del rango calibrado).
-Cubrir toda la grilla. Buena iluminación, sin reflejos directos sobre el papel.
-Después calibrar:
+**Fase 0 — Pre-flight**: verifica que el puerto 8080 está libre, los directorios de salida son escribibles, hay >500MB de disco y hace backup de `calibration.npz` si ya existe. Aborta con `❌` si falta algo crítico.
+
+**Fase 1 — Captura guiada**. Abrir **http://people-counter.local:8080**. La UI muestra una **silueta fantasma** de dónde poner el board para cada pose (20 poses cubriendo 3 distancias × 5 posiciones × tilts variados).
+- Las **primeras 6 capturas** usan intrínsecos nominales + tolerancia suelta (25px, 12 esquinas). Al completarlas, el wizard ajusta los intrínsecos reales del sensor y pasa a **tolerancia estricta** (12px, 15 esquinas) — cada ejemplar de IMX708 tiene focal distinto ±3-5%, así la silueta se dibuja con el K real.
+- Matching por **ID de esquina ChArUco** (no minAreaRect) — funciona bien incluso en poses con tilt fuerte.
+- Auto-captura cuando: (a) alineado, (b) estable 1.5s, (c) L∩R ≥ 15 esquinas en común, (d) frames L y R sincronizados a ≤5ms.
+- Warnings en vivo: reflejo, sub-exposición, asimetría L/R, **drift de iluminación** (si la luz cambia >25% desde el inicio).
+- Botones UI: **Audio ON/OFF** (el teléfono habla — default OFF), **UNDO**, **Saltear pose**, **FINALIZAR**.
+
+**Fase 2 — Calibración**: `calibrate_stereo` con CALIB_RATIONAL_MODEL, guarda `.npz`.
+
+**Fase 3 — Verificación + residuales por par**: dibuja líneas epipolares en `verify_epipolar.png` y calcula el residual de reproyección por cada par capturado. En el reporte final, los pares con residual >2× la mediana se marcan como outlier (tile con borde rojo) — sabés cuáles recapturar si hace falta.
+
+**Fase 4 — Ground-truth depth (opcional)**: el wizard te prompta en la terminal — "poné una superficie plana a X mm, escribí la distancia". Captura un frame, rectifica con la calibración recién hecha, corre SGBM + análisis de 5 zonas. El resultado (centro <5% a 2m / <10% a 3m, borde/centro <2×) queda en el HTML report. Enter vacío para saltear.
+
+**Reporte + QR**: al terminar, el wizard levanta un HTTP server en `:8081` durante 10 min sirviendo el reporte, imprime un **QR code en la terminal** con la URL — escaneás con el teléfono y ves el reporte instantáneo, sin ssh/scp. Requiere `pip install qrcode` (opcional; si no está, muestra solo la URL). Ctrl+C para cerrar antes del timeout.
+
+**Flags útiles**:
+- `--resume` — continuar una sesión anterior interrumpida (lee `session.json` en el output_dir, salta las poses ya capturadas, re-fitea el bootstrap K si hay ≥6 capturas). Si hay una sesión previa y no pasás `--resume`, el wizard aborta para no sobreescribir.
+- `--no-serve-report` — no levantar el server del reporte
+- `--report-serve-sec 1800` — cambiar el tiempo de vida del server (default 600s)
+- `--report-port 9090` — puerto alternativo para el report server
+- `--dist-near-mm/--dist-mid-mm/--dist-far-mm` — distancias custom para la secuencia de poses (útil si el local tiene techo alto o pasillo ancho)
+
+**Si preferís el flujo manual** (capture y calibrate por separado), los flags
+del board tienen defaults canónicos — ya no hace falta pasarlos:
 
 ```bash
+PYTHONPATH=. python3 scripts/calibrate.py capture --guided
 PYTHONPATH=. python3 scripts/calibrate.py calibrate \
-  --columns 11 --rows 7 --square-length 35 --marker-length 26 \
   --input-dir ./calibration/captures \
   --output /etc/people-counter/calibration.npz
 ```

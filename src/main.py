@@ -12,16 +12,24 @@ Orchestrates the full edge pipeline:
 
 import argparse
 import logging
+import os
+import queue
 import signal
+import socket
 import sys
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any
 
 import numpy as np
 
 from src.config.loader import (
+    apply_shadow_delta,
+    build_reported_state,
+    get_invalid_schedule_mode,
     get_scaling_factor,
+    has_schedule_error,
     is_counting_enabled,
     is_within_operating_hours,
     load_config,
@@ -29,14 +37,44 @@ from src.config.loader import (
 )
 from src.mqtt.buffer import MessageBuffer
 from src.mqtt.client import MQTTClient
-from src.tracking.counter import LineCounter
+from src.telemetry import collect_telemetry
+from src.tracking.counter import LineCounter, ROICounter, build_counter
 from src.tracking.tracker import EuclideanTracker
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
-from src.vision.depth import compute_disparity, create_sgbm, depth_at_bbox, disparity_to_depth
+from src.vision.depth import (
+    compute_disparity, create_sgbm, depth_at_bbox, disparity_to_depth,
+    min_depth_at_bbox,
+)
+from src.vision.world_coords import classify_height, head_height_above_floor
 from src.vision.detect import detect_persons, load_model
 
+# Size of the rolling windows used for frame-latency percentiles and
+# detection-rate calculations. 100 covers ~7s at 15 FPS — enough to smooth
+# noise without drowning brief stalls.
+TELEMETRY_WINDOW_SIZE = 100
+
 logger = logging.getLogger(__name__)
+
+
+def sd_notify(message: str) -> None:
+    """Send a notification to systemd via NOTIFY_SOCKET.
+
+    No-op if the socket env var is unset (i.e. running outside systemd).
+    Used to send READY=1, WATCHDOG=1, STOPPING=1 for Type=notify services.
+    """
+    sock_path = os.environ.get("NOTIFY_SOCKET")
+    if not sock_path:
+        return
+    if sock_path.startswith("@"):  # Abstract namespace on Linux
+        sock_path = "\0" + sock_path[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.settimeout(0.5)
+            s.connect(sock_path)
+            s.sendall(message.encode())
+    except OSError as e:
+        logger.debug("sd_notify(%s) failed: %s", message, e)
 
 
 def setup_logging(config: dict[str, Any]) -> None:
@@ -109,39 +147,66 @@ def build_mqtt(config: dict[str, Any]) -> tuple[MQTTClient, MessageBuffer]:
     return client, buffer
 
 
-def get_telemetry() -> dict[str, Any]:
-    """Collect device telemetry."""
-    telemetry: dict[str, Any] = {"uptime_s": 0}
+def _build_telemetry_state(
+    frame_latencies_ms: "deque[float]",
+    detection_counts: "deque[int]",
+    detection_window_start_ts: float,
+    fps: float | int | None,
+    tracker: EuclideanTracker,
+    mqtt_client: MQTTClient,
+    buffer: MessageBuffer,
+) -> dict[str, Any]:
+    """Snapshot pipeline runtime state into the dict expected by
+    :func:`collect_telemetry`. Each lookup is wrapped so a single faulty
+    probe never blocks the telemetry emission.
+    """
+    state: dict[str, Any] = {
+        "frame_latencies_ms": list(frame_latencies_ms),
+        "detection_counts": list(detection_counts),
+        "detection_window_start_ts": detection_window_start_ts,
+        "fps": fps,
+    }
 
     try:
-        with open("/proc/uptime") as f:
-            telemetry["uptime_s"] = float(f.read().split()[0])
+        track_counts = tracker.count_by_state()
+        state["tracker_confirmed"] = track_counts.get("confirmed", 0)
+        state["tracker_pending"] = track_counts.get("pending", 0)
     except Exception:
-        pass
+        logger.exception("tracker.count_by_state failed")
+        state["tracker_confirmed"] = None
+        state["tracker_pending"] = None
 
     try:
-        with open("/sys/class/thermal/thermal_zone0/temp") as f:
-            telemetry["cpu_temp_c"] = int(f.read().strip()) / 1000.0
+        state["mqtt_disconnect_count"] = mqtt_client.disconnect_count
     except Exception:
-        pass
+        state["mqtt_disconnect_count"] = None
+    try:
+        state["mqtt_reconnect_ts"] = mqtt_client.reconnect_ts
+    except Exception:
+        state["mqtt_reconnect_ts"] = None
 
     try:
-        import shutil
-        usage = shutil.disk_usage("/")
-        telemetry["disk_free_mb"] = usage.free // (1024 * 1024)
+        state["buffer_backlog"] = buffer.count_unsent()
     except Exception:
-        pass
+        logger.exception("buffer.count_unsent failed")
+        state["buffer_backlog"] = None
 
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    telemetry["mem_available_mb"] = int(line.split()[1]) // 1024
-                    break
-    except Exception:
-        pass
+    return state
 
-    return telemetry
+
+def get_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Collect device telemetry.
+
+    Thin wrapper over :func:`src.telemetry.collect_telemetry` kept for
+    backwards compatibility. The original implementation returned
+    ``uptime_s = 0`` when ``/proc/uptime`` was unreadable; the new module
+    returns ``None``. Callers that must see a numeric uptime (legacy tests
+    running on Windows) coerce here.
+    """
+    telem = collect_telemetry(state)
+    if telem.get("uptime_s") is None:
+        telem["uptime_s"] = 0
+    return telem
 
 
 def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
@@ -164,9 +229,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     # --- Load detection model ---
     model_path = detect_cfg["model_path"]
-    backend = args.detection_backend if hasattr(args, "detection_backend") else "auto"
-    logger.info("Loading model: %s (backend=%s)", model_path, backend)
-    model = load_model(model_path, backend=backend)
+    detection_backend = getattr(args, "detection_backend", "auto")
+    logger.info("Loading model: %s (backend=%s)", model_path, detection_backend)
+    model = load_model(model_path, backend=detection_backend)
 
     # --- Build SGBM ---
     sgbm = create_sgbm(
@@ -175,18 +240,54 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
 
     # --- Build tracker + counter ---
+    counter_cfg = config.get("counter", {})
+    tracker_cfg = counter_cfg.get("tracker", {})
     tracker = EuclideanTracker(
         max_disappeared=track_cfg.get("max_disappeared", 30),
         max_distance=track_cfg.get("max_distance", 50.0),
+        max_depth_delta=tracker_cfg.get("depth_gate_m", 0.5) * 1000.0,
+        confirm_frames=tracker_cfg.get("confirm_frames", 3),
+        pending_max_frames=tracker_cfg.get("pending_max_frames", 5),
+        reid_gate_px=tracker_cfg.get("reid_gate_px", 60.0),
     )
     line_y = vision_cfg.get("counting_line_y", 0.5)
-    # Convert relative line position to pixels if needed
-    # (actual pixel value computed after first frame read)
-    counter: LineCounter | None = None
+    # Counter built lazily once frame height is known (needed for legacy line_y relative values)
+    counter: LineCounter | ROICounter | None = None
 
     # --- Build MQTT ---
     mqtt_client, buffer = build_mqtt(config)
+
+    # --- Shadow delta wiring -------------------------------------------------
+    # Deltas arrive in the paho network thread; the queue is the thread-safe
+    # hand-off to the main loop, which is the only writer for `config`. The
+    # same queue also carries a sentinel ``{"__reconcile__": True}`` item
+    # posted by the MQTT on_connected hook, so reported-state publishing runs
+    # on the main thread (no paho-thread network calls).
+    shadow_queue: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=32)
+    _RECONCILE_SENTINEL = {"__reconcile__": True}
+
+    def _shadow_delta_handler(state: dict[str, Any]) -> None:
+        try:
+            shadow_queue.put_nowait(state)
+        except queue.Full:
+            logger.warning("Shadow delta queue full — dropping delta")
+
+    def _on_mqtt_connected() -> None:
+        # Runs in paho thread — enqueue, don't block.
+        try:
+            shadow_queue.put_nowait(_RECONCILE_SENTINEL)
+        except queue.Full:
+            logger.warning("Shadow queue full — dropping reconcile request")
+
+    mqtt_client.on_connected = _on_mqtt_connected
     mqtt_client.connect()
+
+    try:
+        mqtt_client.subscribe_shadow_delta(device_id, _shadow_delta_handler)
+    except Exception:
+        logger.exception("Shadow delta subscription failed")
+
+    config_path_arg = getattr(args, "config", None)
 
     # --- Build capture ---
     capture = build_capture(config, replay_dir=getattr(args, "replay_dir", None))
@@ -224,27 +325,161 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     telem_fps_start = time.time()
     last_hours_check = 0.0
     last_purge = time.time()
+    last_watchdog = 0.0
     within_hours = True  # assume open until first check
+
+    # --- Observability state (sliding windows) ---
+    # Rolling buffers of per-frame latency and detection counts. Cleared after
+    # each telemetry emission so each sample represents the previous interval.
+    frame_latencies_ms: deque[float] = deque(maxlen=TELEMETRY_WINDOW_SIZE)
+    detection_counts: deque[int] = deque(maxlen=TELEMETRY_WINDOW_SIZE)
+    detection_window_start_ts = time.time()
+
+    # Operational-hours fail mode — only log the startup warning once.
+    schedule_invalid = has_schedule_error(config)
+    invalid_mode = get_invalid_schedule_mode(config)
+    if schedule_invalid:
+        err = config.get("_schedule_error", "unknown")
+        if invalid_mode == "fail_closed":
+            logger.critical(
+                "Invalid operating_hours (%s) and on_invalid_schedule=fail_closed "
+                "— counting paused until a valid schedule is pushed",
+                err,
+            )
+        else:
+            logger.warning(
+                "Invalid operating_hours (%s) and on_invalid_schedule=fail_open "
+                "— continuing to count (may produce false positives)",
+                err,
+            )
+
+    # Signal systemd that startup is complete. Pair with WatchdogSec in the
+    # unit file — we ping WATCHDOG=1 inside the loop below.
+    sd_notify("READY=1")
 
     try:
         while running:
+            # --- Drain pending shadow deltas (main-thread side) ---
+            while True:
+                try:
+                    delta_state = shadow_queue.get_nowait()
+                except queue.Empty:
+                    break
+                # Reconcile sentinel (on (re)connect): publish current effective
+                # state as reported. Non-fatal on error.
+                if delta_state is _RECONCILE_SENTINEL or delta_state.get(
+                    "__reconcile__"
+                ):
+                    try:
+                        reported = build_reported_state(config, calibration)
+                        mqtt_client.publish_shadow_reported(device_id, reported)
+                        logger.info(
+                            "shadow_reconciliation_published",
+                            extra={"keys": sorted(reported.keys())},
+                        )
+                    except Exception:
+                        logger.exception("Failed to publish shadow reconciliation")
+                    continue
+                try:
+                    new_config, applied_keys = apply_shadow_delta(
+                        config, delta_state, config_path=config_path_arg
+                    )
+                except Exception:
+                    logger.exception("apply_shadow_delta failed")
+                    continue
+                if not applied_keys:
+                    continue
+                config = new_config
+                # Re-evaluate schedule flag after a shadow update.
+                schedule_invalid = has_schedule_error(config)
+                invalid_mode = get_invalid_schedule_mode(config)
+                last_hours_check = 0.0  # force recheck on next iteration
+
+                # Selective re-init based on which keys changed.
+                # counter.tracker.* and counter.height_classifier.* are read
+                # live each frame — no rebuild needed.
+                if any(
+                    k.startswith("counter.")
+                    and not k.startswith("counter.tracker.")
+                    and not k.startswith("counter.height_classifier.")
+                    for k in applied_keys
+                ):
+                    counter = None
+                    logger.info("Counter will be rebuilt after shadow delta")
+                if any(k.startswith("counter.tracker.") for k in applied_keys):
+                    logger.info(
+                        "Tracker params updated; new values apply to future tracks"
+                    )
+                if any(
+                    k in ("vision.num_disparities", "vision.block_size")
+                    for k in applied_keys
+                ):
+                    sgbm = create_sgbm(
+                        num_disparities=config["vision"].get(
+                            "num_disparities", 192
+                        ),
+                        block_size=config["vision"].get("block_size", 9),
+                    )
+                    logger.info("SGBM rebuilt after shadow delta")
+                if any(k == "telemetry.interval_seconds" for k in applied_keys):
+                    telem_interval = config.get("telemetry", {}).get(
+                        "interval_seconds", telem_interval
+                    )
+
+                try:
+                    mqtt_client.publish_shadow_reported(
+                        device_id, {k: True for k in applied_keys}
+                    )
+                except Exception:
+                    logger.exception("Publishing shadow reported failed")
+
             # --- Check operating hours every 60 seconds ---
             now = time.time()
             if now - last_hours_check >= 60.0:
-                dt = datetime.now()
-                day_name = dt.strftime("%A").lower()
-                within_hours = is_within_operating_hours(
-                    config, day_name, dt.hour, dt.minute
-                )
-                if not within_hours:
-                    logger.debug("Outside operating hours (%s %02d:%02d) — paused",
-                                 day_name, dt.hour, dt.minute)
+                if schedule_invalid:
+                    # fail_closed: treat as outside hours; fail_open: count.
+                    within_hours = invalid_mode != "fail_closed"
+                else:
+                    dt = datetime.now()
+                    day_name = dt.strftime("%A").lower()
+                    within_hours = is_within_operating_hours(
+                        config, day_name, dt.hour, dt.minute
+                    )
+                    if not within_hours:
+                        logger.debug("Outside operating hours (%s %02d:%02d) — paused",
+                                     day_name, dt.hour, dt.minute)
                 last_hours_check = now
 
             # --- Check if counting is enabled (cloud toggle) ---
             if not is_counting_enabled(config) or not within_hours:
+                # Keep telemetry + watchdog alive so ops can re-push config.
+                if schedule_invalid and invalid_mode == "fail_closed":
+                    telem_now = time.time()
+                    if telem_now - last_telem >= telem_interval:
+                        telem = collect_telemetry(
+                            _build_telemetry_state(
+                                frame_latencies_ms,
+                                detection_counts,
+                                detection_window_start_ts,
+                                config.get("vision", {}).get("fps"),
+                                tracker,
+                                mqtt_client,
+                                buffer,
+                            )
+                        )
+                        telem["error"] = "invalid_schedule"
+                        telem["schedule_error_detail"] = config.get(
+                            "_schedule_error", ""
+                        )
+                        mqtt_client.publish_event("telemetry", telem)
+                        last_telem = telem_now
+                    if telem_now - last_watchdog >= 60.0:
+                        sd_notify("WATCHDOG=1")
+                        last_watchdog = telem_now
                 time.sleep(1.0)
                 continue
+
+            t_iter_start = time.perf_counter()
             try:
                 frame_l, frame_r = capture.read()
             except StopIteration:
@@ -263,10 +498,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
             # --- Initialize counter with actual frame height ---
             if counter is None:
-                h = rect_l.shape[0]
-                actual_line_y = line_y * h if line_y <= 1.0 else line_y
-                counter = LineCounter(line_y=actual_line_y)
-                logger.info("Counting line at y=%.1f", actual_line_y)
+                counter = build_counter(config, frame_height=rect_l.shape[0])
+                logger.info("Counter initialized: %s", type(counter).__name__)
 
             # --- Set focal length + baseline from calibration ---
             if focal_length_px is None and calibration is not None:
@@ -293,18 +526,42 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 nms_threshold=detect_cfg.get("nms_threshold", 0.45),
             )
 
-            # --- Build 3D positions from detections + depth ---
-            positions = []
+            # --- Build 3D positions + per-detection metadata ---
+            vision_cfg = config.get("vision", {})
+            counter_cfg_live = config.get("counter", {})
+            hc_cfg = counter_cfg_live.get("height_classifier", {}) or {}
+            hc_enabled = bool(hc_cfg.get("enabled", False))
+            mount_height_mm = (
+                float(vision_cfg.get("mounting_height_m", 0.0) or 0.0) * 1000.0
+            )
+            adult_min_mm = float(hc_cfg.get("adult_min_m", 1.55)) * 1000.0
+
+            positions: list[np.ndarray] = []
+            metas: list[dict] = []
             for det in detections:
                 cx, cy = det.centroid
                 if depth_map is not None:
                     z = depth_at_bbox(depth_map, det.bbox)
+                    near_z = min_depth_at_bbox(depth_map, det.bbox)
                 else:
                     z = 0.0
+                    near_z = 0.0
                 positions.append(np.array([cx, cy, z]))
 
+                if hc_enabled and mount_height_mm > 0 and near_z > 0:
+                    head_mm = head_height_above_floor(near_z, mount_height_mm)
+                    height_class = classify_height(head_mm, adult_min_mm)
+                else:
+                    head_mm = None
+                    height_class = "unknown"
+                metas.append({
+                    "near_depth_mm": near_z,
+                    "head_height_mm": head_mm,
+                    "height_class": height_class,
+                })
+
             # --- Tracking ---
-            tracks = tracker.update(positions)
+            tracks = tracker.update(positions, detection_metas=metas)
 
             # --- Counting ---
             events = counter.check_all(tracks)
@@ -324,6 +581,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "scaling_factor": scaling,
                         "scaled_in": round(counter.total_in * scaling),
                         "scaled_out": round(counter.total_out * scaling),
+                        "height_class": event.height_class,
                     },
                 )
 
@@ -343,11 +601,27 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 frame_count = 0
                 fps_start = time.time()
 
+            # --- Observability: record per-frame latency + detection count ---
+            frame_latencies_ms.append(
+                (time.perf_counter() - t_iter_start) * 1000.0
+            )
+            detection_counts.append(len(detections))
+
             # --- Telemetry ---
             now = time.time()
             if now - last_telem >= telem_interval:
                 telem_elapsed = now - telem_fps_start
-                telem = get_telemetry()
+                telem = collect_telemetry(
+                    _build_telemetry_state(
+                        frame_latencies_ms,
+                        detection_counts,
+                        detection_window_start_ts,
+                        config.get("vision", {}).get("fps"),
+                        tracker,
+                        mqtt_client,
+                        buffer,
+                    )
+                )
                 telem["fps"] = telem_frame_count / max(telem_elapsed, 1)
                 telem["total_in"] = counter.total_in
                 telem["total_out"] = counter.total_out
@@ -355,19 +629,29 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 last_telem = now
                 telem_frame_count = 0
                 telem_fps_start = now
+                # Reset rolling windows so the next sample is independent.
+                frame_latencies_ms.clear()
+                detection_counts.clear()
+                detection_window_start_ts = now
 
             # --- Buffer maintenance (every 60s, not every frame) ---
             if now - last_purge >= 60.0:
                 buffer.purge_old()
                 last_purge = now
 
+            # --- systemd watchdog keepalive (every 60s; WatchdogSec=300) ---
+            if now - last_watchdog >= 60.0:
+                sd_notify("WATCHDOG=1")
+                last_watchdog = now
+
     finally:
+        sd_notify("STOPPING=1")
         capture.close()
         mqtt_client.disconnect()
         # Release Hailo resources if backend supports it
-        backend = model.get("backend")
-        if hasattr(backend, "close"):
-            backend.close()
+        backend_impl = model.get("backend")
+        if hasattr(backend_impl, "close"):
+            backend_impl.close()
         logger.info(
             "Pipeline stopped. Final counts: in=%d out=%d",
             counter.total_in if counter else 0,
@@ -397,12 +681,13 @@ def main() -> None:
     # In production this would fetch from AWS IoT via MQTT $aws/things/{id}/shadow/get.
     # For the MVP, we read a local shadow cache file if it exists (updated by a
     # background process or on previous boot). If not available, local defaults apply.
-    shadow_path = args.config.replace(".yaml", ".shadow.json")
-    try:
-        import json
-        from pathlib import Path
+    from pathlib import Path
+    import json
 
-        shadow_file = Path(shadow_path)
+    config_path = Path(args.config)
+    shadow_file = Path(str(config_path.with_suffix("")) + ".shadow.json")
+    shadow_path = str(shadow_file)
+    try:
         if shadow_file.exists():
             shadow_data = json.loads(shadow_file.read_text())
             desired = shadow_data.get("state", {}).get("desired", {})

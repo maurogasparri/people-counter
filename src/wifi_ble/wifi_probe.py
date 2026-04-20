@@ -105,7 +105,13 @@ class WiFiProbeCapture:
                 capture_output=True,
                 text=True,
             )
-            logger.info("Monitor mode enabled: %s → %s", self.interface, self.mon_interface)
+            logger.info(
+                "monitor_mode_enabled",
+                extra={
+                    "interface": self.interface,
+                    "mon_interface": self.mon_interface,
+                },
+            )
 
             # Verify the monitor interface exists
             verify = subprocess.run(
@@ -141,14 +147,14 @@ class WiFiProbeCapture:
                 ["nmcli", "dev", "set", self.interface, "managed", "yes"],
                 capture_output=True,
             )
-            logger.info("Monitor mode stopped, managed mode restored")
+            logger.info("monitor_mode_stopped")
         except Exception:
             logger.exception("Failed to restore managed mode")
 
     def start(self) -> None:
         """Start asynchronous probe capture and channel hopping."""
         if self._capture_thread is not None:
-            logger.warning("Capture already running")
+            logger.warning("wifi_capture_already_running")
             return
 
         self._stop_event.clear()
@@ -163,7 +169,10 @@ class WiFiProbeCapture:
 
         self._hop_thread.start()
         self._capture_thread.start()
-        logger.info("WiFi probe capture started on %s", self.mon_interface)
+        logger.info(
+            "wifi_capture_started",
+            extra={"mon_interface": self.mon_interface},
+        )
 
     def stop(self) -> None:
         """Stop capture and channel hopping."""
@@ -175,7 +184,8 @@ class WiFiProbeCapture:
             self._hop_thread.join(timeout=5.0)
             self._hop_thread = None
         logger.info(
-            "WiFi probe capture stopped. Total probes: %d", self._probe_count
+            "wifi_capture_stopped",
+            extra={"count": self._probe_count},
         )
 
     def _channel_hop_loop(self) -> None:
@@ -191,9 +201,14 @@ class WiFiProbeCapture:
                 )
                 self._current_channel = channel
             except subprocess.CalledProcessError:
-                logger.debug("Failed to set channel %d — skipping", channel)
+                logger.debug(
+                    "channel_set_failed", extra={"channel": channel}
+                )
             except FileNotFoundError:
-                logger.error("iw not found — channel hopping disabled")
+                logger.error(
+                    "iw_not_found",
+                    extra={"reason": "channel hopping disabled"},
+                )
                 return
 
             idx += 1
@@ -205,8 +220,8 @@ class WiFiProbeCapture:
             from scapy.all import Dot11, Dot11ProbeReq, RadioTap, sniff
         except ImportError:
             logger.error(
-                "scapy not installed. Install with: pip install scapy. "
-                "WiFi probe capture disabled."
+                "scapy_not_installed",
+                extra={"reason": "WiFi probe capture disabled"},
             )
             return
 
@@ -258,7 +273,10 @@ class WiFiProbeCapture:
                 except Exception:
                     logger.exception("Error in on_probe callback")
 
-        logger.info("Starting scapy sniff on %s", self.mon_interface)
+        logger.info(
+            "scapy_sniff_starting",
+            extra={"mon_interface": self.mon_interface},
+        )
         try:
             sniff(
                 iface=self.mon_interface,
@@ -267,6 +285,9 @@ class WiFiProbeCapture:
                 stop_filter=lambda _: self._stop_event.is_set(),
             )
         except OSError as e:
-            logger.error("Capture error on %s: %s", self.mon_interface, e)
+            logger.error(
+                "wifi_capture_error",
+                extra={"mon_interface": self.mon_interface, "error": str(e)},
+            )
         except Exception:
             logger.exception("Unexpected capture error")

@@ -8,6 +8,7 @@ Supports three modes:
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +42,7 @@ class StereoCapture:
         self.fps = fps
         self._cam_left = None
         self._cam_right = None
+        self._executor: Optional[ThreadPoolExecutor] = None
 
     def open(self) -> None:
         """Open both camera streams via picamera2.
@@ -92,18 +94,26 @@ class StereoCapture:
                 "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
             })
             logger.info(
-                "%s camera locked: exposure=%d gain=%.1f",
-                name,
-                metadata.get("ExposureTime", 0),
-                metadata.get("AnalogueGain", 0),
+                "camera_controls_locked",
+                extra={
+                    "camera": name,
+                    "exposure_us": metadata.get("ExposureTime", 0),
+                    "analogue_gain": metadata.get("AnalogueGain", 0),
+                },
             )
 
+        self._executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="stereo-cap"
+        )
+
         logger.info(
-            "Stereo capture opened: left=%d, right=%d, res=%s, fps=%d",
-            self.cam_left_id,
-            self.cam_right_id,
-            self.resolution,
-            self.fps,
+            "stereo_capture_opened",
+            extra={
+                "left_id": self.cam_left_id,
+                "right_id": self.cam_right_id,
+                "resolution": list(self.resolution),
+                "fps": self.fps,
+            },
         )
 
     def read(self) -> tuple[np.ndarray, np.ndarray]:
@@ -115,24 +125,77 @@ class StereoCapture:
         Raises:
             RuntimeError: If cameras not opened or read fails.
         """
-        if self._cam_left is None or self._cam_right is None:
+        if self._cam_left is None or self._cam_right is None or self._executor is None:
             raise RuntimeError("Cameras not opened. Call open() first.")
 
-        from concurrent.futures import ThreadPoolExecutor
-
         try:
-            with ThreadPoolExecutor(max_workers=2) as ex:
-                fut_l = ex.submit(self._cam_left.capture_array, "main")
-                fut_r = ex.submit(self._cam_right.capture_array, "main")
-                frame_l = fut_l.result()
-                frame_r = fut_r.result()
+            fut_l = self._executor.submit(self._cam_left.capture_array, "main")
+            fut_r = self._executor.submit(self._cam_right.capture_array, "main")
+            frame_l = fut_l.result()
+            frame_r = fut_r.result()
         except Exception as e:
             raise RuntimeError(f"Frame capture failed: {e}") from e
 
+        # picamera2 with "BGR888" format empirically delivers RGB on RPi OS
+        # Trixie / libcamera builds we ship with. Convert to BGR so downstream
+        # consumers (OpenCV, YOLO preprocess that assumes BGR input) see the
+        # correct channel order.
+        frame_l = cv2.cvtColor(frame_l, cv2.COLOR_RGB2BGR)
+        frame_r = cv2.cvtColor(frame_r, cv2.COLOR_RGB2BGR)
+
         return frame_l, frame_r
+
+    def read_with_timestamps(self) -> tuple[np.ndarray, np.ndarray, int, int]:
+        """Read frame pair along with each camera's sensor timestamp (ns).
+
+        Returns:
+            (left_frame, right_frame, ts_left_ns, ts_right_ns)
+        """
+        frame_l, frame_r, ts_l, ts_r, _temp_l, _temp_r = self.read_with_metadata()
+        return frame_l, frame_r, ts_l, ts_r
+
+    def read_with_metadata(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]:
+        """Read frame pair with sensor timestamps (ns) and sensor temperatures (°C).
+
+        Temperature comes from picamera2 SensorTemperature metadata key when
+        available (IMX708 on RPi5 exposes it). Returns None per camera if the
+        key isn't present — older libcamera builds or non-IMX708 sensors.
+        """
+        if self._cam_left is None or self._cam_right is None or self._executor is None:
+            raise RuntimeError("Cameras not opened. Call open() first.")
+
+        def _grab(cam):
+            req = cam.capture_request()
+            try:
+                frame = req.make_array("main")
+                metadata = req.get_metadata()
+                ts = int(metadata.get("SensorTimestamp", 0))
+                temp_raw = metadata.get("SensorTemperature")
+                temp = float(temp_raw) if temp_raw is not None else None
+                return frame, ts, temp
+            finally:
+                req.release()
+
+        try:
+            fut_l = self._executor.submit(_grab, self._cam_left)
+            fut_r = self._executor.submit(_grab, self._cam_right)
+            frame_l, ts_l, temp_l = fut_l.result()
+            frame_r, ts_r, temp_r = fut_r.result()
+        except Exception as e:
+            raise RuntimeError(f"Frame capture failed: {e}") from e
+
+        frame_l = cv2.cvtColor(frame_l, cv2.COLOR_RGB2BGR)
+        frame_r = cv2.cvtColor(frame_r, cv2.COLOR_RGB2BGR)
+
+        return frame_l, frame_r, ts_l, ts_r, temp_l, temp_r
 
     def close(self) -> None:
         """Release camera resources."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
         for cam, name in [
             (self._cam_left, "left"),
             (self._cam_right, "right"),
@@ -142,10 +205,10 @@ class StereoCapture:
                     cam.stop()
                     cam.close()
                 except Exception:
-                    logger.warning("Error closing %s camera", name)
+                    logger.warning("camera_close_failed", extra={"camera": name})
         self._cam_left = None
         self._cam_right = None
-        logger.info("Stereo capture closed")
+        logger.info("stereo_capture_closed")
 
     def __enter__(self) -> "StereoCapture":
         self.open()
@@ -213,9 +276,8 @@ class FileCapture:
 
         self._index = 0
         logger.info(
-            "File capture opened: %d pairs from %s",
-            len(self._pairs),
-            self.directory,
+            "file_capture_opened",
+            extra={"pairs": len(self._pairs), "path": str(self.directory)},
         )
 
     def read(self) -> tuple[np.ndarray, np.ndarray]:

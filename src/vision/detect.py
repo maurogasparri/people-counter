@@ -53,15 +53,16 @@ class Detection:
 class DetectionBackend(Protocol):
     """Protocol for detection backends."""
 
-    def infer(self, preprocessed: np.ndarray) -> np.ndarray:
+    def infer(self, preprocessed: np.ndarray) -> "np.ndarray | list":
         """Run inference on preprocessed input.
 
         Args:
             preprocessed: (1, 3, 640, 640) float32 normalized [0, 1].
 
         Returns:
-            Raw model output tensor. Shape depends on backend but is
-            typically (1, 84, 8400) for YOLOv8n (transposed COCO).
+            Raw model output. OpenCV backend returns an ndarray of shape
+            (1, 84, 8400) for YOLOv8n (transposed COCO). Hailo backend
+            returns a list of 80 per-class arrays from its built-in NMS.
         """
         ...
 
@@ -135,7 +136,7 @@ class HailoBackend:
         )
         self._pipeline.__enter__()
 
-        logger.info("Hailo backend loaded: %s", hef_path)
+        logger.info("hailo_backend_loaded", extra={"path": hef_path})
 
     def infer(self, preprocessed: np.ndarray) -> list:
         """Run inference on Hailo-8L.
@@ -172,7 +173,7 @@ class HailoBackend:
             self._activation_ctx.__exit__(None, None, None)
         except Exception:
             pass
-        logger.info("Hailo backend closed")
+        logger.info("hailo_backend_closed")
 
 
 # ---------------------------------------------------------------------------
@@ -192,13 +193,13 @@ class OpenCVBackend:
         try:
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-            logger.info("OpenCV backend: CUDA")
+            logger.info("opencv_backend_target", extra={"target": "cuda"})
         except Exception:
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
             self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-            logger.info("OpenCV backend: CPU")
+            logger.info("opencv_backend_target", extra={"target": "cpu"})
 
-        logger.info("OpenCV DNN backend loaded: %s", onnx_path)
+        logger.info("opencv_backend_loaded", extra={"path": onnx_path})
 
     def infer(self, preprocessed: np.ndarray) -> np.ndarray:
         """Run inference via OpenCV DNN."""

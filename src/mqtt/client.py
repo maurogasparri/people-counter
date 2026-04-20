@@ -18,10 +18,9 @@ from src.mqtt.buffer import MessageBuffer
 
 logger = logging.getLogger(__name__)
 
-# Reconnect parameters
+# Reconnect parameters (passed to paho's built-in reconnect_delay_set)
 RECONNECT_MIN_DELAY = 1  # seconds
 RECONNECT_MAX_DELAY = 120  # seconds
-RECONNECT_BACKOFF = 2  # multiplier
 
 
 class MQTTClient:
@@ -70,9 +69,22 @@ class MQTTClient:
         self._connected = False
         self._stop_event = threading.Event()
         self._replay_lock = threading.Lock()
-        self._reconnect_delay = RECONNECT_MIN_DELAY
         self._pending_acks: dict[int, int] = {}  # mqtt_mid -> buffer_msg_id
         self._pending_lock = threading.Lock()
+        # Registered shadow-delta callbacks keyed by MQTT topic so we can
+        # dispatch incoming messages without relying on paho's per-sub wiring.
+        self._shadow_callbacks: dict[str, Callable[[dict], None]] = {}
+        self._shadow_lock = threading.Lock()
+        # Optional hook fired on every successful (re)connect. Runs in the paho
+        # network thread, so callers must keep the callback fast + thread-safe
+        # (typically: enqueue a job for the main loop to drain).
+        self.on_connected: Optional[Callable[[], None]] = None
+        # Connectivity telemetry: incremented on every disconnect callback,
+        # reconnect_ts stamped on each successful connect. Read-only from the
+        # main thread via the public properties.
+        self._disconnect_count = 0
+        self._reconnect_ts: float | None = None
+        self._conn_lock = threading.Lock()
 
         # Validate certificate files exist
         for name, path in [
@@ -99,10 +111,17 @@ class MQTTClient:
             tls_version=ssl.PROTOCOL_TLSv1_2,
         )
 
+        # Delegate reconnect/backoff to paho's built-in logic (active while
+        # loop_start() is running). Avoids stacking custom reconnect threads.
+        self._client.reconnect_delay_set(
+            min_delay=RECONNECT_MIN_DELAY, max_delay=RECONNECT_MAX_DELAY
+        )
+
         # Set callbacks
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_publish = self._on_publish
+        self._client.on_message = self._on_message
 
         logger.info(
             "MQTT client initialized",
@@ -112,6 +131,18 @@ class MQTTClient:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def disconnect_count(self) -> int:
+        """Cumulative count of unexpected disconnects since client creation."""
+        with self._conn_lock:
+            return self._disconnect_count
+
+    @property
+    def reconnect_ts(self) -> float | None:
+        """Epoch seconds of the last successful (re)connect, or None."""
+        with self._conn_lock:
+            return self._reconnect_ts
 
     def connect(self) -> None:
         """Connect to the MQTT broker.
@@ -200,6 +231,66 @@ class MQTTClient:
 
         return self.publish(topic, payload, qos)
 
+    def subscribe_shadow_delta(
+        self,
+        thing_name: str,
+        callback: Callable[[dict], None],
+    ) -> None:
+        """Subscribe to the device shadow delta topic.
+
+        When AWS IoT publishes a delta (desired != reported), the callback
+        is invoked with the parsed ``state`` dict.  The callback runs in
+        the paho network thread; it should be fast and thread-safe.
+
+        Args:
+            thing_name: AWS IoT thing name (typically the device_id).
+            callback: Invoked with the parsed ``state`` delta dict.
+        """
+        topic = f"$aws/things/{thing_name}/shadow/update/delta"
+        with self._shadow_lock:
+            self._shadow_callbacks[topic] = callback
+        try:
+            result, _mid = self._client.subscribe(topic, qos=1)
+            if result != mqtt.MQTT_ERR_SUCCESS:
+                logger.warning(
+                    "Shadow delta subscribe returned rc=%d for %s",
+                    result,
+                    topic,
+                )
+            else:
+                logger.info("Subscribed to shadow delta: %s", topic)
+        except Exception:
+            logger.exception("Shadow delta subscribe failed: %s", topic)
+
+    def publish_shadow_reported(
+        self,
+        thing_name: str,
+        state: dict[str, Any],
+    ) -> None:
+        """Publish an update to the device shadow ``reported`` state.
+
+        Wraps ``state`` in the required ``{"state": {"reported": ...}}``
+        envelope and publishes to ``$aws/things/{thing}/shadow/update``.
+
+        Args:
+            thing_name: AWS IoT thing name (typically the device_id).
+            state: Dict of values to report.
+        """
+        topic = f"$aws/things/{thing_name}/shadow/update"
+        envelope = {"state": {"reported": state}}
+        try:
+            result = self._client.publish(
+                topic, json.dumps(envelope), qos=1, retain=False
+            )
+            if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                logger.warning(
+                    "Shadow reported publish rc=%d for %s", result.rc, topic
+                )
+            else:
+                logger.debug("Shadow reported published to %s", topic)
+        except Exception:
+            logger.exception("Shadow reported publish failed: %s", topic)
+
     def replay_buffer(self) -> int:
         """Replay all pending messages from the buffer.
 
@@ -261,13 +352,23 @@ class MQTTClient:
         """Called when connection is established."""
         if rc == 0:
             self._connected = True
-            self._reconnect_delay = RECONNECT_MIN_DELAY
+            with self._conn_lock:
+                self._reconnect_ts = time.time()
             logger.info("MQTT connected to %s", self.endpoint)
 
             # Replay buffered messages
             threading.Thread(
                 target=self.replay_buffer, daemon=True
             ).start()
+
+            # Fire the external on_connected hook (e.g. shadow reconciliation).
+            # Exceptions here must not break the paho loop.
+            hook = self.on_connected
+            if hook is not None:
+                try:
+                    hook()
+                except Exception:
+                    logger.exception("on_connected hook raised")
         else:
             logger.error("MQTT connect failed: rc=%d", rc)
 
@@ -279,14 +380,13 @@ class MQTTClient:
         rc: int = 0,
         properties: Any = None,
     ) -> None:
-        """Called when disconnected. Handles reconnection."""
+        """Called when disconnected. paho handles reconnect while loop_start is active."""
         self._connected = False
-
         if self._stop_event.is_set():
-            return  # Intentional disconnect
-
-        logger.warning("MQTT disconnected: rc=%d, reconnecting...", rc)
-        self._reconnect_with_backoff()
+            return
+        with self._conn_lock:
+            self._disconnect_count += 1
+        logger.warning("MQTT disconnected: rc=%d (paho will reconnect)", rc)
 
     def _on_publish(
         self,
@@ -305,24 +405,38 @@ class MQTTClient:
         else:
             logger.debug("MQTT PUBACK received: mid=%d (no pending buffer entry)", mid)
 
-    def _reconnect_with_backoff(self) -> None:
-        """Attempt reconnection with exponential backoff."""
+    def _on_message(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        message: mqtt.MQTTMessage,
+    ) -> None:
+        """Dispatch incoming messages to registered shadow callbacks.
 
-        def _reconnect_loop() -> None:
-            delay = self._reconnect_delay
-            while not self._stop_event.is_set() and not self._connected:
-                logger.info("Reconnecting in %d seconds...", delay)
-                self._stop_event.wait(delay)
-                if self._stop_event.is_set():
-                    return
-                try:
-                    self._client.reconnect()
-                    return
-                except Exception:
-                    logger.warning("Reconnect attempt failed")
-                    delay = min(delay * RECONNECT_BACKOFF, RECONNECT_MAX_DELAY)
+        Runs in the paho network thread.  JSON decode errors and
+        callback exceptions are logged but never propagated so the
+        MQTT loop stays healthy.
+        """
+        topic = message.topic
+        with self._shadow_lock:
+            callback = self._shadow_callbacks.get(topic)
+        if callback is None:
+            logger.debug("MQTT message on unhandled topic: %s", topic)
+            return
 
-        threading.Thread(target=_reconnect_loop, daemon=True).start()
+        try:
+            payload = json.loads(message.payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            logger.warning(
+                "Invalid JSON on shadow topic %s: %s", topic, e
+            )
+            return
+
+        state = payload.get("state", payload)
+        try:
+            callback(state if isinstance(state, dict) else {})
+        except Exception:
+            logger.exception("Shadow delta callback raised on %s", topic)
 
     def __enter__(self) -> "MQTTClient":
         self.connect()

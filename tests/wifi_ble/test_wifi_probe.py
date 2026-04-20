@@ -135,7 +135,7 @@ def test_start_twice_warns(caplog):
     with caplog.at_level(logging.WARNING):
         cap.start()
 
-    assert "already running" in caplog.text
+    assert "wifi_capture_already_running" in caplog.text
 
 
 # ---------------------------------------------------------------------------

@@ -60,7 +60,7 @@ La config cloud usa una estrategia de **caché local de shadow**: al bootear, `m
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 |
 | Captura estéreo | Validada | picamera2 en RPi5, ambas cámaras funcionando |
 | Detección | Validada | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN |
-| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 142.8mm. ChArUco 11x7/35mm/26mm/DICT_5X5_100 A3 (en `calibration/`). Validada vía chequeo de profundidad en 5 zonas con umbrales PASS/FAIL |
+| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3 (en `calibration/`). Validada vía chequeo de profundidad en 5 zonas con umbrales PASS/FAIL |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
 | Infra cloud | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |

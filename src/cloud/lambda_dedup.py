@@ -6,6 +6,7 @@ and deduplicates across cameras using DynamoDB.
 DynamoDB table schema:
     Partition key: store_date (str) — "store-001#2026-03-30"
     Sort key: hash (str) — truncated SHA-256 hex
+    ttl (number): epoch seconds at which DynamoDB auto-expires the item.
 
 Each invocation:
     1. Receives an IoT Core rule payload with hashes from one camera.
@@ -14,6 +15,7 @@ Each invocation:
 
 Environment variables:
     DEDUP_TABLE_NAME: DynamoDB table name (default: "people-counter-dedup")
+    DEDUP_TTL_DAYS: Days after which hashes auto-expire (default: 7).
 """
 
 import json
@@ -63,6 +65,9 @@ def deduplicate_hashes(
     """
     table = _get_table()
     partition_key = f"{store_id}#{date}"
+    ttl_days = int(os.environ.get("DEDUP_TTL_DAYS", "7"))
+    now_epoch = int(time.time())
+    ttl_epoch = now_epoch + ttl_days * 86400
 
     new_count = 0
     duplicate_count = 0
@@ -75,7 +80,8 @@ def deduplicate_hashes(
                     "store_date": partition_key,
                     "hash": h,
                     "source_device": source_device,
-                    "first_seen": int(time.time()),
+                    "first_seen": now_epoch,
+                    "ttl": ttl_epoch,
                 },
                 ConditionExpression="attribute_not_exists(#h)",
                 ExpressionAttributeNames={"#h": "hash"},
@@ -87,12 +93,14 @@ def deduplicate_hashes(
             logger.exception("DynamoDB put_item error for hash %s", h[:8])
 
     logger.info(
-        "Dedup L3: store=%s date=%s device=%s new=%d dup=%d",
-        store_id,
-        date,
-        source_device,
-        new_count,
-        duplicate_count,
+        "dedup_l3_complete",
+        extra={
+            "store_id": store_id,
+            "date": date,
+            "device_id": source_device,
+            "new_count": new_count,
+            "duplicate_count": duplicate_count,
+        },
     )
 
     return {

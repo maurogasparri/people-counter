@@ -75,7 +75,7 @@ def test_start_twice_warns(caplog):
     with caplog.at_level(logging.WARNING):
         scanner.start()
 
-    assert "already running" in caplog.text
+    assert "ble_scan_already_running" in caplog.text
 
 
 def test_stop_sets_event():

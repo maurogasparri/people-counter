@@ -260,3 +260,40 @@ def depth_at_bbox(
         return 0.0
 
     return float(np.percentile(valid, percentile))
+
+
+def min_depth_at_bbox(
+    depth_map: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    low_percentile: float = 5.0,
+) -> float:
+    """Estimate the depth of the nearest point in a bbox (top of head for
+    ceiling-mounted stereo).
+
+    Uses a low percentile (default 5%) rather than raw min() to be robust to
+    speckle noise in the disparity map. With zenith mount, this corresponds
+    to the highest point of the tracked object — typically the top of a
+    person's head.
+
+    Args:
+        depth_map: Depth map in mm from disparity_to_depth().
+        bbox: (x1, y1, x2, y2) bounding box in pixel coordinates.
+        low_percentile: Percentile for the "near" value (5 = 5th percentile,
+            more robust than raw minimum).
+
+    Returns:
+        Estimated near-depth in mm. Returns 0.0 if no valid pixels.
+    """
+    x1, y1, x2, y2 = bbox
+    roi_x1 = max(0, x1)
+    roi_y1 = max(0, y1)
+    roi_x2 = min(depth_map.shape[1], x2)
+    roi_y2 = min(depth_map.shape[0], y2)
+
+    roi = depth_map[roi_y1:roi_y2, roi_x1:roi_x2]
+    valid = roi[roi > 0]
+
+    if len(valid) == 0:
+        return 0.0
+
+    return float(np.percentile(valid, low_percentile))
