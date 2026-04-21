@@ -54,19 +54,20 @@ La config cloud usa una estrategia de **caché local de shadow**: al bootear, `m
 
 | Área | Estado | Detalles |
 |------|--------|---------|
-| Código fuente | 22 módulos | Todos los módulos implementados y validados en hardware |
-| Tests | 180/180 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision |
-| Config | Local + Cloud | YAML (hardware) + IoT Shadow (negocio) |
-| Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 |
-| Captura estéreo | Validada | picamera2 en RPi5, ambas cámaras funcionando |
+| Código fuente | 25 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + main + telemetry |
+| Tests | 391/391 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision, reports, wizard, clasificador adulto/niño |
+| Config | Local + Cloud | YAML (hardware) + IoT Shadow (negocio). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
+| Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
+| Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode 2304×1296 (binned full-FOV) para foco, 4608×2592 (full-res) para calibración |
 | Detección | Validada | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN |
-| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3 (en `calibration/`). Wizard guiado con ghost silueta, tolerance preset (`loose`/`normal`/`strict`), auto-open de reporte HTML. Validada vía chequeo de profundidad en 5 zonas con umbrales PASS/FAIL |
-| Asistente de foco | Validado | `focus_assist.py` con UI web (header + side panel, auto-open de reporte). Captura a 2304×1296 (modo full-FOV binned del IMX708), derivación automática del target de foco desde `--mount-height-m`, peak tracker y masking de zonas de bajo contraste |
+| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos |
+| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. `--mount-height-m` deriva el target de foco automáticamente |
+| Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
-| Infra cloud | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
-| Deployment | Listo | provision.py, servicios systemd (pipeline + wifi-monitor + reset diario), logrotate |
-| Guía de setup | Completa | Guía de 13 pasos desde microSD hasta overlayfs (docs/setup-guide.md) |
+| Infra cloud | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda (dedup L3) |
+| Deployment | Listo | provision.py, servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
+| Guía de setup | Completa | Guía de 13 pasos desde microSD hasta overlayfs (docs/setup-guide.md). Guía para operadores en campo (docs/pilot-operator-guide.md) |
 
 ## Quick start
 
@@ -131,56 +132,71 @@ sudo PYTHONPATH=. python3 scripts/calibrate.py wizard \
 
 Wizard de una sola corrida, **todo desde el browser** (terminal solo para logs):
 1. Pre-flight (puerto, disco, backup)
-2. Pantalla "Comenzar" (activa audio del browser)
-3. Captura guiada con ghost silueta (20 poses), audio TTS opcional, hints en cm
-4. Anuncio por voz de la distancia objetivo de cada pose ("A 100cm de la cámara")
-5. Bootstrap de intrínsecos tras las primeras 6 capturas
-6. Calibración estéreo con CALIB_RATIONAL_MODEL
-7. Residuales por par + chequeo de baseline (estimada, no medida físicamente)
-8. Confirmación UI si la diversidad es limitada (botones Continuar/Cancelar)
-9. Ground-truth opcional con input de distancia en la UI (botón Saltear)
-10. Reporte HTML auto-abierto en nueva pestaña
+2. Pantalla "Comenzar" (activa audio del browser, posicionar trípode)
+3. Captura guiada con ghost silueta (20 poses), audio TTS
+4. Cada pose se anuncia como un bloque atómico — `Pose N. <label>. A Xcm de la cámara` — y el capture queda bloqueado hasta que el browser confirma que el audio terminó (`SpeechSynthesisUtterance.onend` → POST `/announce-done`)
+5. Hints de movimiento en cm (`"movelo izquierda 4cm"`), texto en pantalla sincronizado con el último audio dicho para evitar drift de 1cm
+6. Bootstrap de intrínsecos tras las primeras 6 capturas
+7. Calibración estéreo con CALIB_RATIONAL_MODEL (`--min-captures` configurable)
+8. Residuales por par + chequeo de baseline (estimada del set, no medida físicamente)
+9. Confirmación UI si la diversidad es limitada (botones Continuar/Cancelar)
+10. Ground-truth opcional con input + spinner mientras procesa (botón Saltear)
+11. Reporte HTML auto-abierto en nueva pestaña — incluye rectificación epipolar y mapa de profundidad ground-truth embedded
 
 Presets de tolerancia: `loose` (PoC / board chico), `normal` (default, tuned
 para A3 final), `strict` (producción, recomendado con board sobre trípode).
 
-Flags de debug útiles:
+Flags útiles:
 - `--min-captures N`: baja el mínimo para terminar calibración (default 15)
+- `--pose-timeout-sec N`: timeout por pose antes de auto-skip (default 60; subir a 180 con trípode)
+- `--tolerance loose|normal|strict`: preset de tolerancia
 - `--align-tol-{loose,tight}-px`: overrides finos de tolerancia
 - `--resume`: continúa una sesión previa (si no se pasa, descarta y arranca limpio)
+
+**Protocolo recomendado para el piloto**: las mismas 20 poses en cada dispositivo
+(el wizard las genera deterministically). Comparabilidad entre unidades para QA,
+mismo procedimiento para entrenar operadores, detección de outliers entre locales.
 
 ## Estructura del repo
 
 ```
 src/
-├── vision/          # Captura estéreo (picamera2), calibración, profundidad SGBM, detección YOLOv8n (Hailo + OpenCV)
-├── tracking/        # Tracker euclidiano 3D + contador por línea virtual
-├── wifi_ble/        # Captura de probes WiFi, scan BLE, hashing de MAC, dedup (L1+L2)
-├── mqtt/            # Cliente AWS IoT Core + buffer SQLite
+├── vision/          # Captura estéreo (picamera2), calibración ChArUco, profundidad SGBM + WLS, detección YOLOv8n (Hailo + OpenCV), world_coords para altura de cabeza, report HTML
+├── tracking/        # Tracker euclidiano 3D + contador por línea virtual / ROI con height_class por track
+├── wifi_ble/        # Captura de probes WiFi (nexmon), scan BLE (bleak), hashing de MAC, dedup (L1+L2)
+├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
 ├── cloud/           # Lambda dedup L3 (inter-cámara)
-├── config/          # Carga de YAML + merge con IoT Shadow
-└── main.py          # Orquestador del pipeline (17 tests)
-tests/               # 180 tests espejando la estructura de src/
+├── config/          # Carga de YAML + merge con IoT Shadow + runtime-safe prefixes
+├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
+└── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT)
+tests/               # 391 tests espejando src/ + tests/scripts/ para el wizard
 scripts/
-├── calibrate.py      # CLI: generate-board, capture, calibrate, verify, wizard
-│                     # wizard = pipeline end-to-end con UI web, ghost silueta,
-│                     # start overlay, tolerance preset, reporte auto-open
-├── focus_assist.py   # Asistente de foco guiado, UI web con peak tracker,
-│                     # masking de zonas de bajo contraste, reporte auto-open
-├── diagnose_depth.py # Validación de profundidad: análisis de 5 zonas + PASS/FAIL vs distancia conocida
-├── provision.py      # Provisioning de dispositivos: create, deploy, list
-├── download_model.py # Descarga YOLOv8n HEF/ONNX
-├── verify_hardware.py # Script de verificación de hardware
-└── setup_device.sh   # Setup automático del dispositivo (pasos 4-10)
+├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard
+│                          # wizard = pipeline end-to-end browser-driven: start overlay,
+│                          # ghost silueta, pose-announce atómico, tolerance preset,
+│                          # ground-truth en UI, reporte HTML con viz embedded
+├── focus_assist.py        # Asistente de foco browser-driven: start overlay, barras
+│                          # visuales, peak tracker, masking, audio TTS, reporte auto-open
+├── diagnose_depth.py      # Validación de profundidad: 5 zonas + PASS/FAIL vs distancia conocida
+├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
+├── roi_picker.py          # Seleccionador de ROI + línea virtual
+├── export_events.py       # Export de eventos desde el buffer local
+├── provision.py           # Provisioning de dispositivos: create, deploy, list
+├── deploy_lambda.sh       # Packaging del Lambda dedup L3
+├── download_model.py      # Descarga YOLOv8n HEF/ONNX
+├── verify_hardware.py     # Verificación de hardware
+└── setup_device.sh        # Setup automático del dispositivo (pasos 4-10)
 config/
-├── config.example.yaml       # Config anotado con documentación de estrategia
-├── people-counter.service    # Servicio systemd (auto-restart, hardening)
-├── people-counter-reset.*    # Timer de reset diario de dedup (04:00)
-└── logrotate.conf            # Rotación de logs
+├── config.example.yaml           # Config anotado con estrategia local/cloud
+├── people-counter.service        # Servicio systemd principal
+├── people-counter-reset.*        # Timer de reset diario de dedup (04:00)
+└── logrotate.conf                # Rotación de logs
 infra/
 └── cloudformation/people-counter.yaml  # Stack completo de AWS
 docs/
-└── setup-guide.md            # Ensamblaje de hardware + setup RPi (13 pasos)
+├── setup-guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
+└── pilot-operator-guide.md       # Guía para el operador en sitio (foco → calibración → verificación)
+debug/                            # Drop-zone gitignoreado para reportes, capturas y logs de test
 ```
 
 ## Referencias clave

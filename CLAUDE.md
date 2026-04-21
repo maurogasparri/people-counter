@@ -205,5 +205,16 @@ people-counter/
 - **Ambos son 100% browser-driven**. No hay `input()` blocking ni prompts de terminal — la consola solo muestra logs. Cualquier interacción operativa (comenzar, confirmar diversidad, ingresar distancia ground-truth, finalizar) sucede en el UI.
 - Ambos comparten el mismo flujo de UI web: pantalla "Comenzar" al abrir, AudioContext unlocked on click, audio TTS opcional, barras verdes, reporte HTML auto-abierto en pestaña nueva al finalizar.
 - **TTS deduplicado por semántica**: los hints de voz comparan la frase sin dígitos, así fluctuaciones menores (ej. `315<200` vs `318<200`) no re-triggereean el mismo mensaje.
-- **Prompts interactivos del wizard** via threading.Event: `_ask_operator_ui()` emite un estado `data-phase="prompt"` con `data-prompt-type`, el JS renderiza los controles apropiados (botones para confirmación binaria, input numérico para valores), el POST a `/wizard-input` signal-ea el event y el wizard continúa.
+- **Pose announcement = bloque atómico**: `Pose N. <label>. A Xcm de la cámara` se reproduce entero. El capture y otros audios están gateados por una flag server-side `_announce_pending` que se limpia solo cuando el browser confirma el fin del utterance via `SpeechSynthesisUtterance.onend` → POST `/announce-done`. Timing basado en señal, no en timer estimado.
+- **Banner sincronizado con audio**: la cadena visible del hint de movimiento se pinea al texto del último audio dicho (`state.locked_alignment_text`) — evita drift de 1cm entre lo que se escucha y lo que aparece en pantalla cuando la medición del offset fluctúa entre frames.
+- **Prompts interactivos del wizard** via threading.Event: `_ask_operator_ui()` emite un estado `data-phase="prompt"` con `data-prompt-type`, el JS renderiza los controles apropiados (botones para confirmación binaria, input numérico para valores) y deja el spinner mientras el backend procesa. El POST a `/wizard-input` signal-ea el event y el wizard continúa.
+- **Acciones que pueden interrumpir el audio** (flush queue + POST `/announce-done`): Saltar pose, Deshacer última, Finalizar. Todo lo demás espera al onend.
+- **Puerto HTTP con SO_REUSEADDR** y Ctrl+C limpio en ambos tools (server.shutdown() en el cleanup path) — no quedan TIME_WAITs entre runs.
 - El directorio `debug/` en la raíz del repo está gitignoreado — sirve para dumpear reportes, screenshots, logs de sesiones de test sin ensuciar git status.
+
+## Interpretación del reporte de calibración
+
+- **RMS estéreo <0.5px** es condición necesaria pero NO suficiente. Mide self-consistency: si el solver encuentra parámetros que fitean bien los datos. Con capturas degeneradas (pocas poses, similares entre sí) hay infinitos sets de parámetros que fitean igual — el solver elige uno, pero puede ser geométricamente incorrecto.
+- **Baseline estimada** (se calcula del set, no se mide): con 20 poses diversas sobre trípode debe caer a ±1-2mm del diseño 140mm. Si cae ±5-70mm, el problema es capturas insuficientes / poco diversas, no el bracket. El warning del reporte y del log lo explica en ese orden.
+- **Validación ground-truth** (depth check contra distancia conocida) es el test real: error centro <5% a 2m, <10% a 3m, edge/center ratio <2×. Si la calibración pasa esto, sabés que la calibración sirve.
+- Protocolo recomendado para el piloto: **20 poses estándar del wizard en todos los dispositivos** (el wizard las genera deterministically). Misma secuencia → números comparables entre unidades, outliers detectables por QA.
