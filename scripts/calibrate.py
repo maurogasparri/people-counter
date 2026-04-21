@@ -2492,7 +2492,12 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     logger.info("=" * 60)
 
     if abs(baseline_mm - 140.0) > 5.0:
-        logger.warning("⚠ Baseline fuera de tolerancia — revisar bracket mecánico")
+        logger.warning(
+            "⚠ Baseline estimada fuera de tolerancia (%.2fmm vs diseño 140mm, Δ %+.2fmm). "
+            "La baseline se estima del set de capturas — si son pocas o poco "
+            "diversas el solver converge con error.",
+            baseline_mm, baseline_mm - 140.0,
+        )
 
     # Point the capture-UI /report endpoint at the saved report so the browser
     # can auto-open it via the existing HTTP server. We also keep serving it
