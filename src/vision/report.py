@@ -49,6 +49,8 @@ def generate_html_report(
     rms_stereo: Optional[float] = None,
     timestamp: Optional[_dt.datetime] = None,
     per_pair_residuals: Optional[list[dict[str, float]]] = None,
+    epipolar_image: Optional[Path] = None,
+    ground_truth_image: Optional[Path] = None,
 ) -> str:
     """Build a self-contained HTML report string.
 
@@ -168,10 +170,34 @@ def generate_html_report(
     baseline_note = ""
     if not baseline_ok:
         baseline_note = (
-            f'<div class="alert">⚠ Baseline difiere {baseline_delta:+.1f} mm '
-            f'del diseño ({DESIGN_BASELINE_MM:.0f}mm). '
-            f'Tolerancia ±{BASELINE_WARN_TOL_MM:.0f}mm — revisar montaje mecánico del bracket.</div>'
+            f'<div class="alert">⚠ Baseline estimada difiere {baseline_delta:+.1f} mm '
+            f'del diseño ({DESIGN_BASELINE_MM:.0f}mm, tolerancia ±{BASELINE_WARN_TOL_MM:.0f}mm).</div>'
         )
+
+    # Rectification (epipolar) verification image, embedded.
+    epipolar_html = ""
+    if epipolar_image is not None and Path(epipolar_image).exists():
+        img = cv2.imread(str(epipolar_image))
+        if img is not None:
+            b64 = _img_to_base64_jpeg(img, max_w=960, quality=70)
+            epipolar_html = f"""
+<h2>Rectificación epipolar</h2>
+<p style="color:#555;font-size:13px">Pares rectificados con líneas horizontales cada 30px. Las esquinas
+correspondientes entre L y R deberían caer sobre la misma línea si la rectificación es correcta.</p>
+<img src="data:image/jpeg;base64,{b64}" style="width:100%;max-width:960px;border-radius:6px;border:1px solid #ddd">
+"""
+
+    # Ground-truth depth visualisation, embedded.
+    ground_truth_html = ""
+    if ground_truth_image is not None and Path(ground_truth_image).exists():
+        img = cv2.imread(str(ground_truth_image))
+        if img is not None:
+            b64 = _img_to_base64_jpeg(img, max_w=960, quality=70)
+            ground_truth_html = f"""
+<h2>Validación ground-truth — imagen</h2>
+<p style="color:#555;font-size:13px">Mapa de profundidad de la escena usada para el check de distancia conocida.</p>
+<img src="data:image/jpeg;base64,{b64}" style="width:100%;max-width:960px;border-radius:6px;border:1px solid #ddd">
+"""
 
     return f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8">
@@ -209,14 +235,18 @@ th{{background:#f5f5f5}}
 <div class="kv">
 <b>RMS estéreo</b><span>{rms_text}</span>
 <b>Focal izquierda (fx, fy)</b><span>{fx_l:.1f} px, {fy_l:.1f} px</span>
-<b>Baseline medido</b><span>{baseline_mm:.2f} mm (diseño {DESIGN_BASELINE_MM:.0f} mm, Δ {baseline_delta:+.2f}mm) {_pill('dentro de tolerancia', baseline_ok)}</span>
+<b>Baseline medido</b><span>{baseline_mm:.2f} mm (diseño {DESIGN_BASELINE_MM:.0f} mm, Δ {baseline_delta:+.2f}mm) {_pill('tolerancia ±' + f'{BASELINE_WARN_TOL_MM:.0f}mm', baseline_ok)}</span>
 <b>Principal point L</b><span>cx={K_l[0,2]:.1f}, cy={K_l[1,2]:.1f}</span>
 <b>Principal point R</b><span>cx={K_r[0,2]:.1f}, cy={K_r[1,2]:.1f}</span>
 </div>
 
 {depth_html}
 
+{ground_truth_html}
+
 {residuals_html}
+
+{epipolar_html}
 
 {captures_html}
 

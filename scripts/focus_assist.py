@@ -46,6 +46,11 @@ latest_jpeg: bytes = b""
 jpeg_lock = threading.Lock()
 shutting_down = False
 finish_requested = False
+# Set to True when the operator clicks "Comenzar" in the browser. Blocks
+# the main capture loop until that happens so (a) the operator has time to
+# position themselves and (b) the click unlocks the browser audio context.
+capture_started = False
+capture_started_lock = threading.Lock()
 
 MIN_SCORE = 200
 MIN_EDGE_CENTER_RATIO = 0.25
@@ -575,9 +580,13 @@ img{{max-width:48%;border-radius:6px;margin:4px}}</style></head><body>
 
 class MJPEGHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
-        global finish_requested
+        global finish_requested, capture_started
         if self.path == "/finish":
             finish_requested = True
+            self.send_response(204); self.end_headers()
+        elif self.path == "/start":
+            with capture_started_lock:
+                capture_started = True
             self.send_response(204); self.end_headers()
         else:
             self.send_response(404); self.end_headers()
@@ -622,15 +631,85 @@ main{display:flex;flex:1;min-height:0}
   <h1>Asistente de foco</h1>
   <span class="sub">Stereo IMX708 - ajuste guiado</span>
 </header>
+<div id="start-overlay" style="position:fixed;inset:0;background:rgba(11,11,13,0.95);
+     z-index:9999;display:flex;align-items:center;justify-content:center;
+     flex-direction:column;gap:18px">
+  <div style="color:#eee;font-size:26px;font-weight:700">
+    Asistente de foco listo
+  </div>
+  <div style="color:#aaa;font-size:15px;max-width:480px;text-align:center;line-height:1.6">
+    Posicioná el board ChArUco o un target texturado frente a las cámaras.
+    Cuando esté listo, presioná <b>Comenzar</b>. Esto también activa el audio
+    del navegador para las indicaciones de voz.
+  </div>
+  <button id="btn-start" style="padding:14px 36px;font-size:18px;
+       background:#27ae60;color:#fff;border:none;border-radius:10px;
+       cursor:pointer;font-weight:700" onclick="startCapture()">
+    Comenzar
+  </button>
+</div>
 <main>
   <div id="stage"><img id="stream" src="/stream"/></div>
   <aside id="side">
     <div id="status"></div>
+    <button id="btn-audio" class="btn" onclick="toggleAudio()"
+            style="background:#555">Audio OFF</button>
     <button id="finbtn" class="btn btn-finish" onclick="finish()">Finalizar y guardar reporte</button>
   </aside>
 </main>
 <script>
 let finalized=false;
+// Default ON — operator can turn it off and the preference persists.
+let audioOn = localStorage.getItem('focus.audio') !== '0';
+let audioCtx = null;
+let lastSpokenHint = '';
+let lastSpokenAt = 0;
+function ensureAudioCtx(){
+  if(!audioCtx && window.AudioContext){
+    try{ audioCtx = new AudioContext(); }catch(e){}
+  }
+  return audioCtx;
+}
+function beep(freq, durMs, gain){
+  const ctx = ensureAudioCtx();
+  if(!ctx) return;
+  try{
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine'; osc.frequency.value = freq;
+    g.gain.value = gain || 0.15;
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + durMs/1000);
+  }catch(e){}
+}
+function speak(text){
+  // Queue utterances; don't cancel in-flight speech so hints flow.
+  if(!audioOn || !window.speechSynthesis) return;
+  try{
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'es-ES'; u.rate = 1.05;
+    window.speechSynthesis.speak(u);
+  }catch(e){}
+}
+function updateAudioBtn(){
+  const b = document.getElementById('btn-audio');
+  b.textContent = audioOn ? 'Audio ON' : 'Audio OFF';
+  b.style.background = audioOn ? '#27ae60' : '#555';
+}
+function toggleAudio(){
+  audioOn = !audioOn;
+  localStorage.setItem('focus.audio', audioOn ? '1' : '0');
+  updateAudioBtn();
+  if(audioOn){ ensureAudioCtx(); speak('Audio activado'); beep(800, 80); }
+}
+function startCapture(){
+  ensureAudioCtx();
+  if(audioOn) speak('Comenzando ajuste de foco');
+  const overlay = document.getElementById('start-overlay');
+  if(overlay) overlay.style.display = 'none';
+  fetch('/start',{method:'POST'});
+}
 function finish(){
   if(!confirm('Finalizar y guardar reporte?'))return;
   const btn=document.getElementById('finbtn');
@@ -641,21 +720,32 @@ function finish(){
   document.getElementById('stream').style.opacity='0.25';
   fetch('/finish',{method:'POST'});
 }
-// Keep polling /status even after finalize — the server updates it with
-// the final "session finalizada" screen once the report is saved. When
-// we see that marker in the response, we flip the button to "Finalizado"
-// and stop polling.
+updateAudioBtn();
+// Keep polling /status after finalize — the server updates it with the
+// finalised card and we detect that via the data-finalized marker.
 setInterval(()=>{
   fetch('/status').then(r=>r.text()).then(t=>{
     document.getElementById('status').innerHTML=t;
+    // TTS the primary hint when it changes (throttled 3s). We compare the
+    // hint with digits stripped so numeric fluctuations ("315 < 200" vs
+    // "318 < 200") don't re-trigger — only semantic changes do.
+    const hintMatch = t.match(/data-audio-hint="([^"]*)"/);
+    if(audioOn && hintMatch){
+      const hint = hintMatch[1];
+      const hintKey = hint.replace(/[\d.,]+/g, '').trim();
+      const now = Date.now();
+      if(hint && hintKey !== lastSpokenHint && now - lastSpokenAt > 3000){
+        lastSpokenHint = hintKey;
+        lastSpokenAt = now;
+        speak(hint);
+      }
+    }
     if(!finalized && t.indexOf('data-finalized="1"')!==-1){
       finalized=true;
       const btn=document.getElementById('finbtn');
       btn.textContent='Finalizado';
       btn.style.background='#27ae60';
-      // Auto-open the report in a new tab. Popup blockers may reject this
-      // because it's not in the direct click handler — if so, the "Abrir
-      // reporte" button inside the status card is the manual fallback.
+      if(audioOn) speak('Sesión finalizada');
       const w=window.open('/report','_blank');
       if(!w){
         const note=document.createElement('div');
@@ -786,6 +876,9 @@ def main() -> None:
     )
     # ThreadingHTTPServer so the long-running /stream handler doesn't block
     # /finish (and /status) from being served on separate threads.
+    # SO_REUSEADDR so a Ctrl-C'd previous instance doesn't leave the port
+    # in TIME_WAIT for the next run.
+    ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("0.0.0.0", args.port), MJPEGHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -795,8 +888,38 @@ def main() -> None:
           f"{args.marker_mm:.0f}mm mk / {dict_attr}")
     print(f"Mount height: {args.mount_height_m:.2f}m -> target focus distance "
           f"{TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f}m")
+    print("Esperando que el operador haga click en Comenzar...")
+
+    # Block until the operator clicks Comenzar — matches calibrate.py flow.
+    try:
+        while not capture_started:
+            if finish_requested:
+                print("\nCancelado antes de comenzar.")
+                try:
+                    cam_l.stop(); cam_l.close()
+                    cam_r.stop(); cam_r.close()
+                except Exception:
+                    pass
+                try:
+                    server.shutdown()
+                except Exception:
+                    pass
+                return
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\nInterrumpido antes de comenzar (Ctrl-C).")
+        try:
+            cam_l.stop(); cam_l.close()
+            cam_r.stop(); cam_r.close()
+        except Exception:
+            pass
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        sys.exit(0)
     print("Poné el board ChArUco en ese rango frente al par. Ajustá los lentes.")
-    print("Click FINALIZAR en la UI cuando los bars estén verdes.\n")
+    print("Click Finalizar en la UI cuando los bars estén verdes.\n")
 
     frame_l = frame_r = None
     grid_l = grid_r = None
@@ -864,8 +987,12 @@ def main() -> None:
             if lighting:
                 lighting_html = '<div style="color:#f1c40f">⚠ ' + " · ".join(lighting) + "</div>"
 
+            # data-audio-hint: what the browser TTS will read aloud.
+            # Sanitise quotes so the attribute parses cleanly.
+            audio_hint = lead.replace('"', '')
             html = (
-                f'<div style="color:{color_status};font-size:18px;font-weight:700">{lead}</div>'
+                f'<div data-audio-hint="{audio_hint}" '
+                f'style="color:{color_status};font-size:18px;font-weight:700">{lead}</div>'
                 f'{lighting_html}'
                 f'{peak_html}'
                 f'<div style="color:#888;font-size:13px;margin-top:6px">'

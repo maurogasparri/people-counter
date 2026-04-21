@@ -60,7 +60,8 @@ La config cloud usa una estrategia de **caché local de shadow**: al bootear, `m
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 |
 | Captura estéreo | Validada | picamera2 en RPi5, ambas cámaras funcionando |
 | Detección | Validada | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN |
-| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3 (en `calibration/`). Validada vía chequeo de profundidad en 5 zonas con umbrales PASS/FAIL |
+| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3 (en `calibration/`). Wizard guiado con ghost silueta, tolerance preset (`loose`/`normal`/`strict`), auto-open de reporte HTML. Validada vía chequeo de profundidad en 5 zonas con umbrales PASS/FAIL |
+| Asistente de foco | Validado | `focus_assist.py` con UI web (header + side panel, auto-open de reporte). Captura a 2304×1296 (modo full-FOV binned del IMX708), derivación automática del target de foco desde `--mount-height-m`, peak tracker y masking de zonas de bajo contraste |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
 | Infra cloud | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda |
@@ -96,6 +97,58 @@ El sistema usa una estrategia de doble config:
 
 Ver [`config/config.example.yaml`](config/config.example.yaml) para el config anotado completo.
 
+## Instalación en sitio
+
+Los tools de setup (`focus_assist.py`, `calibrate.py`) son **standalone** — no leen
+`config.yaml`, todo se pasa por CLI. Esto permite correrlos durante la
+instalación inicial antes de que exista config.
+
+### 1. Ajuste de foco
+
+```bash
+sudo PYTHONPATH=. python3 scripts/focus_assist.py --mount-height-m 3.0
+```
+
+Abre UI en `http://people-counter.local:8080`. Flujo:
+1. Pantalla "Comenzar" (posicionar board + activa audio)
+2. Captura en vivo con barras de nitidez central + uniformidad + simetría L/R
+3. Peak tracker para ajustar el M12 sin pasarse del óptimo
+4. Masking automático de zonas de bajo contraste
+5. Audio TTS lee los hints (opcional, toggle en la UI)
+6. Finalizar → reporte HTML auto-abierto en nueva pestaña
+
+El board puede estar a cualquier distancia dentro del rango de cabezas
+derivado del mount height (por default `3.0m` → target `1.15–1.80m`).
+
+### 2. Calibración estéreo
+
+```bash
+sudo PYTHONPATH=. python3 scripts/calibrate.py wizard \
+    --device-id DEV-001 \
+    --output /etc/people-counter/calibration.npz \
+    --tolerance strict
+```
+
+Wizard de una sola corrida, **todo desde el browser** (terminal solo para logs):
+1. Pre-flight (puerto, disco, backup)
+2. Pantalla "Comenzar" (activa audio del browser)
+3. Captura guiada con ghost silueta (20 poses), audio TTS opcional, hints en cm
+4. Anuncio por voz de la distancia objetivo de cada pose ("A 100cm de la cámara")
+5. Bootstrap de intrínsecos tras las primeras 6 capturas
+6. Calibración estéreo con CALIB_RATIONAL_MODEL
+7. Residuales por par + chequeo de baseline (estimada, no medida físicamente)
+8. Confirmación UI si la diversidad es limitada (botones Continuar/Cancelar)
+9. Ground-truth opcional con input de distancia en la UI (botón Saltear)
+10. Reporte HTML auto-abierto en nueva pestaña
+
+Presets de tolerancia: `loose` (PoC / board chico), `normal` (default, tuned
+para A3 final), `strict` (producción, recomendado con board sobre trípode).
+
+Flags de debug útiles:
+- `--min-captures N`: baja el mínimo para terminar calibración (default 15)
+- `--align-tol-{loose,tight}-px`: overrides finos de tolerancia
+- `--resume`: continúa una sesión previa (si no se pasa, descarta y arranca limpio)
+
 ## Estructura del repo
 
 ```
@@ -109,8 +162,11 @@ src/
 └── main.py          # Orquestador del pipeline (17 tests)
 tests/               # 180 tests espejando la estructura de src/
 scripts/
-├── calibrate.py      # CLI: generate-board, capture (headless), calibrate, verify
-├── focus_assist.py   # Asistente de foco guiado con preview HTTP
+├── calibrate.py      # CLI: generate-board, capture, calibrate, verify, wizard
+│                     # wizard = pipeline end-to-end con UI web, ghost silueta,
+│                     # start overlay, tolerance preset, reporte auto-open
+├── focus_assist.py   # Asistente de foco guiado, UI web con peak tracker,
+│                     # masking de zonas de bajo contraste, reporte auto-open
 ├── diagnose_depth.py # Validación de profundidad: análisis de 5 zonas + PASS/FAIL vs distancia conocida
 ├── provision.py      # Provisioning de dispositivos: create, deploy, list
 ├── download_model.py # Descarga YOLOv8n HEF/ONNX

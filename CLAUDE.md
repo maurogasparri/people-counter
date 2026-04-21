@@ -47,7 +47,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 ## Decisiones técnicas clave
 
 ### Pipeline de visión
-- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), modelo pinhole con `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). Los parámetros del board son requeridos en todos los subcomandos CLI. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. Captura a 0.5–3m (cubriendo todo el rango operativo, no solo el sweet spot). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
+- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), modelo pinhole con `cv2.calibrateCamera` (CALIB_RATIONAL_MODEL). El flag `--dict` en `calibrate.py` permite usar boards alternativos (ej. DICT_5X5 para dry-runs). Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. Captura a 0.5–3m (cubriendo todo el rango operativo, no solo el sweet spot). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
+- **Óptica de las cámaras**: Arducam B0310 con M12 120° HFOV (fisheye). Focal física 2.87mm / pixel pitch 1.4μm → pinhole-equivalente `f_px = 2050` a full-res 4608x2592 (`NOMINAL_FOCAL_PX` en `src/vision/calibration.py`). El FOV es fisheye real, no rectilíneo — la fórmula `f = (W/2)/tan(HFOV/2)` no aplica y daría valores erróneos (dio origen al bug inicial de 1330 px).
+- **Sensor modes (IMX708)**: `2304×1296 @ 56fps` (2x2 binned, full FOV, 16:9), `2304×1296 @ 30fps HDR`, `1536×864 @ 120fps` (partial-FOV crop). `focus_assist.py` pina el modo binned con `raw={"size": (2304, 1296)}` para evitar que picamera2 elija un sensor mode de FOV parcial. `calibrate.py` usa full-res 4608x2592 para máxima precisión.
 - **Rectificación**: mapas precomputados vía `cv2.initUndistortRectifyMap`. Aplicados por par de frames.
 - **Profundidad**: Semi-Global Block Matching (`cv2.StereoSGBM`) sobre par rectificado + matcher derecho + filtro WLS (`cv2.ximgproc.DisparityWLSFilter`).
 - **Detección**: YOLOv8n compilado a HEF vía Hailo Model Zoo. Corre en Hailo-8L a 30+ FPS. Usa API VStream de `hailo_platform` con activación persistente, VDevice compartido (`group_id="SHARED"`, scheduling `ROUND_ROBIN`), y NMS on-chip.
@@ -121,8 +123,16 @@ people-counter/
 │   └── main.py            <- orquestador del pipeline completo
 ├── tests/                 <- 180 tests en todos los módulos
 ├── scripts/
-│   ├── calibrate.py       <- herramienta CLI de calibración (4 subcomandos, headless)
-│   ├── focus_assist.py    <- asistente de foco guiado con preview HTTP
+│   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard).
+│   │                         wizard es el flujo end-to-end con UI web: start overlay,
+│   │                         captura guiada con ghost silueta + audio TTS,
+│   │                         bootstrap de intrínsecos, residuales por par,
+│   │                         ground-truth check, reporte auto-open.
+│   │                         Tolerance presets loose/normal/strict, --dict configurable.
+│   ├── focus_assist.py    <- asistente de foco guiado, UI web: start overlay,
+│   │                         barras de nitidez central + uniformidad + simetría L/R,
+│   │                         peak tracker, masking de zonas de bajo contraste,
+│   │                         audio TTS, reporte auto-open. Captura a 2304×1296 (binned).
 │   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad
 │   ├── provision.py       <- provisioning de dispositivos (create/deploy/list)
 │   ├── verify_hardware.py <- verificación de hardware
@@ -167,6 +177,8 @@ people-counter/
 - **Tracker**: matching greedy por distancia de píxeles 2D + gating por profundidad. Sin histéresis, sin multi-estado (approaching/crossed/invalidated), sin reidentificación. Suficiente para montaje cenital en puerta simple, necesita trabajo para entradas amplias con oclusión.
 - **Shadow config**: bootstrap con caché local desde archivo `.shadow.json`. Sin suscripción delta en vivo — planificado post-MVP.
 - **Horario operativo fail-open**: si el formato del horario es inválido, el conteo continúa (prefiere falsos positivos a pérdida de datos). Fail-closed configurable planificado para producción.
+- **Sync L/R**: picamera2 con dos instancias independientes no garantiza sync hardware. Typical offset ~60ms (1 frame a 15fps). Para calibración el board está quieto entonces no afecta. Para tracking en vivo, aceptable a la escala de movimiento humano (±60ms = ±6cm a 1m/s).
+- **Clasificador adulto/niño**: threshold único 1.55m (adult_min_m). Sin zona gris — adolescentes altos / mujeres bajas pueden misclasificar en ±5%. Diseño V1 prioriza métricas aggregables sobre precisión per-evento.
 
 ## Reglas duras
 
@@ -182,6 +194,16 @@ people-counter/
 - Raspberry Pi OS Trixie 64-bit, Python 3.13
 - Hailo SDK: hailo_platform 4.23+
 - Picamera2: para captura de cámaras CSI (herramientas CLI rpicam-*)
-- OpenCV: 4.8+ (con contrib para ArUco/ChArUco)
-- MQTT: paho-mqtt 2.0+
+- OpenCV: 4.10+ (con contrib para ArUco/ChArUco; `CharucoParameters` requiere 4.8+)
+- MQTT: paho-mqtt 2.1+
+- SciPy: 1.13+ (residuales de calibración)
 - DB: sqlite3 (stdlib)
+
+## Convenciones para setup tools
+
+- `focus_assist.py` y `calibrate.py` son **standalone** — no leen `config.yaml`. Todo se pasa por CLI porque tienen que correr durante la instalación inicial, antes de que exista config.
+- **Ambos son 100% browser-driven**. No hay `input()` blocking ni prompts de terminal — la consola solo muestra logs. Cualquier interacción operativa (comenzar, confirmar diversidad, ingresar distancia ground-truth, finalizar) sucede en el UI.
+- Ambos comparten el mismo flujo de UI web: pantalla "Comenzar" al abrir, AudioContext unlocked on click, audio TTS opcional, barras verdes, reporte HTML auto-abierto en pestaña nueva al finalizar.
+- **TTS deduplicado por semántica**: los hints de voz comparan la frase sin dígitos, así fluctuaciones menores (ej. `315<200` vs `318<200`) no re-triggereean el mismo mensaje.
+- **Prompts interactivos del wizard** via threading.Event: `_ask_operator_ui()` emite un estado `data-phase="prompt"` con `data-prompt-type`, el JS renderiza los controles apropiados (botones para confirmación binaria, input numérico para valores), el POST a `/wizard-input` signal-ea el event y el wizard continúa.
+- El directorio `debug/` en la raíz del repo está gitignoreado — sirve para dumpear reportes, screenshots, logs de sesiones de test sin ensuciar git status.

@@ -37,8 +37,8 @@ class TestGenerateReport:
     def test_reports_baseline_warning_when_off_design(self):
         off = DESIGN_BASELINE_MM + BASELINE_WARN_TOL_MM + 3
         html = generate_html_report(_mock_calibration(off), device_id="D")
-        assert "revisar montaje" in html.lower() or "bracket" in html.lower()
-        # Alert div should be present
+        # Alert text mentions the baseline deviation (exact wording short).
+        assert "baseline" in html.lower() and "difiere" in html.lower()
         assert "class=\"alert\"" in html
 
     def test_report_includes_depth_zones(self):

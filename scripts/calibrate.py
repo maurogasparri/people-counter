@@ -99,6 +99,47 @@ def _resolve_tolerance(args: argparse.Namespace) -> tuple[float, float]:
     return loose, tight
 
 
+def _ask_operator_ui(prompt_type: str, message: str, options: dict = None) -> str:
+    """Render an interactive prompt in the browser and block until /wizard-input
+    receives the operator's answer. Returns the raw string the operator sent.
+
+    prompt_type drives what controls the JS renders:
+      * "diversity" → two buttons: Continuar / Cancelar
+      * "ground_truth" → input-text + Validar / Saltear buttons
+    """
+    global _post_capture_html, _post_capture_active, _wizard_input_value
+    _post_capture_active = True
+    _wizard_input_event.clear()
+    _wizard_input_value = ""
+
+    if prompt_type == "diversity":
+        html = (
+            f'<div data-phase="prompt" data-prompt-type="diversity">'
+            f'<div style="color:#f1c40f;font-size:20px;font-weight:700;'
+            f'margin-bottom:10px">Confirmación requerida</div>'
+            f'<div style="color:#eee;font-size:14px;line-height:1.6;'
+            f'white-space:pre-line">{message}</div>'
+            f'</div>'
+        )
+    elif prompt_type == "ground_truth":
+        html = (
+            f'<div data-phase="prompt" data-prompt-type="ground_truth">'
+            f'<div style="color:#3fb6f0;font-size:20px;font-weight:700;'
+            f'margin-bottom:10px">Validación ground-truth (opcional)</div>'
+            f'<div style="color:#eee;font-size:14px;line-height:1.6;'
+            f'white-space:pre-line">{message}</div>'
+            f'</div>'
+        )
+    else:
+        html = f'<div data-phase="prompt">{message}</div>'
+
+    with _post_capture_lock:
+        _post_capture_html = html
+
+    _wizard_input_event.wait()
+    return _wizard_input_value
+
+
 def _set_post_capture_phase(
     phase: str, message: str, progress_pct: int | None = None,
     verdict: str | None = None, report_available: bool = False,
@@ -340,6 +381,14 @@ class _GuidedState:
         # when it changes. Updated each tick — browser throttles actual speech.
         self.audio_event: str = ""
         self.audio_event_seq: int = 0
+        # Last hint we actually spoke (digit-stripped key). Separate from
+        # banner_text so we don't "remember" saying hints that were
+        # suppressed during the pose-announcement lockout.
+        self.last_spoken_key: str = ""
+        # Full text of the last spoken hint. Used to override the live
+        # banner so what the operator reads matches what they just heard
+        # (otherwise 1-cm fluctuations between emit and display sneak in).
+        self.locked_alignment_text: str = ""
 
 
 _guided_state: Optional[_GuidedState] = None
@@ -359,6 +408,18 @@ _post_capture_lock = threading.Lock()
 _post_capture_active = False
 _report_path_for_http: Optional[Path] = None
 _guided_server: Optional[ThreadingHTTPServer] = None
+
+# Operator input shuttle: the wizard can block on _ask_operator_ui() which
+# renders a prompt in the browser and waits for /wizard-input POST.
+_wizard_input_event = threading.Event()
+_wizard_input_value: str = ""
+
+# True while the browser is narrating a pose announcement. Set by the
+# _pose_announce emission path; cleared by /announce-done which the JS
+# hits on SpeechSynthesisUtterance.onend (or immediately if audio is off).
+# Captures and other audio emissions gate on this so the three-piece
+# "number / label / distance" block is never interrupted.
+_announce_pending = False
 
 
 class _GuidedHandler(BaseHTTPRequestHandler):
@@ -381,6 +442,17 @@ class _GuidedHandler(BaseHTTPRequestHandler):
             global _capture_started
             with _capture_started_lock:
                 _capture_started = True
+            self.send_response(204); self.end_headers()
+        elif self.path == "/wizard-input":
+            global _wizard_input_value
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
+            _wizard_input_value = raw
+            _wizard_input_event.set()
+            self.send_response(204); self.end_headers()
+        elif self.path == "/announce-done":
+            global _announce_pending
+            _announce_pending = False
             self.send_response(204); self.end_headers()
         else:
             self.send_response(404); self.end_headers()
@@ -486,6 +558,7 @@ def _guided_html() -> str:
        border-radius:12px;color:#000}
   .pill-phase{font-size:12px;padding:2px 10px;border-radius:10px;
               background:#34495e;color:#ecf0f1;margin-left:8px}
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style></head>
 <body>
   <header>
@@ -516,13 +589,54 @@ def _guided_html() -> str:
     <div id="status" class="stat">Conectando...</div>
     <div class="row">
       <button id="btn-audio" class="btn btn-audio" onclick="toggleAudio()">Audio OFF</button>
-      <button class="btn btn-undo" onclick="post('/undo')">Deshacer última</button>
-      <button class="btn btn-skip" onclick="post('/skip')">Saltear pose</button>
-      <button class="btn btn-finish" onclick="if(confirm('Finalizar captura?'))post('/finish')">Finalizar</button>
+      <button class="btn btn-undo" onclick="flushSpeech();post('/undo')">Deshacer última</button>
+      <button class="btn btn-skip" onclick="flushSpeech();post('/skip')">Saltear pose</button>
+      <button class="btn btn-finish" onclick="if(confirm('Finalizar captura?')){flushSpeech();post('/finish')}">Finalizar</button>
     </div>
   </div>
 <script>
 function post(p){fetch(p,{method:'POST'})}
+// Set after the operator submits a prompt response. While true, the
+// /status poll is NOT allowed to re-inject the prompt controls — we
+// already replaced them with a spinner and any phase change will
+// clear the flag.
+let promptSubmitted = false;
+function showSpinner(msg){
+  const status = document.getElementById('status');
+  if(!status) return;
+  status.innerHTML =
+      '<div style="color:#3fb6f0;font-size:18px;font-weight:600;'
+      + 'margin-bottom:10px">'
+      + '<span class="spinner" style="display:inline-block;width:16px;'
+      + 'height:16px;border:2px solid #3fb6f0;border-top-color:transparent;'
+      + 'border-radius:50%;vertical-align:middle;margin-right:10px;'
+      + 'animation:spin 0.9s linear infinite"></span>'
+      + msg + '</div>';
+}
+function sendInput(val){
+  promptSubmitted = true;
+  showSpinner('Procesando...');
+  fetch('/wizard-input', {method:'POST', body: val, headers: {'Content-Type':'text/plain'}});
+}
+function submitGt(){
+  const el = document.getElementById('gt-dist');
+  const val = el ? el.value : '';
+  promptSubmitted = true;
+  showSpinner(val
+      ? 'Capturando y analizando profundidad... (puede tardar hasta 15 segundos)'
+      : 'Salteando validación...');
+  fetch('/wizard-input', {method:'POST', body: val, headers: {'Content-Type':'text/plain'}});
+}
+function flushSpeech(){
+  // Clear any queued-up pose announcements so they don't trail into the
+  // next phase (e.g. "pose 9" still pending when capture is already done).
+  if (window.speechSynthesis) {
+    try { window.speechSynthesis.cancel(); } catch(e){}
+  }
+  // Also tell the backend the announce is "done" — if we cancelled mid-
+  // utterance, its onend won't fire and the server would stay locked.
+  try { fetch('/announce-done', {method:'POST'}); } catch(e){}
+}
 function startCapture(){
   // User gesture — unlock the AudioContext for beeps + TTS.
   ensureAudioCtx();
@@ -576,9 +690,10 @@ function toggleAudio(){
   if (audioOn) { ensureAudioCtx(); speak('Audio activado'); beep(800, 80); }
 }
 function speak(text){
+  // Queue utterances instead of cancelling — operator hears one then the
+  // next. Our 3s dedup on identical hints keeps the queue short.
   if (!audioOn || !window.speechSynthesis) return;
   try {
-    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'es-ES'; u.rate = 1.05;
     window.speechSynthesis.speak(u);
@@ -587,6 +702,8 @@ function speak(text){
 updateAudioBtn();
 let postCaptureMode = false;
 let finalizedSeen = false;
+let lastRenderedPhase = '';
+let lastRenderedPromptType = '';
 async function refresh(){
   try {
     const r = await fetch('/status');
@@ -595,7 +712,24 @@ async function refresh(){
     const phaseMatch = html.match(/data-phase="([^"]+)"/);
     if (phaseMatch) {
       postCaptureMode = true;
-      document.getElementById('status').innerHTML = html;
+      const thisPhase = phaseMatch[1];
+      const thisPromptType = (html.match(/data-prompt-type="([^"]+)"/) || [,''])[1];
+      // Re-render only when the phase OR prompt type changes. Otherwise
+      // we'd wipe the ground-truth <input> every poll and steal focus.
+      const shouldRender = (
+        thisPhase !== lastRenderedPhase ||
+        thisPromptType !== lastRenderedPromptType
+      );
+      if (shouldRender) {
+        document.getElementById('status').innerHTML = html;
+        lastRenderedPhase = thisPhase;
+        lastRenderedPromptType = thisPromptType;
+        // Phase actually changed — clear any pending prompt state so
+        // subsequent prompts can render cleanly.
+        promptSubmitted = false;
+        // Entering any post-capture phase drops queued pose announcements.
+        flushSpeech();
+      }
       // Hide the live stream once capture is done.
       const stage = document.getElementById('stage');
       if (stage) stage.style.display = 'none';
@@ -606,6 +740,61 @@ async function refresh(){
       if (banner) banner.style.display = 'none';
       const bar = document.getElementById('progress-bar');
       if (bar) bar.style.display = 'none';
+      // Interactive prompt from the wizard: show controls that POST back
+      // to /wizard-input. Only inject on first sight AND while the operator
+      // hasn't submitted yet — after submitting we keep the spinner.
+      if (phaseMatch[1] === 'prompt'
+          && !document.getElementById('prompt-ctrls')
+          && !promptSubmitted) {
+        const typeMatch = html.match(/data-prompt-type="([^"]+)"/);
+        const type = typeMatch ? typeMatch[1] : '';
+        const ctrls = document.createElement('div');
+        ctrls.id = 'prompt-ctrls';
+        ctrls.style.cssText = 'display:flex;gap:10px;margin-top:14px;flex-wrap:wrap';
+        const mkBtn = (text, style, onClick) => {
+          const b = document.createElement('button');
+          b.className = 'btn';
+          b.style.cssText = style;
+          b.textContent = text;
+          b.addEventListener('click', onClick);
+          return b;
+        };
+        if (type === 'diversity') {
+          ctrls.appendChild(mkBtn(
+              'Cancelar y recapturar',
+              'width:auto;flex:1;background:#c0392b',
+              () => sendInput('no')
+          ));
+          ctrls.appendChild(mkBtn(
+              'Continuar igual',
+              'width:auto;flex:1;background:#27ae60',
+              () => sendInput('si')
+          ));
+        } else if (type === 'ground_truth') {
+          const input = document.createElement('input');
+          input.id = 'gt-dist';
+          // type=text + inputmode=numeric avoids the native spinner UI
+          // while still bringing up the numeric keyboard on phones.
+          input.type = 'text';
+          input.inputMode = 'numeric';
+          input.pattern = '[0-9]*';
+          input.placeholder = 'Distancia en mm (ej 2000)';
+          input.style.cssText = 'flex:1 1 160px;padding:10px;font-size:15px;'
+              + 'border-radius:6px;border:1px solid #555;background:#1a1a1e;color:#eee';
+          ctrls.appendChild(input);
+          ctrls.appendChild(mkBtn(
+              'Validar',
+              'width:auto;flex:0 0 auto;background:#3fb6f0',
+              submitGt
+          ));
+          ctrls.appendChild(mkBtn(
+              'Saltear',
+              'width:auto;flex:0 0 auto;background:#555',
+              () => sendInput('')
+          ));
+        }
+        document.getElementById('status').appendChild(ctrls);
+      }
       if (phaseMatch[1] === 'complete' && !finalizedSeen) {
         finalizedSeen = true;
         // Only auto-open the report when one actually exists (success path).
@@ -625,6 +814,17 @@ async function refresh(){
       return;
     }
     document.getElementById('status').innerHTML = html;
+    // Detect pose change and flush the speech queue so the new pose
+    // announcement starts cleanly — without any residue from the
+    // previous pose's leftover utterances draining first.
+    const poseIdxMatch = html.match(/data-pose-idx="([^"]+)"/);
+    if (poseIdxMatch) {
+      const idx = poseIdxMatch[1];
+      if (window._lastPoseIdx !== undefined && window._lastPoseIdx !== idx) {
+        flushSpeech();
+      }
+      window._lastPoseIdx = idx;
+    }
     const m = html.match(/data-banner="([^"]*)" data-color="([^"]*)" data-progress="([^"]*)" data-audioseq="([^"]*)" data-audiotext="([^"]*)" data-captured="([^"]*)"/);
     if (m) {
       document.getElementById('banner').textContent = m[1];
@@ -635,11 +835,36 @@ async function refresh(){
       const audioText = m[5];
       const capturedN = parseInt(m[6], 10) || 0;
       const now = Date.now();
-      // TTS: speak when seq changes, with ≥2.5s throttle
-      if (audioOn && audioText && seq !== lastSpokenSeq && now - lastSpokenAt > 2500) {
+      // TTS: speak every new seq. The backend already dedupes by semantic
+      // key (digits stripped), so a seq change means a genuinely new hint
+      // worth speaking. We rely on the queue instead of a time-based
+      // throttle — so nothing gets silently dropped during fast captures.
+      if (seq !== lastSpokenSeq) {
         lastSpokenSeq = seq;
         lastSpokenAt = now;
-        speak(audioText);
+        // Pose announcements get special handling: they're the "atomic
+        // block" (number/label/distance) and the backend waits on the
+        // onend signal before unlocking capture or other hints.
+        const isPoseAnnounce = audioText && audioText.startsWith('Pose ');
+        if (audioOn && audioText) {
+          if (isPoseAnnounce && window.speechSynthesis) {
+            try {
+              const u = new SpeechSynthesisUtterance(audioText);
+              u.lang = 'es-ES'; u.rate = 1.05;
+              u.onend = () => fetch('/announce-done', {method:'POST'});
+              u.onerror = () => fetch('/announce-done', {method:'POST'});
+              window.speechSynthesis.speak(u);
+            } catch(e) {
+              fetch('/announce-done', {method:'POST'});
+            }
+          } else {
+            speak(audioText);
+          }
+        } else if (isPoseAnnounce) {
+          // Audio off — unblock the backend right away so the operator
+          // isn't stuck in a lockout they can't hear.
+          fetch('/announce-done', {method:'POST'});
+        }
       }
       // Beep: tick at 0/33/66% of hold-progress (buckets 0/1/2). Reset on progress=0.
       if (audioOn) {
@@ -967,6 +1192,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 count, BOOTSTRAP_COUNT,
             )
 
+    # SO_REUSEADDR so a Ctrl-C'd previous instance doesn't leave the port
+    # in TIME_WAIT for the next run.
+    ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("0.0.0.0", args.port), _GuidedHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -987,12 +1215,28 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
     # Block until the operator clicks "Comenzar" in the browser. This gives
     # them time to position the board + activates the browser audio context.
-    while not _capture_started:
-        if state.finish_requested:
-            logger.info("Cancelado antes de comenzar.")
+    try:
+        while not _capture_started:
+            if state.finish_requested:
+                logger.info("Cancelado antes de comenzar.")
+                cap.close()
+                try:
+                    server.shutdown()
+                except Exception:
+                    pass
+                return
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        logger.info("Interrumpido antes de comenzar (Ctrl-C).")
+        try:
             cap.close()
-            return
-        time.sleep(0.1)
+        except Exception:
+            pass
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        sys.exit(0)
     logger.info("Ctrl+C para cancelar, o usá el botón Finalizar en la UI.\n")
 
     stability = StabilityTracker()
@@ -1013,12 +1257,22 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         state.audio_event = text
         state.audio_event_seq += 1
 
+    def _pose_announce(idx: int) -> str:
+        """Spoken prompt for a pose: label + target distance in cm."""
+        p = poses[idx]
+        z_cm = p.tvec_mm[2] / 10.0
+        return f"Pose {idx + 1}. {p.label}. A {z_cm:.0f} centímetros de la cámara"
+
+    def _emit_pose_announce(idx: int) -> None:
+        """Emit the pose announcement and lock out everything else until the
+        browser signals the utterance finished (POST /announce-done)."""
+        global _announce_pending
+        _announce_pending = True
+        _emit_audio(_pose_announce(idx))
+
     # Announce the first pending pose (= poses[0] on fresh start, or the
     # next pending after resume restore)
-    initial_pose = poses[state.current_pose_idx]
-    _emit_audio(
-        f"Pose {state.current_pose_idx + 1}. {initial_pose.label}"
-    )
+    _emit_pose_announce(state.current_pose_idx)
 
     # Persist initial/resumed state so a crash before any new capture still
     # leaves a valid session.json on disk.
@@ -1031,8 +1285,19 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     SYNC_WARN_CONSECUTIVE_FRAMES = 4
     sync_bad_streak = 0
 
+    prev_pose_idx = state.current_pose_idx
+
     try:
         while count < len(poses):
+            # Detect any pose change and reset "what we last spoke" so the
+            # first movement hint for the new pose always plays, even if
+            # the previous pose's last hint was the same phrase.
+            if state.current_pose_idx != prev_pose_idx:
+                state.last_spoken_key = ""
+                state.locked_alignment_text = ""
+                sync_bad_streak = 0  # clean slate so skip doesn't replay the warning
+                prev_pose_idx = state.current_pose_idx
+
             pose = poses[state.current_pose_idx]
             if state.pose_status[state.current_pose_idx] != "pending":
                 state.current_pose_idx = (state.current_pose_idx + 1) % len(poses)
@@ -1057,7 +1322,15 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 sync_bad_streak = 0
             else:
                 sync_bad_streak += 1
-            sync_warn_active = sync_bad_streak >= SYNC_WARN_CONSECUTIVE_FRAMES
+            # Suppress the warning for 2s after each pose transition — the
+            # picamera2 pipeline routinely spikes right after skip/capture
+            # while the main thread was busy, and that drift settles within
+            # a second or two without operator action.
+            pose_settling = (time.time() - pose_started_at) < 2.0
+            sync_warn_active = (
+                sync_bad_streak >= SYNC_WARN_CONSECUTIVE_FRAMES
+                and not pose_settling
+            )
 
             frame_counter += 1
 
@@ -1144,16 +1417,32 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             stable = stability.is_stable() if aligned else False
 
             now = time.time()
-            if aligned and stable:
+            # Gate everything on the precise "announcement finished"
+            # signal from the browser (POST /announce-done on
+            # SpeechSynthesisUtterance.onend). This way the three-piece
+            # "number / label / distance" block is guaranteed to play
+            # end-to-end regardless of voice speed — captures and other
+            # audio hints stay blocked until the operator has actually
+            # heard the whole thing. Only manual Skip can interrupt.
+            announce_settling = _announce_pending
+            announce_audio_lockout = _announce_pending
+            if aligned and stable and not announce_settling:
                 if hold_started_at is None:
                     hold_started_at = now
-                    _emit_audio("Mantené quieto")
+                    # Only voice "Mantené quieto" once the pose name has
+                    # finished playing. Capture can still run during that
+                    # window — it just won't announce.
+                    if not announce_audio_lockout:
+                        _emit_audio("Mantené quieto")
                 hold_progress = min(1.0, (now - hold_started_at) / STABILITY_HOLD_SEC)
             else:
                 hold_started_at = None
                 hold_progress = 0.0
 
-            should_capture = aligned and stable and hold_progress >= 1.0
+            should_capture = (
+                aligned and stable and not announce_settling
+                and hold_progress >= 1.0
+            )
 
             warnings = live_lighting_warnings(frame_l, frame_r)
 
@@ -1190,16 +1479,21 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     state.skip_requested = False
                     state.pose_status[state.current_pose_idx] = "skipped"
                     logger.info("Pose %s saltada por usuario", pose.id)
-                    _emit_audio("Pose saltada")
                     state.current_pose_idx = (state.current_pose_idx + 1) % len(poses)
                     pose_started_at = time.time()
                     hold_started_at = None
                     stability.reset()
+                    # Announce the NEW pose so the operator knows where to
+                    # move next. Skip itself isn't announced (they clicked
+                    # the button, they know).
+                    if any(s == "pending" for s in state.pose_status):
+                        _emit_pose_announce(state.current_pose_idx)
                     _save_session(output_dir, state, poses, args)
                     continue
 
-            # Auto-skip timeout
-            if now - pose_started_at > SKIP_POSE_TIMEOUT_SEC:
+            # Auto-skip timeout (configurable via --pose-timeout-sec)
+            pose_timeout = getattr(args, "pose_timeout_sec", SKIP_POSE_TIMEOUT_SEC)
+            if now - pose_started_at > pose_timeout:
                 state.pose_status[state.current_pose_idx] = "skipped"
                 logger.info("Pose %s auto-saltada por timeout", pose.id)
                 _emit_audio("Pose saltada por timeout")
@@ -1208,6 +1502,8 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 hold_started_at = None
                 stability.reset()
                 _save_session(output_dir, state, poses, args)
+                if any(s == "pending" for s in state.pose_status):
+                    _emit_pose_announce(state.current_pose_idx)
                 continue
 
             # Draw ghost + detected corners on previews
@@ -1283,7 +1579,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                         "[%d/%d] Pose %s capturada — %s (common=%d, sync=%.1fms)",
                         count, len(poses), pose.id, pose.label, common_n, lr_delta_ms,
                     )
-                    _emit_audio(f"Capturada. Pose {count + 1}")
+                    # Don't TTS "Capturada" — the capture beep already
+                    # confirms it and a spoken confirmation just delays the
+                    # next pose announcement from being heard.
 
                     # Bootstrap handoff: after N captures fit intrinsics
                     if not state.bootstrap_done and count >= BOOTSTRAP_COUNT:
@@ -1317,7 +1615,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     hold_started_at = None
                     stability.reset()
                     if any(s == "pending" for s in state.pose_status):
-                        _emit_audio(f"Pose {count + 1}. {poses[nxt].label}")
+                        _emit_pose_announce(nxt)
                 else:
                     logger.info("Captura rechazada: %s", "; ".join(reject_reasons))
                     stability.reset()
@@ -1347,8 +1645,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     f_px_for_hint = float(state.fitted_K[0, 0])
                 else:
                     f_px_for_hint = NOMINAL_FOCAL_PX
+                # err offsets are in PREVIEW pixel space (GUIDED_HALF, ~648
+                # wide after the scale_x multiplication earlier). The fitted_K
+                # / nominal f_px are at full-res 4608. Scale f down so the
+                # mm_per_px ratio is consistent with the offset units.
+                f_px_preview = f_px_for_hint * scale_x
                 # PoseTarget stores position as tvec_mm = (x, y, z); z is depth.
-                mm_per_px_here = pose.tvec_mm[2] / f_px_for_hint
+                mm_per_px_here = pose.tvec_mm[2] / f_px_preview
                 banner = alignment_hint_by_corners(err, mm_per_px=mm_per_px_here)
                 banner_color = "#e67e22"
                 audio_text = banner
@@ -1357,9 +1660,38 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 banner_color = "#e74c3c"
                 audio_text = ""
 
-            # Refresh audio event only when banner changes to avoid spam
-            if audio_text and audio_text != state.banner_text:
+            # Refresh audio event only when banner changes SEMANTICALLY —
+            # strip digits so "movelo izquierda 4cm" vs "movelo izquierda
+            # 3cm" count as the same hint and don't re-trigger TTS.
+            # Also skip during the post-pose-announcement grace window so
+            # the pose-name TTS isn't immediately overwritten by a movement
+            # hint (state.audio_event is a single slot — last write wins).
+            import re as _re
+            def _key(s: str) -> str:
+                return _re.sub(r"[\d.,]+", "", s or "").strip()
+            # `last_spoken_key` tracks WHAT WAS SPOKEN, separate from the
+            # visible banner. If we suppressed an emit during the lockout
+            # we must not pretend we already said it — otherwise when the
+            # lockout ends and the hint is still current, _key comparison
+            # thinks we delivered it already and stays silent forever.
+            spoke_audio = False
+            if (audio_text
+                    and not announce_audio_lockout
+                    and _key(audio_text) != state.last_spoken_key):
                 _emit_audio(audio_text)
+                state.last_spoken_key = _key(audio_text)
+                state.locked_alignment_text = audio_text
+                spoke_audio = True
+
+            # When the alignment hint has the same semantic key as what the
+            # operator just heard, keep the on-screen banner frozen on the
+            # exact text we said. Prevents 1-cm flicker between live
+            # measurement and stale audio (operator hears "15cm", sees
+            # "14cm" and thinks they don't match).
+            if (audio_text
+                    and state.locked_alignment_text
+                    and _key(audio_text) == state.last_spoken_key):
+                banner = state.locked_alignment_text
 
             phase_label = "bootstrap" if not state.bootstrap_done else "estricto"
             warnings_html = ""
@@ -1380,8 +1712,8 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             banner_escaped = banner.replace('"', "&quot;")
 
             status = f"""
-<div data-banner="{banner_escaped}" data-color="{banner_color}" data-progress="{hold_progress:.2f}" data-audioseq="{state.audio_event_seq}" data-audiotext="{audio_escaped}" data-captured="{captured_n}"></div>
-<div>Pose <b>{state.current_pose_idx + 1}/{len(poses)}</b> — {pose.label} <span class="pill-phase">{phase_label}</span></div>
+<div data-banner="{banner_escaped}" data-color="{banner_color}" data-progress="{hold_progress:.2f}" data-audioseq="{state.audio_event_seq}" data-audiotext="{audio_escaped}" data-captured="{captured_n}" data-pose-idx="{state.current_pose_idx}"></div>
+<div>Pose <b>{state.current_pose_idx + 1}/{len(poses)}</b> — {pose.label} · <b>{pose.tvec_mm[2] / 10.0:.0f}cm</b> <span class="pill-phase">{phase_label}</span></div>
 <div>Capturadas: <b>{captured_n}</b> · Skipped: <b>{skipped_n}</b> · Restantes: <b>{len(poses) - captured_n - skipped_n}</b></div>
 <div>{rms_html}</div>
 {warnings_html}
@@ -1456,6 +1788,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
     )
 
     # Start HTTP preview
+    ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("0.0.0.0", args.port), _MJPEGHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -1758,15 +2091,14 @@ def _run_ground_truth_phase(
     5-zone depth analysis with the fresh calibration, return zones dict for
     the HTML report. Skip cleanly on empty input or failure.
     """
+    prompt_msg = (
+        "Poné una superficie plana (pared, cartón) a 2 m de las cámaras.\n"
+        "Medí con cinta la distancia exacta y escribila en mm (ej: 2000).\n"
+        "Si no querés hacer esta validación, tocá Saltear."
+    )
     try:
-        print()
-        prompt = (
-            "Poné una superficie plana (pared, cartón) a 2 m de las cámaras,\n"
-            "medí con cinta y escribí la distancia en mm (ej: 2000).\n"
-            "Enter vacío para saltear: "
-        )
-        raw = input(prompt).strip()
-    except (EOFError, KeyboardInterrupt):
+        raw = _ask_operator_ui("ground_truth", prompt_msg).strip()
+    except KeyboardInterrupt:
         print()
         return None
 
@@ -1882,6 +2214,38 @@ def _run_ground_truth_phase(
     zones["_center_err"] = center_err_abs
     zones["_edge_ratio"] = edge_ratio
 
+    # Depth heatmap for the report — scene image with disparity-colored overlay.
+    try:
+        valid_mask = disparity > 0.1
+        norm = np.zeros_like(disparity, dtype=np.uint8)
+        if valid_mask.any():
+            vmin = float(disparity[valid_mask].min())
+            vmax = float(disparity[valid_mask].max())
+            if vmax > vmin:
+                norm[valid_mask] = np.clip(
+                    (disparity[valid_mask] - vmin) / (vmax - vmin) * 255, 0, 255,
+                ).astype(np.uint8)
+        heat = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
+        heat[~valid_mask] = (40, 40, 40)
+        # Side by side: rectified L + heatmap
+        side = np.hstack([rect_l, heat])
+        # Mark each zone center with a box + label
+        for name, (cy, cx) in zones_coords.items():
+            px_x = cx + rect_l.shape[1]  # shift into heatmap side
+            cv2.rectangle(
+                side, (px_x - half, cy - half), (px_x + half, cy + half),
+                (255, 255, 255), 2,
+            )
+            cv2.putText(
+                side, name, (px_x - half, cy - half - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA,
+            )
+        gt_viz_path = Path(args.output).parent / "ground_truth_depth.png"
+        cv2.imwrite(str(gt_viz_path), side)
+        zones["_image_path"] = str(gt_viz_path)
+    except Exception as e:
+        logger.warning("No pude guardar viz de ground-truth: %s", e)
+
     logger.info(
         "Ground-truth: centro err=%.2f%% (umbral %.1f%%), borde/centro=%.2f× (umbral 2×) → %s",
         center_err_abs, center_threshold, edge_ratio,
@@ -1985,10 +2349,14 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         logger.warning("⚠ Diversidad limitada en el set de capturas:")
         for w in coverage["warnings"]:
             logger.warning("    - %s", w)
-        try:
-            answer = input("Continuar con la calibración igual? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
+        warnings_text = "\n".join(f"• {w}" for w in coverage["warnings"])
+        prompt_msg = (
+            "Las capturas no tienen suficiente diversidad de pose:\n\n"
+            f"{warnings_text}\n\n"
+            "Podés continuar igual (la calibración va a converger con más "
+            "error) o cancelar para recapturar."
+        )
+        answer = _ask_operator_ui("diversity", prompt_msg).strip().lower()
         if answer not in ("y", "yes", "s", "si", "sí"):
             logger.info("Calibración cancelada — podés recapturar y volver a correr el wizard.")
             _set_post_capture_phase(
@@ -2048,6 +2416,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         progress_pct=70,
     )
 
+    epi_path: Optional[Path] = None
     if pairs:
         rect_l, rect_r = rectify_pair(pairs[0][0], pairs[0][1], result)
         combined = np.hstack([rect_l, rect_r])
@@ -2092,6 +2461,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
 
     # Final report
     ts = _dt.datetime.now()
+    gt_image = None
+    if diagnose_zones and diagnose_zones.get("_image_path"):
+        gt_image = Path(diagnose_zones["_image_path"])
     html = generate_html_report(
         calibration=result,
         diagnose_zones=diagnose_zones,
@@ -2100,6 +2472,8 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         rms_stereo=rms_est,
         timestamp=ts,
         per_pair_residuals=per_pair,
+        epipolar_image=epi_path,
+        ground_truth_image=gt_image,
     )
     report_name = f"calibration_report_{args.device_id}_{ts:%Y%m%d_%H%M%S}.html"
     report_path = save_report(html, calib_out.parent / report_name)
@@ -2216,6 +2590,10 @@ def main() -> None:
                         help="Max captures per grid cell (0=unlimited). Stops cell when reached.")
     p_cap.add_argument("--cooldown", type=float, default=1.5,
                         help="Seconds to wait after each capture before next one")
+    p_cap.add_argument("--pose-timeout-sec", type=float,
+                        default=SKIP_POSE_TIMEOUT_SEC,
+                        help=f"Seconds before an uncaptured pose is auto-"
+                             f"skipped (default {SKIP_POSE_TIMEOUT_SEC:.0f}).")
     p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
     p_cap.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Board columns (default {DEFAULT_BOARD_SIZE[0]})")
     p_cap.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Board rows (default {DEFAULT_BOARD_SIZE[1]})")
@@ -2280,6 +2658,12 @@ def main() -> None:
                         help="Minimum pair count needed to run calibration. "
                              "Default 15 (statistically robust). Lower for "
                              "dry-runs / debugging only.")
+    p_wiz.add_argument("--pose-timeout-sec", type=float,
+                        default=SKIP_POSE_TIMEOUT_SEC,
+                        help=f"Seconds before an uncaptured pose is auto-"
+                             f"skipped (default {SKIP_POSE_TIMEOUT_SEC:.0f}). "
+                             f"Bump to 180+ when the board is tripod-mounted "
+                             f"and needs time to reposition between poses.")
     p_wiz.add_argument("--tolerance", choices=["loose", "normal", "strict"],
                         default="normal",
                         help="Capture strictness preset. "
