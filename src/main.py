@@ -12,6 +12,7 @@ Orchestrates the full edge pipeline:
 
 import argparse
 import logging
+import math
 import os
 import queue
 import signal
@@ -209,6 +210,43 @@ def get_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
     return telem
 
 
+def _auto_num_disparities(
+    vision_cfg: dict[str, Any], logger: logging.Logger,
+) -> int:
+    """Derive a num_disparities that matches the head-distance range at this
+    site. Uses the calibration focal length (from the .npz loaded elsewhere
+    or a nominal if unknown), design baseline 140mm, and the operator-set
+    mounting_height_m. Rounded up to the next multiple of 16 (SGBM constraint).
+    """
+    mount_m = float(vision_cfg.get("mounting_height_m", 3.0) or 3.0)
+    # f_px and baseline — we don't yet have the calibration loaded at this
+    # point in the pipeline, so we use the nominal optical values. Fine for
+    # sizing the disparity search; the actual depth will use the real K/T.
+    f_px = 2050.0
+    baseline_mm = 140.0
+    head_max_m = 1.85  # tallest adult head
+    floor_margin_m = 0.5  # a bit beyond the floor so SGBM covers the full bg
+
+    z_min = max(0.3, mount_m - head_max_m)
+    z_max = mount_m + floor_margin_m
+    disp_max = f_px * baseline_mm / (z_min * 1000)
+    disp_min = f_px * baseline_mm / (z_max * 1000)
+
+    # SGBM searches [minDisparity, minDisparity + numDisparities). We keep
+    # minDisparity=0 (OpenCV default) for simplicity, so numDisparities
+    # needs to cover 0..disp_max. Round up to next multiple of 16 + one
+    # extra bucket for margin.
+    raw = int(math.ceil(disp_max / 16.0) + 1) * 16
+    # Clamp to a sane envelope.
+    num_disparities = max(64, min(512, raw))
+    logger.info(
+        "num_disparities auto: mount=%.2fm → z=[%.2f,%.2f]m → disp=[%.0f,%.0f]"
+        " → num_disparities=%d",
+        mount_m, z_min, z_max, disp_min, disp_max, num_disparities,
+    )
+    return num_disparities
+
+
 def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     """Run the main processing pipeline."""
     device_id = config["device"]["id"]
@@ -234,8 +272,18 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     model = load_model(model_path, backend=detection_backend)
 
     # --- Build SGBM ---
+    # num_disparities can be a concrete int or the literal "auto" — in which
+    # case we derive the search range from mounting_height_m so the solver
+    # covers exactly the depth band where heads will appear (1.2-1.85m
+    # below the camera) plus a small floor margin. Saves compute at high
+    # mounts and gives wider search at low mounts, transparently per site.
+    num_disp_cfg = vision_cfg.get("num_disparities", 192)
+    if isinstance(num_disp_cfg, str) and num_disp_cfg.lower() == "auto":
+        num_disp_resolved = _auto_num_disparities(vision_cfg, logger)
+    else:
+        num_disp_resolved = int(num_disp_cfg)
     sgbm = create_sgbm(
-        num_disparities=vision_cfg.get("num_disparities", 192),
+        num_disparities=num_disp_resolved,
         block_size=vision_cfg.get("block_size", 9),
     )
 
@@ -411,13 +459,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "Tracker params updated; new values apply to future tracks"
                     )
                 if any(
-                    k in ("vision.num_disparities", "vision.block_size")
+                    k in ("vision.num_disparities", "vision.block_size",
+                          "vision.mounting_height_m")
                     for k in applied_keys
                 ):
+                    nd_cfg = config["vision"].get("num_disparities", 192)
+                    if isinstance(nd_cfg, str) and nd_cfg.lower() == "auto":
+                        nd_resolved = _auto_num_disparities(
+                            config["vision"], logger,
+                        )
+                    else:
+                        nd_resolved = int(nd_cfg)
                     sgbm = create_sgbm(
-                        num_disparities=config["vision"].get(
-                            "num_disparities", 192
-                        ),
+                        num_disparities=nd_resolved,
                         block_size=config["vision"].get("block_size", 9),
                     )
                     logger.info("SGBM rebuilt after shadow delta")

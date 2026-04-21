@@ -61,6 +61,9 @@ RUNTIME_SAFE_KEYS = frozenset(
         # vision.num_disparities / block_size explicit entries
         "vision.num_disparities",
         "vision.block_size",
+        # mounting_height_m is runtime-safe: main.py reads it live for the
+        # height classifier and for auto num_disparities on SGBM rebuild.
+        "vision.mounting_height_m",
         # operational.* handled via prefix below
     }
 )

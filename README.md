@@ -93,7 +93,7 @@ En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suf
 
 El sistema usa una estrategia de doble config:
 
-- **Local** (`config/config.yaml`): settings intrínsecos al hardware — IDs de cámara, archivo de calibración, parámetros SGBM, path del modelo, certificados MQTT
+- **Local** (`config/config.yaml`): settings intrínsecos al hardware — IDs de cámara, archivo de calibración, parámetros SGBM (`num_disparities: auto` deriva el rango de disparidad desde `mounting_height_m` para cada sitio), path del modelo, certificados MQTT
 - **Cloud** (AWS IoT Device Shadow): settings del negocio — horarios operativos, factor de escala, toggles de habilitación
 
 Ver [`config/config.example.yaml`](config/config.example.yaml) para el config anotado completo.
