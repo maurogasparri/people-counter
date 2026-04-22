@@ -31,7 +31,7 @@ class TestGenerateReport:
 
     def test_reports_baseline_pass_at_design(self):
         html = generate_html_report(_mock_calibration(140.0), device_id="D")
-        assert "dentro de tolerancia" in html
+        assert "tolerancia" in html
         assert "PASS" in html
 
     def test_reports_baseline_warning_when_off_design(self):

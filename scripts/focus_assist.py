@@ -53,7 +53,12 @@ capture_started = False
 capture_started_lock = threading.Lock()
 
 MIN_SCORE = 200
-MIN_EDGE_CENTER_RATIO = 0.25
+MIN_CORNER_SCORE = 100.0          # Absolute Laplacian var for corner zones.
+                                   # Replaces the old edges/center ratio: in
+                                   # small test rooms the board fills the
+                                   # center and drives the ratio near zero even
+                                   # with good lenses. Measuring corners on
+                                   # their own scale is honest across scenes.
 MAX_LR_DIFF_PCT = 15.0
 MAX_LR_ZONE_DIFF_PCT = 30.0
 TARGET_DISTANCE_MIN_MM = 1150.0   # Derived from default 3.0m mount
@@ -61,6 +66,11 @@ TARGET_DISTANCE_MAX_MM = 1800.0   # Derived from default 3.0m mount
 DEFAULT_MOUNT_HEIGHT_M = 3.0      # Mode of our door-height distribution
 HEAD_HEIGHT_MAX_M = 1.85          # tall adult
 HEAD_HEIGHT_MIN_M = 1.20          # short child
+COMPACT_BBOX_THRESHOLD = 0.25     # Board bbox/frame area > this -> compact
+                                   # scene (board fills the view, corners see
+                                   # walls at wildly different depths, so
+                                   # corner sharpness is not comparable to
+                                   # center and we skip that check).
 
 
 def _apply_threshold_overrides(args: argparse.Namespace) -> None:
@@ -68,10 +78,10 @@ def _apply_threshold_overrides(args: argparse.Namespace) -> None:
     checks for tricky environments (vidrio frontal, low-light) without editing
     code. Defaults preserve current behaviour.
     """
-    global MIN_SCORE, MIN_EDGE_CENTER_RATIO, MAX_LR_DIFF_PCT, MAX_LR_ZONE_DIFF_PCT
+    global MIN_SCORE, MIN_CORNER_SCORE, MAX_LR_DIFF_PCT, MAX_LR_ZONE_DIFF_PCT
     global TARGET_DISTANCE_MIN_MM, TARGET_DISTANCE_MAX_MM
     MIN_SCORE = args.min_score
-    MIN_EDGE_CENTER_RATIO = args.min_edge_center_ratio
+    MIN_CORNER_SCORE = args.min_corner_score
     MAX_LR_DIFF_PCT = args.max_lr_diff_pct
     MAX_LR_ZONE_DIFF_PCT = args.max_lr_zone_diff_pct
     # Derive target distance from mount height if the operator didn't pass
@@ -125,18 +135,26 @@ def focus_grid(
 def estimate_charuco_distance_mm(
     frame: np.ndarray, board: cv2.aruco.CharucoBoard,
     focal_px_override: float | None = None,
-) -> tuple[float | None, int]:
+) -> tuple[float | None, int, float]:
     """Detect ChArUco in frame, estimate distance via solvePnP with nominal K.
 
-    Returns (distance_mm or None, n_corners_detected). Uses nominal IMX708
+    Returns (distance_mm or None, n_corners_detected, bbox_ratio). bbox_ratio
+    is the fraction of frame area covered by the detected-corners bounding
+    rectangle — used upstream to auto-detect "compact scene" (board fills the
+    view, corners see walls at unrelated depths). Uses nominal IMX708
     intrinsics — ±10% accuracy is fine for validating "is the board at 2.5-3m?".
     """
     corners, ids = detect_charuco_corners(
         frame, board, min_corners=4, lenient=True,
     )
     if corners is None or ids is None or len(corners) < 4:
-        return None, 0
+        return None, 0, 0.0
     h, w = frame.shape[:2]
+    pts = corners.reshape(-1, 2)
+    bbox_w = float(pts[:, 0].max() - pts[:, 0].min())
+    bbox_h = float(pts[:, 1].max() - pts[:, 1].min())
+    frame_area = max(w * h, 1)
+    bbox_ratio = (bbox_w * bbox_h) / frame_area
     if focal_px_override is not None:
         fx = fy = focal_px_override
     else:
@@ -152,16 +170,17 @@ def estimate_charuco_distance_mm(
     try:
         ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, K, dist, flags=cv2.SOLVEPNP_ITERATIVE)
     except cv2.error:
-        return None, len(corners)
+        return None, len(corners), bbox_ratio
     if not ok:
-        return None, len(corners)
-    return float(tvec[2, 0]), len(corners)
+        return None, len(corners), bbox_ratio
+    return float(tvec[2, 0]), len(corners), bbox_ratio
 
 
 def evaluate_focus(
     grid_l: np.ndarray, grid_r: np.ndarray,
     distance_l_mm: float | None, distance_r_mm: float | None,
     valid_l: np.ndarray | None = None, valid_r: np.ndarray | None = None,
+    compact_scene: bool = False,
 ) -> dict:
     if valid_l is None:
         valid_l = np.ones_like(grid_l, dtype=bool)
@@ -178,14 +197,13 @@ def evaluate_focus(
     corners_r_vals = [grid_r[r, c] for r, c in corners_idx if valid_r[r, c]]
     n_valid_corners_l = len(corners_l_vals)
     n_valid_corners_r = len(corners_r_vals)
-    edges_l = float(np.mean(corners_l_vals)) if corners_l_vals else 0.0
-    edges_r = float(np.mean(corners_r_vals)) if corners_r_vals else 0.0
-
-    # If we don't have enough valid corners the uniformity score is unreliable
-    # (sample too small). Mark as unknown by leaving ec at 0 and flagging via
-    # check keys further down.
-    ec_l = edges_l / center_l if center_l > 0 and n_valid_corners_l >= 2 else 0
-    ec_r = edges_r / center_r if center_r > 0 and n_valid_corners_r >= 2 else 0
+    # Absolute corner sharpness (mean Laplacian var across valid corners).
+    # Directly comparable to MIN_CORNER_SCORE — a lens that actually resolves
+    # detail in the corners will read >= threshold regardless of what the
+    # center shows. The old ratio (edges/center) failed in small rooms because
+    # a bright ChArUco centered in the frame inflated the denominator.
+    corner_l = float(np.mean(corners_l_vals)) if corners_l_vals else 0.0
+    corner_r = float(np.mean(corners_r_vals)) if corners_r_vals else 0.0
 
     # Global average and zone diffs only over zones valid on BOTH sides, so
     # comparing cameras doesn't penalise a zone where only one happens to
@@ -229,16 +247,17 @@ def evaluate_focus(
     )
 
     # Uniformity check becomes "pass by default" when we didn't have enough
-    # valid corners to measure it — we can't fail someone for a bad test
-    # scene. Flag it as uniformity_measurable=False so the UI can show it.
-    uniformity_l_measurable = n_valid_corners_l >= 2
-    uniformity_r_measurable = n_valid_corners_r >= 2
+    # valid corners OR we're in a compact scene where corners see walls at
+    # depths unrelated to the board plane (the check would fail structurally,
+    # not because the lens is bad). Flag via uniformity_measurable=False.
+    uniformity_l_measurable = n_valid_corners_l >= 2 and not compact_scene
+    uniformity_r_measurable = n_valid_corners_r >= 2 and not compact_scene
 
     checks = {
         "center_l": center_l >= MIN_SCORE,
         "center_r": center_r >= MIN_SCORE,
-        "uniformity_l": (not uniformity_l_measurable) or ec_l >= MIN_EDGE_CENTER_RATIO,
-        "uniformity_r": (not uniformity_r_measurable) or ec_r >= MIN_EDGE_CENTER_RATIO,
+        "uniformity_l": (not uniformity_l_measurable) or corner_l >= MIN_CORNER_SCORE,
+        "uniformity_r": (not uniformity_r_measurable) or corner_r >= MIN_CORNER_SCORE,
         "lr_global": lr_diff <= MAX_LR_DIFF_PCT,
         "lr_zones": max_zone_diff <= MAX_LR_ZONE_DIFF_PCT,
         "distance": distance_ok,
@@ -262,10 +281,12 @@ def evaluate_focus(
     if not checks["center_r"]:
         hints.append(f"DER: centro débil ({center_r:.0f}<{MIN_SCORE}) — girá el lente derecho")
     if checks["center_l"] and uniformity_l_measurable and not checks["uniformity_l"]:
-        hints.append(f"IZQ: bordes débiles (ec={ec_l:.2f}) — te pasaste del óptimo, revertí ligeramente el ajuste")
+        hints.append(f"IZQ: corners débiles ({corner_l:.0f}<{MIN_CORNER_SCORE:.0f}) — revisá foco / agregá textura en los bordes")
     if checks["center_r"] and uniformity_r_measurable and not checks["uniformity_r"]:
-        hints.append(f"DER: bordes débiles (ec={ec_r:.2f}) — te pasaste del óptimo, revertí ligeramente el ajuste")
-    if not uniformity_l_measurable or not uniformity_r_measurable:
+        hints.append(f"DER: corners débiles ({corner_r:.0f}<{MIN_CORNER_SCORE:.0f}) — revisá foco / agregá textura en los bordes")
+    # Only nag about low-texture corners in "full" mode — in compact mode the
+    # UI shows a dedicated banner explaining corners are intentionally skipped.
+    if not compact_scene and (not uniformity_l_measurable or not uniformity_r_measurable):
         hints.append(
             "Escena con poca textura en los bordes — agregá detalle (poster/empapelado) "
             "detrás de la zona de medición para validar uniformidad"
@@ -284,7 +305,7 @@ def evaluate_focus(
 
     return {
         "center_l": center_l, "center_r": center_r,
-        "ec_l": ec_l, "ec_r": ec_r,
+        "corner_l": corner_l, "corner_r": corner_r,
         "lr_diff": lr_diff, "max_zone_diff": max_zone_diff,
         "distance_l_mm": distance_l_mm, "distance_r_mm": distance_r_mm,
         "distance_avg_mm": distance_avg, "distance_ok": distance_ok,
@@ -296,6 +317,7 @@ def evaluate_focus(
         "uniformity_r_measurable": uniformity_r_measurable,
         "n_valid_corners_l": n_valid_corners_l,
         "n_valid_corners_r": n_valid_corners_r,
+        "compact_scene": compact_scene,
     }
 
 
@@ -446,15 +468,20 @@ def _compose_preview(frame_l: np.ndarray, frame_r: np.ndarray,
               max_value=max(MIN_SCORE / 10 * 2.5, ev["center_r"] / 10 * 1.2, 1.0),
               peak=peak_r_scaled)
 
-    # Row 2: uniformity
+    # Row 2: corner sharpness (absolute). In compact scenes this check is
+    # skipped, so we grey the bar label and force-pass its colour.
+    compact = bool(ev.get("compact_scene"))
+    corner_l_label = "IZQ corners (omitido)" if compact else f"IZQ corners: {ev['corner_l']:.0f}"
+    corner_r_label = "DER corners (omitido)" if compact else f"DER corners: {ev['corner_r']:.0f}"
+    corner_max = max(MIN_CORNER_SCORE * 2.5, ev["corner_l"] * 1.2, ev["corner_r"] * 1.2, 100.0)
     _draw_bar(panel, 20, 50, bar_w, 22,
-              ev["ec_l"], MIN_EDGE_CENTER_RATIO,
-              f"IZQ uniformidad: {ev['ec_l']:.2f}",
-              max_value=max(MIN_EDGE_CENTER_RATIO * 2.5, ev["ec_l"] * 1.2, 0.5))
+              ev["corner_l"], MIN_CORNER_SCORE,
+              corner_l_label, max_value=corner_max,
+              passing=ev["checks"]["uniformity_l"])
     _draw_bar(panel, w + 20, 50, bar_w, 22,
-              ev["ec_r"], MIN_EDGE_CENTER_RATIO,
-              f"DER uniformidad: {ev['ec_r']:.2f}",
-              max_value=max(MIN_EDGE_CENTER_RATIO * 2.5, ev["ec_r"] * 1.2, 0.5))
+              ev["corner_r"], MIN_CORNER_SCORE,
+              corner_r_label, max_value=corner_max,
+              passing=ev["checks"]["uniformity_r"])
 
     # Row 3: L/R symmetry — bar tracks global diff, but fails red also when
     # per-zone diff exceeds threshold (single visual indicator for both
@@ -548,6 +575,24 @@ def _save_report(frame_l: np.ndarray, frame_r: np.ndarray,
 
     dist_text = (f"{ev['distance_avg_mm']/1000:.2f} m"
                  if ev['distance_avg_mm'] is not None else "no detectado")
+    compact_note = ""
+    if ev.get("compact_scene"):
+        compact_note = (
+            '<p style="background:#fff3cd;border:1px solid #ffe39a;'
+            'padding:8px 12px;border-radius:6px;color:#7a5d00">'
+            'Escena compacta detectada — el check de corners fue omitido '
+            'porque los bordes del frame ven superficies a distancia '
+            'distinta del board. Validación basada en centro + simetría + '
+            'distancia.</p>'
+        )
+    corner_l_label = (
+        "IZQ corners: omitido (escena compacta)" if ev.get("compact_scene")
+        else f"IZQ corners: {ev['corner_l']:.0f} (≥{MIN_CORNER_SCORE:.0f})"
+    )
+    corner_r_label = (
+        "DER corners: omitido (escena compacta)" if ev.get("compact_scene")
+        else f"DER corners: {ev['corner_r']:.0f} (≥{MIN_CORNER_SCORE:.0f})"
+    )
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Reporte de foco — {ts:%Y-%m-%d %H:%M}</title>
 <style>body{{font-family:-apple-system,Segoe UI,sans-serif;max-width:1100px;margin:20px auto;color:#222;padding:0 16px}}
@@ -556,13 +601,14 @@ table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:4px 10px;t
 img{{max-width:48%;border-radius:6px;margin:4px}}</style></head><body>
 <h1>Asistente de foco — reporte</h1>
 <p>Fecha/hora: {ts:%Y-%m-%d %H:%M:%S}</p>
+{compact_note}
 <h2>Resultado</h2>
 <p>{_pill(bool(ev["all_pass_with_distance"]), "FOCO GLOBAL")}</p>
 <ul>
 <li>{_pill(ev["checks"]["center_l"], f"IZQ nitidez centro: {ev['center_l']:.0f} (≥{MIN_SCORE})")}</li>
 <li>{_pill(ev["checks"]["center_r"], f"DER nitidez centro: {ev['center_r']:.0f} (≥{MIN_SCORE})")}</li>
-<li>{_pill(ev["checks"]["uniformity_l"], f"IZQ uniformidad: {ev['ec_l']:.2f} (≥{MIN_EDGE_CENTER_RATIO})")}</li>
-<li>{_pill(ev["checks"]["uniformity_r"], f"DER uniformidad: {ev['ec_r']:.2f} (≥{MIN_EDGE_CENTER_RATIO})")}</li>
+<li>{_pill(ev["checks"]["uniformity_l"], corner_l_label)}</li>
+<li>{_pill(ev["checks"]["uniformity_r"], corner_r_label)}</li>
 <li>{_pill(ev["checks"]["lr_global"], f"Simetría L/R: diff {ev['lr_diff']:.1f}% (≤{MAX_LR_DIFF_PCT}%)")}</li>
 <li>{_pill(ev["checks"]["lr_zones"], f"Max zona diff: {ev['max_zone_diff']:.1f}% (≤{MAX_LR_ZONE_DIFF_PCT}%)")}</li>
 <li>{_pill(bool(ev["distance_ok"]), f"Distancia board: {dist_text} (objetivo {TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f} m)")}</li>
@@ -812,8 +858,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--min-score", type=float, default=MIN_SCORE,
                         help="Minimum center Laplacian variance (default 200)")
-    parser.add_argument("--min-edge-center-ratio", type=float, default=MIN_EDGE_CENTER_RATIO,
-                        help="Minimum edge/center sharpness ratio (default 0.25)")
+    parser.add_argument("--min-corner-score", type=float, default=MIN_CORNER_SCORE,
+                        help="Minimum mean Laplacian variance across the 4 corner zones "
+                             "(default 100). Absolute metric — does the corner have detail? "
+                             "Replaces the old edges/center ratio which mis-fired in small "
+                             "rooms where the board dominates the centre. Raise for stricter.")
+    parser.add_argument("--scene", choices=("auto", "compact", "full"), default="auto",
+                        help="Scene mode. 'auto' (default): compact if the ChArUco bbox "
+                             f"covers more than {int(COMPACT_BBOX_THRESHOLD*100)}%% of the "
+                             "frame. 'compact': always skip the corner check (for small "
+                             "test rooms where corners see walls at unrelated depths). "
+                             "'full': always enforce the corner check.")
     parser.add_argument("--max-lr-diff-pct", type=float, default=MAX_LR_DIFF_PCT,
                         help="Max global L/R sharpness asymmetry (default 15%%)")
     parser.add_argument("--max-lr-zone-diff-pct", type=float, default=MAX_LR_ZONE_DIFF_PCT,
@@ -935,10 +990,23 @@ def main() -> None:
             grid_l, valid_l = focus_grid(frame_l)
             grid_r, valid_r = focus_grid(frame_r)
 
-            dist_l, ncorn_l = estimate_charuco_distance_mm(frame_l, board, args.focal_px)
-            dist_r, ncorn_r = estimate_charuco_distance_mm(frame_r, board, args.focal_px)
+            dist_l, ncorn_l, bbox_l = estimate_charuco_distance_mm(frame_l, board, args.focal_px)
+            dist_r, ncorn_r, bbox_r = estimate_charuco_distance_mm(frame_r, board, args.focal_px)
 
-            ev = evaluate_focus(grid_l, grid_r, dist_l, dist_r, valid_l, valid_r)
+            # Scene-mode resolution: "compact" forces corners-skipped; "full"
+            # forces corners-checked; "auto" trips to compact when the board
+            # fills a meaningful fraction of either frame.
+            if args.scene == "compact":
+                is_compact = True
+            elif args.scene == "full":
+                is_compact = False
+            else:
+                is_compact = max(bbox_l, bbox_r) > COMPACT_BBOX_THRESHOLD
+
+            ev = evaluate_focus(
+                grid_l, grid_r, dist_l, dist_r, valid_l, valid_r,
+                compact_scene=is_compact,
+            )
             peaks.update(ev["center_l"], ev["center_r"])
 
             preview = _compose_preview(frame_l, frame_r, ev, grid_l, grid_r, peaks=peaks)
@@ -987,6 +1055,14 @@ def main() -> None:
             if lighting:
                 lighting_html = '<div style="color:#f1c40f">⚠ ' + " · ".join(lighting) + "</div>"
 
+            compact_html = ""
+            if ev.get("compact_scene"):
+                compact_html = (
+                    '<div style="color:#3498db;font-size:13px;margin-top:6px">'
+                    'Escena compacta — solo centro + simetría + distancia'
+                    '</div>'
+                )
+
             # data-audio-hint: what the browser TTS will read aloud.
             # Sanitise quotes so the attribute parses cleanly.
             audio_hint = lead.replace('"', '')
@@ -994,6 +1070,7 @@ def main() -> None:
                 f'<div data-audio-hint="{audio_hint}" '
                 f'style="color:{color_status};font-size:18px;font-weight:700">{lead}</div>'
                 f'{lighting_html}'
+                f'{compact_html}'
                 f'{peak_html}'
                 f'<div style="color:#888;font-size:13px;margin-top:6px">'
                 f'ChArUco IZQ:{ncorn_l} esq · DER:{ncorn_r} esq</div>'
@@ -1004,8 +1081,10 @@ def main() -> None:
             # Terminal one-liner
             verdict = "PASS" if ev["all_pass_with_distance"] else "FAIL"
             dist_str = f"{ev['distance_avg_mm']/1000:.2f}m" if ev['distance_avg_mm'] else "-"
+            scene_tag = "C" if ev.get("compact_scene") else "F"
             print(
-                f"\r  [{verdict}] L/R:{ev['lr_diff']:4.1f}% | ec_L:{ev['ec_l']:.2f} ec_R:{ev['ec_r']:.2f} | "
+                f"\r  [{verdict}/{scene_tag}] L/R:{ev['lr_diff']:4.1f}% | "
+                f"crn_L:{ev['corner_l']:5.0f} crn_R:{ev['corner_r']:5.0f} | "
                 f"ctr_L:{ev['center_l']:6.0f} ctr_R:{ev['center_r']:6.0f} | d:{dist_str}    ",
                 end="", flush=True,
             )

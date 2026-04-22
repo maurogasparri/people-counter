@@ -114,7 +114,66 @@ class TestEvaluateFocus:
         ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0, valid, valid)
         assert not ev["uniformity_l_measurable"]
         assert ev["checks"]["uniformity_l"]   # default-pass
+
+    def test_texture_hint_fires_when_corners_invalid_and_scene_not_compact(self):
+        # Explicit check that the "agregá textura" hint appears while the
+        # session still needs operator action (here: board out of range).
+        grid = np.full((3, 3), 500.0)
+        valid = np.array([
+            [False, True, False],
+            [True, True, True],
+            [False, True, False],
+        ])
+        # Board at 5m — outside target, so all_pass_with_distance=False and
+        # hints aren't overridden by the "LISTO" banner.
+        ev = focus_assist.evaluate_focus(grid, grid, 5000.0, 5000.0, valid, valid)
+        assert not ev["uniformity_l_measurable"]
         assert any("textura" in h for h in ev["hints"])
+
+    def test_weak_corners_fail_absolute_threshold(self):
+        # Sharp center, weak corners (below MIN_CORNER_SCORE = 100). The
+        # new absolute metric should flag this — the old ratio would have
+        # failed here too, but for different reasons.
+        grid = np.array([
+            [50.0, 500.0, 50.0],
+            [500.0, 500.0, 500.0],
+            [50.0, 500.0, 50.0],
+        ])
+        ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0)
+        assert not ev["checks"]["uniformity_l"]
+        assert not ev["checks"]["uniformity_r"]
+        assert ev["corner_l"] == pytest.approx(50.0)
+        assert any("corners" in h and "IZQ" in h for h in ev["hints"])
+
+    def test_compact_scene_skips_corner_check(self):
+        # Compact scene = board fills the view. Even if corners show zero
+        # detail, the check is suppressed and the operator isn't blocked.
+        grid = np.array([
+            [0.0, 500.0, 0.0],
+            [500.0, 500.0, 500.0],
+            [0.0, 500.0, 0.0],
+        ])
+        ev = focus_assist.evaluate_focus(
+            grid, grid, 1500.0, 1500.0, compact_scene=True,
+        )
+        assert ev["compact_scene"] is True
+        assert ev["checks"]["uniformity_l"]       # default-pass
+        assert ev["checks"]["uniformity_r"]
+        assert not ev["uniformity_l_measurable"]  # intentionally unmeasured
+        assert ev["all_pass_with_distance"]
+        # The "textura" nag must NOT fire in compact mode — the UI has a
+        # dedicated banner explaining why corners are skipped.
+        assert not any("textura" in h for h in ev["hints"])
+
+    def test_compact_scene_does_not_hide_center_failure(self):
+        # Compact mode only silences the corner check. Center failure still
+        # blocks the operator.
+        weak_center = np.full((3, 3), 50.0)
+        ev = focus_assist.evaluate_focus(
+            weak_center, weak_center, 1500.0, 1500.0, compact_scene=True,
+        )
+        assert not ev["checks"]["center_l"]
+        assert not ev["all_pass"]
 
 
 class TestEstimateDistance:
@@ -122,6 +181,7 @@ class TestEstimateDistance:
         from src.vision.calibration import create_charuco_board
         board = create_charuco_board()
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
-        dist, n = focus_assist.estimate_charuco_distance_mm(blank, board)
+        dist, n, bbox = focus_assist.estimate_charuco_distance_mm(blank, board)
         assert dist is None
         assert n == 0
+        assert bbox == 0.0
