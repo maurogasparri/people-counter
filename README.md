@@ -112,7 +112,7 @@ sudo PYTHONPATH=. python3 scripts/focus_assist.py --mount-height-m 3.0
 
 Abre UI en `http://people-counter.local:8080`. Flujo:
 1. Pantalla "Comenzar" (posicionar board + activa audio)
-2. Captura en vivo con barras de nitidez central + uniformidad + simetría L/R
+2. Captura en vivo con barras de nitidez central + corners (absoluto) + simetría L/R
 3. Peak tracker para ajustar el M12 sin pasarse del óptimo
 4. Masking automático de zonas de bajo contraste
 5. Audio TTS lee los hints (opcional, toggle en la UI)
@@ -120,6 +120,15 @@ Abre UI en `http://people-counter.local:8080`. Flujo:
 
 El board puede estar a cualquier distancia dentro del rango de cabezas
 derivado del mount height (por default `3.0m` → target `1.15–1.80m`).
+
+**Escena compacta**: si el bounding-box del ChArUco cubre >25% del frame
+(cuarto chico durante PoC, board que llena la vista) el tool auto-detecta
+la situación y omite el check de corners — en esa geometría los bordes
+ven superficies a distancia no relacionada con el board y el check
+fallaría por razón física, no óptica. Forzá el modo con `--scene=compact`
+(siempre omite) o `--scene=full` (siempre enforza). La métrica de corners
+es absoluta (varianza Laplaciana media ≥ 100 por default), ajustable con
+`--min-corner-score N`.
 
 ### 2. Calibración estéreo
 
@@ -169,14 +178,16 @@ src/
 ├── config/          # Carga de YAML + merge con IoT Shadow + runtime-safe prefixes
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT)
-tests/               # 391 tests espejando src/ + tests/scripts/ para el wizard
+tests/               # 395 tests espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,
 │                          # ghost silueta, pose-announce atómico, tolerance preset,
 │                          # ground-truth en UI, reporte HTML con viz embedded
 ├── focus_assist.py        # Asistente de foco browser-driven: start overlay, barras
-│                          # visuales, peak tracker, masking, audio TTS, reporte auto-open
+│                          # visuales, peak tracker, masking, audio TTS, reporte auto-open.
+│                          # Corner sharpness absoluta + auto-detección de escena compacta
+│                          # (bbox board/frame >25% → omite check de corners)
 ├── diagnose_depth.py      # Validación de profundidad: 5 zonas + PASS/FAIL vs distancia conocida
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── roi_picker.py          # Seleccionador de ROI + línea virtual

@@ -230,14 +230,19 @@ PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
 Abrir **http://people-counter.local:8080**. La UI muestra:
-- Barras de sharpness por cámara (centro y uniformidad) con zona verde = target
-- Distancia detectada del board (objetivo 2.5-3m)
+- Barras de sharpness por cámara (centro + corners absoluto) con zona verde = target
+- Distancia detectada del board (objetivo derivado de `--mount-height-m`)
 - Simetría L/R
 - Warnings de iluminación/glare en vivo
 
 Girar los anillos hasta que todas las barras estén verdes. Click **FINALIZAR**
 cuando pase el check global — salva un reporte HTML en `/tmp/focus_report_*.html`
 con todas las métricas y los frames finales embebidos.
+
+**Escena compacta**: si el cuarto de test es chico y el board llena el frame
+(bbox >25%), el tool auto-detecta la situación y omite el check de corners
+porque los bordes ven paredes a distancia no relacionada con el board. Banner
+azul en la UI lo indica. Forzá el modo con `--scene=compact|full` si hace falta.
 
 ### 12.2. Calibración estéreo (modo wizard guiado)
 

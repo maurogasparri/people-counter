@@ -121,7 +121,7 @@ people-counter/
 │   ├── config/
 │   │   └── loader.py      <- carga y validación de config YAML
 │   └── main.py            <- orquestador del pipeline completo
-├── tests/                 <- 180 tests en todos los módulos
+├── tests/                 <- 395 tests en todos los módulos
 ├── scripts/
 │   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard).
 │   │                         wizard es el flujo end-to-end con UI web: start overlay,
@@ -130,9 +130,12 @@ people-counter/
 │   │                         ground-truth check, reporte auto-open.
 │   │                         Tolerance presets loose/normal/strict, --dict configurable.
 │   ├── focus_assist.py    <- asistente de foco guiado, UI web: start overlay,
-│   │                         barras de nitidez central + uniformidad + simetría L/R,
+│   │                         barras de nitidez central + corners (absoluto) + simetría L/R,
 │   │                         peak tracker, masking de zonas de bajo contraste,
 │   │                         audio TTS, reporte auto-open. Captura a 2304×1296 (binned).
+│   │                         Auto-detecta "escena compacta" (bbox del board >25% del frame)
+│   │                         y omite el check de corners en esa geometría. --scene=
+│   │                         auto|compact|full override, --min-corner-score N ajusta umbral.
 │   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad
 │   ├── provision.py       <- provisioning de dispositivos (create/deploy/list)
 │   ├── verify_hardware.py <- verificación de hardware
@@ -166,7 +169,7 @@ people-counter/
 
 ## Estado de implementación
 
-**180 tests pasando.** Módulos por estado:
+**395 tests pasando.** Módulos por estado:
 
 - COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
 - INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
@@ -210,6 +213,7 @@ people-counter/
 - **Prompts interactivos del wizard** via threading.Event: `_ask_operator_ui()` emite un estado `data-phase="prompt"` con `data-prompt-type`, el JS renderiza los controles apropiados (botones para confirmación binaria, input numérico para valores) y deja el spinner mientras el backend procesa. El POST a `/wizard-input` signal-ea el event y el wizard continúa.
 - **Acciones que pueden interrumpir el audio** (flush queue + POST `/announce-done`): Saltar pose, Deshacer última, Finalizar. Todo lo demás espera al onend.
 - **Puerto HTTP con SO_REUSEADDR** y Ctrl+C limpio en ambos tools (server.shutdown() en el cleanup path) — no quedan TIME_WAITs entre runs.
+- **focus_assist: corner sharpness absoluta + escena compacta**. La métrica de uniformidad es la varianza Laplaciana media de los 4 corners válidos (umbral absoluto `MIN_CORNER_SCORE = 100`), no el ratio bordes/centro. Auto-detecta "escena compacta" cuando el bbox del ChArUco cubre >25% del frame (cuarto chico durante PoC, board que domina la vista) y omite el check porque en esa geometría los corners ven paredes a distancia no relacionada con el board y el ratio fallaría por razón física, no óptica. `--scene=auto|compact|full` override manual; `--min-corner-score N` ajusta el umbral.
 - El directorio `debug/` en la raíz del repo está gitignoreado — sirve para dumpear reportes, screenshots, logs de sesiones de test sin ensuciar git status.
 
 ## Interpretación del reporte de calibración
