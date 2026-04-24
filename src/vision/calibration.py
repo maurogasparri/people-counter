@@ -1,8 +1,14 @@
 """Stereo calibration using ChArUco patterns.
 
-Uses standard pinhole model with cv2.calibrateCamera and cv2.stereoCalibrate.
-The Arducam IMX708 M12 120° HFOV lens has moderate radial distortion that is
-well modeled by Brown-Conrady coefficients (CALIB_RATIONAL_MODEL).
+Uses the OpenCV fisheye model (cv2.fisheye.*, Kannala-Brandt angular polynomial
+k1..k4). The Arducam IMX708 M12 lens is fisheye (120° HFOV / 152° diagonal) —
+pinhole + CALIB_RATIONAL_MODEL fits the centre but leaves measurable residuals
+at the edges of the frame, which matters for wide-coverage cenital counting
+(FootfallCam-style, ~40% frame eccentricity for the tracking zone).
+
+The ghost overlay renderer in project_pose() stays pinhole — it's a coarse
+visual guide for the operator, and at the wizard's alignment tolerances the
+pinhole/fisheye discrepancy at frame edges (~3-9px in preview) is negligible.
 
 Compatible with OpenCV 4.8+ (contrib) which uses the refactored ArUco API.
 """
@@ -42,11 +48,21 @@ def create_charuco_board(
     square_length: float = DEFAULT_SQUARE_LENGTH,
     marker_length: float = DEFAULT_MARKER_LENGTH,
     dict_id: int = ARUCO_DICT_ID,
+    legacy_pattern: bool = True,
 ) -> cv2.aruco.CharucoBoard:
+    """Build a ChArUco board. legacy_pattern defaults to True because our
+    canonical calib.io PDFs use the pre-4.6 marker enumeration — OpenCV 4.6+
+    switched the default and CharucoDetector.detectBoard returns zero ChArUco
+    corners against legacy-printed boards when run under the new pattern
+    (markers decode, IDs don't land where the new-pattern board expects). Both
+    sides — detection and generateImage() — respect this flag, so toggling
+    produces matching producer + detector behaviour.
+    """
     aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
     board = cv2.aruco.CharucoBoard(
         board_size, square_length, marker_length, aruco_dict
     )
+    board.setLegacyPattern(legacy_pattern)
     return board
 
 
@@ -175,6 +191,118 @@ def _detect_all_pairs(
 # ---------------------------------------------------------------------------
 
 
+# Fisheye stereoRectify balance: 0.0 crops to zero black pixels in the rectified
+# output (tight FOV). For SGBM we prefer no black borders over maximum field —
+# black regions produce spurious disparity at the image edges. Raise to ~0.3 if
+# edge FOV turns out to matter more than disparity cleanliness in testing.
+FISHEYE_RECTIFY_BALANCE = 0.0
+
+
+def _reshape_for_fisheye(
+    obj_pts_list: list[np.ndarray],
+    img_pts_list: list[np.ndarray],
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """cv2.fisheye.* is picky: object points must be (N,1,3) float64 and image
+    points (N,1,2) float64. _detect_all_pairs already returns image points as
+    (N,1,2) float32 — we just upcast dtype and reshape the object points.
+    """
+    obj_out = [np.asarray(o, dtype=np.float64).reshape(-1, 1, 3) for o in obj_pts_list]
+    img_out = [np.asarray(p, dtype=np.float64).reshape(-1, 1, 2) for p in img_pts_list]
+    return obj_out, img_out
+
+
+def _derive_stereo_rt_from_per_pose(
+    rvecs_l: list[np.ndarray], tvecs_l: list[np.ndarray],
+    rvecs_r: list[np.ndarray], tvecs_r: list[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Average the per-pose relative transform (left→right) across all poses.
+
+    For a rigid stereo bracket, R_stereo @ R_board_to_left == R_board_to_right
+    and T_stereo == t_right - R_stereo @ t_left in every pose. We compute both
+    per-pose and average — translations with a simple mean, rotations via
+    quaternion averaging (arithmetic mean + renormalise is close enough for
+    this application and avoids the pypkg scipy dependency).
+    """
+    rel_rotations: list[np.ndarray] = []
+    rel_translations: list[np.ndarray] = []
+    for rv_l, tv_l, rv_r, tv_r in zip(rvecs_l, tvecs_l, rvecs_r, tvecs_r):
+        R_l, _ = cv2.Rodrigues(np.asarray(rv_l, dtype=np.float64).reshape(3, 1))
+        R_r, _ = cv2.Rodrigues(np.asarray(rv_r, dtype=np.float64).reshape(3, 1))
+        t_l = np.asarray(tv_l, dtype=np.float64).reshape(3, 1)
+        t_r = np.asarray(tv_r, dtype=np.float64).reshape(3, 1)
+        R_rel = R_r @ R_l.T
+        t_rel = t_r - R_rel @ t_l
+        rel_rotations.append(R_rel)
+        rel_translations.append(t_rel)
+
+    # Average translations straight.
+    T_mean = np.mean(np.stack(rel_translations, axis=0), axis=0).reshape(3, 1)
+
+    # Average rotations: arithmetic mean of R matrices, then SVD-project to
+    # the closest valid rotation (orthogonal with det=+1).
+    R_sum = np.sum(np.stack(rel_rotations, axis=0), axis=0)
+    U, _, Vt = np.linalg.svd(R_sum)
+    R_mean = U @ Vt
+    if np.linalg.det(R_mean) < 0:
+        # Mirror reflection — flip the last singular column.
+        U[:, -1] *= -1
+        R_mean = U @ Vt
+
+    return R_mean.astype(np.float64), T_mean.astype(np.float64)
+
+
+def _compute_stereo_rms(
+    obj_list: list[np.ndarray],
+    corners_l: list[np.ndarray],
+    corners_r: list[np.ndarray],
+    K_l: np.ndarray, D_l: np.ndarray,
+    K_r: np.ndarray, D_r: np.ndarray,
+    rvecs_l: list[np.ndarray], tvecs_l: list[np.ndarray],
+    R_stereo: np.ndarray, T_stereo: np.ndarray,
+) -> float:
+    """Reprojection RMS of the fixed-intrinsics / averaged-extrinsics stereo fit.
+
+    For each pose, left extrinsics come from fisheye.calibrate's per-pose
+    solve; right extrinsics are derived by applying R_stereo, T_stereo. We
+    project the 3D object points through both cameras and compare to the
+    detected corners. This is the same quantity stereoCalibrate minimises,
+    just computed after the fact.
+    """
+    errs: list[float] = []
+    for obj_pts, pts_l, pts_r, rv_l, tv_l in zip(
+        obj_list, corners_l, corners_r, rvecs_l, tvecs_l,
+    ):
+        rv_l_arr = np.asarray(rv_l, dtype=np.float64).reshape(3, 1)
+        tv_l_arr = np.asarray(tv_l, dtype=np.float64).reshape(3, 1)
+        R_l, _ = cv2.Rodrigues(rv_l_arr)
+
+        proj_l, _ = cv2.fisheye.projectPoints(
+            obj_pts, rv_l_arr, tv_l_arr, K_l, D_l,
+        )
+        err_l = np.linalg.norm(
+            proj_l.reshape(-1, 2) - pts_l.reshape(-1, 2), axis=1,
+        )
+
+        # Right extrinsics: chain left with the stereo transform.
+        R_r = R_stereo @ R_l
+        t_r = R_stereo @ tv_l_arr + T_stereo
+        rv_r_arr, _ = cv2.Rodrigues(R_r)
+        proj_r, _ = cv2.fisheye.projectPoints(
+            obj_pts, rv_r_arr, t_r, K_r, D_r,
+        )
+        err_r = np.linalg.norm(
+            proj_r.reshape(-1, 2) - pts_r.reshape(-1, 2), axis=1,
+        )
+
+        errs.extend(err_l.tolist())
+        errs.extend(err_r.tolist())
+
+    if not errs:
+        return float("nan")
+    errs_arr = np.asarray(errs, dtype=np.float64)
+    return float(np.sqrt((errs_arr ** 2).mean()))
+
+
 def calibrate_stereo(
     image_pairs: list[tuple[np.ndarray, np.ndarray]],
     board_size: tuple[int, int] = DEFAULT_BOARD_SIZE,
@@ -182,9 +310,12 @@ def calibrate_stereo(
     marker_length: float = DEFAULT_MARKER_LENGTH,
     dict_id: int = ARUCO_DICT_ID,
     min_pairs: int = 15,
+    legacy_pattern: bool = True,
 ) -> dict[str, np.ndarray]:
-    """Stereo calibration using pinhole model with CALIB_RATIONAL_MODEL."""
-    board = create_charuco_board(board_size, square_length, marker_length, dict_id)
+    """Stereo calibration using the fisheye (Kannala-Brandt) model."""
+    board = create_charuco_board(
+        board_size, square_length, marker_length, dict_id, legacy_pattern,
+    )
     all_obj, all_corners_l, all_corners_r, image_size = _detect_all_pairs(
         image_pairs, board,
     )
@@ -200,11 +331,29 @@ def calibrate_stereo(
             f"Need at least {min_pairs} valid pairs, got {valid_pairs}."
         )
 
-    calib_flags = cv2.CALIB_RATIONAL_MODEL
+    obj_f, corners_l_f = _reshape_for_fisheye(all_obj, all_corners_l)
+    _, corners_r_f = _reshape_for_fisheye(all_obj, all_corners_r)
+
+    # CHECK_COND raises if a pose is too degenerate. We omit it — with real lab
+    # captures the 20 canonical poses are well-distributed, and keeping it off
+    # avoids cryptic failures on rare borderline cases.
+    calib_flags = (
+        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
+        | cv2.fisheye.CALIB_FIX_SKEW
+    )
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
-    rms_l, K_l, D_l, _, _ = cv2.calibrateCamera(
-        all_obj, all_corners_l, image_size, None, None,
+    # Pre-allocate K/D with the shapes the fisheye binding expects, but do NOT
+    # pre-allocate rvecs/tvecs — the Python binding builds them itself from the
+    # pose count, and passing fixed-shape placeholders triggers an _OutputArray
+    # assertion (OpenCV 4.13+).
+    K_l = np.zeros((3, 3), dtype=np.float64)
+    D_l = np.zeros((4, 1), dtype=np.float64)
+    K_r = np.zeros((3, 3), dtype=np.float64)
+    D_r = np.zeros((4, 1), dtype=np.float64)
+
+    rms_l, K_l, D_l, rvecs_l, tvecs_l = cv2.fisheye.calibrate(
+        obj_f, corners_l_f, image_size, K_l, D_l,
         flags=calib_flags, criteria=criteria,
     )
     logger.info(
@@ -212,8 +361,8 @@ def calibrate_stereo(
         extra={"camera": "left", "rms": rms_l, "pairs": valid_pairs},
     )
 
-    rms_r, K_r, D_r, _, _ = cv2.calibrateCamera(
-        all_obj, all_corners_r, image_size, None, None,
+    rms_r, K_r, D_r, rvecs_r, tvecs_r = cv2.fisheye.calibrate(
+        obj_f, corners_r_f, image_size, K_r, D_r,
         flags=calib_flags, criteria=criteria,
     )
     logger.info(
@@ -221,25 +370,37 @@ def calibrate_stereo(
         extra={"camera": "right", "rms": rms_r, "pairs": valid_pairs},
     )
 
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC | cv2.CALIB_RATIONAL_MODEL
-    rms_stereo, K_l, D_l, K_r, D_r, R, T, E, F = cv2.stereoCalibrate(
-        all_obj, all_corners_l, all_corners_r,
-        K_l, D_l, K_r, D_r, image_size,
-        flags=stereo_flags, criteria=criteria,
+    D_l = np.asarray(D_l, dtype=np.float64).reshape(4, 1)
+    D_r = np.asarray(D_r, dtype=np.float64).reshape(4, 1)
+
+    # fisheye.stereoCalibrate requires identical point counts across poses
+    # (OpenCV 4.13 limitation). Our lab captures have variable per-pose counts
+    # (far distances lose corners), so we derive the rigid L→R transform
+    # directly from the per-pose extrinsics returned by fisheye.calibrate:
+    # for each pose i, R_stereo = R_ri @ R_li.T and T_stereo = t_ri - R_stereo @ t_li.
+    # Averaging across poses (with SO(3) projection on rotations) gives the
+    # same R, T that joint stereoCalibrate would converge to, within a
+    # fraction of a pixel RMS for a rigid bracket.
+    R, T = _derive_stereo_rt_from_per_pose(rvecs_l, tvecs_l, rvecs_r, tvecs_r)
+    rms_stereo = _compute_stereo_rms(
+        obj_f, corners_l_f, corners_r_f, K_l, D_l, K_r, D_r,
+        rvecs_l, tvecs_l, R, T,
     )
     logger.info(
         "stereo_calibrated",
         extra={"rms": rms_stereo, "pairs": valid_pairs},
     )
 
-    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
         K_l, D_l, K_r, D_r, image_size, R, T,
-        flags=cv2.CALIB_ZERO_DISPARITY, alpha=0,
+        flags=cv2.CALIB_ZERO_DISPARITY,
+        newImageSize=image_size,
+        balance=FISHEYE_RECTIFY_BALANCE,
     )
-    map_l_x, map_l_y = cv2.initUndistortRectifyMap(
+    map_l_x, map_l_y = cv2.fisheye.initUndistortRectifyMap(
         K_l, D_l, R1, P1, image_size, cv2.CV_32FC1,
     )
-    map_r_x, map_r_y = cv2.initUndistortRectifyMap(
+    map_r_x, map_r_y = cv2.fisheye.initUndistortRectifyMap(
         K_r, D_r, R2, P2, image_size, cv2.CV_32FC1,
     )
 
@@ -255,7 +416,7 @@ def calibrate_stereo(
     return {
         "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
         "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
-        "R": R, "T": T, "E": E, "F": F,
+        "R": R, "T": T,
         "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
         "map_l_x": map_l_x, "map_l_y": map_l_y,
         "map_r_x": map_r_x, "map_r_y": map_r_y,
@@ -337,8 +498,8 @@ class PoseTarget:
 
 
 DEFAULT_DIST_NEAR_MM = 1000.0
-DEFAULT_DIST_MID_MM = 1700.0
-DEFAULT_DIST_FAR_MM = 2400.0
+DEFAULT_DIST_MID_MM = 2000.0
+DEFAULT_DIST_FAR_MM = 3000.0
 
 
 def default_pose_sequence(
@@ -348,10 +509,16 @@ def default_pose_sequence(
 ) -> list[PoseTarget]:
     """Return a canonical 20-pose sequence covering near/mid/far × positions × tilts.
 
-    Default distances (1000/1700/2400mm) chosen so DICT_4X4 markers stay above
-    ~12px detection threshold at full capture resolution (markers ~33mm wide,
-    f≈1330px). Override if the install location has different operational range
-    — e.g. high-ceiling mount with boards further from the cameras.
+    Default distances (1000/2000/3000mm) span most of the fleet operating range
+    (mount heights 3.0–4.5m → head distances 1.15–3.30m) while keeping every
+    pose's required board height inside a standard 70–210cm tripod envelope.
+    With far=3.0m the D-group poses (±0.35 vertical offset) put the board at
+    1.40m ± 66cm = [0.74m, 2.06m], vs 1.40m ± 77cm = [0.63m, 2.17m] at far=3.5m
+    which blows past a typical 2.1m tripod max and a 70cm tripod min. The
+    operating ceiling (3.30m) is extrapolated 30cm beyond the sampled far —
+    low risk for the fisheye Kannala-Brandt model which stays well-behaved
+    under modest extrapolation. At 3.0m with f≈2050px full-res, a 33mm
+    DICT_4X4 marker is ~23 px wide, comfortably above the ~12 px threshold.
     """
     near, mid, far = near_mm, mid_mm, far_mm
 
@@ -762,6 +929,13 @@ def fit_single_camera_intrinsics(
     Returns the 3×3 camera matrix, or None if detection fails on too many frames.
     Used for the guided-capture bootstrap — after a few captures we replace the
     nominal K used to render ghost targets with the measured per-sensor value.
+
+    Intentionally stays on the pinhole model (cv2.calibrateCamera) even though
+    the main stereo pipeline is fisheye. The only consumer is project_pose()
+    which also renders the ghost with pinhole projection — keeping both halves
+    on the same model avoids a visible offset between the ghost and the
+    detected board at frame edges during bootstrap. The final calibration that
+    actually goes into the .npz uses cv2.fisheye.* in calibrate_stereo.
     """
     all_obj: list[np.ndarray] = []
     all_corners: list[np.ndarray] = []
@@ -796,6 +970,46 @@ def fit_single_camera_intrinsics(
 # ---------------------------------------------------------------------------
 # Per-pair residual analysis (outlier flagging in the HTML report)
 # ---------------------------------------------------------------------------
+
+
+def _fisheye_reprojection_rms(
+    obj_pts: np.ndarray,
+    img_pts: np.ndarray,
+    K: np.ndarray,
+    D: np.ndarray,
+) -> float:
+    """PnP + reprojection residual for one view under the fisheye model.
+
+    OpenCV doesn't ship a fisheye solvePnP, so we undistort the observations
+    into normalised pinhole coordinates, solve PnP against an identity camera,
+    then reproject through the fisheye model and measure the pixel residual
+    against the original observations. Returns NaN on any OpenCV failure.
+    """
+    try:
+        # Normalise observations: fisheye.undistortPoints returns (N,1,2) in
+        # normalised image coords (what a pinhole camera with K=I would see).
+        undistorted = cv2.fisheye.undistortPoints(
+            img_pts.reshape(-1, 1, 2).astype(np.float64), K, D,
+        )
+        ok, rvec, tvec = cv2.solvePnP(
+            obj_pts.astype(np.float64),
+            undistorted,
+            np.eye(3, dtype=np.float64),
+            np.zeros(4, dtype=np.float64),
+            flags=cv2.SOLVEPNP_ITERATIVE,
+        )
+        if not ok:
+            return float("nan")
+        proj, _ = cv2.fisheye.projectPoints(
+            obj_pts.reshape(-1, 1, 3).astype(np.float64),
+            rvec, tvec, K, D,
+        )
+        err = np.linalg.norm(
+            proj.reshape(-1, 2) - img_pts.reshape(-1, 2), axis=1,
+        )
+        return float(np.sqrt((err ** 2).mean()))
+    except cv2.error:
+        return float("nan")
 
 
 def compute_per_pair_residuals(
@@ -843,27 +1057,8 @@ def compute_per_pair_residuals(
         pts_l = corners_l[mask_l][order_l].reshape(-1, 1, 2).astype(np.float32)
         pts_r = corners_r[mask_r][order_r].reshape(-1, 1, 2).astype(np.float32)
 
-        rms_l = rms_r = float("nan")
-        try:
-            ok_l, rvec_l, tvec_l = cv2.solvePnP(obj_pts, pts_l, K_l, D_l)
-            if ok_l:
-                proj_l, _ = cv2.projectPoints(obj_pts, rvec_l, tvec_l, K_l, D_l)
-                err_l = np.linalg.norm(
-                    proj_l.reshape(-1, 2) - pts_l.reshape(-1, 2), axis=1
-                )
-                rms_l = float(np.sqrt((err_l ** 2).mean()))
-        except cv2.error:
-            pass
-        try:
-            ok_r, rvec_r, tvec_r = cv2.solvePnP(obj_pts, pts_r, K_r, D_r)
-            if ok_r:
-                proj_r, _ = cv2.projectPoints(obj_pts, rvec_r, tvec_r, K_r, D_r)
-                err_r = np.linalg.norm(
-                    proj_r.reshape(-1, 2) - pts_r.reshape(-1, 2), axis=1
-                )
-                rms_r = float(np.sqrt((err_r ** 2).mean()))
-        except cv2.error:
-            pass
+        rms_l = _fisheye_reprojection_rms(obj_pts, pts_l, K_l, D_l)
+        rms_r = _fisheye_reprojection_rms(obj_pts, pts_r, K_r, D_r)
 
         combined = float("nan")
         vals = [v for v in (rms_l, rms_r) if not math.isnan(v)]

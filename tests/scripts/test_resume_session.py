@@ -21,7 +21,7 @@ _spec.loader.exec_module(calibrate)
 def _args(tmp: Path, **overrides) -> argparse.Namespace:
     defaults = dict(
         columns=9, rows=6, square_length=45.0, marker_length=33.0,
-        dist_near_mm=1000.0, dist_mid_mm=1700.0, dist_far_mm=2400.0,
+        dist_near_mm=1000.0, dist_mid_mm=2000.0, dist_far_mm=3000.0,
         output_dir=str(tmp),
     )
     defaults.update(overrides)
@@ -72,7 +72,7 @@ class TestSessionRoundtrip:
         state = _StateStub(len(poses))
         calibrate._save_session(tmp_path, state, poses, _args(tmp_path))
 
-        args_diff = _args(tmp_path, dist_far_mm=3000.0)
+        args_diff = _args(tmp_path, dist_far_mm=3500.0)
         assert calibrate._load_session(tmp_path, args_diff) is None
 
     def test_load_tolerates_garbage(self, tmp_path):

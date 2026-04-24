@@ -268,7 +268,7 @@ El wizard tiene 5 fases:
 - Warnings en vivo: reflejo, sub-exposición, asimetría L/R, **drift de iluminación** (si la luz cambia >25% desde el inicio).
 - Botones UI: **Audio ON/OFF** (el teléfono habla — default OFF), **UNDO**, **Saltear pose**, **FINALIZAR**.
 
-**Fase 2 — Calibración**: `calibrate_stereo` con CALIB_RATIONAL_MODEL, guarda `.npz`.
+**Fase 2 — Calibración**: `calibrate_stereo` con modelo fisheye Kannala-Brandt (`cv2.fisheye.calibrate` + derivación de R/T per-pose), guarda `.npz`.
 
 **Fase 3 — Verificación + residuales por par**: dibuja líneas epipolares en `verify_epipolar.png` y calcula el residual de reproyección por cada par capturado. En el reporte final, los pares con residual >2× la mediana se marcan como outlier (tile con borde rojo) — sabés cuáles recapturar si hace falta.
 

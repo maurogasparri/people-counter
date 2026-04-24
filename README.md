@@ -60,8 +60,8 @@ La config cloud usa una estrategia de **caché local de shadow**: al bootear, `m
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode 2304×1296 (binned full-FOV) para foco, 4608×2592 (full-res) para calibración |
 | Detección | Validada | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN |
-| Calibración | Validada | Pinhole (CALIB_RATIONAL_MODEL), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos |
-| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. `--mount-height-m` deriva el target de foco automáticamente |
+| Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab: poses a 1.0/2.0/3.0m, foco único a 2.0m ±20cm para toda la flota. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos |
+| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. Target range lab protocol 1.80–2.20m por default |
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
@@ -146,7 +146,7 @@ Wizard de una sola corrida, **todo desde el browser** (terminal solo para logs):
 4. Cada pose se anuncia como un bloque atómico — `Pose N. <label>. A Xcm de la cámara` — y el capture queda bloqueado hasta que el browser confirma que el audio terminó (`SpeechSynthesisUtterance.onend` → POST `/announce-done`)
 5. Hints de movimiento en cm (`"movelo izquierda 4cm"`), texto en pantalla sincronizado con el último audio dicho para evitar drift de 1cm
 6. Bootstrap de intrínsecos tras las primeras 6 capturas
-7. Calibración estéreo con CALIB_RATIONAL_MODEL (`--min-captures` configurable)
+7. Calibración estéreo con modelo fisheye Kannala-Brandt (`--min-captures` configurable)
 8. Residuales por par + chequeo de baseline (estimada del set, no medida físicamente)
 9. Confirmación UI si la diversidad es limitada (botones Continuar/Cancelar)
 10. Ground-truth opcional con input + spinner mientras procesa (botón Saltear)

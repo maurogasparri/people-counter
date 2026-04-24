@@ -339,7 +339,7 @@ def _draw_coverage(
 GUIDED_PREVIEW = (1296, 486)  # combined preview: 2x (648, 486)
 GUIDED_HALF = (648, 486)  # each camera's preview half
 STABILITY_HOLD_SEC = 1.5
-SKIP_POSE_TIMEOUT_SEC = 60.0
+SKIP_POSE_TIMEOUT_SEC = 180.0
 
 # Bootstrap: first N captures use loose tolerance + nominal intrinsics; after
 # that we fit per-sensor intrinsics from the captured left frames and use them
@@ -688,6 +688,12 @@ function toggleAudio(){
   localStorage.setItem('guided.audio', audioOn ? '1' : '0');
   updateAudioBtn();
   if (audioOn) { ensureAudioCtx(); speak('Audio activado'); beep(800, 80); }
+  else {
+    // Cancel in-flight speech + queue so the OFF is immediate. Also unblocks
+    // the backend if a pose announce is in progress — flushSpeech POSTs
+    // /announce-done since onend won't fire after cancel().
+    flushSpeech();
+  }
 }
 function speak(text){
   // Queue utterances instead of cancelling — operator hears one then the
@@ -946,7 +952,8 @@ def _rms_color_for(rms: float) -> str:
 
 
 def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_len,
-                           captures_dir: Path, stop_evt: threading.Event) -> None:
+                           captures_dir: Path, stop_evt: threading.Event,
+                           legacy_pattern: bool = True) -> None:
     """Every 3 new captures past the 8th, attempt an incremental calibration."""
     last_attempt_count = 0
     while not stop_evt.is_set():
@@ -966,9 +973,8 @@ def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_le
         try:
             result = calibrate_stereo(
                 pairs, board_size=board_size, square_length=sq_len, marker_length=mk_len,
+                legacy_pattern=legacy_pattern,
             )
-            # Compute residual via projecting first pair's corners through stereo geometry
-            # Simpler: re-run calibrateCamera to get left RMS
             rms_l = _residual_estimate(pairs, board, result)
             with state.lock:
                 state.rms_text = f"RMS≈{rms_l:.2f}px ({n} pares)"
@@ -978,16 +984,19 @@ def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_le
 
 
 def _residual_estimate(pairs, board, result) -> float:
-    """Quick residual estimate for a calibration — reuse left camera RMS."""
-    from src.vision.calibration import _detect_all_pairs
-    all_obj, all_l, _all_r, size = _detect_all_pairs(pairs, board)
-    if not all_obj:
+    """Quick residual estimate for a calibration — reuse left camera RMS.
+
+    Projects each pair's observed corners through the fitted fisheye model and
+    returns the mean per-pair RMS. Cheaper than re-running fisheye.calibrate and
+    robust to the few degenerate poses that occasionally appear mid-capture.
+    """
+    from src.vision.calibration import compute_per_pair_residuals
+    per_pair = compute_per_pair_residuals(pairs, board, result)
+    rms_vals = [p["rms_l"] for p in per_pair
+                if p["rms_l"] == p["rms_l"]]  # NaN filter
+    if not rms_vals:
         return 99.0
-    rms, _, _, _, _ = cv2.calibrateCamera(
-        all_obj, all_l, size, result["camera_matrix_l"], result["dist_coeffs_l"],
-        flags=cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_RATIONAL_MODEL,
-    )
-    return float(rms)
+    return float(sum(rms_vals) / len(rms_vals))
 
 
 SESSION_SIDECAR = "session.json"
@@ -1092,6 +1101,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         square_length=args.square_length,
         marker_length=args.marker_length,
         dict_id=dict_id,
+        legacy_pattern=args.legacy_pattern,
     )
 
     poses = default_pose_sequence(
@@ -1173,6 +1183,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                         square_length=args.square_length,
                         marker_length=args.marker_length,
                         dict_id=dict_id,
+                        legacy_pattern=args.legacy_pattern,
                     ),
                 )
                 if fitted is not None:
@@ -1203,7 +1214,8 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     rms_thread = threading.Thread(
         target=_background_rms_worker,
         args=(state, board, board_size, args.square_length,
-              args.marker_length, output_dir, rms_stop),
+              args.marker_length, output_dir, rms_stop,
+              getattr(args, "legacy_pattern", True)),
         daemon=True,
     )
     rms_thread.start()
@@ -1752,6 +1764,7 @@ def cmd_generate_board(args: argparse.Namespace) -> None:
         square_length=args.square_length,
         marker_length=args.marker_length,
         dict_id=dict_id,
+        legacy_pattern=args.legacy_pattern,
     )
     img = generate_board_image(board, (args.width, args.height))
     cv2.imwrite(args.output, img)
@@ -1785,6 +1798,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
         square_length=args.square_length,
         marker_length=args.marker_length,
         dict_id=dict_id,
+        legacy_pattern=getattr(args, "legacy_pattern", True),
     )
 
     # Start HTTP preview
@@ -1817,7 +1831,8 @@ def cmd_capture(args: argparse.Namespace) -> None:
     board_w_mm = cols * args.square_length
     board_h_mm = rows * args.square_length
     board_diag = f"{board_w_mm:.0f}x{board_h_mm:.0f}mm"
-    dist_range = "0.5-3m (cover full operational range, not just sweet spot)"
+    dist_range = (f"{args.dist_near_mm/1000:.1f}/{args.dist_mid_mm/1000:.1f}/"
+                  f"{args.dist_far_mm/1000:.1f}m (lab protocol spans fleet mount 3-4.5m)")
 
     # Manual trigger: Enter on stdin OR POST /capture via web UI
     global _trigger_armed, _manual_enabled
@@ -1995,6 +2010,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             square_length=args.square_length,
             marker_length=args.marker_length,
             dict_id=dict_id,
+            legacy_pattern=getattr(args, "legacy_pattern", True),
         )
     except ValueError as e:
         logger.error("Calibration failed: %s", e)
@@ -2305,6 +2321,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     dict_id = _resolve_aruco_dict(getattr(args, "aruco_dict", "DICT_4X4_100"))
     board_tmp = create_charuco_board(
         (args.columns, args.rows), args.square_length, args.marker_length, dict_id,
+        legacy_pattern=getattr(args, "legacy_pattern", True),
     )
     for lf in left_files:
         rf = lf.parent / lf.name.replace("left_", "right_")
@@ -2385,6 +2402,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
             marker_length=args.marker_length,
             dict_id=dict_id,
             min_pairs=min_captures,
+            legacy_pattern=getattr(args, "legacy_pattern", True),
         )
     except ValueError as e:
         msg = f"Calibración falló: {e}"
@@ -2404,6 +2422,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
 
     board_for_residuals = create_charuco_board(
         (args.columns, args.rows), args.square_length, args.marker_length, dict_id,
+        legacy_pattern=getattr(args, "legacy_pattern", True),
     )
 
     # Phase 3 — verify (epipolar) + per-pair residuals
@@ -2579,6 +2598,9 @@ def main() -> None:
     p_board.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Marker side in mm (default {DEFAULT_MARKER_LENGTH})")
     p_board.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="ArUco dictionary name (e.g. DICT_4X4_100, DICT_5X5_100). Default DICT_4X4_100")
+    p_board.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
     p_board.add_argument("--width", type=int, default=4961, help="Image width (px) — default A3 landscape @ 300 DPI")
     p_board.add_argument("--height", type=int, default=3508, help="Image height (px) — default A3 landscape @ 300 DPI")
     p_board.set_defaults(func=cmd_generate_board)
@@ -2606,6 +2628,9 @@ def main() -> None:
     p_cap.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Marker side in mm (default {DEFAULT_MARKER_LENGTH})")
     p_cap.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="ArUco dictionary name. Default DICT_4X4_100 (the final board)")
+    p_cap.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
     p_cap.add_argument("--grid", choices=["rectangular", "circular"], default="rectangular",
                         help="Legacy coverage grid (ignored when --guided is on)")
     p_cap.add_argument("--manual", action="store_true",
@@ -2634,6 +2659,9 @@ def main() -> None:
     p_cal.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Marker side in mm (default {DEFAULT_MARKER_LENGTH})")
     p_cal.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="ArUco dictionary name. Default DICT_4X4_100")
+    p_cal.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---
@@ -2659,6 +2687,9 @@ def main() -> None:
     p_wiz.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH)
     p_wiz.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="ArUco dictionary name. Default DICT_4X4_100 (the final board)")
+    p_wiz.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
     p_wiz.add_argument("--min-captures", type=int, default=15,
                         help="Minimum pair count needed to run calibration. "
                              "Default 15 (statistically robust). Lower for "

@@ -61,8 +61,8 @@ MIN_CORNER_SCORE = 100.0          # Absolute Laplacian var for corner zones.
                                    # their own scale is honest across scenes.
 MAX_LR_DIFF_PCT = 15.0
 MAX_LR_ZONE_DIFF_PCT = 30.0
-TARGET_DISTANCE_MIN_MM = 1150.0   # Derived from default 3.0m mount
-TARGET_DISTANCE_MAX_MM = 1800.0   # Derived from default 3.0m mount
+TARGET_DISTANCE_MIN_MM = 1800.0   # Lab protocol: focus at 2.0m ±20cm
+TARGET_DISTANCE_MAX_MM = 2200.0   # DoF covers fleet range 1.15-3.30m
 DEFAULT_MOUNT_HEIGHT_M = 3.0      # Mode of our door-height distribution
 HEAD_HEIGHT_MAX_M = 1.85          # tall adult
 HEAD_HEIGHT_MIN_M = 1.20          # short child
@@ -84,17 +84,8 @@ def _apply_threshold_overrides(args: argparse.Namespace) -> None:
     MIN_CORNER_SCORE = args.min_corner_score
     MAX_LR_DIFF_PCT = args.max_lr_diff_pct
     MAX_LR_ZONE_DIFF_PCT = args.max_lr_zone_diff_pct
-    # Derive target distance from mount height if the operator didn't pass
-    # explicit min/max overrides. This way each install uses the correct
-    # target for its geometry without the operator having to compute it.
-    if args.target_distance_min_mm is None:
-        TARGET_DISTANCE_MIN_MM = (args.mount_height_m - HEAD_HEIGHT_MAX_M) * 1000
-    else:
-        TARGET_DISTANCE_MIN_MM = args.target_distance_min_mm
-    if args.target_distance_max_mm is None:
-        TARGET_DISTANCE_MAX_MM = (args.mount_height_m - HEAD_HEIGHT_MIN_M) * 1000
-    else:
-        TARGET_DISTANCE_MAX_MM = args.target_distance_max_mm
+    TARGET_DISTANCE_MIN_MM = args.target_distance_min_mm
+    TARGET_DISTANCE_MAX_MM = args.target_distance_max_mm
 
 
 def focus_score(frame: np.ndarray) -> float:
@@ -642,7 +633,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write("""<!DOCTYPE html>
+            self.wfile.write(r"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Asistente de foco</title>
 <style>
 *{box-sizing:border-box}
@@ -748,6 +739,10 @@ function toggleAudio(){
   localStorage.setItem('focus.audio', audioOn ? '1' : '0');
   updateAudioBtn();
   if(audioOn){ ensureAudioCtx(); speak('Audio activado'); beep(800, 80); }
+  else if(window.speechSynthesis){
+    // Cancel any in-flight utterance + the queue so turning off is immediate.
+    try{ window.speechSynthesis.cancel(); }catch(e){}
+  }
 }
 function startCapture(){
   ensureAudioCtx();
@@ -874,15 +869,20 @@ def main() -> None:
     parser.add_argument("--max-lr-zone-diff-pct", type=float, default=MAX_LR_ZONE_DIFF_PCT,
                         help="Max per-zone L/R asymmetry (default 30%%)")
     parser.add_argument("--mount-height-m", type=float, default=DEFAULT_MOUNT_HEIGHT_M,
-                        help=f"Camera mount height from floor in meters. Tool derives "
-                             f"the target focus distance from this as the range where "
-                             f"heads cross ({HEAD_HEIGHT_MIN_M:.1f}m child to "
-                             f"{HEAD_HEIGHT_MAX_M:.2f}m tall adult). "
-                             f"Default {DEFAULT_MOUNT_HEIGHT_M}m (matches our mode door).")
-    parser.add_argument("--target-distance-min-mm", type=float, default=None,
-                        help="Override auto-derived min target distance (mm)")
-    parser.add_argument("--target-distance-max-mm", type=float, default=None,
-                        help="Override auto-derived max target distance (mm)")
+                        help=f"Informational only: camera mount height from floor. "
+                             f"Focus is done once in the lab at a fixed distance "
+                             f"(see --target-distance-min/max-mm) — this flag does "
+                             f"not affect the target range. "
+                             f"Default {DEFAULT_MOUNT_HEIGHT_M}m.")
+    parser.add_argument("--target-distance-min-mm", type=float,
+                        default=TARGET_DISTANCE_MIN_MM,
+                        help=f"Min target distance (mm) for focus validation. "
+                             f"Default {TARGET_DISTANCE_MIN_MM:.0f}mm (lab protocol: "
+                             f"focus at 2.0m ±20cm, DoF covers fleet 1.15-3.30m).")
+    parser.add_argument("--target-distance-max-mm", type=float,
+                        default=TARGET_DISTANCE_MAX_MM,
+                        help=f"Max target distance (mm) for focus validation. "
+                             f"Default {TARGET_DISTANCE_MAX_MM:.0f}mm (lab protocol).")
     parser.add_argument("--board-cols", type=int, default=9,
                         help="ChArUco columns (squares). Default 9 (canonical board)")
     parser.add_argument("--board-rows", type=int, default=6,
@@ -894,6 +894,13 @@ def main() -> None:
     parser.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="ArUco dictionary name (e.g. DICT_4X4_100, DICT_5X5_100). "
                              "Default DICT_4X4_100 (canonical board)")
+    parser.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use OpenCV pre-4.6 ChArUco marker enumeration. Default "
+                             "True matches calib.io's canonical board layout. Pass "
+                             "--no-legacy-pattern only if you generated a board with "
+                             "a post-4.6 OpenCV CharucoBoard without calling "
+                             "setLegacyPattern(True).")
     parser.add_argument("--focal-px", type=float, default=None,
                         help="Override focal length in pixels for distance estimation. "
                              "Use if nominal IMX708 f gives wrong distances (e.g. sensor "
@@ -928,6 +935,7 @@ def main() -> None:
         square_length=args.square_mm,
         marker_length=args.marker_mm,
         dict_id=dict_id,
+        legacy_pattern=args.legacy_pattern,
     )
     # ThreadingHTTPServer so the long-running /stream handler doesn't block
     # /finish (and /status) from being served on separate threads.
@@ -941,8 +949,9 @@ def main() -> None:
     print(f"Focus assist — http://people-counter.local:{args.port}")
     print(f"Board: {args.board_cols}x{args.board_rows} / {args.square_mm:.0f}mm sq / "
           f"{args.marker_mm:.0f}mm mk / {dict_attr}")
-    print(f"Mount height: {args.mount_height_m:.2f}m -> target focus distance "
-          f"{TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f}m")
+    print(f"Target focus distance: "
+          f"{TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f}m "
+          f"(mount height {args.mount_height_m:.2f}m — informational)")
     print("Esperando que el operador haga click en Comenzar...")
 
     # Block until the operator clicks Comenzar — matches calibrate.py flow.

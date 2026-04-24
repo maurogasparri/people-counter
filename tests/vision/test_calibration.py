@@ -353,8 +353,8 @@ class TestPoseSequence:
         zs = sorted({p.tvec_mm[2] for p in poses})
         assert len(zs) == 3, f"expected 3 distance bands, got {zs}"
         assert 800 <= zs[0] <= 1200
-        assert 1500 <= zs[1] <= 2000
-        assert 2200 <= zs[2] <= 2800
+        assert 1800 <= zs[1] <= 2200
+        assert 2800 <= zs[2] <= 3500
 
     def test_sequence_includes_strong_tilts(self):
         poses = default_pose_sequence()
@@ -721,7 +721,7 @@ class TestConfigurableDistances:
     def test_default_distances_preserved(self):
         poses = default_pose_sequence()
         zs = sorted({p.tvec_mm[2] for p in poses})
-        assert zs == [1000.0, 1700.0, 2400.0]
+        assert zs == [1000.0, 2000.0, 3000.0]
 
     def test_custom_distances_applied(self):
         poses = default_pose_sequence(near_mm=1200, mid_mm=2000, far_mm=3000)

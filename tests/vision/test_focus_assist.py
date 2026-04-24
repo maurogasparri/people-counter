@@ -41,8 +41,8 @@ class TestEvaluateFocus:
 
     def test_symmetric_sharp_passes(self):
         g = self._sharp_grid()
-        # 1500mm is inside the default target range (1150-1800mm for a 3.0m mount)
-        ev = focus_assist.evaluate_focus(g, g, 1500.0, 1500.0)
+        # 2000mm is inside the lab target range (1800-2200mm)
+        ev = focus_assist.evaluate_focus(g, g, 2000.0, 2000.0)
         assert ev["all_pass"]
         assert ev["all_pass_with_distance"]
 
@@ -55,7 +55,7 @@ class TestEvaluateFocus:
 
     def test_board_too_close(self):
         g = self._sharp_grid()
-        # 800mm is below the default 1150mm min for a 3.0m mount
+        # 800mm is below the lab 1800mm min
         ev = focus_assist.evaluate_focus(g, g, 800.0, 800.0)
         assert not ev["distance_ok"]
         assert any("cerca" in h for h in ev["hints"])
@@ -71,14 +71,14 @@ class TestEvaluateFocus:
         weak = np.full((3, 3), 50, dtype=np.float64)
         # Weak center on L, strong on R
         weak_l = weak.copy()
-        ev = focus_assist.evaluate_focus(weak_l, strong, 1500.0, 1500.0)
+        ev = focus_assist.evaluate_focus(weak_l, strong, 2000.0, 2000.0)
         assert not ev["checks"]["center_l"]
         assert any("IZQ" in h for h in ev["hints"])
 
     def test_lr_asymmetry_detected(self):
         bright = self._sharp_grid(500)
         dim = np.full((3, 3), 200, dtype=np.float64)
-        ev = focus_assist.evaluate_focus(bright, dim, 1500.0, 1500.0)
+        ev = focus_assist.evaluate_focus(bright, dim, 2000.0, 2000.0)
         # 60% global diff -> exceeds 15%
         assert not ev["checks"]["lr_global"]
 
@@ -97,7 +97,7 @@ class TestEvaluateFocus:
             [True, True, True],
             [True, True, False],
         ])
-        ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0, valid, valid)
+        ev = focus_assist.evaluate_focus(grid, grid, 2000.0, 2000.0, valid, valid)
         assert ev["checks"]["uniformity_l"]
         assert ev["uniformity_l_measurable"]
         assert ev["n_valid_corners_l"] == 2
@@ -111,7 +111,7 @@ class TestEvaluateFocus:
             [True, True, True],
             [False, True, False],
         ])
-        ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0, valid, valid)
+        ev = focus_assist.evaluate_focus(grid, grid, 2000.0, 2000.0, valid, valid)
         assert not ev["uniformity_l_measurable"]
         assert ev["checks"]["uniformity_l"]   # default-pass
 
@@ -139,7 +139,7 @@ class TestEvaluateFocus:
             [500.0, 500.0, 500.0],
             [50.0, 500.0, 50.0],
         ])
-        ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0)
+        ev = focus_assist.evaluate_focus(grid, grid, 2000.0, 2000.0)
         assert not ev["checks"]["uniformity_l"]
         assert not ev["checks"]["uniformity_r"]
         assert ev["corner_l"] == pytest.approx(50.0)
@@ -154,7 +154,7 @@ class TestEvaluateFocus:
             [0.0, 500.0, 0.0],
         ])
         ev = focus_assist.evaluate_focus(
-            grid, grid, 1500.0, 1500.0, compact_scene=True,
+            grid, grid, 2000.0, 2000.0, compact_scene=True,
         )
         assert ev["compact_scene"] is True
         assert ev["checks"]["uniformity_l"]       # default-pass
@@ -170,7 +170,7 @@ class TestEvaluateFocus:
         # blocks the operator.
         weak_center = np.full((3, 3), 50.0)
         ev = focus_assist.evaluate_focus(
-            weak_center, weak_center, 1500.0, 1500.0, compact_scene=True,
+            weak_center, weak_center, 2000.0, 2000.0, compact_scene=True,
         )
         assert not ev["checks"]["center_l"]
         assert not ev["all_pass"]
