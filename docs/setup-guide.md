@@ -231,7 +231,7 @@ PYTHONPATH=. python3 scripts/focus_assist.py
 
 Abrir **http://people-counter.local:8080**. La UI muestra:
 - Barras de sharpness por cámara (centro + corners absoluto) con zona verde = target
-- Distancia detectada del board (objetivo derivado de `--mount-height-m`)
+- Distancia detectada del board (objetivo **1.80–2.20m** por default — lab protocol universal, override con `--target-distance-min-mm` / `--target-distance-max-mm`)
 - Simetría L/R
 - Warnings de iluminación/glare en vivo
 

@@ -48,14 +48,14 @@ El dispositivo corre tres servicios systemd independientes:
 
 El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT, y la dedup L3 entre cámaras se hace en la nube (Lambda).
 
-La config cloud usa una estrategia de **caché local de shadow**: al bootear, `main.py` lee un archivo `.shadow.json` si existe (actualizado por un proceso de fondo o en el boot anterior). Suscripción delta en vivo vía AWS IoT Shadow planificada post-MVP.
+La config cloud usa una estrategia de **caché local de shadow**: al bootear, `main.py` lee un archivo `.shadow.json` si existe (actualizado por un proceso de fondo o en el boot anterior). Los cambios cloud-pusheados se aplican en el próximo boot del servicio.
 
 ## Estado del proyecto
 
 | Área | Estado | Detalles |
 |------|--------|---------|
-| Código fuente | 25 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + main + telemetry |
-| Tests | 391/391 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision, reports, wizard, clasificador adulto/niño |
+| Código fuente | 18 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + main + telemetry |
+| Tests | 395/395 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision, reports, wizard, clasificador adulto/niño |
 | Config | Local + Cloud | YAML (hardware) + IoT Shadow (negocio). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode 2304×1296 (binned full-FOV) para foco, 4608×2592 (full-res) para calibración |
@@ -107,7 +107,7 @@ instalación inicial antes de que exista config.
 ### 1. Ajuste de foco
 
 ```bash
-sudo PYTHONPATH=. python3 scripts/focus_assist.py --mount-height-m 3.0
+sudo PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
 Abre UI en `http://people-counter.local:8080`. Flujo:
@@ -115,14 +115,16 @@ Abre UI en `http://people-counter.local:8080`. Flujo:
 2. Captura en vivo con barras de nitidez central + corners (absoluto) + simetría L/R
 3. Peak tracker para ajustar el M12 sin pasarse del óptimo
 4. Masking automático de zonas de bajo contraste
-5. Audio TTS lee los hints (opcional, toggle en la UI)
+5. Audio TTS lee los hints (opcional, toggle en la UI; OFF corta la voz al toque)
 6. Finalizar → reporte HTML auto-abierto en nueva pestaña
 
-El board puede estar a cualquier distancia dentro del rango de cabezas
-derivado del mount height (por default `3.0m` → target `1.15–1.80m`).
+Target de foco: **1.80–2.20m** por default (lab protocol — focar a 2.0m ±20cm
+cubre con el DoF del M12 todo el rango operativo 1.15–3.30m de la flota).
+Overridear con `--target-distance-min-mm` / `--target-distance-max-mm` si hace
+falta. El flag `--mount-height-m` es solo informativo.
 
 **Escena compacta**: si el bounding-box del ChArUco cubre >25% del frame
-(cuarto chico durante PoC, board que llena la vista) el tool auto-detecta
+(ambiente chico donde el board llena la vista) el tool auto-detecta
 la situación y omite el check de corners — en esa geometría los bordes
 ven superficies a distancia no relacionada con el board y el check
 fallaría por razón física, no óptica. Forzá el modo con `--scene=compact`
@@ -152,14 +154,17 @@ Wizard de una sola corrida, **todo desde el browser** (terminal solo para logs):
 10. Ground-truth opcional con input + spinner mientras procesa (botón Saltear)
 11. Reporte HTML auto-abierto en nueva pestaña — incluye rectificación epipolar y mapa de profundidad ground-truth embedded
 
-Presets de tolerancia: `loose` (PoC / board chico), `normal` (default, tuned
-para A3 final), `strict` (producción, recomendado con board sobre trípode).
+Presets de tolerancia: `loose` (ambientes con poca diversidad de poses),
+`normal` (default, tuned para A3 canónico), `strict` (producción, con
+board sobre trípode).
 
 Flags útiles:
 - `--min-captures N`: baja el mínimo para terminar calibración (default 15)
-- `--pose-timeout-sec N`: timeout por pose antes de auto-skip (default 60; subir a 180 con trípode)
+- `--pose-timeout-sec N`: timeout por pose antes de auto-skip (default 180, tuned para board sobre trípode; bajar a 60 si hand-held)
 - `--tolerance loose|normal|strict`: preset de tolerancia
 - `--align-tol-{loose,tight}-px`: overrides finos de tolerancia
+- `--dist-near-mm` / `--dist-mid-mm` / `--dist-far-mm`: distancias de las 3 bandas de poses (default 1000/2000/3000mm — lab protocol)
+- `--legacy-pattern` / `--no-legacy-pattern`: enumeración de markers ChArUco (default `--legacy-pattern` matches calib.io)
 - `--resume`: continúa una sesión previa (si no se pasa, descarta y arranca limpio)
 
 **Protocolo recomendado para el piloto**: las mismas 20 poses en cada dispositivo
@@ -206,6 +211,7 @@ infra/
 └── cloudformation/people-counter.yaml  # Stack completo de AWS
 docs/
 ├── setup-guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
+├── lab-calibration-guide.md      # Protocolo de foco + calibración en lab (universal para la flota)
 └── pilot-operator-guide.md       # Guía para el operador en sitio (foco → calibración → verificación)
 debug/                            # Drop-zone gitignoreado para reportes, capturas y logs de test
 ```

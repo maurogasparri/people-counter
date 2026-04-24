@@ -16,9 +16,9 @@ parámetros por sitio (`mounting_height_m`, etc.) se definen después en
 | Bracket | Rígido, baseline 140mm, L/R fijas. **No desarmar entre calibración y deploy** |
 | Trípode de cámara | Rango ~[70cm, 210cm], cabeza con 1/4" |
 | Trípode del board | Rango ~[70cm, 210cm], cabeza con 1/4" |
-| Board ChArUco | A3 landscape, 9×6 cuadrados, checker 45mm, marker 33mm, DICT_4X4_100 (PDF: `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`) |
-| Montaje del board | Sustrato rígido (3mm PVC o equivalente) + rosca 1/4" centrada |
-| Loctite | 243 azul (threadlocker medio) para el lens post-foco |
+| Board ChArUco | A3 landscape, 9×6 cuadrados, checker 45mm, marker 33mm, DICT_4X4 legacy pattern (PDF: `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`). Los scripts usan `--legacy-pattern` por default para matchear la enumeración de calib.io. |
+| Montaje del board | Sustrato rígido (3mm PVC o equivalente) + rosca 1/4" (idealmente centrada; si está al borde inferior del board, contar 148mm de offset del thread al centro óptico) |
+| Threadlocker para lens | **Trabasil AM3** (pasta anaeróbica con PTFE). Torque de quiebre 4-10 N·m, fill de holgura hasta 0.5mm, 100-130 min de working time antes de cura parcial, 36h de cura total. |
 
 ### Espacio
 
@@ -37,66 +37,76 @@ parámetros por sitio (`mounting_height_m`, etc.) se definen después en
 Las alturas son del **stud 1/4" del trípode** (base de la rosca), no del punto óptico del objeto montado. Hay que sumar los offsets del mount:
 
 - **Offset del bracket de cámara**: distancia desde el 1/4" al eje óptico del lente. Con el bracket de referencia, son **~40mm**. Medir el tuyo con regla.
-- **Offset del soporte del board**: distancia desde el 1/4" al centro óptico del área impresa. Con el soporte de referencia (rosca al borde inferior), son **~148mm** (medio alto del A3 = 297/2). Si pusiste la rosca centrada en el dorso, son casi 0.
-
-Ajustes si tus offsets difieren: si el offset de board es mayor a 148mm, el thread del board queda más bajo — podés colapsar contra el mínimo del trípode en D4/D5; compensá bajando far con `--dist-far-mm 2800` (ver Paso 3).
+- **Offset del soporte del board**: con la rosca centrada en el dorso del A3 (convención del soporte de referencia), el centro óptico del board coincide con el stud → offset **~0mm**. Si pusiste la rosca en otra posición, medirla.
 
 ### Pasos
 
-1. **Cámara en trípode, stud 1/4" a 1.50m del piso**, apuntando horizontal hacia el lado despejado. Con offset +40mm, el eje óptico queda a ~1.54m.
-2. **Trípode del board cerca, con el stud 1/4" a 1.39m inicialmente** (corresponde al centro del board a 1.54m, matching la altura óptica de la cámara, para la primera pose frontal). El trípode del board se moverá durante el proceso.
+1. **Cámara en trípode, stud 1/4" a 1.36m del piso**, apuntando horizontal hacia el lado despejado. Con offset +40mm, el eje óptico queda a 1.40m.
+2. **Trípode del board cerca, con el stud 1/4" a 1.40m inicialmente** (con rosca centrada, el centro del board coincide con el stud → matches la altura óptica de la cámara para pose frontal). El trípode del board se moverá durante el proceso.
 3. **Nivelar el bracket** con burbuja. No es crítico para la matemática de calibración (los intrínsecos son invariantes a la orientación) pero facilita la lectura de los ghost overlays.
 4. **Marcar con cinta en el piso** tres líneas perpendiculares a la cámara, a 1.0m, 2.0m y 3.0m medidas con cinta métrica.
 5. **Limpiar los lens** con trapo de microfibra. Una huella digital baja el contraste y puede invalidar el check de nitidez.
 
 ### Alturas esperadas del thread del board a lo largo de las 20 poses
 
-Con cámara a 1.50m y far=3.0m:
+Con cámara stud a 1.36m (eje óptico 1.40m), board con rosca centrada (offset 0mm), y far=3.0m:
 
 | Grupo | Pose | Thread del board (tripod) |
 |---|---|---|
-| A, D1 | Centro frontal / centro far | 1.39m |
-| B1/B2 | Top mid | 1.96m |
-| B3/B4 | Bottom mid | 0.82m |
-| C3 | Top-center mid | 1.91m |
-| C4 | Bottom-center mid | 0.87m |
-| D2/D3 | Top far | **2.05m** (5cm margen al tope del trípode) |
-| D4/D5 | Bottom far | **0.73m** (3cm margen al mínimo) |
-| E | Centro near, tilts extremos | 1.39m |
+| A, D1 | Centro frontal / centro far | 1.40m |
+| B1/B2 | Top mid | 1.97m |
+| B3/B4 | Bottom mid | 0.83m |
+| C3 | Top-center mid | 1.92m |
+| C4 | Bottom-center mid | 0.88m |
+| D2/D3 | Top far | **2.06m** (4cm margen al tope) |
+| D4/D5 | Bottom far | **0.74m** (4cm margen al piso) |
+| E | Centro near, tilts extremos | 1.40m |
 
-D2/D3 y D4/D5 son los más apretados. Si tu trípode no los alcanza con margen de maniobra, bajar a far=2.8m (excursión ±62cm en lugar de ±66cm).
+Todas las poses entran con 4cm de margen simétrico en los extremos. Si necesitás más holgura (trípode con stops imprecisos cerca de los límites), bajar a `--dist-far-mm 2800` para ganar ~4cm extra a cada extremo.
 
-## Paso 2 — Foco
+## Paso 2 — Foco + Lens locking con Trabasil AM3
 
 Objetivo: enfocar ambos lens a una distancia tal que el DoF cubra todo el rango operativo (1.15m a 3.30m). Focando a ~2.0m, el DoF va de ~1.2m a infinito con el M12 120° a f/~2.
 
-### Correr el asistente
+El holder M12 del Arducam B0310 **no tiene set screw**, así que el lens se fija químicamente con **Trabasil AM3** (pasta anaeróbica con PTFE). La aproximación elegida: aplicar AM3 **antes** de enfocar, enfocar con la pasta ya en los hilos (durante los 100+ min de working time que da), y dejar curar 36h en la posición final. Evita el error de "aflojar y re-apretar al mark" después de focar, y la pasta da un damping suave al barrel que ayuda a encontrar el peak de nitidez con más precisión.
+
+### Paso 2A — Colocar AM3
+
+1. **Dry-run previo (sin pasta)**: primero corré `focus_assist.py` y rotá el lens aproximadamente hasta que las barras entren al verde. Esto es para confirmar que el rango de foco del lens efectivamente alcanza 2m (pre-screening). Marcá con fibrita la posición tentativa del lens vs el holder.
+2. **Desenroscar el lens completo** del holder. Limpiar ambos hilos (macho del lens, hembra del holder) con un trapo de microfibra limpio — nada de solventes fuertes que puedan migrar a la óptica.
+3. **Aplicar AM3**: con un palillo de dientes o una jeringa de insulina sin aguja, depositar **una gota del tamaño de una cabeza de alfiler** (≈15 μL) en los hilos hembra del holder, alrededor del perímetro interno. Evitar la zona cercana al sensor — solo los primeros 2-3 mm de rosca desde la boca del holder.
+4. **Enroscar el lens** hasta la posición aproximada de la marca tentativa del dry-run. No forzar — dejar que agarre natural. La pasta se va a distribuir por los hilos al rotar.
+
+A partir de acá tenés **~100 minutos de working time** antes de que la cura parcial empiece a agarrar fuerza.
+
+### Paso 2B — Hacer foco
 
 ```bash
-python scripts/focus_assist.py
+sudo PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
-Defaults aplicados: target range 1.80–2.20m (lab protocol), board definitivo,
-compact-scene auto-detect.
+Defaults aplicados: target range 1.80–2.20m (lab protocol), board definitivo, compact-scene auto-detect.
 
 1. Abrir `http://<rpi-hostname>:8080` en el browser.
 2. Click "Comenzar" — desbloquea AudioContext y comienza el preview.
 3. Posicionar el board a ~2.0m de la cámara. El status indica "cerca" o "lejos" si está fuera del target range.
-4. Ajustar el lens izquierdo (rotándolo en su montaje M12) hasta que las barras de nitidez central y corners pasen (verde).
-5. Repetir para el lens derecho. La barra de simetría L/R debe quedar por debajo del umbral.
-6. Cuando ambos lens están en verde y el banner dice "LISTO", click "Finalizar".
-7. El reporte HTML se abre automáticamente en pestaña nueva. Guardarlo.
+4. **Ajustar el lens izquierdo** rotándolo en el holder hasta que las barras de nitidez central y corners pasen (verde). La pasta AM3 provee damping — vas a sentir una resistencia suave y pareja al girar. Aprovechalo para fine-tunear — giros de 2-5° (1-3μm axial) permiten encontrar el peak con precisión.
+5. **Repetir para el lens derecho**. La barra de simetría L/R debe quedar por debajo del umbral.
+6. Cuando ambos lens están en verde y el banner dice "LISTO", click "Finalizar". Guardar el reporte HTML.
+7. **Limpiar excedente**: si la pasta asomó por el seam exterior donde el barrel se encuentra con el holder, limpiarla ahora con hisopo + isopropílico. Tenés ventana hasta ~90 min post-aplicación.
 
-### Fijar el foco con Loctite
+**Importante**: después de este punto, **no volver a rotar los lens**. Cualquier rotación posterior desacomoda el foco y puede interrumpir la cura en progreso.
 
-**Solo después de que focus_assist dé PASS**:
+### Paso 2C — Dejar curar
 
-1. Marcar con fibrita la posición del lens respecto al holder (referencia por si se mueve).
-2. Aflojar el lens ~¼ de vuelta.
-3. Aplicar una gota pequeña de Loctite 243 azul en la rosca expuesta. **Nunca cerca del front element**.
-4. Volver a la marca.
-5. Verificar en focus_assist que sigue en PASS (por si rotaste de más).
-6. Dejar curar **24h antes de mover el dispositivo**.
+1. Poner el dispositivo con **los lens apuntando hacia abajo** (al piso) durante las primeras **3-4 horas**. Precaución contra migración por gravedad de cualquier gota residual hacia el sensor durante la fase fluida.
+2. Después de las 4h, el dispositivo puede quedar en cualquier orientación. **No tocar, no desarmar, no mover** hasta completar las 36h de cura total.
+3. A las **36h**, la cura está completa. Los lens quedan firmemente trabados (torque de quiebre ~4-10 N·m) pero reversibles si alguna vez hace falta re-focar (se aflojan a mano con firmeza).
+4. Re-verificar focus_assist PASS antes de continuar al Paso 3 (calibración). Si algún lens drifteó durante la cura (raro), se puede re-enroscar con fuerza moderada — la matriz curada permite micro-ajustes de ±2-3° sin romperse, suficientes para corregir drift térmico de la cura.
+
+**Planning del cronograma para el showroom del martes**:
+
+Desde la aplicación de AM3 hasta cura total son 36h. Si el showroom es el martes de día, aplicar AM3 y focar a más tardar el **domingo por la mañana** — así el dispositivo queda listo para calibrar el martes con cura total completada el lunes por la tarde. Más holgura es mejor; si podés aplicar el sábado, mejor.
 
 ## Paso 3 — Calibración estéreo
 

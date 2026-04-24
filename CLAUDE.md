@@ -47,8 +47,8 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 ## Decisiones técnicas clave
 
 ### Pipeline de visión
-- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), **modelo fisheye Kannala-Brandt** con `cv2.fisheye.calibrate` (4 coef angulares k1–k4). Se eligió fisheye sobre pinhole+rational porque el lens Arducam 120°×152° opera en zona útil hasta ±40% horizontal del frame (cobertura tipo FootfallCam), donde el pinhole degrada medibles. El flag `--dict` en `calibrate.py` permite usar boards alternativos (ej. DICT_5X5 para dry-runs). Nota: `cv2.fisheye.stereoCalibrate` (4.13) requiere mismo punto count per pose, nuestras capturas reales tienen counts variables, así que derivamos R/T directamente de los extrínsecos per-pose que devuelve `fisheye.calibrate` (promedio + proyección SO(3)) — matemáticamente equivalente a menos de fracciones de px RMS. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. **Protocolo de lab (universal para toda la flota)**: foco y calibración se hacen una sola vez en laboratorio con distancias fijas, no por sitio. Foco a 2.0m ±20cm (el DoF del M12 120° cubre 1.15–3.30m, o sea mount 3–4.5m). Calibración con poses a 1.0/2.0/3.0m (bracketing parcial: se interpola hasta el operativo 3.0m, se extrapola 30cm hasta 3.30m; fisheye Kannala-Brandt tolera bien esa extrapolación). Far se limitó a 3.0m porque con 3.5m el D-group de poses requiere el board a 2.17m, fuera del rango 70–210cm de tripodes típicos. `mounting_height_m` en `config.yaml` es solo para runtime (SGBM auto-tune, head-height gating). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
-- **Óptica de las cámaras**: Arducam B0310 con M12 120° HFOV (fisheye). Focal física 2.87mm / pixel pitch 1.4μm → pinhole-equivalente `f_px = 2050` a full-res 4608x2592 (`NOMINAL_FOCAL_PX` en `src/vision/calibration.py`). El FOV es fisheye real, no rectilíneo — la fórmula `f = (W/2)/tan(HFOV/2)` no aplica y daría valores erróneos (dio origen al bug inicial de 1330 px).
+- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), **modelo fisheye Kannala-Brandt** con `cv2.fisheye.calibrate` (4 coef angulares k1–k4), apropiado para el lens Arducam 120°×152° que opera en zona útil hasta ±40% horizontal del frame (cobertura tipo FootfallCam). El flag `--dict` en `calibrate.py` permite usar boards alternativos. R y T del par se derivan de los extrínsecos per-pose que devuelve `fisheye.calibrate` (promedio + proyección SO(3)), manejando counts de puntos variables entre poses. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. **Protocolo de lab (universal para toda la flota)**: foco y calibración se hacen una sola vez en laboratorio con distancias fijas, no por sitio. Foco a 2.0m ±20cm (el DoF del M12 120° cubre 1.15–3.30m, o sea mount 3–4.5m). Calibración con poses a 1.0/2.0/3.0m (interpola hasta el operativo 3.0m, extrapola 30cm hasta 3.30m; fisheye Kannala-Brandt tolera bien esa extrapolación). `mounting_height_m` en `config.yaml` es solo para runtime (SGBM auto-tune, head-height gating). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
+- **Óptica de las cámaras**: Arducam B0310 con M12 120° HFOV (fisheye). Focal física 2.87mm / pixel pitch 1.4μm → pinhole-equivalente `f_px = 2050` a full-res 4608x2592 (`NOMINAL_FOCAL_PX` en `src/vision/calibration.py`). El FOV es fisheye real, no rectilíneo — la fórmula `f = (W/2)/tan(HFOV/2)` no aplica y daría valores erróneos.
 - **Sensor modes (IMX708)**: `2304×1296 @ 56fps` (2x2 binned, full FOV, 16:9), `2304×1296 @ 30fps HDR`, `1536×864 @ 120fps` (partial-FOV crop). `focus_assist.py` pina el modo binned con `raw={"size": (2304, 1296)}` para evitar que picamera2 elija un sensor mode de FOV parcial. `calibrate.py` usa full-res 4608x2592 para máxima precisión.
 - **Rectificación**: mapas precomputados vía `cv2.fisheye.initUndistortRectifyMap` (balance=0.0 para cero bordes negros, que ensucian SGBM). Aplicados por par de frames con `cv2.remap`.
 - **Profundidad**: Semi-Global Block Matching (`cv2.StereoSGBM`) sobre par rectificado + matcher derecho + filtro WLS (`cv2.ximgproc.DisparityWLSFilter`). El config `vision.num_disparities` acepta `"auto"` — el pipeline deriva el rango de búsqueda de disparidades desde `mounting_height_m`, cubriendo exactamente las distancias donde van a aparecer cabezas + piso. Sites altos corren SGBM más rápido, sites bajos obtienen más rango automáticamente. Un int explícito override es posible si hace falta (`192`, `256`, etc.).
@@ -65,7 +65,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Dedup L3 (inter-cámara)**: Cloud Lambda + DynamoDB por store_id + fecha.
 
 ### Comunicación
-- **MQTT**: AWS IoT Core, certificados cliente X.509, QoS 1.
+- **MQTT**: protocolo 3.1.1 sobre AWS IoT Core, certificados cliente X.509, QoS 1.
 - **Eventos de conteo**: en tiempo real en cada cruce.
 - **Resúmenes WiFi/BLE**: cada 15 min.
 - **Telemetría**: cada 5 min (temp CPU, temp Hailo, RAM, disco, uptime).
@@ -146,7 +146,9 @@ people-counter/
 │   └── cloudformation/
 │       └── people-counter.yaml <- stack completo (IoT, Timestream, DynamoDB, Lambda)
 ├── docs/
-│   └── setup-guide.md     <- guía de ensamblaje + setup RPi
+│   ├── setup-guide.md          <- guía de ensamblaje + setup RPi (13 pasos)
+│   ├── lab-calibration-guide.md <- protocolo de foco + calibración en lab (universal)
+│   └── pilot-operator-guide.md <- guía del operador en sitio
 └── config/
     ├── config.example.yaml
     └── people-counter.service <- servicio systemd
@@ -158,11 +160,11 @@ people-counter/
 |--------|------|-----------|--------|
 | S3 | PoC | Captura estéreo + YOLOv8n en RPi5. Probar que funciona. | **HARDWARE VALIDADO** — capture.py adaptado a picamera2, captura estéreo verificada en RPi5. detect.py (backends Hailo + OpenCV). |
 | S4 | Calibración | Pipeline ChArUco. Rectificación. Mapa de profundidad. | **DONE** — calibration.py modelo fisheye Kannala-Brandt (`cv2.fisheye.*`). Board: 9x6 / 45mm / 33mm / DICT_4X4_100 (A3, en `calibration/`). Baseline 140mm por diseño. diagnose_depth.py valida 5 zonas con umbrales PASS/FAIL. |
-| S5 | Detección | Compilación HEF. Integración Hailo SDK. 30+ FPS. | **SOFTWARE READY** — detect.py con backends Hailo + OpenCV, pre/postproceso testeado (10 tests). Hailo-8L verificado (fw 4.23.0, PCIe Gen 3). Compilación HEF pendiente. |
-| S6 | Tracking | Tracker 3D. Línea virtual. Eventos ingreso/egreso. | **DONE** — tracker.py + counter.py (12 tests). main.py conectado E2E (17 tests). |
-| S7 | WiFi/BLE | nexmon + captura BLE. Hashing. Dedup L1+L2. | **HARDWARE VALIDADO** — wifi_probe.py (nexmon + airmon-ng + scapy, probes capturadas), ble_scan.py (bleak, 343 adverts/8 dispositivos únicos). hasher.py + dedup.py (11 tests). |
-| S8 | MQTT | Cliente IoT Core. Buffer SQLite. Reconexión. | **DONE** — client.py con TLS, replay de buffer, backoff (7 tests). |
-| S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). Template CloudFormation con IoT Core, Timestream, DynamoDB, Lambda, IAM. QuickSight/API GW diferidos post-MVP. |
+| S5 | Detección | Compilación HEF. Integración Hailo SDK. 30+ FPS. | **SOFTWARE READY** — detect.py con backends Hailo + OpenCV, pre/postproceso testeado (16 tests). Hailo-8L verificado (fw 4.23.0, PCIe Gen 3). Compilación HEF pendiente. |
+| S6 | Tracking | Tracker 3D. Línea virtual. Eventos ingreso/egreso. | **DONE** — tracker.py (13 tests) + counter.py (24 tests). main.py conectado E2E (21 tests). |
+| S7 | WiFi/BLE | nexmon + captura BLE. Hashing. Dedup L1+L2. | **HARDWARE VALIDADO** — wifi_probe.py (nexmon + airmon-ng + scapy, probes capturadas, 13 tests), ble_scan.py (bleak, 343 adverts/8 dispositivos únicos, 11 tests). hasher.py (5 tests) + dedup.py (12 tests). |
+| S8 | MQTT | Cliente IoT Core. Buffer SQLite. Reconexión. | **DONE** — client.py con TLS, replay de buffer, backoff (15 tests) + buffer.py SQLite (3 tests). |
+| S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). Template CloudFormation con IoT Core, Timestream, DynamoDB, Lambda, IAM. |
 | S10 | Integración | End-to-end. Todos los módulos juntos. | **E2E VALIDADO** — pipeline testeado en RPi5: capture -> rectify -> depth (SGBM) -> detect (Hailo) -> depth por persona. |
 | S11 | Piloto | Deploy en 3 locales. Monitorear. Corregir. | PENDIENTE |
 | S12 | Estabilización | Correcciones post-piloto. | PENDIENTE |
@@ -173,15 +175,15 @@ people-counter/
 
 - COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
 - INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
-- PENDIENTE: test de detección cenital, ajuste SGBM con cámaras IMX708
+- POR VALIDAR EN PILOTO: detección cenital con people counting real en los 3 locales del S11
 
-## Limitaciones conocidas (MVP)
+## Alcance del diseño
 
-- **Tracker**: matching greedy por distancia de píxeles 2D + gating por profundidad. Sin histéresis, sin multi-estado (approaching/crossed/invalidated), sin reidentificación. Suficiente para montaje cenital en puerta simple, necesita trabajo para entradas amplias con oclusión.
-- **Shadow config**: bootstrap con caché local desde archivo `.shadow.json`. Sin suscripción delta en vivo — planificado post-MVP.
-- **Horario operativo fail-open**: si el formato del horario es inválido, el conteo continúa (prefiere falsos positivos a pérdida de datos). Fail-closed configurable planificado para producción.
-- **Sync L/R**: picamera2 con dos instancias independientes no garantiza sync hardware. Typical offset ~60ms (1 frame a 15fps). Para calibración el board está quieto entonces no afecta. Para tracking en vivo, aceptable a la escala de movimiento humano (±60ms = ±6cm a 1m/s).
-- **Clasificador adulto/niño**: threshold único 1.55m (adult_min_m). Sin zona gris — adolescentes altos / mujeres bajas pueden misclasificar en ±5%. Diseño V1 prioriza métricas aggregables sobre precisión per-evento.
+- **Tracker**: matching greedy por distancia de píxeles 2D + gating por profundidad. Diseñado para montaje cenital en puerta simple — el caso de uso objetivo para esta generación del producto.
+- **Shadow config**: bootstrap con caché local desde archivo `.shadow.json`. Lee el estado al inicio, sin suscripción delta en vivo — los cambios de config se aplican en el próximo boot del servicio.
+- **Horario operativo fail-open**: si el formato del horario es inválido, el conteo continúa (prefiere falsos positivos a pérdida de datos).
+- **Sync L/R**: picamera2 con dos instancias independientes tiene offset típico ~60ms (1 frame a 15fps). Irrelevante para calibración (board quieto) y dentro de tolerancia para tracking humano (±60ms = ±6cm a 1m/s).
+- **Clasificador adulto/niño**: threshold único 1.55m (`adult_min_m`), cerca del P25 de mujeres adultas en Argentina. La métrica agregada prioriza estabilidad de totales diarios sobre precisión per-evento.
 
 ## Reglas duras
 
@@ -213,7 +215,7 @@ people-counter/
 - **Prompts interactivos del wizard** via threading.Event: `_ask_operator_ui()` emite un estado `data-phase="prompt"` con `data-prompt-type`, el JS renderiza los controles apropiados (botones para confirmación binaria, input numérico para valores) y deja el spinner mientras el backend procesa. El POST a `/wizard-input` signal-ea el event y el wizard continúa.
 - **Acciones que pueden interrumpir el audio** (flush queue + POST `/announce-done`): Saltar pose, Deshacer última, Finalizar. Todo lo demás espera al onend.
 - **Puerto HTTP con SO_REUSEADDR** y Ctrl+C limpio en ambos tools (server.shutdown() en el cleanup path) — no quedan TIME_WAITs entre runs.
-- **focus_assist: corner sharpness absoluta + escena compacta**. La métrica de uniformidad es la varianza Laplaciana media de los 4 corners válidos (umbral absoluto `MIN_CORNER_SCORE = 100`), no el ratio bordes/centro. Auto-detecta "escena compacta" cuando el bbox del ChArUco cubre >25% del frame (cuarto chico durante PoC, board que domina la vista) y omite el check porque en esa geometría los corners ven paredes a distancia no relacionada con el board y el ratio fallaría por razón física, no óptica. `--scene=auto|compact|full` override manual; `--min-corner-score N` ajusta el umbral.
+- **focus_assist: corner sharpness absoluta + escena compacta**. La métrica de uniformidad es la varianza Laplaciana media de los 4 corners válidos (umbral absoluto `MIN_CORNER_SCORE = 100`), no el ratio bordes/centro. Auto-detecta "escena compacta" cuando el bbox del ChArUco cubre >25% del frame (ambiente chico donde el board domina la vista) y omite el check porque en esa geometría los corners ven paredes a distancia no relacionada con el board y el ratio fallaría por razón física, no óptica. `--scene=auto|compact|full` override manual; `--min-corner-score N` ajusta el umbral.
 - El directorio `debug/` en la raíz del repo está gitignoreado — sirve para dumpear reportes, screenshots, logs de sesiones de test sin ensuciar git status.
 
 ## Interpretación del reporte de calibración
