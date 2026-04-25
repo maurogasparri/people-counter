@@ -119,9 +119,9 @@ telemetry:
   interval_seconds: 300           # Report CPU temp, uptime, etc. every 5 min
 
 # --- LOCAL: Status LED (3mm common-cathode RGB on the GPIO header) ---
-# Field-visible operator indicator. Enabled by default; set enabled=false on
-# bench units without an LED wired (initialization gracefully falls back to
-# a no-op if gpiozero is missing or the pins can't be opened anyway).
+# Field-visible operator indicator. Set enabled=false to silence the LED if
+# it's visually intrusive at the deploy site (e.g. retail aesthetics, dim
+# corner where the brightness bothers customers).
 status_led:
   enabled: true
 

@@ -262,7 +262,8 @@ lo pueda interpretar sin re-aprender:
 Cascada de prioridad (peor estado wins): Off > Rojo > Amarillo fijo > Amarillo
 parpadeante > Verde parpadeante > Verde fijo > Azul parpadeante > Azul fijo.
 
-Apagar el LED en bench (ej. desarrollo sin hardware) en `config.yaml`:
+Apagar el LED si molesta en el local (ej. brillo excesivo en una zona oscura,
+restricciones estéticas del retail) en `config.yaml`:
 
 ```yaml
 status_led:
