@@ -49,7 +49,7 @@ sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
 systemctl enable watchdog
 systemctl start watchdog
 
-info "  Configuring config.txt (RTC, PCIe Gen 3, USB current, IMX708 cameras)"
+info "  Configuring config.txt (RTC, PCIe Gen 3, USB current, IMX708 cameras, low power)"
 CONFIG_TXT="/boot/firmware/config.txt"
 # RTC charging: only for rechargeable ML2032 batteries.
 # If using non-rechargeable CR2032, comment out or remove this line after setup.
@@ -63,6 +63,25 @@ grep -q "^usb_max_current_enable=1" "$CONFIG_TXT" || echo "usb_max_current_enabl
 sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' "$CONFIG_TXT"
 grep -q "^dtoverlay=imx708,cam0" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708,cam0' "$CONFIG_TXT"
 grep -q "^dtoverlay=imx708,cam1" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708,cam1' "$CONFIG_TXT"
+# Quiet the onboard LEDs (ACT + power), the Ethernet jack LEDs (link/activity),
+# and the audio PWM. The external RGB is the canonical status indicator.
+#
+# eth_led0 / eth_led1 use bcm54213 PHY mode codes; mode 4 = "off / always low".
+grep -q "^dtparam=audio=" "$CONFIG_TXT" \
+    && sed -i 's/^dtparam=audio=.*/dtparam=audio=off/' "$CONFIG_TXT" \
+    || echo "dtparam=audio=off" >> "$CONFIG_TXT"
+grep -q "^dtparam=act_led_trigger=" "$CONFIG_TXT" \
+    || echo "dtparam=act_led_trigger=none" >> "$CONFIG_TXT"
+grep -q "^dtparam=act_led_activelow=" "$CONFIG_TXT" \
+    || echo "dtparam=act_led_activelow=off" >> "$CONFIG_TXT"
+grep -q "^dtparam=power_led_trigger=" "$CONFIG_TXT" \
+    || echo "dtparam=power_led_trigger=none" >> "$CONFIG_TXT"
+grep -q "^dtparam=power_led_activelow=" "$CONFIG_TXT" \
+    || echo "dtparam=power_led_activelow=off" >> "$CONFIG_TXT"
+grep -q "^dtparam=eth_led0=" "$CONFIG_TXT" \
+    || echo "dtparam=eth_led0=4" >> "$CONFIG_TXT"
+grep -q "^dtparam=eth_led1=" "$CONFIG_TXT" \
+    || echo "dtparam=eth_led1=4" >> "$CONFIG_TXT"
 
 # =========================================================================
 # Step 5: Hailo
@@ -97,6 +116,7 @@ apt install -y \
     python3-pip \
     python3-opencv python3-numpy \
     libopencv-dev \
+    python3-gpiozero python3-lgpio \
     git
 
 cd "$REPO_DIR"

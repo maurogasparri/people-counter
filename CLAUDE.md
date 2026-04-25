@@ -41,7 +41,8 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - Raspberry Pi Active Cooler — fan PWM + disipador para gestión térmica
 - Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — acelerador neuronal
 - 2x Arducam IMX708 12MP HDR, lente M12 120 HFOV (B0310) vía CSI — par estéreo, baseline 14cm
-- Waveshare PoE HAT (H) 25.5W (802.3at) conectado por dupont (no stackeado) — alimentación por Ethernet
+- Waveshare PoE HAT (H) 25.5W (802.3at) conectado por dupont (2× 5V + 2× GND para repartir corriente, no stackeado) — alimentación por Ethernet
+- LED RGB 3mm common cathode — status visual al operador, dupont 2x2 al header (R/G/B vía GPIO 17/18/27 con resistores 150/220/220Ω, cátodo a GND pin 14)
 - SanDisk Extreme 64GB microSD — boot + almacenamiento
 
 ## Decisiones técnicas clave
@@ -70,6 +71,14 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Resúmenes WiFi/BLE**: cada 15 min.
 - **Telemetría**: cada 5 min (temp CPU, temp Hailo, RAM, disco, uptime).
 - **Buffer SQLite**: todos los eventos se almacenan localmente. Replay al reconectar. Se marca enviado solo después de PUBACK.
+
+### Status LED
+- **Hardware**: RGB 3mm common cathode en GPIO 17 (R, 150Ω) / 18 (G, 220Ω) / 27 (B, 220Ω) + GND pin 14, dupont 2x2. Resistencias asimétricas porque el verde es ~2.5× más eficiente luminoso que el rojo y el azul ~1.5× — valores iguales harían que las mezclas se desbalanceen al verde.
+- **Esquema**: 8 estados alineados con el código de FootfallCam (apagado / rojo fijo / amarillo fijo / amarillo parpadeante / verde parpadeante / verde fijo / azul fijo / azul parpadeante) — el operador del local interpreta sin SSH. Cascada de prioridad worst-first: HW > pipeline > internet > cloud > OK.
+- **Health checks** (`src/status/health.py`): CPU temp <80°C, Hailo temp <85°C, disco free >10%, calibración cargable, captura/inferencia OK, pipeline watchdog (`last_loop_ts` <5s), internet TCP a 1.1.1.1:53 (cacheado 30s), MQTT `connected` flag.
+- **Monitor en thread separado** (`src/status/monitor.py`): probes blocking (socket connect 3s timeout) no estresan el hot path del pipeline. `HealthSignals` es shared state mutable; el pipeline escribe, el monitor lee — atomicidad garantizada por el GIL para tipos primitivos.
+- **Fail-safe**: si `gpiozero` no está disponible o los pines no se pueden abrir, `StatusLED` cae a no-op + log INFO. Permite correr el servicio en bench sin LED conectado y los tests sin GPIO real.
+- **Bajo consumo asociado**: LEDs onboard ACT/power (vía `dtparam=*_led_trigger=none` + `*_led_activelow=off`) + LEDs del jack Ethernet (`eth_led0=4`, `eth_led1=4`) + audio PWM (`dtparam=audio=off`) apagados — el RGB externo es la única fuente visual de estado.
 
 ### Cloud (AWS)
 - IoT Core: broker MQTT + rules engine.
@@ -118,10 +127,14 @@ people-counter/
 │   │   └── buffer.py      <- buffer local SQLite
 │   ├── cloud/
 │   │   └── lambda_dedup.py <- dedup inter-cámara L3
+│   ├── status/
+│   │   ├── led.py         <- driver RGB LED + state machine + blink thread
+│   │   ├── health.py      <- probes (CPU/Hailo temp, disco, internet, cloud) + decide_state
+│   │   └── monitor.py     <- thread background que mapea HealthSignals -> LedState
 │   ├── config/
 │   │   └── loader.py      <- carga y validación de config YAML
 │   └── main.py            <- orquestador del pipeline completo
-├── tests/                 <- 395 tests en todos los módulos
+├── tests/                 <- 449 tests en todos los módulos
 ├── scripts/
 │   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard).
 │   │                         wizard es el flujo end-to-end con UI web: start overlay,
@@ -171,9 +184,9 @@ people-counter/
 
 ## Estado de implementación
 
-**395 tests pasando.** Módulos por estado:
+**449 tests pasando.** Módulos por estado:
 
-- COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main
+- COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main, status (led + health + monitor)
 - INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
 - POR VALIDAR EN PILOTO: detección cenital con people counting real en los 3 locales del S11
 

@@ -21,7 +21,8 @@ Cada unidad consiste en:
 | Raspberry Pi Active Cooler | fan PWM + disipador | Gestión térmica |
 | Raspberry Pi AI HAT+ | 13 TOPS (Hailo-8L) | Inferencia neuronal |
 | 2x Arducam IMX708 | 12MP HDR, 120° HFOV, lente M12, CSI, baseline 14cm | Par estéreo |
-| Waveshare PoE HAT (H) | 25.5W, 802.3at | Alimentación por dupont (no stackeado) |
+| Waveshare PoE HAT (H) | 25.5W, 802.3at | Alimentación por dupont (2× 5V + 2× GND, no stackeado) |
+| LED RGB 3mm | common cathode, 4 patas | Status visual al operador (R/G/B vía GPIO 17/18/27 con 150/220/220Ω) |
 | MicroSD | SanDisk Extreme 64GB | Boot + almacenamiento |
 
 ## Arquitectura
@@ -50,12 +51,29 @@ El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusiv
 
 La config cloud usa una estrategia de **caché local de shadow**: al bootear, `main.py` lee un archivo `.shadow.json` si existe (actualizado por un proceso de fondo o en el boot anterior). Los cambios cloud-pusheados se aplican en el próximo boot del servicio.
 
+### Status LED para diagnóstico en sitio
+
+Un LED RGB en el frente del enclosure le da al operador del local un código visual del estado del dispositivo sin SSH. Esquema alineado con FootfallCam (cascada worst-first por capa: hardware > pipeline > internet > cloud > OK):
+
+| LED | Patrón | Significado |
+|-----|--------|-------------|
+| Apagado | — | Sin power (PoE caído) |
+| Rojo | Fijo | Boot failure (servicio no levanta) |
+| Amarillo | Fijo | Hardware roto (cámara, Hailo, temp >80°C, disco lleno) |
+| Amarillo | Parpadeante | Pipeline stalled o software crasheó |
+| Verde | Parpadeante | Sin internet (ethernet up pero no llega afuera) |
+| Verde | Fijo | Internet OK, AWS IoT no responde |
+| Azul | Fijo | Operación normal |
+| Azul | Parpadeante | Sin provisioning (certs ausentes — solo en install) |
+
+`src/status/health.py` corre los probes (CPU/Hailo temp, disco free, calibración cargable, internet TCP a 1.1.1.1:53, MQTT connected flag, watchdog del pipeline) y `src/status/monitor.py` los agrega cada 2s en un thread separado para no estresar el hot path. Configurable vía `status_led:` en `config.yaml` (pines GPIO, intervalos, enabled flag para bench sin LED).
+
 ## Estado del proyecto
 
 | Área | Estado | Detalles |
 |------|--------|---------|
-| Código fuente | 18 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + main + telemetry |
-| Tests | 395/395 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision, reports, wizard, clasificador adulto/niño |
+| Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
+| Tests | 449/449 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision, reports, wizard, status LED + health monitor, clasificador adulto/niño |
 | Config | Local + Cloud | YAML (hardware) + IoT Shadow (negocio). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode 2304×1296 (binned full-FOV) para foco, 4608×2592 (full-res) para calibración |
@@ -180,10 +198,11 @@ src/
 ├── wifi_ble/        # Captura de probes WiFi (nexmon), scan BLE (bleak), hashing de MAC, dedup (L1+L2)
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
 ├── cloud/           # Lambda dedup L3 (inter-cámara)
+├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
 ├── config/          # Carga de YAML + merge con IoT Shadow + runtime-safe prefixes
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT)
-tests/               # 395 tests espejando src/ + tests/scripts/ para el wizard
+tests/               # 449 tests espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,

@@ -38,6 +38,8 @@ from src.config.loader import (
 )
 from src.mqtt.buffer import MessageBuffer
 from src.mqtt.client import MQTTClient
+from src.status.led import StatusLED
+from src.status.monitor import HealthMonitor, HealthSignals
 from src.telemetry import collect_telemetry
 from src.tracking.counter import LineCounter, ROICounter, build_counter
 from src.tracking.tracker import EuclideanTracker
@@ -255,6 +257,21 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     detect_cfg = config["detection"]
     track_cfg = config.get("tracking", {})
     telem_cfg = config.get("telemetry", {})
+    status_cfg = config.get("status_led", {}) or {}
+
+    # --- Status LED + health monitor (started before any heavy init so it can
+    # surface hardware faults during model load / camera open). The LED falls
+    # back to a no-op when gpiozero is missing, so this is safe off-RPi.
+    health_signals = HealthSignals(
+        provisioned=True,
+        calibration_path=vision_cfg.get("calibration_file"),
+    )
+    status_led: StatusLED | None = None
+    health_monitor: HealthMonitor | None = None
+    if bool(status_cfg.get("enabled", True)):
+        status_led = StatusLED()
+        health_monitor = HealthMonitor(led=status_led, signals=health_signals)
+        health_monitor.start()
 
     # --- Load calibration ---
     cal_file = vision_cfg.get("calibration_file")
@@ -404,6 +421,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # Signal systemd that startup is complete. Pair with WatchdogSec in the
     # unit file — we ping WATCHDOG=1 inside the loop below.
     sd_notify("READY=1")
+    health_signals.boot_complete = True
 
     try:
         while running:
@@ -536,11 +554,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             t_iter_start = time.perf_counter()
             try:
                 frame_l, frame_r = capture.read()
+                health_signals.capture_ok = True
             except StopIteration:
                 logger.info("File replay exhausted")
                 break
             except RuntimeError as e:
                 logger.error("Capture error: %s", e)
+                health_signals.capture_ok = False
                 time.sleep(0.1)
                 continue
 
@@ -573,12 +593,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 depth_map = None
 
             # --- Detection ---
-            detections = detect_persons(
-                rect_l,
-                model,
-                confidence_threshold=detect_cfg.get("confidence_threshold", 0.5),
-                nms_threshold=detect_cfg.get("nms_threshold", 0.45),
-            )
+            try:
+                detections = detect_persons(
+                    rect_l,
+                    model,
+                    confidence_threshold=detect_cfg.get("confidence_threshold", 0.5),
+                    nms_threshold=detect_cfg.get("nms_threshold", 0.45),
+                )
+                health_signals.detect_ok = True
+            except Exception:
+                logger.exception("Detection failed")
+                health_signals.detect_ok = False
+                time.sleep(0.1)
+                continue
 
             # --- Build 3D positions + per-detection metadata ---
             vision_cfg = config.get("vision", {})
@@ -698,8 +725,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 sd_notify("WATCHDOG=1")
                 last_watchdog = now
 
+            # --- Health signals (read by the LED monitor thread) ---
+            health_signals.last_loop_ts = now
+            health_signals.mqtt_connected = mqtt_client.connected
+
     finally:
         sd_notify("STOPPING=1")
+        if health_monitor is not None:
+            health_monitor.stop()
+        if status_led is not None:
+            status_led.close()
         capture.close()
         mqtt_client.disconnect()
         # Release Hailo resources if backend supports it

@@ -24,17 +24,36 @@ Desde tu PC con Windows:
 Orden recomendado:
 
 1. **Raspberry Pi AI HAT+ 13 TOPS** → stackearlo sobre la Raspberry Pi 5 (GPIO + FFC al puerto PCIe)
-2. **Waveshare PoE HAT (H)** → conectar por cables dupont (5V, GND, y los pines PoE del header) — no se stackea
+2. **Waveshare PoE HAT (H)** → conectar por dupont — no se stackea. Usar **2× 5V + 2× GND** para repartir corriente sin sobrecargar un solo contacto:
+
+   | Header pin | RPi5 | PoE HAT |
+   |------------|------|---------|
+   | Pin 2      | 5V   | 5V      |
+   | Pin 4      | 5V   | 5V      |
+   | Pin 6      | GND  | GND     |
+   | Pin 9      | GND  | GND     |
+
 3. **Cámaras** → conectar los cables CSI a los puertos CAM0 y CAM1 de la Pi
    - Cámara izquierda (mirando desde la cámara hacia la escena) → CAM1
    - Cámara derecha (mirando desde la cámara hacia la escena) → CAM0
    - Orientar ambas igual (el conector flat tiene un lado con contactos expuestos)
    - **Usar Arducam IMX708 120 HFOV con filtro IR** (modelo B0310)
 4. **Raspberry Pi Active Cooler** → clip sobre el SoC de la Pi y conectar el cable PWM al header de 4 pines del fan
-5. **microSD** → insertar la tarjeta ya flasheada
-6. **Batería RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO).
+5. **LED RGB de status** (3mm common cathode, 4 patas) → conectar por dupont 2x2 al bloque pin 11/12/13/14 con resistencias en serie con cada ánodo:
+
+   | Header pin | GPIO | Pata LED | Resistor en serie |
+   |------------|------|----------|-------------------|
+   | Pin 11     | GPIO 17 | R    | 150 Ω             |
+   | Pin 12     | GPIO 18 | G    | 220 Ω             |
+   | Pin 13     | GPIO 27 | B    | 220 Ω             |
+   | Pin 14     | GND  | cátodo (pata más larga) | — |
+
+   Resistencias asimétricas porque el verde es ~2.5× más eficiente luminoso que el rojo y el azul ~1.5×; valores iguales harían que el verde domine las mezclas (el "amarillo" R+G saldría verde-amarillento).
+
+6. **microSD** → insertar la tarjeta ya flasheada
+7. **Batería RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO).
    Usar una batería recargable LiMnO2 como la ML2032 (no confundir con CR2032 que no es recargable).
-7. **NO conectar PoE todavía** — para el PoC usá la fuente USB-C estándar
+8. **NO conectar PoE todavía** — para el PoC usá la fuente USB-C estándar
 
 ## 3. Primer boot y actualización
 
@@ -60,8 +79,12 @@ O seguir el paso a paso manual a continuación.
 ## 4. Configurar sistema (headless + config.txt)
 
 Deshabilita el entorno gráfico, instala watchdog y parchea `/boot/firmware/config.txt`
-(RTC, PCIe Gen 3, USB current para el PoE HAT, overlays IMX708 por puerto). El bloque
-de `config.txt` es idempotente.
+(RTC, PCIe Gen 3, USB current para el PoE HAT, overlays IMX708, low-power tweaks).
+El bloque de `config.txt` es idempotente.
+
+Las líneas de bajo consumo apagan el audio PWM, los LEDs onboard (ACT + power)
+y los LEDs del jack Ethernet (link + activity) — el RGB externo es la única
+fuente visual de estado.
 
 ```bash
 sudo raspi-config nonint do_boot_behaviour B1
@@ -79,6 +102,15 @@ grep -q "^dtoverlay=imx708,cam1" $CFG || sudo sed -i '/^\[all\]/a dtoverlay=imx7
 grep -q "^dtparam=rtc_bbat_vchg" $CFG    || echo "dtparam=rtc_bbat_vchg=3000000" | sudo tee -a $CFG > /dev/null
 grep -q "^dtparam=pciex1_gen=3" $CFG     || echo "dtparam=pciex1_gen=3"     | sudo tee -a $CFG > /dev/null
 grep -q "^usb_max_current_enable=1" $CFG || echo "usb_max_current_enable=1" | sudo tee -a $CFG > /dev/null
+# Audio off + onboard LEDs off + Ethernet jack LEDs off (case semi-translúcido)
+sudo sed -i 's/^dtparam=audio=.*/dtparam=audio=off/' $CFG \
+    || echo "dtparam=audio=off" | sudo tee -a $CFG > /dev/null
+grep -q "^dtparam=act_led_trigger="     $CFG || echo "dtparam=act_led_trigger=none"     | sudo tee -a $CFG > /dev/null
+grep -q "^dtparam=act_led_activelow="   $CFG || echo "dtparam=act_led_activelow=off"    | sudo tee -a $CFG > /dev/null
+grep -q "^dtparam=power_led_trigger="   $CFG || echo "dtparam=power_led_trigger=none"   | sudo tee -a $CFG > /dev/null
+grep -q "^dtparam=power_led_activelow=" $CFG || echo "dtparam=power_led_activelow=off"  | sudo tee -a $CFG > /dev/null
+grep -q "^dtparam=eth_led0="            $CFG || echo "dtparam=eth_led0=4"               | sudo tee -a $CFG > /dev/null
+grep -q "^dtparam=eth_led1="            $CFG || echo "dtparam=eth_led1=4"               | sudo tee -a $CFG > /dev/null
 ```
 
 Si usás una pila no recargable (CR2032), **no agregar la línea de rtc_bbat_vchg**.
@@ -141,6 +173,7 @@ sudo apt install -y \
   python3-pip \
   python3-opencv python3-numpy \
   libopencv-dev \
+  python3-gpiozero python3-lgpio \
   git
 
 sudo git clone https://github.com/maurogasparri/people-counter.git /usr/src/people-counter
@@ -207,6 +240,33 @@ Y desde tu PC:
 
 ```bash
 scp pi@people-counter.local:/tmp/test_cam*.jpg .
+```
+
+### 11.1. LED de status — código de colores
+
+El LED RGB es la fuente visual de estado para diagnóstico en sitio sin SSH.
+Esquema alineado con FootfallCam para que un operador entrenado en ese sistema
+lo pueda interpretar sin re-aprender:
+
+| LED | Patrón | Significado | Acción del operador |
+|-----|--------|-------------|---------------------|
+| Apagado | — | Sin power (PoE caído / cable desconectado) | Verificar PoE, switch, cable Ethernet |
+| Rojo | Fijo | Boot failure (servicio no levanta) | Power cycle; si persiste, contactar soporte |
+| Amarillo | Fijo | Hardware roto (cámara, Hailo, temp >80°C, disco lleno) | Power cycle; si persiste, reemplazo |
+| Amarillo | Parpadeante | Pipeline stalled o software crasheó | Esperar 1 min al auto-restart; si persiste, power cycle |
+| Verde | Parpadeante | Sin internet (ethernet up pero no llega afuera) | Verificar internet del local |
+| Verde | Fijo | Internet OK, AWS IoT no responde | Soporte (problema cloud, no del dispositivo) |
+| Azul | Fijo | **Operación normal** | Ninguna |
+| Azul | Parpadeante | Sin provisioning (certs ausentes) | Re-provisionar (instalación) |
+
+Cascada de prioridad (peor estado wins): Off > Rojo > Amarillo fijo > Amarillo
+parpadeante > Verde parpadeante > Verde fijo > Azul parpadeante > Azul fijo.
+
+Apagar el LED en bench (ej. desarrollo sin hardware) en `config.yaml`:
+
+```yaml
+status_led:
+  enabled: false
 ```
 
 ## 12. Ajuste de foco y calibración estéreo
