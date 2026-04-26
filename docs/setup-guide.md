@@ -66,6 +66,34 @@ sudo apt update && sudo apt full-upgrade -y
 sudo reboot
 ```
 
+### 3.1. (Opcional) Firewall corporativo con TLS interception
+
+Si la red del lugar inspecciona TLS y reemplaza los certs por uno de la empresa,
+hay que instalar el CA corporativo antes de seguir o `git clone` va a fallar
+con `certificate verify failed`. Pedir el CA root a IT (formato `.cer` o `.pem`)
+y copiarlo a `/tmp/empresa-ca.cer`.
+
+```bash
+# 1. Detectar formato (DER vs PEM) y convertir si hace falta
+file /tmp/empresa-ca.cer
+# - "Certificate, Version=3" o "data" → DER, convertir:
+openssl x509 -inform der -in /tmp/empresa-ca.cer -out /tmp/empresa-ca.crt
+# - "ASCII text" → PEM, solo renombrar:
+# cp /tmp/empresa-ca.cer /tmp/empresa-ca.crt
+
+# 2. Inspeccionar (subject + vigencia)
+openssl x509 -in /tmp/empresa-ca.crt -noout -subject -issuer -dates
+
+# 3. Instalar
+sudo cp /tmp/empresa-ca.crt /usr/local/share/ca-certificates/empresa-ca.crt
+sudo update-ca-certificates
+
+# 4. Verificar
+git ls-remote https://github.com/maurogasparri/people-counter.git | head -3
+```
+
+### 3.2. Setup automático
+
 Los pasos 4 a 10 se pueden ejecutar automáticamente:
 
 ```bash
