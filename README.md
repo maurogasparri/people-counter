@@ -73,7 +73,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 449/449 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision, reports, wizard, status LED + health monitor, clasificador adulto/niño |
+| Tests | 456/456 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño |
 | Config | Local + Cloud | YAML (hardware) + IoT Shadow (negocio). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode 2304×1296 (binned full-FOV) para foco, 4608×2592 (full-res) para calibración |
@@ -84,8 +84,9 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
 | Infra cloud | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda (dedup L3) |
-| Deployment | Listo | provision.py, servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
-| Guía de setup | Completa | Guía de 13 pasos desde microSD hasta overlayfs (docs/setup-guide.md). Guía para operadores en campo (docs/pilot-operator-guide.md) |
+| Deployment | Listo | provision.py (create/deploy/harvest/reprovision), servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
+| Disaster recovery | Listo | `harvest` baja `calibration.npz` al workstation; `reprovision` revoca cert viejo en IoT Core y emite uno nuevo. Certs nunca se respaldan — rotan en cada restore |
+| Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup-guide.md). Guía para operadores en campo (docs/pilot-operator-guide.md) |
 
 ## Quick start
 
@@ -216,7 +217,7 @@ scripts/
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── roi_picker.py          # Seleccionador de ROI + línea virtual
 ├── export_events.py       # Export de eventos desde el buffer local
-├── provision.py           # Provisioning de dispositivos: create, deploy, list
+├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
 ├── deploy_lambda.sh       # Packaging del Lambda dedup L3
 ├── download_model.py      # Descarga YOLOv8n HEF/ONNX
 ├── verify_hardware.py     # Verificación de hardware

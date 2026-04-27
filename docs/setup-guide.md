@@ -428,6 +428,65 @@ que necesitan persistir entre reinicios ya están en paths separados:
 
 > **Nota**: `raspi-config` versión GUI también lo ofrece en Performance → Overlay File System.
 
+## 14. Backup y disaster recovery
+
+Tres artefactos por dispositivo justifican backup. El resto (`buffer.db`,
+`dedup.db`, logs) es volátil por diseño y se pierde al reiniciar sin impacto.
+
+| Path en la Pi | Qué es | Estrategia |
+|---------------|--------|------------|
+| `/etc/people-counter/config.yaml` | device_id, store, ROI, endpoint MQTT | Queda en `provisioned/<id>/` durante `create` |
+| `/etc/people-counter/calibration.npz` | calibración estéreo per-unidad | Pull al workstation con `harvest` post-calibración |
+| `/etc/people-counter/certs/` | X.509 client cert per-device | **No se respalda** — se re-emite ante restore (cert rotation) |
+
+### 14.1. Backup post-calibración
+
+Después de validar la calibración, traer la `calibration.npz` al workstation:
+
+```bash
+# Desde el workstation (donde está provisioned/<id>/)
+python scripts/provision.py harvest \
+  --device-id store-001-cam-01 \
+  --host people-counter.local
+```
+
+Eso deja `provisioned/<device-id>/calibration.npz` listo para un re-deploy.
+
+### 14.2. Restore después de SD muerta
+
+1. **Flashear nueva SD + setup steps 1-10** (o `setup_device.sh`).
+
+2. **Reprovisionar el cert** desde el workstation. Revoca el viejo en
+   AWS IoT Core y emite uno nuevo asociado a la misma thing:
+
+   ```bash
+   python scripts/provision.py reprovision --device-id store-001-cam-01
+   ```
+
+   El cert viejo queda detacheado de la thing, sin policies y `INACTIVE`
+   en IoT Core, así si la SD original cae en manos ajenas no puede
+   impersonar al device.
+
+3. **Deploy de config + cert nuevo + calibration** (la `calibration.npz`
+   se pushea automáticamente si existe en `provisioned/<id>/`):
+
+   ```bash
+   python scripts/provision.py deploy \
+     --device-id store-001-cam-01 \
+     --host people-counter.local
+   ```
+
+4. **Restart del servicio** en la Pi:
+
+   ```bash
+   ssh pi@people-counter.local 'sudo systemctl restart people-counter'
+   ```
+
+`provision.py reprovision` y `provision.py harvest` requieren AWS CLI
+configurado en el workstation con permisos de admin de IoT Core. **Nunca
+correrlos desde la Pi** — esas credenciales no deben vivir en una SD que
+sale del entorno controlado.
+
 ## Troubleshooting
 
 - **Cámaras no detectadas**: verificar que los cables CSI están bien

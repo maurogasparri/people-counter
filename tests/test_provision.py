@@ -16,7 +16,9 @@ from provision import (
     _build_config,
     cmd_create,
     cmd_deploy,
+    cmd_harvest,
     cmd_list,
+    cmd_reprovision,
 )
 
 
@@ -228,3 +230,155 @@ def test_deploy_fails_if_not_provisioned():
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
         with pytest.raises(SystemExit):
             cmd_deploy(args)
+
+
+@patch("provision._scp")
+@patch("provision._ssh")
+def test_deploy_pushes_calibration_when_present(mock_ssh, mock_scp):
+    tmpdir = tempfile.mkdtemp()
+    device_dir = Path(tmpdir) / "store-001-cam-01"
+    cert_dir = device_dir / "certs"
+    cert_dir.mkdir(parents=True)
+    (device_dir / "config.yaml").write_text("device: {}")
+    (device_dir / "calibration.npz").write_bytes(b"fake npz")
+    (cert_dir / "device.pem.crt").write_text("cert")
+    (cert_dir / "device.pem.key").write_text("key")
+    (cert_dir / "AmazonRootCA1.pem").write_text("ca")
+
+    args = argparse.Namespace(
+        device_id="store-001-cam-01",
+        host="people-counter.local",
+        user="pi",
+    )
+
+    with patch("provision.PROVISION_DIR", Path(tmpdir)):
+        cmd_deploy(args)
+
+    npz_calls = [
+        c for c in mock_scp.call_args_list
+        if "calibration.npz" in str(c)
+    ]
+    assert len(npz_calls) == 1
+
+
+@patch("provision._scp")
+@patch("provision._ssh")
+def test_deploy_skips_calibration_when_absent(mock_ssh, mock_scp):
+    tmpdir = tempfile.mkdtemp()
+    device_dir = Path(tmpdir) / "store-001-cam-01"
+    cert_dir = device_dir / "certs"
+    cert_dir.mkdir(parents=True)
+    (device_dir / "config.yaml").write_text("device: {}")
+    (cert_dir / "device.pem.crt").write_text("cert")
+    (cert_dir / "device.pem.key").write_text("key")
+    (cert_dir / "AmazonRootCA1.pem").write_text("ca")
+
+    args = argparse.Namespace(
+        device_id="store-001-cam-01",
+        host="people-counter.local",
+        user="pi",
+    )
+
+    with patch("provision.PROVISION_DIR", Path(tmpdir)):
+        cmd_deploy(args)
+
+    npz_calls = [
+        c for c in mock_scp.call_args_list
+        if "calibration.npz" in str(c)
+    ]
+    assert len(npz_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_harvest
+# ---------------------------------------------------------------------------
+
+
+@patch("provision._scp")
+def test_harvest_pulls_calibration(mock_scp):
+    tmpdir = tempfile.mkdtemp()
+    device_dir = Path(tmpdir) / "store-001-cam-01"
+    device_dir.mkdir(parents=True)
+
+    args = argparse.Namespace(
+        device_id="store-001-cam-01",
+        host="people-counter.local",
+        user="pi",
+    )
+
+    with patch("provision.PROVISION_DIR", Path(tmpdir)):
+        cmd_harvest(args)
+
+    mock_scp.assert_called_once()
+    call_args = mock_scp.call_args[0]
+    assert "people-counter.local:/etc/people-counter/calibration.npz" in call_args[0]
+    assert str(device_dir / "calibration.npz") == call_args[1]
+
+
+def test_harvest_fails_if_not_provisioned():
+    tmpdir = tempfile.mkdtemp()
+    args = argparse.Namespace(
+        device_id="nonexistent",
+        host="people-counter.local",
+        user="pi",
+    )
+
+    with patch("provision.PROVISION_DIR", Path(tmpdir)):
+        with pytest.raises(SystemExit):
+            cmd_harvest(args)
+
+
+# ---------------------------------------------------------------------------
+# cmd_reprovision
+# ---------------------------------------------------------------------------
+
+
+@patch("provision._issue_cert")
+@patch("provision._revoke_certs")
+def test_reprovision_revokes_then_issues(mock_revoke, mock_issue):
+    tmpdir = tempfile.mkdtemp()
+    device_dir = Path(tmpdir) / "store-001-cam-01"
+    cert_dir = device_dir / "certs"
+    cert_dir.mkdir(parents=True)
+    (cert_dir / "device.pem.crt").write_text("old cert")
+
+    mock_revoke.return_value = 1
+
+    args = argparse.Namespace(device_id="store-001-cam-01")
+
+    with patch("provision.PROVISION_DIR", Path(tmpdir)):
+        cmd_reprovision(args)
+
+    mock_revoke.assert_called_once_with("store-001-cam-01")
+    mock_issue.assert_called_once()
+    # Old certs archived under a sibling certs.old-* dir
+    archived = list(device_dir.glob("certs.old-*"))
+    assert len(archived) == 1
+    assert (archived[0] / "device.pem.crt").exists()
+
+
+@patch("provision._issue_cert")
+@patch("provision._revoke_certs")
+def test_reprovision_handles_no_existing_certs(mock_revoke, mock_issue):
+    tmpdir = tempfile.mkdtemp()
+    device_dir = Path(tmpdir) / "store-001-cam-01"
+    device_dir.mkdir(parents=True)
+
+    mock_revoke.return_value = 0
+
+    args = argparse.Namespace(device_id="store-001-cam-01")
+
+    with patch("provision.PROVISION_DIR", Path(tmpdir)):
+        cmd_reprovision(args)
+
+    mock_revoke.assert_called_once()
+    mock_issue.assert_called_once()
+
+
+def test_reprovision_fails_if_not_provisioned():
+    tmpdir = tempfile.mkdtemp()
+    args = argparse.Namespace(device_id="nonexistent")
+
+    with patch("provision.PROVISION_DIR", Path(tmpdir)):
+        with pytest.raises(SystemExit):
+            cmd_reprovision(args)

@@ -134,7 +134,7 @@ people-counter/
 │   ├── config/
 │   │   └── loader.py      <- carga y validación de config YAML
 │   └── main.py            <- orquestador del pipeline completo
-├── tests/                 <- 449 tests en todos los módulos
+├── tests/                 <- 456 tests en todos los módulos
 ├── scripts/
 │   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard).
 │   │                         wizard es el flujo end-to-end con UI web: start overlay,
@@ -150,7 +150,7 @@ people-counter/
 │   │                         y omite el check de corners en esa geometría. --scene=
 │   │                         auto|compact|full override, --min-corner-score N ajusta umbral.
 │   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad
-│   ├── provision.py       <- provisioning de dispositivos (create/deploy/list)
+│   ├── provision.py       <- provisioning + disaster recovery (create/deploy/harvest/reprovision/list)
 │   ├── verify_hardware.py <- verificación de hardware
 │   └── setup_device.sh    <- setup automático del dispositivo (pasos 4-10)
 ├── calibration/
@@ -184,7 +184,7 @@ people-counter/
 
 ## Estado de implementación
 
-**449 tests pasando.** Módulos por estado:
+**456 tests pasando.** Módulos por estado:
 
 - COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main, status (led + health + monitor)
 - INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
@@ -197,6 +197,7 @@ people-counter/
 - **Horario operativo fail-open**: si el formato del horario es inválido, el conteo continúa (prefiere falsos positivos a pérdida de datos).
 - **Sync L/R**: picamera2 con dos instancias independientes tiene offset típico ~60ms (1 frame a 15fps). Irrelevante para calibración (board quieto) y dentro de tolerancia para tracking humano (±60ms = ±6cm a 1m/s).
 - **Clasificador adulto/niño**: threshold único 1.55m (`adult_min_m`), cerca del P25 de mujeres adultas en Argentina. La métrica agregada prioriza estabilidad de totales diarios sobre precisión per-evento.
+- **Backup / disaster recovery**: config y `calibration.npz` se preservan en el workstation (`provisioned/<id>/`) — config queda durante `create`, calibration se trae con `harvest` post-calibración. Los certs **no se respaldan**: ante restore (SD muerta) `provision.py reprovision` revoca el cert viejo en IoT Core y emite uno nuevo asociado a la misma thing. Trade-off elegido: rotación efectiva del cert vale el ~30s extra de AWS API; las credenciales admin de AWS nunca tocan la Pi.
 
 ## Reglas duras
 

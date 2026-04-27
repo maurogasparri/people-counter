@@ -3,7 +3,8 @@
 
 Creates the AWS IoT Core thing, generates X.509 certificates, builds
 the device-specific config YAML, and optionally deploys to the device
-via SSH.
+via SSH. Also covers disaster recovery: pulling calibration back to
+the workstation backup, and re-issuing certs after SD failure.
 
 Usage:
     # Provision a new device (creates thing + certs + config)
@@ -13,11 +14,20 @@ Usage:
         --store-name "Store Name" \
         --endpoint xxxxx.iot.us-east-1.amazonaws.com
 
-    # Deploy config and certs to a device via SSH
+    # Deploy config + certs (+ calibration.npz if backed up) to a device
     python scripts/provision.py deploy \
         --device-id store-001-cam-01 \
         --host people-counter.local \
         --user pi
+
+    # Pull calibration.npz from a device into the workstation backup
+    python scripts/provision.py harvest \
+        --device-id store-001-cam-01 \
+        --host people-counter.local
+
+    # Re-issue cert (revokes the old one in IoT Core). Use after SD failure.
+    python scripts/provision.py reprovision \
+        --device-id store-001-cam-01
 
     # List all provisioned devices
     python scripts/provision.py list
@@ -29,6 +39,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 logging.basicConfig(
@@ -94,74 +105,130 @@ def cmd_create(args: argparse.Namespace) -> None:
 def _create_iot_thing(device_id: str, cert_dir: Path, endpoint: str) -> None:
     """Register IoT thing and generate certificates via AWS CLI."""
     try:
-        # Create the thing
-        subprocess.run(
-            ["aws", "iot", "create-thing", "--thing-name", device_id],
-            check=True,
-            capture_output=True,
-        )
-        logger.info("IoT thing created: %s", device_id)
-
-        # Create keys and certificate
-        result = subprocess.run(
-            [
-                "aws", "iot", "create-keys-and-certificate",
-                "--set-as-active",
-                "--certificate-pem-outfile", str(cert_dir / "device.pem.crt"),
-                "--private-key-outfile", str(cert_dir / "device.pem.key"),
-                "--public-key-outfile", str(cert_dir / "device.pem.pub"),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        cert_response = json.loads(result.stdout)
-        cert_arn = cert_response["certificateArn"]
-        logger.info("Certificate created: %s", cert_arn)
-
-        # Attach policy to certificate
-        subprocess.run(
-            [
-                "aws", "iot", "attach-policy",
-                "--policy-name", "people-counter-device-policy",
-                "--target", cert_arn,
-            ],
-            check=True,
-            capture_output=True,
-        )
-
-        # Attach certificate to thing
-        subprocess.run(
-            [
-                "aws", "iot", "attach-thing-principal",
-                "--thing-name", device_id,
-                "--principal", cert_arn,
-            ],
-            check=True,
-            capture_output=True,
-        )
-        logger.info("Certificate attached to thing %s", device_id)
-
-        # Download Amazon Root CA
-        subprocess.run(
-            [
-                "curl", "-s", "-o", str(cert_dir / "AmazonRootCA1.pem"),
-                "https://www.amazontrust.com/repository/AmazonRootCA1.pem",
-            ],
-            check=True,
-            capture_output=True,
-        )
-        logger.info("Root CA downloaded")
-
-        # Save cert ARN for future reference
-        (cert_dir / "cert_arn.txt").write_text(cert_arn)
-
+        _create_thing(device_id)
+        _issue_cert(device_id, cert_dir)
     except FileNotFoundError:
         logger.error("AWS CLI not found. Install with: pip install awscli")
         sys.exit(1)
     except subprocess.CalledProcessError as e:
         logger.error("AWS CLI error: %s", e.stderr)
         sys.exit(1)
+
+
+def _create_thing(device_id: str) -> None:
+    """Register an IoT thing. Idempotent: skips if already exists."""
+    try:
+        subprocess.run(
+            ["aws", "iot", "create-thing", "--thing-name", device_id],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        logger.info("IoT thing created: %s", device_id)
+    except subprocess.CalledProcessError as e:
+        if "ResourceAlreadyExistsException" in (e.stderr or ""):
+            logger.info("IoT thing %s already exists, skipping creation", device_id)
+        else:
+            raise
+
+
+def _issue_cert(device_id: str, cert_dir: Path) -> None:
+    """Generate keys + cert, attach policy, attach to thing. Thing must exist.
+
+    Writes device.pem.crt / device.pem.key / device.pem.pub / AmazonRootCA1.pem
+    / cert_arn.txt into cert_dir.
+    """
+    cert_dir.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(
+        [
+            "aws", "iot", "create-keys-and-certificate",
+            "--set-as-active",
+            "--certificate-pem-outfile", str(cert_dir / "device.pem.crt"),
+            "--private-key-outfile", str(cert_dir / "device.pem.key"),
+            "--public-key-outfile", str(cert_dir / "device.pem.pub"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    cert_arn = json.loads(result.stdout)["certificateArn"]
+    logger.info("Certificate created: %s", cert_arn)
+
+    subprocess.run(
+        [
+            "aws", "iot", "attach-policy",
+            "--policy-name", "people-counter-device-policy",
+            "--target", cert_arn,
+        ],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        [
+            "aws", "iot", "attach-thing-principal",
+            "--thing-name", device_id,
+            "--principal", cert_arn,
+        ],
+        check=True, capture_output=True,
+    )
+    logger.info("Certificate attached to thing %s", device_id)
+
+    subprocess.run(
+        [
+            "curl", "-s", "-o", str(cert_dir / "AmazonRootCA1.pem"),
+            "https://www.amazontrust.com/repository/AmazonRootCA1.pem",
+        ],
+        check=True, capture_output=True,
+    )
+    logger.info("Root CA downloaded")
+
+    (cert_dir / "cert_arn.txt").write_text(cert_arn)
+
+
+def _revoke_certs(device_id: str) -> int:
+    """Detach + deactivate + delete every cert currently attached to the thing.
+
+    Returns the count of certs revoked. Safe to call when there are none.
+    """
+    result = subprocess.run(
+        ["aws", "iot", "list-thing-principals", "--thing-name", device_id],
+        check=True, capture_output=True, text=True,
+    )
+    principals = json.loads(result.stdout).get("principals", [])
+
+    for arn in principals:
+        cert_id = arn.split("/")[-1]
+        logger.info("Revoking cert %s", cert_id)
+
+        subprocess.run(
+            ["aws", "iot", "detach-thing-principal",
+             "--thing-name", device_id, "--principal", arn],
+            check=True, capture_output=True,
+        )
+
+        # Detach every policy attached to the cert (don't assume just one)
+        pols = subprocess.run(
+            ["aws", "iot", "list-attached-policies", "--target", arn],
+            check=True, capture_output=True, text=True,
+        )
+        for pol in json.loads(pols.stdout).get("policies", []):
+            subprocess.run(
+                ["aws", "iot", "detach-policy",
+                 "--policy-name", pol["policyName"], "--target", arn],
+                check=True, capture_output=True,
+            )
+
+        subprocess.run(
+            ["aws", "iot", "update-certificate",
+             "--certificate-id", cert_id, "--new-status", "INACTIVE"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["aws", "iot", "delete-certificate", "--certificate-id", cert_id],
+            check=True, capture_output=True,
+        )
+
+    return len(principals)
 
 
 def _build_config(device_dir: Path, args: argparse.Namespace) -> None:
@@ -222,6 +289,12 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     _ssh(host, f"chmod 600 {REMOTE_CERT_DIR}/device.pem.key")
     _ssh(host, f"chmod 644 {REMOTE_CERT_DIR}/device.pem.crt {REMOTE_CERT_DIR}/AmazonRootCA1.pem")
 
+    # Push calibration.npz if a backup exists for this device
+    calibration = device_dir / "calibration.npz"
+    if calibration.exists():
+        _scp(str(calibration), f"{host}:{REMOTE_CONFIG_DIR}/calibration.npz")
+        logger.info("Calibration deployed from backup")
+
     # Install systemd services and logrotate
     config_dir = Path(__file__).resolve().parent.parent / "config"
     for config_file in [
@@ -245,6 +318,60 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     logger.info("Systemd services and logrotate installed")
 
     logger.info("Device %s deployed to %s", device_id, args.host)
+
+
+def cmd_harvest(args: argparse.Namespace) -> None:
+    """Pull calibration.npz from a device into the workstation backup."""
+    device_id = args.device_id
+    device_dir = PROVISION_DIR / device_id
+
+    if not device_dir.exists():
+        logger.error("Device %s not provisioned. Run 'create' first.", device_id)
+        sys.exit(1)
+
+    host = f"{args.user}@{args.host}"
+    remote = f"{REMOTE_CONFIG_DIR}/calibration.npz"
+    local = device_dir / "calibration.npz"
+
+    _scp(f"{host}:{remote}", str(local))
+    logger.info("Calibration harvested to %s", local)
+
+
+def cmd_reprovision(args: argparse.Namespace) -> None:
+    """Re-issue cert for an existing thing. Revokes the old cert first.
+
+    Use after SD failure or whenever you suspect the device cert is
+    compromised. The thing keeps its identity; only the principal rotates.
+    """
+    device_id = args.device_id
+    device_dir = PROVISION_DIR / device_id
+    cert_dir = device_dir / "certs"
+
+    if not device_dir.exists():
+        logger.error("Device %s not provisioned. Run 'create' first.", device_id)
+        sys.exit(1)
+
+    # Move the old cert dir aside before overwriting (in case we need to dig)
+    if cert_dir.exists() and any(cert_dir.iterdir()):
+        archived = cert_dir.parent / f"certs.old-{int(time.time())}"
+        cert_dir.rename(archived)
+        logger.info("Old certs archived to %s", archived)
+
+    try:
+        revoked = _revoke_certs(device_id)
+        logger.info("Revoked %d old cert(s) in IoT Core", revoked)
+        _issue_cert(device_id, cert_dir)
+    except FileNotFoundError:
+        logger.error("AWS CLI not found. Install with: pip install awscli")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        logger.error("AWS CLI error: %s", e.stderr)
+        sys.exit(1)
+
+    logger.info(
+        "Device %s reprovisioned. Run 'deploy' to push the new cert.",
+        device_id,
+    )
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -320,6 +447,24 @@ def main() -> None:
     p_deploy.add_argument("--host", required=True, help="Device hostname or IP")
     p_deploy.add_argument("--user", default="pi", help="SSH user")
     p_deploy.set_defaults(func=cmd_deploy)
+
+    # --- harvest ---
+    p_harvest = sub.add_parser(
+        "harvest",
+        help="Pull calibration.npz from a device into the workstation backup",
+    )
+    p_harvest.add_argument("--device-id", required=True)
+    p_harvest.add_argument("--host", required=True, help="Device hostname or IP")
+    p_harvest.add_argument("--user", default="pi", help="SSH user")
+    p_harvest.set_defaults(func=cmd_harvest)
+
+    # --- reprovision ---
+    p_reprov = sub.add_parser(
+        "reprovision",
+        help="Re-issue cert for an existing thing (revokes the old cert)",
+    )
+    p_reprov.add_argument("--device-id", required=True)
+    p_reprov.set_defaults(func=cmd_reprovision)
 
     # --- list ---
     p_list = sub.add_parser("list", help="List provisioned devices")
