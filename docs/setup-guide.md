@@ -44,11 +44,11 @@ Orden recomendado:
    | Header pin | GPIO | Pata LED | Resistor en serie |
    |------------|------|----------|-------------------|
    | Pin 11     | GPIO 17 | R    | 150 Ω             |
-   | Pin 12     | GPIO 18 | G    | 220 Ω             |
-   | Pin 13     | GPIO 27 | B    | 220 Ω             |
+   | Pin 12     | GPIO 18 | G    | 100 Ω             |
+   | Pin 13     | GPIO 27 | B    | 100 Ω             |
    | Pin 14     | GND  | cátodo (pata más larga) | — |
 
-   Resistencias asimétricas porque el verde es ~2.5× más eficiente luminoso que el rojo y el azul ~1.5×; valores iguales harían que el verde domine las mezclas (el "amarillo" R+G saldría verde-amarillento).
+   Resistencias asimétricas porque G y B (InGaN, Vf≈3.1V) tienen apenas 0.2V de headroom contra el supply de 3.3V mientras que R (AlGaInP, Vf≈2.1V) tiene 1.2V. Los valores apuntan a brillo perceptualmente parejo entre canales, no a corrientes iguales — sin esa asimetría las mezclas tiran al verde por la mayor eficiencia luminosa del eye response.
 
 6. **microSD** → insertar la tarjeta ya flasheada
 7. **Batería RTC** → conectar al conector J5 de la Pi (entre los puertos USB y el GPIO).

@@ -42,7 +42,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — acelerador neuronal
 - 2x Arducam IMX708 12MP HDR, lente M12 120 HFOV (B0310) vía CSI — par estéreo, baseline 14cm
 - Waveshare PoE HAT (H) 25.5W (802.3at) conectado por dupont (2× 5V + 2× GND para repartir corriente, no stackeado) — alimentación por Ethernet
-- LED RGB 3mm common cathode — status visual al operador, dupont 2x2 al header (R/G/B vía GPIO 17/18/27 con resistores 150/220/220Ω, cátodo a GND pin 14)
+- LED RGB 3mm common cathode — status visual al operador, dupont 2x2 al header (R/G/B vía GPIO 17/18/27 con resistores 150/100/100Ω, cátodo a GND pin 14)
 - SanDisk Extreme 64GB microSD — boot + almacenamiento
 
 ## Decisiones técnicas clave
@@ -73,7 +73,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Buffer SQLite**: todos los eventos se almacenan localmente. Replay al reconectar. Se marca enviado solo después de PUBACK.
 
 ### Status LED
-- **Hardware**: RGB 3mm common cathode en GPIO 17 (R, 150Ω) / 18 (G, 220Ω) / 27 (B, 220Ω) + GND pin 14, dupont 2x2. Resistencias asimétricas porque el verde es ~2.5× más eficiente luminoso que el rojo y el azul ~1.5× — valores iguales harían que las mezclas se desbalanceen al verde.
+- **Hardware**: RGB 3mm common cathode en GPIO 17 (R, 150Ω) / 18 (G, 100Ω) / 27 (B, 100Ω) + GND pin 14, dupont 2x2. Resistencias asimétricas porque G y B (InGaN, Vf≈3.1V) tienen apenas 0.2V de headroom contra los 3.3V del GPIO mientras que R (AlGaInP, Vf≈2.1V) tiene 1.2V — los valores apuntan a brillo perceptualmente parejo entre canales, no a corrientes iguales. Sin esa asimetría las mezclas tiran al verde por la mayor eficiencia luminosa del eye response.
 - **Esquema**: 8 estados alineados con el código de FootfallCam (apagado / rojo fijo / amarillo fijo / amarillo parpadeante / verde parpadeante / verde fijo / azul fijo / azul parpadeante) — el operador del local interpreta sin SSH. Cascada de prioridad worst-first: HW > pipeline > internet > cloud > OK.
 - **Health checks** (`src/status/health.py`): CPU temp <80°C, Hailo temp <85°C, disco free >10%, calibración cargable, captura/inferencia OK, pipeline watchdog (`last_loop_ts` <5s), internet TCP a 1.1.1.1:53 (cacheado 30s), MQTT `connected` flag.
 - **Monitor en thread separado** (`src/status/monitor.py`): probes blocking (socket connect 3s timeout) no estresan el hot path del pipeline. `HealthSignals` es shared state mutable; el pipeline escribe, el monitor lee — atomicidad garantizada por el GIL para tipos primitivos.

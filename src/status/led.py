@@ -5,8 +5,8 @@ can interpret device health from the LED color/blink without SSH access.
 
 Hardware: 3mm common-cathode RGB on the GPIO header.
     GPIO 17 (pin 11) -> R via 150 ohm
-    GPIO 18 (pin 12) -> G via 220 ohm
-    GPIO 27 (pin 13) -> B via 220 ohm
+    GPIO 18 (pin 12) -> G via 100 ohm
+    GPIO 27 (pin 13) -> B via 100 ohm
     pin 14 (GND)     -> common cathode
 
 State priority cascade (worst-first), used by ``decide_state`` in
