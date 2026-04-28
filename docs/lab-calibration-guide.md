@@ -18,7 +18,8 @@ parámetros por sitio (`mounting_height_m`, etc.) se definen después en
 | Trípode del board | Rango ~[70cm, 210cm], cabeza con 1/4" |
 | Board ChArUco | A3 landscape, 9×6 cuadrados, checker 45mm, marker 33mm, DICT_4X4 legacy pattern (PDF: `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`). Los scripts usan `--legacy-pattern` por default para matchear la enumeración de calib.io. |
 | Montaje del board | Sustrato rígido (3mm PVC o equivalente) + rosca 1/4" (idealmente centrada; si está al borde inferior del board, contar 148mm de offset del thread al centro óptico) |
-| Threadlocker para lens | **Trabasil AM3** (pasta anaeróbica con PTFE). Torque de quiebre 4-10 N·m, fill de holgura hasta 0.5mm, 100-130 min de working time antes de cura parcial, 36h de cura total. |
+| Threadlocker para lens | **Trabasil AM3** (pasta anaeróbica con PTFE) + **activador anaeróbico**. El activador acelera la cura de las ~36h del Trabasil solo a ~15min de cura parcial (suficiente para calibrar sin que el lens se mueva). Torque de quiebre 4-10 N·m, fill de holgura hasta 0.5mm. |
+| Llave de barrel | Llave diseñada para encastrar en el barrel del lens M12, permite girar el lens con dedos sobre un mango más grande — facilita ajustes finos durante el foco. Queda puesta durante calib y se retira después del curado total. |
 
 ### Espacio
 
@@ -64,20 +65,23 @@ Con cámara stud a 1.36m (eje óptico 1.40m), board con rosca centrada (offset 0
 
 Todas las poses entran con 4cm de margen simétrico en los extremos. Si necesitás más holgura (trípode con stops imprecisos cerca de los límites), bajar a `--dist-far-mm 2800` para ganar ~4cm extra a cada extremo.
 
-## Paso 2 — Foco + Lens locking con Trabasil AM3
+## Paso 2 — Foco + Lens locking con Trabasil AM3 + activador
 
 Objetivo: enfocar ambos lens a una distancia tal que el DoF cubra todo el rango operativo (1.15m a 3.30m). Focando a ~2.0m, el DoF va de ~1.2m a infinito con el M12 120° a f/~2.
 
-El holder M12 del Arducam B0310 **no tiene set screw**, así que el lens se fija químicamente con **Trabasil AM3** (pasta anaeróbica con PTFE). La aproximación elegida: aplicar AM3 **antes** de enfocar, enfocar con la pasta ya en los hilos (durante los 100+ min de working time que da), y dejar curar 36h en la posición final. Evita el error de "aflojar y re-apretar al mark" después de focar, y la pasta da un damping suave al barrel que ayuda a encontrar el peak de nitidez con más precisión.
+El holder M12 del Arducam B0310 **no tiene set screw**, así que el lens se fija químicamente con **Trabasil AM3** (pasta anaeróbica con PTFE) **acelerado con activador anaeróbico**. El activador es lo que hace viable el flujo same-day: cura parcial a ~15min (suficiente para calibrar sin drift), cura total al cabo de horas. Sin activador, el Trabasil solo da ~100min de working time + 36h de cura total — incompatible con un solo día de lab.
 
-### Paso 2A — Colocar AM3
+El barrel del lens M12 se gira con una **llave dedicada** que encastra en sus ranuras y da más palanca que los dedos sobre el barrel pelado. La llave queda puesta durante foco y calibración, y se retira recién después del curado total.
+
+### Paso 2A — Colocar activador + AM3
 
 1. **Dry-run previo (sin pasta)**: primero corré `focus_assist.py` y rotá el lens aproximadamente hasta que las barras entren al verde. Esto es para confirmar que el rango de foco del lens efectivamente alcanza 2m (pre-screening). Marcá con fibrita la posición tentativa del lens vs el holder.
 2. **Desenroscar el lens completo** del holder. Limpiar ambos hilos (macho del lens, hembra del holder) con un trapo de microfibra limpio — nada de solventes fuertes que puedan migrar a la óptica.
-3. **Aplicar AM3**: con un palillo de dientes o una jeringa de insulina sin aguja, depositar **una gota del tamaño de una cabeza de alfiler** (≈15 μL) en los hilos hembra del holder, alrededor del perímetro interno. Evitar la zona cercana al sensor — solo los primeros 2-3 mm de rosca desde la boca del holder.
-4. **Enroscar el lens** hasta la posición aproximada de la marca tentativa del dry-run. No forzar — dejar que agarre natural. La pasta se va a distribuir por los hilos al rotar.
+3. **Aplicar activador** sobre una de las dos roscas según la especificación del fabricante (típicamente la rosca macho del lens). Dejar evaporar el solvente del activador antes del paso siguiente.
+4. **Aplicar AM3** sobre la otra rosca: con un palillo de dientes o una jeringa de insulina sin aguja, depositar **una gota del tamaño de una cabeza de alfiler** (≈15 μL) alrededor del perímetro. Evitar la zona cercana al sensor — solo los primeros 2-3 mm de rosca desde la boca del holder.
+5. **Encastrar la llave en el barrel del lens** y enroscar hasta la posición aproximada de la marca tentativa del dry-run. No forzar — dejar que agarre natural. La pasta se va a distribuir por los hilos al rotar.
 
-A partir de acá tenés **~100 minutos de working time** antes de que la cura parcial empiece a agarrar fuerza.
+Con activador, la cura empieza apenas las dos roscas se tocan. Working time efectivo de unos pocos minutos antes de que el barrel se ponga rígido — proceder al foco sin demora.
 
 ### Paso 2B — Hacer foco
 
@@ -90,23 +94,22 @@ Defaults aplicados: target range 1.80–2.20m (lab protocol), board definitivo, 
 1. Abrir `http://<rpi-hostname>:8080` en el browser.
 2. Click "Comenzar" — desbloquea AudioContext y comienza el preview.
 3. Posicionar el board a ~2.0m de la cámara. El status indica "cerca" o "lejos" si está fuera del target range.
-4. **Ajustar el lens izquierdo** rotándolo en el holder hasta que las barras de nitidez central y corners pasen (verde). La pasta AM3 provee damping — vas a sentir una resistencia suave y pareja al girar. Aprovechalo para fine-tunear — giros de 2-5° (1-3μm axial) permiten encontrar el peak con precisión.
+4. **Ajustar el lens izquierdo** girando la llave del barrel hasta que las barras de nitidez central y corners pasen (verde). La llave da palanca para movimientos finos — giros de 2-5° (1-3μm axial) permiten encontrar el peak con precisión.
 5. **Repetir para el lens derecho**. La barra de simetría L/R debe quedar por debajo del umbral.
 6. Cuando ambos lens están en verde y el banner dice "LISTO", click "Finalizar". Guardar el reporte HTML.
-7. **Limpiar excedente**: si la pasta asomó por el seam exterior donde el barrel se encuentra con el holder, limpiarla ahora con hisopo + isopropílico. Tenés ventana hasta ~90 min post-aplicación.
+7. **Limpiar excedente**: si la pasta asomó por el seam exterior donde el barrel se encuentra con el holder, limpiarla ahora con hisopo + isopropílico, antes de que termine de curar.
 
 **Importante**: después de este punto, **no volver a rotar los lens**. Cualquier rotación posterior desacomoda el foco y puede interrumpir la cura en progreso.
 
-### Paso 2C — Dejar curar
+### Paso 2C — Cura parcial (15 min)
 
-1. Poner el dispositivo con **los lens apuntando hacia abajo** (al piso) durante las primeras **3-4 horas**. Precaución contra migración por gravedad de cualquier gota residual hacia el sensor durante la fase fluida.
-2. Después de las 4h, el dispositivo puede quedar en cualquier orientación. **No tocar, no desarmar, no mover** hasta completar las 36h de cura total.
-3. A las **36h**, la cura está completa. Los lens quedan firmemente trabados (torque de quiebre ~4-10 N·m) pero reversibles si alguna vez hace falta re-focar (se aflojan a mano con firmeza).
-4. Re-verificar focus_assist PASS antes de continuar al Paso 3 (calibración). Si algún lens drifteó durante la cura (raro), se puede re-enroscar con fuerza moderada — la matriz curada permite micro-ajustes de ±2-3° sin romperse, suficientes para corregir drift térmico de la cura.
+1. Esperar **15 minutos** desde el final del foco. El activador hace que en ese tiempo la cura parcial sea suficiente para que los lens queden inmóviles bajo las cargas vibratorias del manejo de calibración.
+2. **No tocar el barrel ni la llave** durante esta espera. La llave queda encastrada — la sacamos recién después del curado total (Paso 4).
+3. Una vez pasados los 15min, proceder al Paso 3 (calibración).
 
-**Planning del cronograma para el showroom del martes**:
+**Planning del cronograma**:
 
-Desde la aplicación de AM3 hasta cura total son 36h. Si el showroom es el martes de día, aplicar AM3 y focar a más tardar el **domingo por la mañana** — así el dispositivo queda listo para calibrar el martes con cura total completada el lunes por la tarde. Más holgura es mejor; si podés aplicar el sábado, mejor.
+Con activador, todo el ciclo (foco + 15min de espera + calibración + ground-truth) entra en una sola sesión de lab de ~1-1.5h. La cura total sigue su curso después y se completa en horas; la llave del barrel se retira al final, cuando el set ya está rígido.
 
 ## Paso 3 — Calibración estéreo
 
@@ -173,10 +176,12 @@ En `--output` (default `./calibration.npz`):
 
 ## Paso 4 — Fin del ciclo
 
-1. **No desarmar el bracket L/R**. La calibración viaja con el par físico, no con el dispositivo RPi. Si separás los lens, la extrínseca cambia y la calibración se invalida.
-2. **Etiquetar el bracket** con el device-id del reporte.
-3. **Guardar el `.npz`** en la estructura del provisioning (ver `scripts/provision.py`) asociado al device-id.
-4. **Archivar las PNGs crudas** (no eliminarlas del RPi). Son oro si después hay que re-calibrar con otro modelo o validar con otra herramienta.
+1. **Esperar el curado total** según especificación del activador (típicamente unas horas). El dispositivo puede quedar en cualquier orientación durante este tiempo, pero sin manipular los lens.
+2. **Retirar la llave del barrel** una vez completada la cura. El lens debe quedar firme y no rotar al intentar moverlo a mano.
+3. **No desarmar el bracket L/R**. La calibración viaja con el par físico, no con el dispositivo RPi. Si separás los lens, la extrínseca cambia y la calibración se invalida.
+4. **Etiquetar el bracket** con el device-id del reporte.
+5. **Guardar el `.npz`** en la estructura del provisioning (ver `scripts/provision.py`) asociado al device-id.
+6. **Archivar las PNGs crudas** (no eliminarlas del RPi). Son oro si después hay que re-calibrar con otro modelo o validar con otra herramienta.
 
 ## Troubleshooting
 
