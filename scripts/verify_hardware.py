@@ -68,6 +68,13 @@ def main() -> None:
     failures += not check("camera_auto_detect=0", "camera_auto_detect=0" in config_txt)
     failures += not check("dtoverlay=imx708,cam0", "dtoverlay=imx708,cam0" in config_txt)
     failures += not check("dtoverlay=imx708,cam1", "dtoverlay=imx708,cam1" in config_txt)
+    failures += not check("dtparam=audio=off", "dtparam=audio=off" in config_txt)
+    failures += not check("dtparam=act_led_trigger=none", "dtparam=act_led_trigger=none" in config_txt)
+    failures += not check("dtparam=act_led_activelow=off", "dtparam=act_led_activelow=off" in config_txt)
+    failures += not check("dtparam=power_led_trigger=none", "dtparam=power_led_trigger=none" in config_txt)
+    failures += not check("dtparam=power_led_activelow=off", "dtparam=power_led_activelow=off" in config_txt)
+    failures += not check("dtparam=eth_led0=4", "dtparam=eth_led0=4" in config_txt)
+    failures += not check("dtparam=eth_led1=4", "dtparam=eth_led1=4" in config_txt)
 
     # --- PCIe Gen 3 ---
     print("\n[PCIe]")
