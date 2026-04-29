@@ -893,9 +893,12 @@ def analyze_pose_coverage(
         by_group[group] = by_group.get(group, 0) + 1
 
     warnings: list[str] = []
+    critical: list[str] = []  # Coverage gaps that produce degenerate fits
     for band, count in by_distance.items():
-        if count < 2:
-            warnings.append(f"Solo {count} captura(s) en banda de distancia '{band}'")
+        if count == 0:
+            critical.append(f"Banda de distancia '{band}' sin capturas")
+        elif count < 2:
+            warnings.append(f"Solo {count} captura en banda de distancia '{band}'")
     for axis, count in by_tilt.items():
         if axis == "frontal":
             continue  # frontal is nice-to-have, not required
@@ -903,14 +906,15 @@ def analyze_pose_coverage(
             warnings.append(f"Poca diversidad de tilt '{axis}' ({count} captura/s)")
     for group in ["A", "B", "C", "D"]:  # E is extras, not required
         if by_group.get(group, 0) < 1:
-            warnings.append(f"Grupo de poses {group} sin capturas")
+            critical.append(f"Grupo de poses {group} sin capturas")
 
     return {
         "by_distance": by_distance,
         "by_tilt_axis": by_tilt,
         "by_group": by_group,
         "warnings": warnings,
-        "ok": len(warnings) == 0,
+        "critical": critical,
+        "ok": len(warnings) == 0 and len(critical) == 0,
     }
 
 

@@ -747,7 +747,10 @@ class TestPoseCoverage:
         near_ids = [p.id for p in all_poses if p.tvec_mm[2] <= 1200]
         coverage = analyze_pose_coverage(near_ids, all_poses)
         assert not coverage["ok"]
-        assert any("mid" in w or "far" in w for w in coverage["warnings"])
+        # Empty bands and missing groups are CRITICAL, not soft warnings
+        all_msgs = coverage["warnings"] + coverage["critical"]
+        assert any("mid" in m or "far" in m for m in all_msgs)
+        assert coverage["critical"], "expected critical entries when whole bands missing"
 
     def test_no_yaw_flagged(self):
         all_poses = default_pose_sequence()

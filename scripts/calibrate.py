@@ -1017,6 +1017,10 @@ def _session_params(args: argparse.Namespace) -> dict:
         "dist_near_mm": getattr(args, "dist_near_mm", DEFAULT_DIST_NEAR_MM),
         "dist_mid_mm": getattr(args, "dist_mid_mm", DEFAULT_DIST_MID_MM),
         "dist_far_mm": getattr(args, "dist_far_mm", DEFAULT_DIST_FAR_MM),
+        # Resolution must match across resume — calibration needs all frames
+        # at the same size or the math breaks. 2026-04-28 session would have
+        # silently corrupted if the operator had retried at a different res.
+        "resolution": list(args.resolution),
     }
 
 
@@ -1266,6 +1270,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     temp_baseline: Optional[float] = None
     temp_samples: list[float] = []
     last_temp: Optional[float] = None
+    # Asymmetric-detection streak (for the "one camera silently failing" hint).
+    # If one camera keeps detecting the board but the other doesn't, we want
+    # to surface that in the UI — operator was getting "captura rechazada"
+    # without knowing which camera was failing.
+    only_l_detect_streak = 0
+    only_r_detect_streak = 0
+    ASYMMETRIC_DETECT_WARN_FRAMES = 20
 
     def _emit_audio(text: str) -> None:
         state.audio_event = text
@@ -1400,6 +1411,22 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 frame_r, board, lenient=True, min_corners=4,
             )
 
+            # Track asymmetric detection — one camera consistently failing
+            # while the other detects fine is the silent killer the 2026-04-28
+            # session ran into (R returned 0 corners on C1/C2 while L saw 40,
+            # operator had no signal in the UI).
+            l_detected = corners_l is not None and ids_l is not None and len(ids_l) >= 4
+            r_detected = corners_r is not None and ids_r is not None and len(ids_r) >= 4
+            if l_detected and not r_detected:
+                only_l_detect_streak += 1
+                only_r_detect_streak = 0
+            elif r_detected and not l_detected:
+                only_r_detect_streak += 1
+                only_l_detect_streak = 0
+            else:
+                only_l_detect_streak = 0
+                only_r_detect_streak = 0
+
             vis_l = cv2.resize(frame_l, GUIDED_HALF)
             vis_r = cv2.resize(frame_r, GUIDED_HALF)
             scale_x = GUIDED_HALF[0] / frame_l.shape[1]
@@ -1531,11 +1558,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     _emit_pose_announce(state.current_pose_idx)
                 continue
 
-            # Draw ghost + detected corners on previews
-            ghost_color = (80, 220, 80) if aligned else (80, 180, 255)
-            _draw_ghost(vis_l, ghost["outer_corners"], ghost_color)
-            _draw_ghost(vis_r, ghost["outer_corners"], ghost_color)
-
+            # Detected corners first, then ghost on top — keeps the ghost
+            # outline visible above the busy charuco overlay (lines + IDs)
+            # so the operator can actually see the alignment target. Ghost
+            # is only drawn on L: alignment is computed against L only, and
+            # showing it on R was misleading because parallax (14 cm baseline)
+            # makes the same physical board land 14 cm offset in R — operators
+            # were trying to fit both ghosts simultaneously, which is impossible.
             if corners_l is not None and ids_l is not None:
                 sc = corners_l.copy()
                 sc[:, 0, 0] *= scale_x
@@ -1546,6 +1575,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 sc[:, 0, 0] *= scale_x
                 sc[:, 0, 1] *= scale_y
                 cv2.aruco.drawDetectedCornersCharuco(vis_r, sc, ids_r, (0, 255, 0))
+
+            ghost_color = (80, 220, 80) if aligned else (80, 180, 255)
+            _draw_ghost(vis_l, ghost["outer_corners"], ghost_color)
 
             # Direction arrow on LEFT
             if err is not None and not aligned and err["matched"] >= 4:
@@ -1736,13 +1768,52 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             audio_escaped = (state.audio_event or "").replace('"', "&quot;")
             banner_escaped = banner.replace('"', "&quot;")
 
+            n_l = len(corners_l) if corners_l is not None else 0
+            n_r = len(corners_r) if corners_r is not None else 0
+
+            asymmetric_warn_html = ""
+            if only_l_detect_streak >= ASYMMETRIC_DETECT_WARN_FRAMES:
+                asymmetric_warn_html = (
+                    '<div class="warn" style="font-weight:600">'
+                    '⚠ Cámara R no detecta el board hace varios segundos '
+                    '(L sí). Limpiá el lens, chequeá foco, o asegurate '
+                    'que el board entre en su FOV.</div>'
+                )
+            elif only_r_detect_streak >= ASYMMETRIC_DETECT_WARN_FRAMES:
+                asymmetric_warn_html = (
+                    '<div class="warn" style="font-weight:600">'
+                    '⚠ Cámara L no detecta el board hace varios segundos '
+                    '(R sí). Limpiá el lens, chequeá foco, o asegurate '
+                    'que el board entre en su FOV.</div>'
+                )
+
+            # Color L/R counts: highlight in amber when one is 0 and the other > 0
+            def _detect_pill(label: str, n: int, asymmetric_zero: bool) -> str:
+                if asymmetric_zero:
+                    color = "#e67e22"
+                elif n >= 8:
+                    color = "#2ecc71"
+                elif n >= 4:
+                    color = "#f1c40f"
+                else:
+                    color = "#888"
+                return f'<span style="color:{color};font-weight:600">{label}:{n}</span>'
+
+            l_zero_asym = (n_l == 0 and n_r > 0)
+            r_zero_asym = (n_r == 0 and n_l > 0)
+            detect_pills = (
+                f'{_detect_pill("L", n_l, l_zero_asym)} · '
+                f'{_detect_pill("R", n_r, r_zero_asym)}'
+            )
+
             status = f"""
 <div data-banner="{banner_escaped}" data-color="{banner_color}" data-progress="{hold_progress:.2f}" data-audioseq="{state.audio_event_seq}" data-audiotext="{audio_escaped}" data-captured="{captured_n}" data-pose-idx="{state.current_pose_idx}"></div>
 <div>Pose <b>{state.current_pose_idx + 1}/{len(poses)}</b> — {pose.label} · <b>{pose.tvec_mm[2] / 10.0:.0f}cm</b> <span class="pill-phase">{phase_label}</span></div>
 <div>Capturadas: <b>{captured_n}</b> · Skipped: <b>{skipped_n}</b> · Restantes: <b>{len(poses) - captured_n - skipped_n}</b></div>
 <div>{rms_html}</div>
 {warnings_html}
-<div style="color:#888;font-size:12px;margin-top:8px">Detección: {len(corners_l) if corners_l is not None else 0}L / {len(corners_r) if corners_r is not None else 0}R esquinas · matched L={err['matched'] if err else 0}{sync_note}</div>
+{asymmetric_warn_html}
+<div style="color:#888;font-size:12px;margin-top:8px">Detección: {detect_pills} esquinas · matched L={err['matched'] if err else 0}{sync_note}</div>
 """
             with state.lock:
                 state.status_html = status
@@ -2105,12 +2176,80 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
         sock.bind(("0.0.0.0", args.port))
         messages.append(f"✓ Puerto {args.port} libre")
     except OSError:
-        messages.append(f"❌ Puerto {args.port} ocupado — otro proceso está escuchando")
+        # Try to find which PID is holding the port so the operator gets
+        # an actionable error instead of "go look it up".
+        culprit = _find_port_culprit(args.port)
+        if culprit:
+            pid, cmd = culprit
+            messages.append(
+                f"❌ Puerto {args.port} ocupado — PID {pid} ({cmd}). "
+                f"Liberalo con: kill {pid}  (o kill -9 {pid} si no muere)"
+            )
+        else:
+            messages.append(
+                f"❌ Puerto {args.port} ocupado pero no pude identificar el PID. "
+                f"Probá con: sudo lsof -i :{args.port}  o usá --port {args.port + 10}"
+            )
         hard_fail = True
     finally:
         sock.close()
 
     return (not hard_fail), messages
+
+
+def _find_port_culprit(port: int) -> Optional[tuple[int, str]]:
+    """Best-effort lookup of the PID + command holding a TCP port.
+
+    Returns (pid, command) on Linux; None on other platforms or if we can't
+    figure it out (e.g. process owned by another UID and we're not root).
+    """
+    import os as _os
+    if not _os.path.exists("/proc"):
+        return None
+    # Find the inode of the listening socket on this port
+    try:
+        with open("/proc/net/tcp") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    target_hex = f"{port:04X}"
+    target_inodes: set[str] = set()
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 10:
+            continue
+        local = parts[1]
+        state = parts[3]
+        # state 0A = LISTEN
+        if state != "0A":
+            continue
+        if not local.endswith(":" + target_hex):
+            continue
+        target_inodes.add(parts[9])
+    if not target_inodes:
+        return None
+    # Walk /proc/*/fd to find which PID holds that socket inode
+    for pid_str in _os.listdir("/proc"):
+        if not pid_str.isdigit():
+            continue
+        fd_dir = f"/proc/{pid_str}/fd"
+        try:
+            for fd in _os.listdir(fd_dir):
+                try:
+                    target = _os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if target.startswith("socket:[") and target[8:-1] in target_inodes:
+                    try:
+                        with open(f"/proc/{pid_str}/cmdline") as f:
+                            cmdline = f.read().replace("\x00", " ").strip()
+                    except OSError:
+                        cmdline = ""
+                    short = cmdline.split()[-1] if cmdline else "?"
+                    return int(pid_str), short
+        except OSError:
+            continue
+    return None
 
 
 def _run_ground_truth_phase(
@@ -2329,7 +2468,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
             pose_id_by_path[str(lp)] = pid
 
     pairs: list[tuple[np.ndarray, np.ndarray]] = []
-    pair_meta: list[tuple[Path, Path, str, int]] = []
+    pair_meta: list[tuple[Path, Path, str, int, int]] = []
     captured_pose_ids: list[str] = []
     dict_id = _resolve_aruco_dict(getattr(args, "aruco_dict", "DICT_4X4_100"))
     board_tmp = create_charuco_board(
@@ -2347,9 +2486,13 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         pairs.append((il, ir))
         pose_id = pose_id_by_path.get(str(lf), lf.stem.replace("left_", "pose-"))
         captured_pose_ids.append(pose_id)
-        corners, _ids = detect_charuco_corners(il, board_tmp)
-        n_corners = len(corners) if corners is not None else 0
-        pair_meta.append((lf, rf, pose_id, n_corners))
+        # Re-detect with the SAME lenient mode the calibration step will use
+        # so this sanity count matches what calibrate_stereo will actually see.
+        corners_l, _ = detect_charuco_corners(il, board_tmp, lenient=True)
+        corners_r, _ = detect_charuco_corners(ir, board_tmp, lenient=True)
+        n_l = len(corners_l) if corners_l is not None else 0
+        n_r = len(corners_r) if corners_r is not None else 0
+        pair_meta.append((lf, rf, pose_id, n_l, n_r))
 
     min_captures = getattr(args, "min_captures", 15)
     if len(pairs) < min_captures:
@@ -2358,6 +2501,47 @@ def cmd_wizard(args: argparse.Namespace) -> None:
             f"{min_captures} para calibrar."
         )
         logger.error(msg)
+        _set_post_capture_phase(
+            "complete", msg, verdict="FAIL", report_available=False,
+        )
+        time.sleep(10)
+        sys.exit(1)
+
+    # Pre-calibration sanity: count pairs where BOTH cameras produced a
+    # usable detection (≥ 8 common corners is what calibrate_stereo's
+    # _detect_all_pairs gates on). If too many pairs fail this re-detect,
+    # the live capture loop accepted frames that won't actually feed the
+    # calibration math — and we'd silently calibrate on a tiny subset
+    # (2026-04-28 session: 7 of 15 valid → degenerate fit).
+    valid_both = 0
+    invalid_lines: list[str] = []
+    for lf, rf, pid, n_l, n_r in pair_meta:
+        if n_l >= 8 and n_r >= 8:
+            valid_both += 1
+        else:
+            invalid_lines.append(
+                f"{pid}: L={n_l} corners, R={n_r} corners (need ≥8 en ambas)"
+            )
+    detect_rate = valid_both / len(pairs) if pairs else 0.0
+    min_rate = getattr(args, "min_detect_rate", 0.7)
+    logger.info(
+        "Pre-calibration sanity: %d/%d pares con detección válida en ambas "
+        "cámaras (%.0f%%, umbral %.0f%%)",
+        valid_both, len(pairs), detect_rate * 100, min_rate * 100,
+    )
+    if detect_rate < min_rate:
+        offending = "\n".join(f"• {l}" for l in invalid_lines)
+        msg = (
+            f"Solo {valid_both} de {len(pairs)} pares ({detect_rate*100:.0f}%) "
+            f"sobrevivieron la re-detección. Umbral mínimo: {min_rate*100:.0f}%. "
+            f"Calibrar con esta data va a producir un fit degenerado.\n\n"
+            f"Pares con detección incompleta:\n{offending}\n\n"
+            f"Recapturá las poses con problemas (lens limpio, foco, exposición) "
+            f"o bajá --min-detect-rate si entendés el riesgo."
+        )
+        logger.error("❌ Pre-calibration sanity falló")
+        for line in invalid_lines:
+            logger.error("    %s", line)
         _set_post_capture_phase(
             "complete", msg, verdict="FAIL", report_available=False,
         )
@@ -2375,11 +2559,36 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         "Cobertura: distancia %s · tilts %s",
         coverage["by_distance"], coverage["by_tilt_axis"],
     )
-    if not coverage["ok"]:
+    # Critical gaps are hard-blockers: missing entire pose groups or
+    # distance bands produces degenerate calibrations (low RMS but
+    # geometrically wrong) — exactly the failure mode of the 2026-04-28
+    # session. Operator can override with --force-degenerate-coverage.
+    critical_gaps = coverage.get("critical", [])
+    force_flag = getattr(args, "force_degenerate_coverage", False)
+    if critical_gaps and not force_flag:
+        logger.error("❌ Coverage crítico insuficiente — calibración bloqueada:")
+        for c in critical_gaps:
+            logger.error("    - %s", c)
+        msg = (
+            "Coverage crítico insuficiente. La calibración va a producir un fit "
+            "degenerado (RMS bajo pero geométricamente incorrecto) que falla "
+            "ground-truth. Recapturá las poses faltantes:\n\n"
+            + "\n".join(f"• {c}" for c in critical_gaps)
+            + "\n\nSi entendés los riesgos y querés forzarla igual, "
+            "agregá --force-degenerate-coverage al wizard."
+        )
+        _set_post_capture_phase(
+            "complete", msg, verdict="FAIL", report_available=False,
+        )
+        time.sleep(10)
+        sys.exit(1)
+
+    soft_warnings = coverage.get("warnings", [])
+    if soft_warnings:
         logger.warning("⚠ Diversidad limitada en el set de capturas:")
-        for w in coverage["warnings"]:
+        for w in soft_warnings:
             logger.warning("    - %s", w)
-        warnings_text = "\n".join(f"• {w}" for w in coverage["warnings"])
+        warnings_text = "\n".join(f"• {w}" for w in soft_warnings)
         prompt_msg = (
             "Las capturas no tienen suficiente diversidad de pose:\n\n"
             f"{warnings_text}\n\n"
@@ -2596,6 +2805,55 @@ def cmd_verify(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_reset(args: argparse.Namespace) -> None:
+    """Wipe captures + session.json + calibration.npz so the next wizard
+    run starts from a clean slate. Useful when a session went sideways
+    (degenerate captures, mismatched resolution, corrupted state) and you
+    don't want to debug — you just want to start over.
+    """
+    output_dir = Path(args.output_dir)
+    calib_out = Path(args.output)
+    items_to_remove: list[tuple[str, Path]] = []
+
+    if output_dir.exists():
+        captures = (
+            list(output_dir.glob("left_*.png"))
+            + list(output_dir.glob("right_*.png"))
+        )
+        for p in captures:
+            items_to_remove.append(("capture", p))
+        sidecar = output_dir / "session.json"
+        if sidecar.exists():
+            items_to_remove.append(("session", sidecar))
+
+    if calib_out.exists():
+        items_to_remove.append(("calibration", calib_out))
+
+    if not items_to_remove:
+        logger.info("No hay nada que limpiar — directorios ya vacíos.")
+        return
+
+    by_kind: dict[str, int] = {}
+    for kind, _ in items_to_remove:
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+    summary = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in by_kind.items())
+
+    if not args.yes:
+        logger.info(
+            "Voy a borrar: %s. Pasá --yes para confirmar.",
+            summary,
+        )
+        sys.exit(1)
+
+    logger.info("Borrando: %s", summary)
+    for kind, p in items_to_remove:
+        try:
+            p.unlink()
+        except OSError as e:
+            logger.warning("    No pude borrar %s: %s", p, e)
+    logger.info("Reset completo.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Stereo calibration tool for People Counter"
@@ -2744,8 +3002,31 @@ def main() -> None:
                         help=f"Mid distance for pose sequence (default {DEFAULT_DIST_MID_MM:.0f}mm)")
     p_wiz.add_argument("--dist-far-mm", type=float, default=DEFAULT_DIST_FAR_MM,
                         help=f"Far distance for pose sequence (default {DEFAULT_DIST_FAR_MM:.0f}mm)")
+    # --- reset ---
+    p_reset = sub.add_parser("reset",
+        help="Wipe captures + session.json + calibration.npz for a clean restart")
+    p_reset.add_argument("--output", default="calibration.npz",
+                         help="Calibration file to remove (default: calibration.npz)")
+    p_reset.add_argument("--output-dir", default="./calibration/captures",
+                         help="Captures dir to clean (default: ./calibration/captures)")
+    p_reset.add_argument("--yes", action="store_true",
+                         help="Confirm deletion (without this the command lists what would be removed)")
+    p_reset.set_defaults(func=cmd_reset)
+
     p_wiz.add_argument("--resume", action="store_true",
                         help="Continue a previous wizard session — skips already-captured poses")
+    p_wiz.add_argument("--force-degenerate-coverage", action="store_true",
+                        help="Bypass the critical-coverage block. By default the "
+                             "wizard refuses to calibrate when entire pose groups "
+                             "(A/B/C/D) or distance bands (near/mid/far) are "
+                             "missing, because that produces a low-RMS but "
+                             "geometrically wrong fit (2026-04-28 session). Use "
+                             "this flag only if you understand the trade-off.")
+    p_wiz.add_argument("--min-detect-rate", type=float, default=0.7,
+                        help="Pre-calibration sanity threshold: if fewer than this "
+                             "fraction of captured pairs survive a strict "
+                             "re-detection pass, the wizard aborts before running "
+                             "fisheye.calibrate. Default 0.7 (70%%).")
     p_wiz.set_defaults(func=cmd_wizard)
 
     args = parser.parse_args()

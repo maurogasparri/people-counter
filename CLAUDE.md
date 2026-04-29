@@ -136,12 +136,22 @@ people-counter/
 │   └── main.py            <- orquestador del pipeline completo
 ├── tests/                 <- 456 tests en todos los módulos
 ├── scripts/
-│   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard).
+│   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard, reset).
 │   │                         wizard es el flujo end-to-end con UI web: start overlay,
 │   │                         captura guiada con ghost silueta + audio TTS,
 │   │                         bootstrap de intrínsecos, residuales por par,
 │   │                         ground-truth check, reporte auto-open.
 │   │                         Tolerance presets loose/normal/strict, --dict configurable.
+│   │                         Default 2304×1296 binned (2026-04-28 lab session).
+│   │                         Pre-calibration sanity gate: re-detecta los pares
+│   │                         capturados y aborta si <70% pasan detección en
+│   │                         ambas cámaras. Coverage critical block: si falta
+│   │                         banda completa (near/mid/far) o grupo de poses
+│   │                         (A/B/C/D), bloquea — pasar --force-degenerate-coverage
+│   │                         para overridear. UI panel muestra L/R corner counts
+│   │                         con highlight ámbar cuando una cámara silenciosamente
+│   │                         falla detección. Subcomando `reset --yes` limpia
+│   │                         captures + session.json + .npz para restart limpio.
 │   ├── focus_assist.py    <- asistente de foco guiado, UI web: start overlay,
 │   │                         barras de nitidez central + corners (absoluto) + simetría L/R,
 │   │                         peak tracker, masking de zonas de bajo contraste,
@@ -149,6 +159,11 @@ people-counter/
 │   │                         Auto-detecta "escena compacta" (bbox del board >25% del frame)
 │   │                         y omite el check de corners en esa geometría. --scene=
 │   │                         auto|compact|full override, --min-corner-score N ajusta umbral.
+│   │                         L/R parity check: mide la disparidad horizontal del
+│   │                         centroide del board entre cámaras y la compara contra
+│   │                         la disparidad esperada por baseline+depth — pill verde
+│   │                         "L/R OK", roja "INVERTIDO" o ámbar "magnitud rara"
+│   │                         (sign correcto pero off por >2.5× respecto del esperado).
 │   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad
 │   ├── provision.py       <- provisioning + disaster recovery (create/deploy/harvest/reprovision/list)
 │   ├── verify_hardware.py <- verificación de hardware
@@ -231,6 +246,15 @@ people-counter/
 - **Puerto HTTP con SO_REUSEADDR** y Ctrl+C limpio en ambos tools (server.shutdown() en el cleanup path) — no quedan TIME_WAITs entre runs.
 - **focus_assist: corner sharpness absoluta + escena compacta**. La métrica de uniformidad es la varianza Laplaciana media de los 4 corners válidos (umbral absoluto `MIN_CORNER_SCORE = 100`), no el ratio bordes/centro. Auto-detecta "escena compacta" cuando el bbox del ChArUco cubre >25% del frame (ambiente chico donde el board domina la vista) y omite el check porque en esa geometría los corners ven paredes a distancia no relacionada con el board y el ratio fallaría por razón física, no óptica. `--scene=auto|compact|full` override manual; `--min-corner-score N` ajusta el umbral.
 - **Lens locking en lab**: el holder M12 del Arducam B0310 no tiene set screw — el lens se fija químicamente con **Trabasil AM3** (pasta anaeróbica con PTFE) **+ activador anaeróbico**, y se gira con una **llave dedicada** que encastra en el barrel. El activador es lo que viabiliza el flujo same-day: cura parcial a ~15min (suficiente para calibrar sin drift), cura total al cabo de horas. Sin activador, el Trabasil solo da 100min de working time + 36h de cura total — incompatible con un solo día de lab. La llave queda puesta durante foco y calibración, y se retira recién después del curado total. Procedimiento completo en `docs/lab-calibration-guide.md`.
+- **Wizard guardrails (post 2026-04-28)**: la sesión de bench produjo una calibración degenerada (RMS estéreo 0.24px pero ground-truth +15.6% a 2m) porque la detección a full-res 4608×2592 era inestable y solo 7 de 15 capturas tenían marcadores válidos en ambas cámaras. Salvaguardas agregadas:
+  - `wizard --resolution` default `2304 1296` (binned, full FOV, ~4× faster detect, mejor SNR por 2x2 binning).
+  - **Pre-calibration sanity gate** (`--min-detect-rate`, default 0.7): re-detecta los pares capturados con el mismo modo lenient que va a usar `calibrate_stereo`, y aborta si <70% pasan en ambas cámaras. Evita correr el solver sobre data que no va a fittear.
+  - **Coverage critical block**: `analyze_pose_coverage` ahora separa `warnings` (soft) de `critical` (banda completa o grupo entero faltante). El wizard bloquea hard en críticos — bypass con `--force-degenerate-coverage`.
+  - **L/R asymmetric detection alert**: si una cámara devuelve 0 corners 20+ frames seguidos mientras la otra detecta, el panel muestra una alerta naranja pidiendo limpiar lens / chequear foco / verificar FOV. Antes el operador veía "captura rechazada" sin saber cuál cámara fallaba.
+  - **`--resume` valida resolución**: `_session_params` ahora incluye `resolution`, abortando si el operador retoma con una resolución distinta (mezclar 4608 y 2304 corrompe los intrínsecos silenciosamente).
+  - **Subcomando `reset`**: `python scripts/calibrate.py reset --yes` borra captures + session.json + .npz para restart limpio sin `rm -rf` manual.
+  - **Preflight error útil para puerto ocupado**: walks `/proc/net/tcp` + `/proc/*/fd` para identificar PID + cmd que ocupa el puerto y sugerir `kill <PID>` directo, en lugar de "puerto ocupado, andá a buscarlo".
+- **focus_assist L/R parity check**: mide la disparidad horizontal del centroide del board entre cámaras (mediana sobre 30 frames) y la compara contra la esperada por `baseline * f_px / depth`. Tres estados: verde "OK", rojo "INVERTIDO" (sign opuesto al esperado), ámbar "magnitud rara" (sign correcto pero off por >2.5× del valor predicho — hint de baseline mal en código, lente flojo, o detección espuria). Detecta el problema antes de calibrar contra un par invertido (que produciría extrínsecos sign-flipped silenciosos).
 - El directorio `debug/` en la raíz del repo está gitignoreado — sirve para dumpear reportes, screenshots, logs de sesiones de test sin ensuciar git status.
 
 ## Interpretación del reporte de calibración

@@ -44,7 +44,7 @@ def _pill(text: str, ok: bool) -> str:
 def generate_html_report(
     calibration: dict,
     diagnose_zones: Optional[dict] = None,
-    capture_pairs: Optional[list[tuple[Path, Path, str, int]]] = None,
+    capture_pairs: Optional[list[tuple[Path, Path, str, int, int]]] = None,
     device_id: str = "unknown",
     rms_stereo: Optional[float] = None,
     timestamp: Optional[_dt.datetime] = None,
@@ -59,7 +59,7 @@ def generate_html_report(
         diagnose_zones: optional dict from diagnose_depth: {zone_name: (depth, std, err_pct, fill)}
                         plus "_pass" boolean, "_edge_ratio" float, "_center_err" float,
                         and "_distance_mm" ground truth.
-        capture_pairs: list of (left_path, right_path, pose_id, n_corners)
+        capture_pairs: list of (left_path, right_path, pose_id, n_corners_l, n_corners_r)
         device_id: device identifier for the report header
         rms_stereo: overall stereo calibration RMS (px) if known
         timestamp: override timestamp; defaults to now
@@ -145,7 +145,14 @@ def generate_html_report(
     captures_html = ""
     if capture_pairs:
         tiles = []
-        for idx, (lp, rp, pose_id, n_corners) in enumerate(capture_pairs):
+        for idx, pair in enumerate(capture_pairs):
+            # Backwards-compat: old (path, path, id, n_corners) and new
+            # (path, path, id, n_l, n_r). Treat 4-tuple as symmetric.
+            if len(pair) == 5:
+                lp, rp, pose_id, n_l, n_r = pair
+            else:
+                lp, rp, pose_id, n_l = pair
+                n_r = n_l
             try:
                 img_l = cv2.imread(str(lp))
                 img_r = cv2.imread(str(rp))
@@ -157,9 +164,12 @@ def generate_html_report(
             is_outlier = idx in outlier_indices
             badge = '<span class="outlier-badge">OUTLIER</span>' if is_outlier else ''
             tile_cls = "tile outlier" if is_outlier else "tile"
+            corners_text = (
+                f"L={n_l}/R={n_r}" if n_l != n_r else f"{n_l}"
+            )
             tiles.append(
                 f'<div class="{tile_cls}">'
-                f'<div class="tile-label">#{idx} · {pose_id} — {n_corners} esquinas {badge}</div>'
+                f'<div class="tile-label">#{idx} · {pose_id} — {corners_text} esquinas {badge}</div>'
                 f'{img_tag}</div>'
             )
         captures_html = f"""

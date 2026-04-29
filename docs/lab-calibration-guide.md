@@ -123,7 +123,27 @@ python scripts/calibrate.py wizard --device-id DEV-XXX
 
 Reemplazar `DEV-XXX` con el identificador del dispositivo (va al reporte).
 
-Defaults aplicados: far=3.0m (cabe en tripod 70–210cm), 20 poses canónicas, tolerance "normal", pose-timeout 180s (tripod-friendly).
+Defaults aplicados: resolución 2304×1296 binned (4× más rápido que full-res en detect, mismo FOV), far=3.0m (cabe en tripod 70–210cm), 20 poses canónicas, tolerance "normal", pose-timeout 180s (tripod-friendly).
+
+**Antes de arrancar**, verificá que las cámaras estén bien mapeadas con `focus_assist` — la pill verde "✓ L/R OK" en el panel del browser confirma. Si dice "L/R INVERTIDO", reiniciá pasando `--left/--right` swappeados (el wizard tiene los mismos flags). Calibrar contra un par invertido produce extrínsecos sign-flipped silenciosos.
+
+### Si necesitás restart limpio
+
+Después de una sesión que terminó mal (degenerada, abortada, etc.):
+
+```bash
+python scripts/calibrate.py reset --yes
+```
+
+Borra captures + session.json + .npz. Sin `--yes` lista qué borraría sin tocar nada.
+
+### Salvaguardas del wizard
+
+Si las capturas no son suficientemente diversas o detection falla en una de las dos cámaras, el wizard **bloquea antes de calibrar** para evitar producir un fit degenerado (RMS bueno pero ground-truth mal). Mensajes que vas a ver:
+
+- **❌ Coverage crítico insuficiente**: falta una banda completa (near/mid/far) o un grupo entero (A/B/C/D). Re-capturá esas poses. Bypass: `--force-degenerate-coverage` (úsalo solo si entendés el riesgo).
+- **❌ Pre-calibration sanity falló**: <70% de los pares sobreviven la re-detección estricta en ambas cámaras. Revisá lens limpio / foco / iluminación y recapturá. Para bajar el umbral: `--min-detect-rate 0.5` (otra vez, riesgo asumido).
+- **⚠ Cámara R/L no detecta**: una cámara está en 0 corners por 20+ frames mientras la otra detecta. Limpiá lens, chequeá foco, asegurate que el board entre en su FOV. El wizard espera — no te traba.
 
 ### Las 20 poses
 

@@ -181,7 +181,8 @@ class TestEstimateDistance:
         from src.vision.calibration import create_charuco_board
         board = create_charuco_board()
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
-        dist, n, bbox = focus_assist.estimate_charuco_distance_mm(blank, board)
+        dist, n, bbox, cx = focus_assist.estimate_charuco_distance_mm(blank, board)
         assert dist is None
         assert n == 0
         assert bbox == 0.0
+        assert cx is None

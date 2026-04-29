@@ -27,6 +27,7 @@ import unicodedata
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -126,26 +127,28 @@ def focus_grid(
 def estimate_charuco_distance_mm(
     frame: np.ndarray, board: cv2.aruco.CharucoBoard,
     focal_px_override: float | None = None,
-) -> tuple[float | None, int, float]:
+) -> tuple[float | None, int, float, float | None]:
     """Detect ChArUco in frame, estimate distance via solvePnP with nominal K.
 
-    Returns (distance_mm or None, n_corners_detected, bbox_ratio). bbox_ratio
-    is the fraction of frame area covered by the detected-corners bounding
-    rectangle — used upstream to auto-detect "compact scene" (board fills the
-    view, corners see walls at unrelated depths). Uses nominal IMX708
-    intrinsics — ±10% accuracy is fine for validating "is the board at 2.5-3m?".
+    Returns (distance_mm or None, n_corners_detected, bbox_ratio,
+             centroid_x or None). bbox_ratio is the fraction of frame area
+    covered by the detected-corners bounding rectangle. centroid_x is the
+    mean x-coordinate of detected corners (in frame pixels) — used by the
+    L/R parity check upstream. Uses nominal IMX708 intrinsics — ±10% is
+    fine for validating "is the board at 2.5-3m?".
     """
     corners, ids = detect_charuco_corners(
         frame, board, min_corners=4, lenient=True,
     )
     if corners is None or ids is None or len(corners) < 4:
-        return None, 0, 0.0
+        return None, 0, 0.0, None
     h, w = frame.shape[:2]
     pts = corners.reshape(-1, 2)
     bbox_w = float(pts[:, 0].max() - pts[:, 0].min())
     bbox_h = float(pts[:, 1].max() - pts[:, 1].min())
     frame_area = max(w * h, 1)
     bbox_ratio = (bbox_w * bbox_h) / frame_area
+    centroid_x = float(pts[:, 0].mean())
     if focal_px_override is not None:
         fx = fy = focal_px_override
     else:
@@ -161,10 +164,10 @@ def estimate_charuco_distance_mm(
     try:
         ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, K, dist, flags=cv2.SOLVEPNP_ITERATIVE)
     except cv2.error:
-        return None, len(corners), bbox_ratio
+        return None, len(corners), bbox_ratio, centroid_x
     if not ok:
-        return None, len(corners), bbox_ratio
-    return float(tvec[2, 0]), len(corners), bbox_ratio
+        return None, len(corners), bbox_ratio, centroid_x
+    return float(tvec[2, 0]), len(corners), bbox_ratio, centroid_x
 
 
 def evaluate_focus(
@@ -317,6 +320,66 @@ def _ascii(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text)
     stripped = "".join(c for c in normalized if not unicodedata.combining(c))
     return stripped.replace("—", "-").replace("–", "-").replace("¿", "?").replace("¡", "!")
+
+
+LR_DISPARITY_OK_MIN_PX = 8.0  # Below this we don't trust the sign — could be
+                              # parallax noise on a tiny board.
+LR_BASELINE_MM = 140.0        # Design baseline (matches CLAUDE.md / README)
+
+
+def _expected_disparity_px(distance_mm: float, frame_width_px: int) -> float:
+    """Predict L/R centroid disparity for an object at `distance_mm`.
+
+    disparity_px = baseline * focal_px / depth, where focal_px scales with
+    capture resolution (NOMINAL_FOCAL_PX is referenced to NOMINAL_FULL_RES).
+    """
+    if distance_mm <= 0:
+        return 0.0
+    scale = frame_width_px / NOMINAL_FULL_RES[0]
+    f_px = NOMINAL_FOCAL_PX * scale
+    return LR_BASELINE_MM * f_px / distance_mm
+
+
+def _classify_lr(
+    buffer: list[float],
+    expected_px: Optional[float] = None,
+) -> dict[str, object]:
+    """Decide L/R parity from recent disparity samples.
+
+    Returns a dict with keys:
+        state: "ok" | "swapped" | "unknown" | "magnitude_off"
+        median_px: median disparity (or None if buffer empty)
+        n: sample count
+        expected_px: predicted disparity for the current scene (or None)
+
+    "magnitude_off" fires when the sign matches but the magnitude is way
+    off the prediction — could be a wrong baseline in code, a board
+    misidentified by detection, or a depth estimate that drifted. We mark
+    it ambiguous instead of green so the operator gets a hint that
+    something deeper is wrong even though the L/R wiring itself is fine.
+    """
+    if not buffer:
+        return {
+            "state": "unknown", "median_px": None, "n": 0,
+            "expected_px": expected_px,
+        }
+    arr = sorted(buffer)
+    median = arr[len(arr) // 2]
+    if median > LR_DISPARITY_OK_MIN_PX:
+        state = "ok"
+    elif median < -LR_DISPARITY_OK_MIN_PX:
+        state = "swapped"
+    else:
+        state = "unknown"
+    # Magnitude check — only when we have an expected value AND sign is OK
+    if state == "ok" and expected_px is not None and expected_px > 20:
+        ratio = median / expected_px
+        if ratio < 0.4 or ratio > 2.5:
+            state = "magnitude_off"
+    return {
+        "state": state, "median_px": median, "n": len(arr),
+        "expected_px": expected_px,
+    }
 
 
 class PeakTracker:
@@ -996,6 +1059,7 @@ def main() -> None:
     ev: dict = {}
     pass_streak = 0
     peaks = PeakTracker(window_frames=40)
+    lr_disparity_buffer: list[float] = []
 
     try:
         while not finish_requested:
@@ -1005,8 +1069,29 @@ def main() -> None:
             grid_l, valid_l = focus_grid(frame_l)
             grid_r, valid_r = focus_grid(frame_r)
 
-            dist_l, ncorn_l, bbox_l = estimate_charuco_distance_mm(frame_l, board, args.focal_px)
-            dist_r, ncorn_r, bbox_r = estimate_charuco_distance_mm(frame_r, board, args.focal_px)
+            dist_l, ncorn_l, bbox_l, cx_l = estimate_charuco_distance_mm(frame_l, board, args.focal_px)
+            dist_r, ncorn_r, bbox_r, cx_r = estimate_charuco_distance_mm(frame_r, board, args.focal_px)
+
+            # L/R parity check — with the cameras correctly mapped, the L
+            # camera (physically on the left) sees an object shifted to the
+            # RIGHT in its frame compared to R (parallax: baseline 14 cm).
+            # So cx_l should be GREATER than cx_r when wiring matches the
+            # convention. Negative or near-zero disparity → cameras swapped
+            # in software (operator should pass --left/--right inverted).
+            if cx_l is not None and cx_r is not None:
+                lr_disparity_px = cx_l - cx_r
+                lr_disparity_buffer.append(lr_disparity_px)
+                if len(lr_disparity_buffer) > 30:
+                    lr_disparity_buffer.pop(0)
+            # Predicted disparity for the current depth, used to flag
+            # magnitude_off (sign correct but value way off — hints at a
+            # baseline mismatch or a non-board object detected).
+            expected_px = None
+            if dist_l is not None and frame_l is not None:
+                expected_px = _expected_disparity_px(dist_l, frame_l.shape[1])
+            elif dist_r is not None and frame_r is not None:
+                expected_px = _expected_disparity_px(dist_r, frame_r.shape[1])
+            lr_status = _classify_lr(lr_disparity_buffer, expected_px=expected_px)
 
             # Scene-mode resolution: "compact" forces corners-skipped; "full"
             # forces corners-checked; "auto" trips to compact when the board
@@ -1078,6 +1163,40 @@ def main() -> None:
                     '</div>'
                 )
 
+            lr_html = ""
+            if lr_status["state"] == "swapped":
+                lr_html = (
+                    '<div style="color:#e74c3c;font-size:14px;font-weight:600;margin-top:6px">'
+                    f'⚠ L/R INVERTIDO — la cámara mapeada como L está físicamente '
+                    f'a la derecha (disparidad mediana {lr_status["median_px"]:.0f}px). '
+                    'Reiniciá con --left/--right swappeados.'
+                    '</div>'
+                )
+            elif lr_status["state"] == "magnitude_off":
+                exp = lr_status["expected_px"] or 0
+                lr_html = (
+                    '<div style="color:#e67e22;font-size:13px;font-weight:600;margin-top:6px">'
+                    f'⚠ L/R signo OK pero magnitud rara: {lr_status["median_px"]:.0f}px '
+                    f'observados vs {exp:.0f}px esperados a esta distancia. '
+                    'Posible baseline incorrecto, lente flojo, o detección espuria.'
+                    '</div>'
+                )
+            elif lr_status["state"] == "ok":
+                exp = lr_status["expected_px"]
+                exp_note = f" · esperado ~{exp:.0f}px" if exp else ""
+                lr_html = (
+                    '<div style="color:#2ecc71;font-size:13px;margin-top:6px">'
+                    f'✓ L/R OK (disparidad {lr_status["median_px"]:.0f}px{exp_note})'
+                    '</div>'
+                )
+            elif lr_status["state"] == "unknown" and lr_status["n"] > 0:
+                lr_html = (
+                    '<div style="color:#888;font-size:13px;margin-top:6px">'
+                    f'L/R sin determinar (disparidad {lr_status["median_px"]:.0f}px '
+                    f'< {LR_DISPARITY_OK_MIN_PX:.0f}px) — acercá el board para mejor señal'
+                    '</div>'
+                )
+
             # data-audio-hint: what the browser TTS will read aloud.
             # Sanitise quotes so the attribute parses cleanly.
             audio_hint = lead.replace('"', '')
@@ -1086,6 +1205,7 @@ def main() -> None:
                 f'style="color:{color_status};font-size:18px;font-weight:700">{lead}</div>'
                 f'{lighting_html}'
                 f'{compact_html}'
+                f'{lr_html}'
                 f'{peak_html}'
                 f'<div style="color:#888;font-size:13px;margin-top:6px">'
                 f'ChArUco IZQ:{ncorn_l} esq · DER:{ncorn_r} esq</div>'
