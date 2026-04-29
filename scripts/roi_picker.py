@@ -80,9 +80,9 @@ def _capture_from_cameras(camera: str) -> np.ndarray:
     cam_right = None
     try:
         if want_left:
-            cam_left = Picamera2(1)
+            cam_left = Picamera2(0)
         if want_right:
-            cam_right = Picamera2(0)
+            cam_right = Picamera2(1)
     except Exception as exc:
         if cam_left is not None:
             try:

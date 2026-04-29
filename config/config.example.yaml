@@ -22,9 +22,15 @@ device:
 
 # --- LOCAL: Camera & stereo hardware (depends on physical installation) ---
 vision:
-  camera_left: 1                  # CSI bus ID for left IMX708 (CAM1 = izquierda mirando desde la cámara hacia la escena)
-  camera_right: 0                 # CSI bus ID for right IMX708 (CAM0 = derecha mirando desde la cámara hacia la escena)
-  resolution: [4608, 2592]        # Sensor native resolution (IMX708 12MP)
+  camera_left: 0                  # CSI bus ID for left IMX708 (lente izquierda mirando desde la cámara hacia la escena)
+  camera_right: 1                 # CSI bus ID for right IMX708
+  resolution: [2304, 1296]        # IMX708 binned mode, full FOV. Must match the
+                                  # resolution used at calibration time — calibrate.py
+                                  # defaults to this. Bench session 2026-04-28 showed
+                                  # full-res 4608x2592 makes ChArUco detection drop
+                                  # below 2 FPS on Pi 5, which intermittently fails
+                                  # marker detection at fisheye edges and produces
+                                  # degenerate calibrations.
   fps: 15                         # Capture frame rate
   baseline_cm: 14                 # Physical distance between cameras (measured)
   calibration_file: "/etc/people-counter/calibration.npz"  # ChArUco stereo cal output

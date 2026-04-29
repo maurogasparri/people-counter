@@ -154,8 +154,8 @@ def _detect_all_pairs(
     image_size: Optional[tuple[int, int]] = None
 
     for idx, (img_l, img_r) in enumerate(image_pairs):
-        corners_l, ids_l = detect_charuco_corners(img_l, board)
-        corners_r, ids_r = detect_charuco_corners(img_r, board)
+        corners_l, ids_l = detect_charuco_corners(img_l, board, lenient=True)
+        corners_r, ids_r = detect_charuco_corners(img_r, board, lenient=True)
 
         if corners_l is None or corners_r is None:
             continue
@@ -1031,8 +1031,8 @@ def compute_per_pair_residuals(
 
     results: list[dict[str, float]] = []
     for idx, (img_l, img_r) in enumerate(image_pairs):
-        corners_l, ids_l = detect_charuco_corners(img_l, board)
-        corners_r, ids_r = detect_charuco_corners(img_r, board)
+        corners_l, ids_l = detect_charuco_corners(img_l, board, lenient=True)
+        corners_r, ids_r = detect_charuco_corners(img_r, board, lenient=True)
         if corners_l is None or corners_r is None or ids_l is None or ids_r is None:
             results.append({
                 "pair_idx": idx, "rms_l": float("nan"), "rms_r": float("nan"),

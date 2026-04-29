@@ -345,10 +345,12 @@ SKIP_POSE_TIMEOUT_SEC = 180.0
 # that we fit per-sensor intrinsics from the captured left frames and use them
 # for ghost projection with tight tolerance.
 BOOTSTRAP_COUNT = 6
-LR_SYNC_MAX_DELTA_NS = 80_000_000  # 80 ms (≈1 frame at 12.5fps). Software sync
-# via picamera2 typically lands at ~1 frame offset; stricter is impossible
-# without hardware-triggered sync. Board is static during a calibration
-# capture so a 1-frame delta doesn't affect the result.
+LR_SYNC_MAX_DELTA_NS = 250_000_000  # 250 ms. Software sync via two picamera2
+# instances drifts further than the original 80ms target on real hardware
+# (60-120 ms typical, occasional 200ms spikes when CPU is busy). Hardware-
+# triggered sync would be needed for tight bounds. Board is static during
+# a calibration capture so the temporal delta doesn't affect the result —
+# a generous ceiling here just keeps captures from being wrongly rejected.
 LR_MIN_COMMON_CORNERS = 15
 
 # Ambient drift: compare median brightness every ~30 frames against baseline.
@@ -1383,9 +1385,20 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 else:
                     state.drift_warning = None
 
-            # ChArUco detection on full-res
-            corners_l, ids_l = detect_charuco_corners(frame_l, board)
-            corners_r, ids_r = detect_charuco_corners(frame_r, board)
+            # ChArUco detection on full-res. lenient=True so 33mm markers at
+            # the 3m far poses (~22 px wide → 0.5% of 4608) still get picked up
+            # — strict default rejects markers under 3% of the image dimension.
+            # min_corners=4 matches the alignment-gate threshold below; with the
+            # default of 8, partial detections at the fisheye edges (corner
+            # poses) bounce between "8 corners" and "7 corners" frame to frame
+            # and the wizard flips between Alineado and "board no visible",
+            # never holding stable long enough to capture.
+            corners_l, ids_l = detect_charuco_corners(
+                frame_l, board, lenient=True, min_corners=4,
+            )
+            corners_r, ids_r = detect_charuco_corners(
+                frame_r, board, lenient=True, min_corners=4,
+            )
 
             vis_l = cv2.resize(frame_l, GUIDED_HALF)
             vis_r = cv2.resize(frame_r, GUIDED_HALF)
@@ -1868,9 +1881,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 break
             frame_l, frame_r = cap.read()
 
-            # Detect corners
-            corners_l, ids_l = detect_charuco_corners(frame_l, board)
-            corners_r, ids_r = detect_charuco_corners(frame_r, board)
+            # Detect corners (lenient: see wizard loop comment)
+            corners_l, ids_l = detect_charuco_corners(frame_l, board, lenient=True)
+            corners_r, ids_r = detect_charuco_corners(frame_r, board, lenient=True)
 
             # Build preview (resize for HTTP)
             vis_l = cv2.resize(frame_l, (648, 486))
@@ -2607,9 +2620,12 @@ def main() -> None:
 
     # --- capture ---
     p_cap = sub.add_parser("capture", help="Interactive capture with HTTP preview")
-    p_cap.add_argument("--left", type=int, default=1, help="Left camera index (CAM1 — lente izquierda mirando desde la cámara hacia la escena)")
-    p_cap.add_argument("--right", type=int, default=0, help="Right camera index (CAM0 — lente derecha mirando desde la cámara hacia la escena)")
-    p_cap.add_argument("--resolution", type=int, nargs=2, default=[4608, 2592])
+    p_cap.add_argument("--left", type=int, default=0, help="Left camera index (lente izquierda mirando desde la cámara hacia la escena). Default 0 matches the fleet wiring.")
+    p_cap.add_argument("--right", type=int, default=1, help="Right camera index. Default 1.")
+    p_cap.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
+                        help="Capture resolution. Default 2304x1296 (IMX708 binned, "
+                             "full FOV, ~4x faster ChArUco detection than full-res). "
+                             "Runtime config must match this — see config.example.yaml.")
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")
     p_cap.add_argument("--count", type=int, default=30, help="Minimum number of pairs")
@@ -2676,9 +2692,16 @@ def main() -> None:
     p_wiz.add_argument("--device-id", default="unknown", help="Device identifier for the report")
     p_wiz.add_argument("--output", default="calibration.npz", help="Output calibration file")
     p_wiz.add_argument("--output-dir", default="./calibration/captures", help="Dir for captured pairs")
-    p_wiz.add_argument("--left", type=int, default=1)
-    p_wiz.add_argument("--right", type=int, default=0)
-    p_wiz.add_argument("--resolution", type=int, nargs=2, default=[4608, 2592])
+    p_wiz.add_argument("--left", type=int, default=0)
+    p_wiz.add_argument("--right", type=int, default=1)
+    p_wiz.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
+                        help="Capture resolution. Default 2304x1296 (binned, full FOV). "
+                             "Full-res 4608x2592 makes per-frame detection 4x slower, "
+                             "which on Pi 5 dropped FPS to <2 and caused intermittent "
+                             "marker detection at the FOV edges (B/C/D corner poses) — "
+                             "the calibration came out degenerate (low RMS but failing "
+                             "ground-truth) on 2026-04-28 lab session because of that. "
+                             "Runtime config must match this resolution.")
     p_wiz.add_argument("--fps", type=int, default=5)
     p_wiz.add_argument("--port", type=int, default=8080)
     p_wiz.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0])

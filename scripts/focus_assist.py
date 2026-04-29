@@ -851,6 +851,12 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Guided focus assist for stereo cameras")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--left", type=int, default=0,
+                        help="Left camera index (lente izquierda mirando desde "
+                             "la cámara hacia la escena). Default 0 — matches "
+                             "the fleet wiring.")
+    parser.add_argument("--right", type=int, default=1,
+                        help="Right camera index. Default 1.")
     parser.add_argument("--min-score", type=float, default=MIN_SCORE,
                         help="Minimum center Laplacian variance (default 200)")
     parser.add_argument("--min-corner-score", type=float, default=MIN_CORNER_SCORE,
@@ -916,8 +922,8 @@ def main() -> None:
 
     from picamera2 import Picamera2
 
-    cam_l = Picamera2(1)
-    cam_r = Picamera2(0)
+    cam_l = Picamera2(args.left)
+    cam_r = Picamera2(args.right)
     for cam in [cam_l, cam_r]:
         # Capture at the IMX708 native full-FOV binned mode (2304x1296 @ 56fps,
         # 16:9) so there's no sensor-mode ambiguity, no aspect-ratio cropping,
