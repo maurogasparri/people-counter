@@ -30,6 +30,7 @@ import numpy as np
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import src.vision.calibration as _calib_mod
 from src.vision.calibration import (
     ALIGN_CENTER_TOL_PX,
     ALIGN_MEAN_ERR_TOL_PX_LOOSE,
@@ -84,6 +85,25 @@ _TOLERANCE_PRESETS = {
     "normal": (ALIGN_MEAN_ERR_TOL_PX_LOOSE, ALIGN_MEAN_ERR_TOL_PX_TIGHT),
     "strict": (15.0, 8.0),
 }
+
+
+def _apply_low_light_overrides() -> None:
+    """Relax frame-quality gates for PoC runs in low-light / small-room scenes.
+
+    Mutates the constants that ``assess_frame_quality`` reads. NOT for
+    production calibration — pairs accepted under these thresholds will have
+    poor SNR and the resulting .npz won't survive ground-truth verification.
+    """
+    _calib_mod.QUALITY_MIN_CORNERS = 8
+    _calib_mod.QUALITY_MIN_BLUR = 3.0
+    _calib_mod.QUALITY_MIN_EXPOSURE = 5.0
+    _calib_mod.QUALITY_MIN_CORNER_SHARPNESS = 5.0
+    _calib_mod.QUALITY_MAX_LR_BRIGHTNESS_PCT = 70.0
+    logger.warning(
+        "Low-light mode enabled — quality gates relaxed (exposure/blur/"
+        "corner-sharp/LR-balance). PoC only, do NOT trust the resulting "
+        "calibration for depth.",
+    )
 
 
 def _resolve_tolerance(args: argparse.Namespace) -> tuple[float, float]:
@@ -2427,6 +2447,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     verify → ground-truth check → report."""
     from src.vision.report import generate_html_report, save_report
 
+    if getattr(args, "low_light", False):
+        _apply_low_light_overrides()
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3027,6 +3050,13 @@ def main() -> None:
                              "fraction of captured pairs survive a strict "
                              "re-detection pass, the wizard aborts before running "
                              "fisheye.calibrate. Default 0.7 (70%%).")
+    p_wiz.add_argument("--low-light", action="store_true",
+                        help="PoC mode for low-light / small-room runs. Relaxes "
+                             "frame-quality gates (exposure, blur, corner sharpness, "
+                             "L/R brightness balance) so captures aren't rejected for "
+                             "scene conditions. The resulting calibration will NOT "
+                             "be valid for production depth — use only to validate "
+                             "the wizard end-to-end.")
     p_wiz.set_defaults(func=cmd_wizard)
 
     args = parser.parse_args()
