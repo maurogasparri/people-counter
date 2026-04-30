@@ -85,6 +85,7 @@ _LOW_LIGHT_DEFAULTS = {
     "target_distance_min_mm": 500.0,
     "target_distance_max_mm": 5000.0,
     "scene": "compact",
+    "meter": "centre",
 }
 
 
@@ -119,6 +120,8 @@ def _apply_threshold_overrides(args: argparse.Namespace) -> None:
 
     if low_light and args.scene == "auto":
         args.scene = _LOW_LIGHT_DEFAULTS["scene"]
+    if low_light and args.meter == "matrix":
+        args.meter = _LOW_LIGHT_DEFAULTS["meter"]
     if low_light:
         print(
             "[low-light] Umbrales aflojados (centro/corners/L-R/distancia) y "
@@ -273,9 +276,15 @@ def evaluate_focus(
     elif distance_r_mm is not None:
         distance_avg = distance_r_mm
 
+    # Both cameras must detect AND be in range. Falling back to whichever
+    # detected (the previous behaviour) let LISTO fire when one camera was
+    # blind to the board — masking dirty lenses, dead sensors, or asymmetric
+    # exposure problems behind a green PASS verdict.
     distance_ok = (
-        distance_avg is not None
-        and TARGET_DISTANCE_MIN_MM <= distance_avg <= TARGET_DISTANCE_MAX_MM
+        distance_l_mm is not None
+        and distance_r_mm is not None
+        and TARGET_DISTANCE_MIN_MM <= distance_l_mm <= TARGET_DISTANCE_MAX_MM
+        and TARGET_DISTANCE_MIN_MM <= distance_r_mm <= TARGET_DISTANCE_MAX_MM
     )
 
     # Uniformity check becomes "pass by default" when we didn't have enough
@@ -301,10 +310,25 @@ def evaluate_focus(
     hints: list[str] = []
     target_lo = TARGET_DISTANCE_MIN_MM / 1000
     target_hi = TARGET_DISTANCE_MAX_MM / 1000
-    if distance_avg is None:
+    if distance_l_mm is None and distance_r_mm is None:
         hints.append("Poné el board ChArUco en la escena para validar la distancia")
+    elif distance_l_mm is None:
+        hints.append(
+            "IZQ no detecta el board — limpiá el lente, chequeá foco "
+            "o exposición (probá --meter centre / --low-light)"
+        )
+    elif distance_r_mm is None:
+        hints.append(
+            "DER no detecta el board — limpiá el lente, chequeá foco "
+            "o exposición (probá --meter centre / --low-light)"
+        )
     elif not distance_ok:
-        if distance_avg < TARGET_DISTANCE_MIN_MM:
+        # Both detected but at least one is out of range. Pick whichever side
+        # is the worse offender so the operator knows where to move the board.
+        offender = distance_l_mm if abs(distance_l_mm - (TARGET_DISTANCE_MIN_MM + TARGET_DISTANCE_MAX_MM) / 2) > \
+                                    abs(distance_r_mm - (TARGET_DISTANCE_MIN_MM + TARGET_DISTANCE_MAX_MM) / 2) \
+                   else distance_r_mm
+        if offender < TARGET_DISTANCE_MIN_MM:
             hints.append(f"Board muy cerca ({distance_avg/1000:.2f}m). Objetivo: {target_lo:.2f}-{target_hi:.2f}m")
         else:
             hints.append(f"Board muy lejos ({distance_avg/1000:.2f}m). Objetivo: {target_lo:.2f}-{target_hi:.2f}m")
@@ -983,6 +1007,13 @@ def main() -> None:
                              "test rooms where corners see walls at unrelated depths). "
                              "'full': always enforce the corner check. --low-light forces "
                              "compact.")
+    parser.add_argument("--meter", choices=("matrix", "centre", "spot"), default="matrix",
+                        help="AE metering mode. 'matrix' (default) weights the whole "
+                             "frame — works in even lighting. 'centre' weights the "
+                             "central area heavily and 'spot' uses only the centre "
+                             "— use these when bright zones (windows, walls beyond a "
+                             "textured backdrop) drag exposure down on the board. "
+                             "--low-light defaults this to 'centre'.")
     parser.add_argument("--max-lr-diff-pct", type=float, default=None,
                         help="Max global L/R sharpness asymmetry (default 15%%, "
                              "or 50%% with --low-light)")
@@ -1038,6 +1069,7 @@ def main() -> None:
     dict_id = getattr(cv2.aruco, dict_attr)
 
     from picamera2 import Picamera2
+    from libcamera import controls as _libcam_controls
 
     cam_l = Picamera2(args.left)
     cam_r = Picamera2(args.right)
@@ -1051,6 +1083,22 @@ def main() -> None:
         )
         cam.configure(config)
         cam.start()
+
+    # AE metering mode: matrix (default) weighs the whole frame; centre-weighted
+    # / spot ignore the periphery and expose for the centre — useful when the
+    # scene has bright zones outside the board area (windows, walls beyond a
+    # textured backdrop) that drag the exposure down on the board itself.
+    meter_map = {
+        "matrix": _libcam_controls.AeMeteringModeEnum.Matrix,
+        "centre": _libcam_controls.AeMeteringModeEnum.CentreWeighted,
+        "spot": _libcam_controls.AeMeteringModeEnum.Spot,
+    }
+    meter_mode = meter_map[args.meter]
+    for cam in [cam_l, cam_r]:
+        cam.set_controls({"AeMeteringMode": meter_mode})
+    if args.meter != "matrix":
+        print(f"[meter] AE metering = {args.meter} (centre/spot ignores frame "
+              "edges, useful when bright zones surround the board)", flush=True)
     time.sleep(1)
 
     board = create_charuco_board(
@@ -1114,6 +1162,17 @@ def main() -> None:
     pass_streak = 0
     peaks = PeakTracker(window_frames=40)
     lr_disparity_buffer: list[float] = []
+    # Per-camera detection memory: ChArUco detection flickers in marginal
+    # contrast (low light, busy backgrounds), and per-frame None values
+    # caused the verdict to bounce. We carry the last successful detection
+    # forward for up to DETECT_STALENESS_SEC, so brief drops don't reset
+    # the LISTO gate while a real loss-of-board still surfaces after the
+    # grace period.
+    DETECT_STALENESS_SEC = 2.0
+    last_dist_l: Optional[float] = None
+    last_dist_l_t = 0.0
+    last_dist_r: Optional[float] = None
+    last_dist_r_t = 0.0
 
     try:
         while not finish_requested:
@@ -1125,6 +1184,18 @@ def main() -> None:
 
             dist_l, ncorn_l, bbox_l, cx_l = estimate_charuco_distance_mm(frame_l, board, args.focal_px)
             dist_r, ncorn_r, bbox_r, cx_r = estimate_charuco_distance_mm(frame_r, board, args.focal_px)
+
+            # Update per-camera detection memory; expire on staleness so a
+            # truly blind camera surfaces after a couple of seconds.
+            now_ts = time.time()
+            if dist_l is not None:
+                last_dist_l = dist_l
+                last_dist_l_t = now_ts
+            if dist_r is not None:
+                last_dist_r = dist_r
+                last_dist_r_t = now_ts
+            eff_dist_l = last_dist_l if (now_ts - last_dist_l_t) < DETECT_STALENESS_SEC else None
+            eff_dist_r = last_dist_r if (now_ts - last_dist_r_t) < DETECT_STALENESS_SEC else None
 
             # L/R parity check — with the cameras correctly mapped, the L
             # camera (physically on the left) sees an object shifted to the
@@ -1139,12 +1210,14 @@ def main() -> None:
                     lr_disparity_buffer.pop(0)
             # Predicted disparity for the current depth, used to flag
             # magnitude_off (sign correct but value way off — hints at a
-            # baseline mismatch or a non-board object detected).
+            # baseline mismatch or a non-board object detected). Uses the
+            # smoothed distances so brief detection drops don't bounce
+            # expected_px.
             expected_px = None
-            if dist_l is not None and frame_l is not None:
-                expected_px = _expected_disparity_px(dist_l, frame_l.shape[1])
-            elif dist_r is not None and frame_r is not None:
-                expected_px = _expected_disparity_px(dist_r, frame_r.shape[1])
+            if eff_dist_l is not None and frame_l is not None:
+                expected_px = _expected_disparity_px(eff_dist_l, frame_l.shape[1])
+            elif eff_dist_r is not None and frame_r is not None:
+                expected_px = _expected_disparity_px(eff_dist_r, frame_r.shape[1])
             lr_status = _classify_lr(lr_disparity_buffer, expected_px=expected_px)
 
             # Scene-mode resolution: "compact" forces corners-skipped; "full"
@@ -1158,7 +1231,7 @@ def main() -> None:
                 is_compact = max(bbox_l, bbox_r) > COMPACT_BBOX_THRESHOLD
 
             ev = evaluate_focus(
-                grid_l, grid_r, dist_l, dist_r, valid_l, valid_r,
+                grid_l, grid_r, eff_dist_l, eff_dist_r, valid_l, valid_r,
                 compact_scene=is_compact,
             )
             peaks.update(ev["center_l"], ev["center_r"])

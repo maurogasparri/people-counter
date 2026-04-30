@@ -496,8 +496,41 @@ class TestStability:
         for _ in range(3):
             st.push(small)
         st.push(big)
-        # Buffer should restart on corner count change
+        # Without IDs the tracker still uses the legacy "restart on count
+        # change" behaviour — there's no way to know which corner is which.
         assert len(st._buffer) == 1
+
+    def test_ids_tolerate_detection_count_fluctuation(self):
+        # With marker IDs, the tracker compares displacement on the corners
+        # that appear in BOTH frames. Counts can fluctuate (e.g. 23↔35) due
+        # to marginal lighting without resetting the buffer — what matters
+        # is whether the persistent corners are still.
+        st = StabilityTracker(window=5, max_disp_px=1.5)
+        # Frames alternate between detecting 3 corners and detecting 2 corners,
+        # but the corners that DO appear stay at the same pixel coords.
+        big_pts = np.array([[100, 100], [200, 200], [300, 300]], dtype=np.float32)
+        big_ids = np.array([1, 2, 3])
+        small_pts = np.array([[100, 100], [200, 200]], dtype=np.float32)
+        small_ids = np.array([1, 2])
+        for i in range(5):
+            if i % 2 == 0:
+                st.push(big_pts, ids=big_ids)
+            else:
+                st.push(small_pts, ids=small_ids)
+        assert len(st._buffer) == 5
+        assert st.is_stable()
+
+    def test_ids_detect_movement_on_common_corners(self):
+        # Even with fluctuating counts, real motion on the persistent corners
+        # must be detected — IDs only tolerate count changes, not displacement.
+        st = StabilityTracker(window=5, max_disp_px=1.5)
+        for i in range(5):
+            pts = np.array(
+                [[100 + i * 5, 100], [200, 200], [300, 300]], dtype=np.float32,
+            )
+            ids = np.array([1, 2, 3]) if i % 2 == 0 else np.array([1, 2])
+            st.push(pts[:len(ids)], ids=ids)
+        assert not st.is_stable()
 
 
 class TestFrameQuality:

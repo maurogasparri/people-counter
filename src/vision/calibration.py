@@ -1112,6 +1112,12 @@ class StabilityTracker:
     Call push() every frame with the detected corner array (preview px). Call
     is_stable() to check whether the last `window` frames have max inter-frame
     displacement below the threshold.
+
+    When IDs are provided, displacement is measured on the INTERSECTION of
+    corner IDs across frames. Marginal lighting often causes detection counts
+    to fluctuate (23 ↔ 35 corners) even when the board is still — the previous
+    "reset on shape change" behaviour made stability unreachable in those
+    conditions, even though the board wasn't actually moving.
     """
 
     def __init__(
@@ -1121,31 +1127,67 @@ class StabilityTracker:
     ) -> None:
         self.window = window
         self.max_disp_px = max_disp_px
-        self._buffer: list[np.ndarray] = []
+        # Each entry is (positions Nx2, ids 1D array or None when caller didn't
+        # pass IDs). When ids is None we fall back to the legacy behaviour of
+        # requiring identical shapes between frames.
+        self._buffer: list[tuple[np.ndarray, Optional[np.ndarray]]] = []
 
     def reset(self) -> None:
         self._buffer.clear()
 
-    def push(self, corners_preview: Optional[np.ndarray]) -> None:
-        """Add a frame's corner positions. Pass None if detection failed."""
+    def push(
+        self,
+        corners_preview: Optional[np.ndarray],
+        ids: Optional[np.ndarray] = None,
+    ) -> None:
+        """Add a frame's corner positions (and optional IDs). Pass None if
+        detection failed."""
         if corners_preview is None or len(corners_preview) == 0:
             self._buffer.clear()
             return
         pts = np.asarray(corners_preview).reshape(-1, 2).astype(np.float32)
-        if self._buffer and self._buffer[-1].shape != pts.shape:
-            # Corner count changed (partial detection) — restart
+        ids_arr: Optional[np.ndarray]
+        if ids is not None:
+            ids_arr = np.asarray(ids).reshape(-1).astype(int)
+        else:
+            ids_arr = None
+        # Legacy fallback: when no IDs are supplied we can't intersect, so we
+        # keep the old "restart on count change" semantics.
+        if (
+            self._buffer
+            and ids_arr is None
+            and self._buffer[-1][0].shape != pts.shape
+        ):
             self._buffer.clear()
-        self._buffer.append(pts)
+        self._buffer.append((pts, ids_arr))
         if len(self._buffer) > self.window:
             self._buffer.pop(0)
 
     def max_displacement(self) -> float:
-        """Max per-corner displacement between consecutive frames in the buffer."""
+        """Max per-corner displacement between consecutive frames in the buffer.
+
+        With IDs available, compares only corners that appear in both frames
+        of each consecutive pair — tolerant to detection drop-in/drop-out
+        without losing precision on the corners that DO persist."""
         if len(self._buffer) < 2:
             return float("inf")
         worst = 0.0
-        for prev, curr in zip(self._buffer[:-1], self._buffer[1:]):
-            disp = np.linalg.norm(curr - prev, axis=1).max()
+        for (prev_pts, prev_ids), (curr_pts, curr_ids) in zip(
+            self._buffer[:-1], self._buffer[1:],
+        ):
+            if prev_ids is not None and curr_ids is not None:
+                common, prev_idx, curr_idx = np.intersect1d(
+                    prev_ids, curr_ids, return_indices=True,
+                )
+                if common.size == 0:
+                    return float("inf")
+                disp = np.linalg.norm(
+                    curr_pts[curr_idx] - prev_pts[prev_idx], axis=1,
+                ).max()
+            else:
+                if prev_pts.shape != curr_pts.shape:
+                    return float("inf")
+                disp = np.linalg.norm(curr_pts - prev_pts, axis=1).max()
             worst = max(worst, float(disp))
         return worst
 

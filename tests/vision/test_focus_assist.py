@@ -53,6 +53,20 @@ class TestEvaluateFocus:
         assert not ev["all_pass_with_distance"]
         assert not ev["checks"]["distance"]
 
+    def test_only_one_camera_detects_blocks_distance_pass(self):
+        # Regression: previously falling back to whichever camera detected
+        # let LISTO fire when one was blind. Both cameras must see the board.
+        g = self._sharp_grid()
+        ev = focus_assist.evaluate_focus(g, g, 2000.0, None)
+        assert not ev["distance_ok"]
+        assert not ev["all_pass_with_distance"]
+        assert any("DER no detecta" in h for h in ev["hints"])
+
+        ev = focus_assist.evaluate_focus(g, g, None, 2000.0)
+        assert not ev["distance_ok"]
+        assert not ev["all_pass_with_distance"]
+        assert any("IZQ no detecta" in h for h in ev["hints"])
+
     def test_board_too_close(self):
         g = self._sharp_grid()
         # 800mm is below the lab 1800mm min

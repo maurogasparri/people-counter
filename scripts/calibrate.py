@@ -1484,8 +1484,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                         min_matched=ALIGN_MATCHED_MIN_LOOSE,
                     )
 
-            # Stability
-            stability.push(scaled_corners_l if aligned else None)
+            # Stability — pass IDs so the tracker tolerates detection
+            # count fluctuations (23↔35 corners with marginal lighting)
+            # without resetting the buffer.
+            stability.push(
+                scaled_corners_l if aligned else None,
+                ids=ids_l if aligned else None,
+            )
             stable = stability.is_stable() if aligned else False
 
             now = time.time()
