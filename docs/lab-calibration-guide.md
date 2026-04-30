@@ -26,6 +26,20 @@ parámetros por sitio (`mounting_height_m`, etc.) se definen después en
 - Mínimo **4m × 3m despejado** con buena iluminación uniforme (sin fuentes pulsátiles tipo LED barato a 100Hz).
 - Ideal: showroom o similar, con fondo texturado (paredes con cuadros, percheros con ropa). Evitar paredes lisas blancas frente a la cámara — afectan el check de uniformidad de foco.
 
+#### Fondo texturado: por qué importa
+
+El check de **corner sharpness** del `focus_assist` mide varianza Laplaciana en las 4 esquinas del frame — necesita textura visible ahí para devolver un número representativo. Pared blanca = varianza ~0 = el check no puede distinguir "lente blando en los bordes" de "no hay contenido para medir".
+
+La **validación ground-truth** del wizard al final muestrea profundidad en 5 zonas (centro + 4 esquinas). SGBM necesita textura para matchear L↔R; pared lisa devuelve fill-rate bajo (<50%) y std alto, y el reporte termina con números que parecen una calibración mala cuando en realidad es la escena la que no tiene info.
+
+**Opciones de fondo, en orden de preferencia**:
+
+1. **Jardín vertical / pared con plantas densas** a 3.5-4m del lente. Follaje cubre las 4 esquinas con textura de alta frecuencia. Caveat: hojas estáticas (AC off, sin viento) — si se mueven entre frames L y R (60-120ms desync) el SGBM mete ruido.
+2. **Biblioteca con libros**, ladrillo visto, afiche con detalle denso, percheros con ropa. Cualquier superficie con detalle visible cubriendo el FOV completo.
+3. **Pared lisa**: aceptable solo si **agregás objetos texturados en las 4 esquinas del frame** — caja con etiquetas en el piso, cuadros en la pared, plantas en macetas. Lo que importa es que cada esquina del frame de la cámara tenga textura, no que toda la pared sea uniforme.
+
+Sin esto, el reporte va a tirar `FAIL` o `WARN` en uniformidad de corners y/o ground-truth aunque el lente esté bien enfocado.
+
 ### Software
 
 - Dispositivo RPi5 encendido, con el repo clonado y dependencias instaladas.

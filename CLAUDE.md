@@ -152,6 +152,14 @@ people-counter/
 │   │                         con highlight ámbar cuando una cámara silenciosamente
 │   │                         falla detección. Subcomando `reset --yes` limpia
 │   │                         captures + session.json + .npz para restart limpio.
+│   │                         --low-light: preset PoC que afloja los gates de
+│   │                         assess_frame_quality (exposure/blur/corner-sharp/
+│   │                         L-R balance) — el .npz resultante NO es válido
+│   │                         para producción, solo valida que el wizard corra.
+│   │                         Preview L durante captura guiada NO dibuja overlay
+│   │                         de ChArUco (badge "N esquinas" en su lugar) para
+│   │                         no tapar el área del ghost; R sí lo dibuja como
+│   │                         diagnóstico de la cámara derecha.
 │   ├── focus_assist.py    <- asistente de foco guiado, UI web: start overlay,
 │   │                         barras de nitidez central + corners (absoluto) + simetría L/R,
 │   │                         peak tracker, masking de zonas de bajo contraste,
@@ -164,6 +172,9 @@ people-counter/
 │   │                         la disparidad esperada por baseline+depth — pill verde
 │   │                         "L/R OK", roja "INVERTIDO" o ámbar "magnitud rara"
 │   │                         (sign correcto pero off por >2.5× respecto del esperado).
+│   │                         --low-light: preset PoC que afloja todos los gates
+│   │                         (centro/corners/L-R/distancia) y fuerza scene=compact
+│   │                         para validar el flujo en cuarto chico/oscuro.
 │   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad
 │   ├── provision.py       <- provisioning + disaster recovery (create/deploy/harvest/reprovision/list)
 │   ├── verify_hardware.py <- verificación de hardware

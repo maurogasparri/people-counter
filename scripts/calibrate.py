@@ -1578,18 +1578,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     _emit_pose_announce(state.current_pose_idx)
                 continue
 
-            # Detected corners first, then ghost on top — keeps the ghost
-            # outline visible above the busy charuco overlay (lines + IDs)
-            # so the operator can actually see the alignment target. Ghost
-            # is only drawn on L: alignment is computed against L only, and
-            # showing it on R was misleading because parallax (14 cm baseline)
-            # makes the same physical board land 14 cm offset in R — operators
-            # were trying to fit both ghosts simultaneously, which is impossible.
-            if corners_l is not None and ids_l is not None:
-                sc = corners_l.copy()
-                sc[:, 0, 0] *= scale_x
-                sc[:, 0, 1] *= scale_y
-                cv2.aruco.drawDetectedCornersCharuco(vis_l, sc, ids_l, (0, 255, 0))
+            # L preview: NO charuco overlay — the per-corner dots + IDs filled
+            # the ghost area and made it hard to see the actual board edges
+            # against the ghost outline. Show only a corner count badge so
+            # the operator still knows detection is working. R keeps the full
+            # overlay as a diagnostic of the right camera (no ghost competes
+            # with it there).
+            n_l_detected = len(corners_l) if corners_l is not None else 0
             if corners_r is not None and ids_r is not None:
                 sc = corners_r.copy()
                 sc[:, 0, 0] *= scale_x
@@ -1598,6 +1593,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
             ghost_color = (80, 220, 80) if aligned else (80, 180, 255)
             _draw_ghost(vis_l, ghost["outer_corners"], ghost_color)
+
+            badge_color = (80, 220, 80) if n_l_detected >= 8 else (80, 180, 255)
+            cv2.putText(
+                vis_l, f"{n_l_detected} esquinas",
+                (8, GUIDED_HALF[1] - 14),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, badge_color, 2,
+            )
 
             # Direction arrow on LEFT
             if err is not None and not aligned and err["matched"] >= 4:

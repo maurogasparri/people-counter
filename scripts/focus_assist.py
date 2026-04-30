@@ -74,19 +74,57 @@ COMPACT_BBOX_THRESHOLD = 0.25     # Board bbox/frame area > this -> compact
                                    # center and we skip that check).
 
 
+# Relaxed presets for PoC runs in low-light / small-room scenes. NOT a
+# production focus pass — the resulting "PASS" only confirms the wizard runs,
+# not that the lens is actually focused well enough for depth.
+_LOW_LIGHT_DEFAULTS = {
+    "min_score": 80.0,
+    "min_corner_score": 30.0,
+    "max_lr_diff_pct": 50.0,
+    "max_lr_zone_diff_pct": 100.0,
+    "target_distance_min_mm": 500.0,
+    "target_distance_max_mm": 5000.0,
+    "scene": "compact",
+}
+
+
 def _apply_threshold_overrides(args: argparse.Namespace) -> None:
     """Override focus-quality thresholds from CLI flags. Lets operators loosen
     checks for tricky environments (vidrio frontal, low-light) without editing
-    code. Defaults preserve current behaviour.
+    code.
+
+    Resolution order per setting: explicit CLI flag > --low-light preset >
+    production default. Sentinel ``None`` defaults on the args identify
+    "operator did not pass this flag explicitly".
     """
     global MIN_SCORE, MIN_CORNER_SCORE, MAX_LR_DIFF_PCT, MAX_LR_ZONE_DIFF_PCT
     global TARGET_DISTANCE_MIN_MM, TARGET_DISTANCE_MAX_MM
-    MIN_SCORE = args.min_score
-    MIN_CORNER_SCORE = args.min_corner_score
-    MAX_LR_DIFF_PCT = args.max_lr_diff_pct
-    MAX_LR_ZONE_DIFF_PCT = args.max_lr_zone_diff_pct
-    TARGET_DISTANCE_MIN_MM = args.target_distance_min_mm
-    TARGET_DISTANCE_MAX_MM = args.target_distance_max_mm
+
+    low_light = getattr(args, "low_light", False)
+
+    def _resolve(name: str, prod_default: float) -> float:
+        explicit = getattr(args, name)
+        if explicit is not None:
+            return explicit
+        if low_light:
+            return _LOW_LIGHT_DEFAULTS[name]
+        return prod_default
+
+    MIN_SCORE = _resolve("min_score", MIN_SCORE)
+    MIN_CORNER_SCORE = _resolve("min_corner_score", MIN_CORNER_SCORE)
+    MAX_LR_DIFF_PCT = _resolve("max_lr_diff_pct", MAX_LR_DIFF_PCT)
+    MAX_LR_ZONE_DIFF_PCT = _resolve("max_lr_zone_diff_pct", MAX_LR_ZONE_DIFF_PCT)
+    TARGET_DISTANCE_MIN_MM = _resolve("target_distance_min_mm", TARGET_DISTANCE_MIN_MM)
+    TARGET_DISTANCE_MAX_MM = _resolve("target_distance_max_mm", TARGET_DISTANCE_MAX_MM)
+
+    if low_light and args.scene == "auto":
+        args.scene = _LOW_LIGHT_DEFAULTS["scene"]
+    if low_light:
+        print(
+            "[low-light] Umbrales aflojados (centro/corners/L-R/distancia) y "
+            "scene=compact. PoC only — no confiar en este PASS para producción.",
+            flush=True,
+        )
 
 
 def focus_score(frame: np.ndarray) -> float:
@@ -920,23 +958,37 @@ def main() -> None:
                              "the fleet wiring.")
     parser.add_argument("--right", type=int, default=1,
                         help="Right camera index. Default 1.")
-    parser.add_argument("--min-score", type=float, default=MIN_SCORE,
-                        help="Minimum center Laplacian variance (default 200)")
-    parser.add_argument("--min-corner-score", type=float, default=MIN_CORNER_SCORE,
+    parser.add_argument("--low-light", action="store_true",
+                        help="PoC mode for low-light / small-room runs. Relaxes "
+                             "center sharpness, corner sharpness, L/R balance, distance "
+                             "range, and forces scene=compact. Equivalent to passing "
+                             "--min-score 80 --min-corner-score 30 --max-lr-diff-pct 50 "
+                             "--max-lr-zone-diff-pct 100 --target-distance-min-mm 500 "
+                             "--target-distance-max-mm 5000 --scene compact. Explicit "
+                             "flags still override this preset. The resulting PASS does "
+                             "NOT validate focus for production — only that the tool runs.")
+    parser.add_argument("--min-score", type=float, default=None,
+                        help="Minimum center Laplacian variance (default 200, "
+                             "or 80 with --low-light)")
+    parser.add_argument("--min-corner-score", type=float, default=None,
                         help="Minimum mean Laplacian variance across the 4 corner zones "
-                             "(default 100). Absolute metric — does the corner have detail? "
-                             "Replaces the old edges/center ratio which mis-fired in small "
-                             "rooms where the board dominates the centre. Raise for stricter.")
+                             "(default 100, or 30 with --low-light). Absolute metric — "
+                             "does the corner have detail? Replaces the old edges/center "
+                             "ratio which mis-fired in small rooms where the board "
+                             "dominates the centre. Raise for stricter.")
     parser.add_argument("--scene", choices=("auto", "compact", "full"), default="auto",
                         help="Scene mode. 'auto' (default): compact if the ChArUco bbox "
                              f"covers more than {int(COMPACT_BBOX_THRESHOLD*100)}%% of the "
                              "frame. 'compact': always skip the corner check (for small "
                              "test rooms where corners see walls at unrelated depths). "
-                             "'full': always enforce the corner check.")
-    parser.add_argument("--max-lr-diff-pct", type=float, default=MAX_LR_DIFF_PCT,
-                        help="Max global L/R sharpness asymmetry (default 15%%)")
-    parser.add_argument("--max-lr-zone-diff-pct", type=float, default=MAX_LR_ZONE_DIFF_PCT,
-                        help="Max per-zone L/R asymmetry (default 30%%)")
+                             "'full': always enforce the corner check. --low-light forces "
+                             "compact.")
+    parser.add_argument("--max-lr-diff-pct", type=float, default=None,
+                        help="Max global L/R sharpness asymmetry (default 15%%, "
+                             "or 50%% with --low-light)")
+    parser.add_argument("--max-lr-zone-diff-pct", type=float, default=None,
+                        help="Max per-zone L/R asymmetry (default 30%%, "
+                             "or 100%% with --low-light)")
     parser.add_argument("--mount-height-m", type=float, default=DEFAULT_MOUNT_HEIGHT_M,
                         help=f"Informational only: camera mount height from floor. "
                              f"Focus is done once in the lab at a fixed distance "
@@ -944,14 +996,16 @@ def main() -> None:
                              f"not affect the target range. "
                              f"Default {DEFAULT_MOUNT_HEIGHT_M}m.")
     parser.add_argument("--target-distance-min-mm", type=float,
-                        default=TARGET_DISTANCE_MIN_MM,
+                        default=None,
                         help=f"Min target distance (mm) for focus validation. "
                              f"Default {TARGET_DISTANCE_MIN_MM:.0f}mm (lab protocol: "
-                             f"focus at 2.0m ±20cm, DoF covers fleet 1.15-3.30m).")
+                             f"focus at 2.0m ±20cm, DoF covers fleet 1.15-3.30m). "
+                             f"500mm with --low-light.")
     parser.add_argument("--target-distance-max-mm", type=float,
-                        default=TARGET_DISTANCE_MAX_MM,
+                        default=None,
                         help=f"Max target distance (mm) for focus validation. "
-                             f"Default {TARGET_DISTANCE_MAX_MM:.0f}mm (lab protocol).")
+                             f"Default {TARGET_DISTANCE_MAX_MM:.0f}mm (lab protocol). "
+                             f"5000mm with --low-light.")
     parser.add_argument("--board-cols", type=int, default=9,
                         help="ChArUco columns (squares). Default 9 (canonical board)")
     parser.add_argument("--board-rows", type=int, default=6,
