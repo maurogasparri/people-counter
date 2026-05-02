@@ -27,6 +27,8 @@ class StereoCapture:
         cam_right_id: int,
         resolution: tuple[int, int],
         fps: int = 15,
+        meter_mode: str = "matrix",
+        lock_ae: bool = False,
     ) -> None:
         """Initialize stereo capture.
 
@@ -35,11 +37,24 @@ class StereoCapture:
             cam_right_id: Right camera index.
             resolution: (width, height) capture resolution.
             fps: Target frame rate.
+            meter_mode: AE metering mode ('matrix', 'centre', 'spot'). Centre/spot
+                ignore the frame periphery during the AE settle, useful when
+                bright zones outside the working area drag exposure down on the
+                target (calibration board). Default 'matrix' matches picamera2's
+                default whole-frame weighting.
+            lock_ae: When True, AE/AWB are locked to the values that AE settled
+                on after a 1-second wait. Useful when the calibration scene has
+                fluctuating light (natural daylight, doors opening) — the lock
+                prevents L/R AE drift mid-session. Default False — for stable
+                indoor lighting AE auto is simpler and produces representative
+                images for the ground-truth report.
         """
         self.cam_left_id = cam_left_id
         self.cam_right_id = cam_right_id
         self.resolution = resolution
         self.fps = fps
+        self.meter_mode = meter_mode
+        self.lock_ae = lock_ae
         self._cam_left = None
         self._cam_right = None
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -77,30 +92,58 @@ class StereoCapture:
             cam.configure(config)
             cam.start()
 
-        # Lock exposure, gain and white balance so both cameras match.
-        # Let auto-exposure settle first, then fix the values.
-        import time as _time
-        _time.sleep(1.0)
-        for cam, name in [
-            (self._cam_left, "left"),
-            (self._cam_right, "right"),
-        ]:
-            metadata = cam.capture_metadata()
-            cam.set_controls({
-                "AeEnable": False,
-                "AwbEnable": False,
-                "ExposureTime": metadata.get("ExposureTime", 30000),
-                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
-                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
-            })
-            logger.info(
-                "camera_controls_locked",
-                extra={
-                    "camera": name,
-                    "exposure_us": metadata.get("ExposureTime", 0),
-                    "analogue_gain": metadata.get("AnalogueGain", 0),
-                },
-            )
+        # Set AE metering mode before the settle so the locked exposure
+        # reflects the chosen weighting (matrix/centre/spot).
+        if self.meter_mode != "matrix":
+            try:
+                from libcamera import controls as _libcam_controls
+                meter_map = {
+                    "centre": _libcam_controls.AeMeteringModeEnum.CentreWeighted,
+                    "spot": _libcam_controls.AeMeteringModeEnum.Spot,
+                }
+                meter_value = meter_map[self.meter_mode]
+                for cam in [self._cam_left, self._cam_right]:
+                    cam.set_controls({"AeMeteringMode": meter_value})
+                logger.info(
+                    "ae_metering_mode_set",
+                    extra={"mode": self.meter_mode},
+                )
+            except (ImportError, KeyError, Exception) as e:
+                logger.warning(
+                    "ae_metering_mode_failed",
+                    extra={"mode": self.meter_mode, "error": str(e)},
+                )
+
+        # Optionally lock exposure, gain and white balance after a 1s settle.
+        # Default behaviour (lock_ae=False) keeps AE auto throughout the
+        # session — simpler, produces representative ground-truth images,
+        # and works fine for stable indoor lighting. Enable lock_ae=True
+        # when the scene has fluctuating light (natural daylight, doors
+        # opening, mixed lighting) — the lock prevents independent L/R AE
+        # drift mid-session.
+        if self.lock_ae:
+            import time as _time
+            _time.sleep(1.0)
+            for cam, name in [
+                (self._cam_left, "left"),
+                (self._cam_right, "right"),
+            ]:
+                metadata = cam.capture_metadata()
+                cam.set_controls({
+                    "AeEnable": False,
+                    "AwbEnable": False,
+                    "ExposureTime": metadata.get("ExposureTime", 30000),
+                    "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                    "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+                })
+                logger.info(
+                    "camera_controls_locked",
+                    extra={
+                        "camera": name,
+                        "exposure_us": metadata.get("ExposureTime", 0),
+                        "analogue_gain": metadata.get("AnalogueGain", 0),
+                    },
+                )
 
         self._executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="stereo-cap"

@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 
+from src.config.hardware import load_hardware_config
 from src.config.loader import (
     apply_shadow_delta,
     build_reported_state,
@@ -111,11 +112,19 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
             fps=config["vision"].get("fps", 15),
         )
     else:
+        # camera_left / camera_right come from hardware.yaml — they're
+        # determined by the bracket assembly procedure (which CSI port the
+        # left/right ribbon plugs into) and are invariant across the fleet.
+        # See config/hardware.yaml.
+        hw = load_hardware_config()
         cap = StereoCapture(
-            cam_left_id=config["vision"]["camera_left"],
-            cam_right_id=config["vision"]["camera_right"],
-            resolution=tuple(config["vision"]["resolution"]),
-            fps=config["vision"].get("fps", 15),
+            cam_left_id=hw["bracket"]["camera_left_csi"],
+            cam_right_id=hw["bracket"]["camera_right_csi"],
+            resolution=tuple(
+                config["vision"].get("resolution",
+                                     hw["sensor"]["default_res"])
+            ),
+            fps=config["vision"].get("fps", hw["sensor"]["default_fps"]),
         )
     return cap
 

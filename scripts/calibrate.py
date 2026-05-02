@@ -87,6 +87,43 @@ _TOLERANCE_PRESETS = {
 }
 
 
+def _captured_have_distance_diversity(
+    captured_pairs: list,
+    poses: list,
+    near_mm: float,
+    mid_mm: float,
+    far_mm: float,
+) -> bool:
+    """True iff captures span all 3 distance bands (near/mid/far).
+
+    Bootstrap fits intrinsics from the captures so far. Done with only
+    near-band captures it converges to a focal that fits those depths but
+    extrapolates poorly — and that wrong focal then drives the ghost
+    rendering for far poses, telling the operator to put the board at a
+    distance that doesn't match the floor mark. Defer the bootstrap until
+    we have evidence from each band.
+    """
+    if not captured_pairs:
+        return False
+    pose_distance = {p.id: p.tvec_mm[2] for p in poses}
+    mid_lo = (near_mm + mid_mm) / 2
+    far_lo = (mid_mm + far_mm) / 2
+    has_near = has_mid = has_far = False
+    for entry in captured_pairs:
+        # captured_pairs items are (left_path, right_path, pose_id) tuples
+        pose_id = entry[2] if len(entry) >= 3 else None
+        z = pose_distance.get(pose_id)
+        if z is None:
+            continue
+        if z < mid_lo:
+            has_near = True
+        elif z < far_lo:
+            has_mid = True
+        else:
+            has_far = True
+    return has_near and has_mid and has_far
+
+
 def _apply_low_light_overrides() -> None:
     """Relax frame-quality gates for PoC runs in low-light / small-room scenes.
 
@@ -1040,7 +1077,7 @@ def _session_params(args: argparse.Namespace) -> dict:
         # Resolution must match across resume — calibration needs all frames
         # at the same size or the math breaks. 2026-04-28 session would have
         # silently corrupted if the operator had retried at a different res.
-        "resolution": list(args.resolution),
+        "resolution": list(getattr(args, "resolution", [2304, 1296])),
     }
 
 
@@ -1117,6 +1154,8 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     cap = StereoCapture(
         cam_left_id=args.left, cam_right_id=args.right,
         resolution=tuple(args.resolution), fps=args.fps,
+        meter_mode=getattr(args, "meter", "matrix"),
+        lock_ae=getattr(args, "lock_ae", False),
     )
     cap.open()
 
@@ -1194,34 +1233,48 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 break
         else:
             logger.info("Sesión ya completa (%d capturas). Nada que resumir.", count)
-        # Re-fit bootstrap K if enough captures
+        # Re-fit bootstrap K if enough captures AND distance diversity
         if count >= BOOTSTRAP_COUNT:
-            lefts = []
-            for lp, _rp, _pid in state.captured_pairs:
-                img = cv2.imread(str(lp))
-                if img is not None:
-                    lefts.append(img)
-            if len(lefts) >= 4:
-                fitted = fit_single_camera_intrinsics(
-                    lefts,
-                    create_charuco_board(
-                        board_size=board_size,
-                        square_length=args.square_length,
-                        marker_length=args.marker_length,
-                        dict_id=dict_id,
-                        legacy_pattern=args.legacy_pattern,
-                    ),
+            diverse = _captured_have_distance_diversity(
+                state.captured_pairs, poses,
+                getattr(args, "dist_near_mm", DEFAULT_DIST_NEAR_MM),
+                getattr(args, "dist_mid_mm", DEFAULT_DIST_MID_MM),
+                getattr(args, "dist_far_mm", DEFAULT_DIST_FAR_MM),
+            )
+            if not diverse:
+                logger.info(
+                    "Resume: %d capturas restauradas pero falta cobertura "
+                    "de alguna banda (near/mid/far) — seguimos con K nominal "
+                    "hasta completar diversity",
+                    count,
                 )
-                if fitted is not None:
-                    state.fitted_K = fitted
-                    state.bootstrap_done = True
-                    logger.info(
-                        "Resume: %d capturas restauradas, bootstrap K re-ajustado "
-                        "(fx=%.0f fy=%.0f)",
-                        count, fitted[0, 0], fitted[1, 1],
+            else:
+                lefts = []
+                for lp, _rp, _pid in state.captured_pairs:
+                    img = cv2.imread(str(lp))
+                    if img is not None:
+                        lefts.append(img)
+                if len(lefts) >= 4:
+                    fitted = fit_single_camera_intrinsics(
+                        lefts,
+                        create_charuco_board(
+                            board_size=board_size,
+                            square_length=args.square_length,
+                            marker_length=args.marker_length,
+                            dict_id=dict_id,
+                            legacy_pattern=args.legacy_pattern,
+                        ),
                     )
-                else:
-                    logger.warning("Resume: bootstrap fit falló, seguimos con K nominal")
+                    if fitted is not None:
+                        state.fitted_K = fitted
+                        state.bootstrap_done = True
+                        logger.info(
+                            "Resume: %d capturas restauradas, bootstrap K re-ajustado "
+                            "(fx=%.0f fy=%.0f)",
+                            count, fitted[0, 0], fitted[1, 1],
+                        )
+                    else:
+                        logger.warning("Resume: bootstrap fit falló, seguimos con K nominal")
         else:
             logger.info(
                 "Resume: %d capturas restauradas (< bootstrap threshold %d, "
@@ -1316,8 +1369,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         _emit_audio(_pose_announce(idx))
 
     # Announce the first pending pose (= poses[0] on fresh start, or the
-    # next pending after resume restore)
-    _emit_pose_announce(state.current_pose_idx)
+    # next pending after resume restore). Skip if there's nothing to
+    # capture — happens with --resume on a session that's already complete:
+    # the wizard goes straight to processing, and an immediately-cut TTS
+    # "Pose 1, ..." mid-utterance is jarring.
+    has_pending = any(s == "pending" for s in state.pose_status)
+    if has_pending:
+        _emit_pose_announce(state.current_pose_idx)
 
     # Persist initial/resumed state so a crash before any new capture still
     # leaves a valid session.json on disk.
@@ -1667,26 +1725,43 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     # confirms it and a spoken confirmation just delays the
                     # next pose announcement from being heard.
 
-                    # Bootstrap handoff: after N captures fit intrinsics
+                    # Bootstrap handoff: after N captures AND distance diversity
+                    # across all 3 bands, fit intrinsics. Without diversity, the
+                    # fitted focal can be wildly off and corrupt the ghost
+                    # rendering for poses outside the captured band.
                     if not state.bootstrap_done and count >= BOOTSTRAP_COUNT:
-                        logger.info("Fitting bootstrap intrinsics from %d captures...", count)
-                        lefts = []
-                        for lp, _rp, _pid in state.captured_pairs:
-                            img = cv2.imread(str(lp))
-                            if img is not None:
-                                lefts.append(img)
-                        fitted = fit_single_camera_intrinsics(lefts, board)
-                        if fitted is not None:
-                            state.fitted_K = fitted
-                            state.bootstrap_done = True
+                        diverse = _captured_have_distance_diversity(
+                            state.captured_pairs, poses,
+                            getattr(args, "dist_near_mm", DEFAULT_DIST_NEAR_MM),
+                            getattr(args, "dist_mid_mm", DEFAULT_DIST_MID_MM),
+                            getattr(args, "dist_far_mm", DEFAULT_DIST_FAR_MM),
+                        )
+                        if not diverse:
                             logger.info(
-                                "Bootstrap done: f_x=%.0f, f_y=%.0f, cx=%.0f, cy=%.0f — "
-                                "switching to tight tolerance",
-                                fitted[0, 0], fitted[1, 1], fitted[0, 2], fitted[1, 2],
+                                "Bootstrap deferido: %d capturas pero falta cobertura "
+                                "de alguna banda (near/mid/far). Seguimos con K nominal "
+                                "hasta tener al menos una captura por banda.",
+                                count,
                             )
-                            _emit_audio("Intrínsecos bootstrap ajustados, tolerancia ahora estricta")
                         else:
-                            logger.warning("Bootstrap fit failed; staying with nominal K")
+                            logger.info("Fitting bootstrap intrinsics from %d captures...", count)
+                            lefts = []
+                            for lp, _rp, _pid in state.captured_pairs:
+                                img = cv2.imread(str(lp))
+                                if img is not None:
+                                    lefts.append(img)
+                            fitted = fit_single_camera_intrinsics(lefts, board)
+                            if fitted is not None:
+                                state.fitted_K = fitted
+                                state.bootstrap_done = True
+                                logger.info(
+                                    "Bootstrap done: f_x=%.0f, f_y=%.0f, cx=%.0f, cy=%.0f — "
+                                    "switching to tight tolerance",
+                                    fitted[0, 0], fitted[1, 1], fitted[0, 2], fitted[1, 2],
+                                )
+                                _emit_audio("Intrínsecos bootstrap ajustados, tolerancia ahora estricta")
+                            else:
+                                logger.warning("Bootstrap fit failed; staying with nominal K")
 
                     # Advance to next pending pose
                     nxt = state.current_pose_idx
@@ -1858,6 +1933,23 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
     except KeyboardInterrupt:
         print("\nInterrumpido por usuario.")
+        # On Ctrl+C we want a hard exit, not a return — the wizard caller
+        # would otherwise march on to the calibrate phase with whatever
+        # captures we have, and the HTTP server would stay alive holding
+        # the port until the eventual exit. (Normal completion keeps the
+        # server alive on purpose: the post-capture phases — processing,
+        # ground-truth, report — share this same HTTP server.)
+        _shutting_down = True
+        rms_stop.set()
+        try:
+            cap.close()
+        except Exception:
+            pass
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        sys.exit(0)
 
     _shutting_down = True
     rms_stop.set()
@@ -2196,8 +2288,13 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
     except Exception:
         pass
 
-    # Port
+    # Port — use SO_REUSEADDR so a port in TIME_WAIT (typical right after a
+    # Ctrl+C of a previous run) doesn't trigger a false "puerto ocupado". The
+    # actual HTTP server binds with allow_reuse_address=True too, so the
+    # preflight needs to match — otherwise the wizard refuses to start when
+    # in fact the bind would succeed.
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(0.5)
     try:
         sock.bind(("0.0.0.0", args.port))
@@ -2396,18 +2493,24 @@ def _run_ground_truth_phase(
     edge_ratio = float("nan")
     center_err_abs = float("nan")
     overall_pass = False
+    # Verdict depends ONLY on the center zone — that's the only zone whose
+    # distance the operator measured (with tape/laser). Edge zones see
+    # whatever happens to be in the periphery (other objects, walls at
+    # different depths, the floor) and rarely match the target distance
+    # in real scenes. Edge/center ratio is still computed and shown in the
+    # report as informational, but it doesn't gate PASS.
     if center is not None:
         center_err_abs = abs(center[2])
         if edges:
             edge_errs = [abs(v[2]) for v in edges]
             edge_ratio = max(edge_errs) / max(center_err_abs, 0.1)
-        checks_pass = center_err_abs <= center_threshold and edge_ratio <= 2.0
-        overall_pass = bool(checks_pass)
+        overall_pass = center_err_abs <= center_threshold
 
     zones["_pass"] = overall_pass
     zones["_distance_mm"] = distance_mm
     zones["_center_err"] = center_err_abs
     zones["_edge_ratio"] = edge_ratio
+    zones["_center_threshold"] = center_threshold
 
     # Depth heatmap for the report — scene image with disparity-colored overlay.
     try:
@@ -2442,7 +2545,7 @@ def _run_ground_truth_phase(
         logger.warning("No pude guardar viz de ground-truth: %s", e)
 
     logger.info(
-        "Ground-truth: centro err=%.2f%% (umbral %.1f%%), borde/centro=%.2f× (umbral 2×) → %s",
+        "Ground-truth: centro err=%.2f%% (umbral %.1f%%), borde/centro=%.2f× (informativo) → %s",
         center_err_abs, center_threshold, edge_ratio,
         "PASS" if overall_pass else "FAIL",
     )
@@ -2584,6 +2687,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         all_poses=default_pose_sequence(
             near_mm=args.dist_near_mm, mid_mm=args.dist_mid_mm, far_mm=args.dist_far_mm,
         ),
+        near_mm=args.dist_near_mm,
+        mid_mm=args.dist_mid_mm,
+        far_mm=args.dist_far_mm,
     )
     logger.info(
         "Cobertura: distancia %s · tilts %s",
@@ -3064,6 +3170,18 @@ def main() -> None:
                              "scene conditions. The resulting calibration will NOT "
                              "be valid for production depth — use only to validate "
                              "the wizard end-to-end.")
+    p_wiz.add_argument("--meter", choices=("matrix", "centre", "spot"), default="matrix",
+                        help="AE metering mode. 'matrix' (default) weights the whole "
+                             "frame. 'centre'/'spot' expose for the middle of the "
+                             "frame — use these in low light when bright peripheries "
+                             "(windows, walls) drag exposure down on the board.")
+    p_wiz.add_argument("--lock-ae", action="store_true",
+                        help="Lock exposure/gain/white-balance after a 1s AE settle. "
+                             "Useful when the scene has variable light (natural "
+                             "daylight, doors/windows letting light fluctuate) — the "
+                             "lock prevents independent L/R AE drift mid-session. "
+                             "Default off: AE adjusts throughout, simpler and the "
+                             "ground-truth report image matches what the cameras see.")
     p_wiz.set_defaults(func=cmd_wizard)
 
     args = parser.parse_args()

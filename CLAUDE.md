@@ -95,7 +95,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Linter**: Ruff
 - **Type hints**: requeridos en todas las firmas de funciones
 - **Logging**: módulo `logging`, JSON estructurado. DEBUG para dev, INFO para prod.
-- **Config**: YAML en `/etc/people-counter/config.yaml`. Ver `config/config.example.yaml`.
+- **Config**: dos niveles distintos:
+  - `config/hardware.yaml` (en repo, **inmutable**): constantes de diseño del bracket + sensores (baseline_mm, camera_left/right_csi, sensor model, focal nominal). Cargado vía `src.config.hardware.load_hardware_config()`. **Nunca se edita** — si necesitás cambiar algo acá tenés un defecto de hardware o un build no-estándar.
+  - `/etc/people-counter/config.yaml` (per-device, mutable): settings de instalación — `mounting_height_m`, paths, MQTT creds, store_id, schedule. Ver `config/config.example.yaml`.
 - **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. Nunca commitear.
 - **Tests**: pytest, estructura espejo de src.
 - **No usar clases salvo que haya estado.** Tracker y MQTTClient justifican clases. Preferir funciones en el resto.

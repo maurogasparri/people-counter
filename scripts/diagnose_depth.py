@@ -26,6 +26,7 @@ import argparse
 import cv2
 import numpy as np
 
+from src.config.hardware import load_hardware_config
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import StereoCapture
 from src.vision.depth import compute_disparity, create_sgbm, disparity_to_depth
@@ -77,7 +78,24 @@ def main() -> None:
                         help="Edge zone offset from corner, fraction of min(H,W). Default 0.10")
     parser.add_argument("--delay", type=int, default=0,
                         help="Countdown in seconds before capture")
+    parser.add_argument("--meter", choices=("matrix", "centre", "spot"),
+                        default="matrix",
+                        help="AE metering mode. Use 'centre'/'spot' when bright "
+                             "zones in the periphery (windows, lights) drag "
+                             "exposure down on the centre.")
+    parser.add_argument("--lock-ae", action="store_true",
+                        help="Lock AE/AWB after a 1s settle. Useful for variable "
+                             "light (natural daylight). Default off — AE adjusts "
+                             "to current scene, single-frame capture is unaffected "
+                             "by drift.")
     args = parser.parse_args()
+
+    # Hardware constants: camera CSI assignments + sensor defaults from
+    # config/hardware.yaml. Single source of truth across all tools.
+    hw = load_hardware_config()
+    cam_left = hw["bracket"]["camera_left_csi"]
+    cam_right = hw["bracket"]["camera_right_csi"]
+    resolution = tuple(hw["sensor"]["default_res"])
 
     cal = load_calibration(args.calibration)
 
@@ -102,7 +120,11 @@ def main() -> None:
     print("CAPTURING...")
     print("=" * 70)
 
-    cap = StereoCapture(cam_left_id=0, cam_right_id=1, resolution=(2304, 1296), fps=5)
+    cap = StereoCapture(
+        cam_left_id=cam_left, cam_right_id=cam_right,
+        resolution=resolution, fps=5,
+        meter_mode=args.meter, lock_ae=args.lock_ae,
+    )
     cap.open()
 
     if args.delay > 0:
@@ -204,9 +226,15 @@ def main() -> None:
     if center is not None:
         ok = abs(center[2]) <= center_threshold
         checks.append(("Center error", f"{abs(center[2]):.2f}% ≤ {center_threshold:.1f}%", ok))
+    # Edge/center ratio is shown as INFO only — it assumes a flat target
+    # scene which most real environments don't have. Multi-depth scenes
+    # inflate edge errors without that being a calibration problem.
     if not np.isnan(edge_ratio):
-        ok = edge_ratio <= PASS_EDGE_CENTER_RATIO
-        checks.append(("Edge/center ratio", f"{edge_ratio:.2f}× ≤ {PASS_EDGE_CENTER_RATIO:.1f}×", ok))
+        info_ok = edge_ratio <= PASS_EDGE_CENTER_RATIO
+        flag = "OK" if info_ok else "INFO"
+        print(f"  [{flag}] Edge/center ratio: {edge_ratio:.2f}× "
+              f"(reference {PASS_EDGE_CENTER_RATIO:.1f}× — informativo, "
+              f"only meaningful on flat targets)")
 
     for name, detail, ok in checks:
         status = "PASS" if ok else "FAIL"

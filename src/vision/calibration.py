@@ -842,6 +842,9 @@ def count_common_corners(ids_l: Optional[np.ndarray], ids_r: Optional[np.ndarray
 def analyze_pose_coverage(
     captured_pose_ids: list[str],
     all_poses: Optional[list[PoseTarget]] = None,
+    near_mm: float = DEFAULT_DIST_NEAR_MM,
+    mid_mm: float = DEFAULT_DIST_MID_MM,
+    far_mm: float = DEFAULT_DIST_FAR_MM,
 ) -> dict[str, object]:
     """Report how diverse a set of captured poses is.
 
@@ -849,6 +852,12 @@ def analyze_pose_coverage(
     letter (A=center near, B=corners mid, C=roll/pitch mid, D=far, E=extreme).
     A healthy calibration captures at least 2 poses from each of A..D and
     covers pitch, yaw and roll tilts.
+
+    near_mm/mid_mm/far_mm: thresholds for band classification, derived from the
+    wizard's actual --dist flags. Default to canonical 1/2/3m. Without these
+    parameters in scope, custom distance setups (e.g. PoC at 0.5/0.9/1.3m) had
+    everything classified as near/mid because the hardcoded 1200/2000 thresholds
+    didn't match.
 
     Returns:
         {
@@ -860,8 +869,15 @@ def analyze_pose_coverage(
         }
     """
     if all_poses is None:
-        all_poses = default_pose_sequence()
+        all_poses = default_pose_sequence(near_mm=near_mm, mid_mm=mid_mm, far_mm=far_mm)
     pose_by_id = {p.id: p for p in all_poses}
+
+    # Band boundaries: midpoint between adjacent target distances. With
+    # canonical 1000/2000/3000mm this yields 1500 and 2500 (close to the
+    # previous hardcoded 1200/2000). With PoC distances (e.g. 500/900/1300)
+    # this yields 700 and 1100, correctly classifying each band.
+    near_mid_threshold = (near_mm + mid_mm) / 2
+    mid_far_threshold = (mid_mm + far_mm) / 2
 
     by_distance = {"near": 0, "mid": 0, "far": 0}
     by_tilt = {"frontal": 0, "pitch": 0, "yaw": 0, "roll": 0}
@@ -872,9 +888,9 @@ def analyze_pose_coverage(
         if pose is None:
             continue
         z = pose.tvec_mm[2]
-        if z <= 1200:
+        if z < near_mid_threshold:
             by_distance["near"] += 1
-        elif z <= 2000:
+        elif z < mid_far_threshold:
             by_distance["mid"] += 1
         else:
             by_distance["far"] += 1

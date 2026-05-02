@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""Stereo live preview for aiming cameras.
+
+Browser-driven minimal preview — no detection, no audio, no analysis. Just
+what the cameras see, side-by-side, with a thirds grid + center crosshair to
+help framing. Same UX as focus_assist / calibrate (start overlay, header).
+
+Usage:
+    sudo PYTHONPATH=. python3 scripts/preview.py
+    # then open http://people-counter.local:8080
+"""
+
+import argparse
+import socket
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+latest_jpeg: bytes = b""
+jpeg_lock = threading.Lock()
+shutting_down = False
+preview_started = False
+preview_started_lock = threading.Lock()
+
+
+HTML_PAGE = r"""<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Stereo preview</title>
+<style>
+  :root {
+    --bg: #0a0a0a; --fg: #ddd; --muted: #888; --panel: #141414;
+    --border: #222; --accent: #2ecc71;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg);
+               color: var(--fg);
+               font-family: -apple-system, system-ui, sans-serif; }
+  header { padding: 12px 18px; background: var(--panel);
+           border-bottom: 1px solid var(--border);
+           display: flex; align-items: center; justify-content: space-between;
+           font-size: 14px; }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  .stage { padding: 18px; }
+  .stream { display: block; width: 100%; height: auto; max-width: 100%;
+            border-radius: 6px; border: 1px solid var(--border);
+            background: #000; }
+  .legend { margin-top: 12px; color: var(--muted); font-size: 12px;
+            display: flex; gap: 18px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 12px; height: 12px; display: inline-block;
+              border-radius: 2px; background: var(--accent); }
+
+  /* Start overlay (idem focus_assist / calibrate) */
+  #start-overlay { position: fixed; inset: 0; background: rgba(10,10,10,0.95);
+                   display: flex; align-items: center; justify-content: center;
+                   z-index: 999; }
+  #start-overlay .card { max-width: 460px; padding: 28px 32px;
+                         background: var(--panel); border: 1px solid var(--border);
+                         border-radius: 10px; text-align: center; }
+  #start-overlay h2 { margin: 0 0 12px; font-size: 18px; }
+  #start-overlay p { margin: 0 0 20px; color: var(--muted);
+                     font-size: 13px; line-height: 1.5; }
+  #start-overlay button { padding: 10px 28px; font-size: 14px;
+                          border: 0; border-radius: 6px; background: var(--accent);
+                          color: #000; cursor: pointer; font-weight: 600; }
+  #start-overlay button:hover { background: #27ae60; }
+</style>
+</head>
+<body>
+
+<div id="start-overlay">
+  <div class="card">
+    <h2>Stereo preview</h2>
+    <p>Vista en vivo de ambas cámaras lado a lado. Útil para apuntar el bracket,
+       reframear escenas o verificar oclusiones antes de focus / calibración.
+       Sin detección, sin métricas — solo lo que ven los lentes.</p>
+    <button id="start-btn">Comenzar</button>
+  </div>
+</div>
+
+<header>
+  <h1>Stereo preview</h1>
+  <span class="meta">Ctrl+C en la terminal para salir</span>
+</header>
+
+<div class="stage">
+  <img id="stream" class="stream" />
+  <div class="legend">
+    <span><i style="background:#3c3"></i> Centro: cruz blanca</span>
+    <span><i style="background:#666"></i> Grid de tercios: gris</span>
+    <span>Etiquetas IZQ / DER en cada mitad</span>
+  </div>
+</div>
+
+<script>
+  const overlay = document.getElementById("start-overlay");
+  const startBtn = document.getElementById("start-btn");
+  const stream = document.getElementById("stream");
+
+  startBtn.addEventListener("click", async () => {
+    try {
+      await fetch("/start", { method: "POST" });
+    } catch (_) {}
+    stream.src = "/stream";
+    overlay.style.display = "none";
+  });
+</script>
+</body>
+</html>
+"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path == "/":
+            body = HTML_PAGE.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/stream":
+            self.send_response(200)
+            self.send_header(
+                "Content-Type", "multipart/x-mixed-replace; boundary=frame",
+            )
+            self.end_headers()
+            try:
+                while not shutting_down:
+                    with jpeg_lock:
+                        jpg = latest_jpeg
+                    if jpg:
+                        self.wfile.write(b"--frame\r\n")
+                        self.wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
+                        self.wfile.write(jpg)
+                        self.wfile.write(b"\r\n")
+                    time.sleep(0.05)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self) -> None:
+        global preview_started
+        if self.path == "/start":
+            with preview_started_lock:
+                preview_started = True
+            self.send_response(200)
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args) -> None:
+        pass
+
+
+def _draw_overlay(vis: np.ndarray, label: str) -> None:
+    """Center crosshair + thirds grid + camera label."""
+    h, w = vis.shape[:2]
+    grid = (60, 60, 60)
+    for i in (1, 2):
+        x = w * i // 3
+        y = h * i // 3
+        cv2.line(vis, (x, 0), (x, h), grid, 1)
+        cv2.line(vis, (0, y), (w, y), grid, 1)
+    cx, cy = w // 2, h // 2
+    cross = (200, 200, 200)
+    cv2.line(vis, (cx - 14, cy), (cx + 14, cy), cross, 1)
+    cv2.line(vis, (cx, cy - 14), (cx, cy + 14), cross, 1)
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+    cv2.rectangle(vis, (4, 4), (4 + tw + 10, 4 + th + 12), (0, 0, 0), -1)
+    cv2.putText(
+        vis, label, (9, 4 + th + 6),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA,
+    )
+
+
+def main() -> None:
+    global latest_jpeg, shutting_down
+
+    parser = argparse.ArgumentParser(description="Stereo live preview")
+    parser.add_argument("--left", type=int, default=0,
+                        help="Left camera index. Default 0.")
+    parser.add_argument("--right", type=int, default=1,
+                        help="Right camera index. Default 1.")
+    parser.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
+                        help="Capture resolution. Default 2304x1296 (binned).")
+    parser.add_argument("--port", type=int, default=8080,
+                        help="HTTP port for the preview UI. Default 8080.")
+    parser.add_argument("--meter", choices=("matrix", "centre", "spot"),
+                        default="matrix",
+                        help="AE metering mode. Use 'centre' / 'spot' when "
+                             "bright zones in the periphery (windows, lights) "
+                             "drag exposure down on the centre.")
+    args = parser.parse_args()
+
+    from picamera2 import Picamera2
+    from libcamera import controls as _libcam_controls
+
+    cam_l = Picamera2(args.left)
+    cam_r = Picamera2(args.right)
+    w, h = args.resolution
+    for cam in [cam_l, cam_r]:
+        config = cam.create_still_configuration(
+            main={"size": (w, h), "format": "BGR888"},
+            raw={"size": (w, h)},
+        )
+        cam.configure(config)
+        cam.start()
+
+    if args.meter != "matrix":
+        meter_map = {
+            "centre": _libcam_controls.AeMeteringModeEnum.CentreWeighted,
+            "spot": _libcam_controls.AeMeteringModeEnum.Spot,
+        }
+        for cam in [cam_l, cam_r]:
+            cam.set_controls({"AeMeteringMode": meter_map[args.meter]})
+
+    time.sleep(1)
+
+    ThreadingHTTPServer.allow_reuse_address = True
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    except OSError as e:
+        print(f"❌ No se pudo abrir el puerto {args.port}: {e}")
+        try:
+            cam_l.stop(); cam_l.close()
+            cam_r.stop(); cam_r.close()
+        except Exception:
+            pass
+        sys.exit(1)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    host = socket.gethostname()
+    print(f"Preview en http://{host}.local:{args.port} (o http://0.0.0.0:{args.port})")
+    print("Ctrl+C para salir.")
+
+    half_w, half_h = 960, 540
+
+    # Single try/finally around BOTH the wait-for-start phase and the
+    # main capture loop so Ctrl+C in either path goes through cleanup.
+    # Previously the wait loop sat outside the try and a Ctrl+C there
+    # leaked the HTTP server thread, leaving the port in TIME_WAIT for
+    # the next tool to start.
+    try:
+        # Wait for the operator to click "Comenzar". URL is loadable but
+        # the camera capture loop only runs once the page is open.
+        print("Esperando 'Comenzar' en el browser...")
+        while not shutting_down:
+            with preview_started_lock:
+                if preview_started:
+                    break
+            time.sleep(0.1)
+
+        while not shutting_down:
+            frame_l = cv2.cvtColor(
+                cam_l.capture_array("main"), cv2.COLOR_RGB2BGR,
+            )
+            frame_r = cv2.cvtColor(
+                cam_r.capture_array("main"), cv2.COLOR_RGB2BGR,
+            )
+
+            vis_l = cv2.resize(frame_l, (half_w, half_h))
+            vis_r = cv2.resize(frame_r, (half_w, half_h))
+            _draw_overlay(vis_l, "IZQ")
+            _draw_overlay(vis_r, "DER")
+
+            combined = np.hstack([vis_l, vis_r])
+            _, jpeg = cv2.imencode(
+                ".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 75],
+            )
+
+            with jpeg_lock:
+                latest_jpeg = jpeg.tobytes()
+
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        shutting_down = True
+        try:
+            cam_l.stop(); cam_l.close()
+            cam_r.stop(); cam_r.close()
+        except Exception:
+            pass
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    main()

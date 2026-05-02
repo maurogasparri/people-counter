@@ -81,30 +81,148 @@ def generate_html_report(
     depth_html = ""
     depth_pass = None
     if diagnose_zones:
-        rows = []
-        for name, vals in diagnose_zones.items():
-            if name.startswith("_"):
-                continue
-            if vals is None:
-                rows.append(f"<tr><td>{name}</td><td colspan=3 class=dim>NO DATA</td></tr>")
-                continue
-            depth, std, err_pct, fill = vals
-            err_class = "bad" if abs(err_pct) > 10 else ("warn" if abs(err_pct) > 5 else "good")
-            rows.append(
-                f"<tr><td>{name}</td><td>{depth:.0f} mm</td>"
-                f"<td>{std:.0f} mm</td><td class='{err_class}'>{err_pct:+.2f}%</td>"
-                f"<td>{fill:.1f}%</td></tr>"
-            )
         depth_pass = diagnose_zones.get("_pass", False)
         distance_gt = diagnose_zones.get("_distance_mm", 0)
         edge_ratio = diagnose_zones.get("_edge_ratio", float("nan"))
         center_err = diagnose_zones.get("_center_err", float("nan"))
+        center_threshold = diagnose_zones.get("_center_threshold", 5.0)
+
+        center_class = "good" if center_err <= center_threshold else "bad"
+        verdict_pill = _pill("PASS Depth validation", True) if depth_pass \
+            else _pill("FAIL Depth validation", False)
+
+        # Per-zone reliability classification: a zone's depth reading is
+        # trustworthy when std is low (SGBM matched cleanly) and fill is high
+        # (most pixels matched). Unreliable readings (huge std, low fill)
+        # mean SGBM failed in that zone — usually a smooth/specular surface
+        # (monitor, glass) or low-light noise. We hide the depth/error
+        # numbers for unreliable zones because they're not meaningful.
+        def _reliability(std_mm: float, fill_pct: float) -> str:
+            std_factor = max(0.0, 1.0 - std_mm / 2000.0)
+            score = std_factor * (fill_pct / 100.0)
+            if score >= 0.40:
+                return "reliable"
+            if score >= 0.15:
+                return "partial"
+            return "unreliable"
+
+        center_row_html = ""
+        edge_rows_html: list[str] = []
+        for name, vals in diagnose_zones.items():
+            if name.startswith("_"):
+                continue
+
+            is_center = name == "center"
+            row_class = "row-center" if is_center else ""
+
+            if vals is None:
+                edge_rows_html.append(
+                    f'<tr class="row-unreliable"><td>{name}</td>'
+                    f'<td colspan=4 class=dim>NO DATA</td>'
+                    f'<td><span class="confidence-tag confidence-unreliable">'
+                    f'⚠ Sin datos</span></td></tr>'
+                )
+                continue
+
+            depth, std, err_pct, fill = vals
+            abs_err = abs(err_pct)
+
+            if is_center:
+                # Verdict zone — full numbers, big VERDICT badge
+                err_color = "good" if abs_err <= center_threshold else "bad"
+                row_class = "row-center"
+                status_html = ('<span class="badge-verdict">VERDICT</span>')
+                depth_cell = f"{depth:.0f} mm"
+                err_cell = (
+                    f'<span class="{err_color}">{err_pct:+.2f}%</span>'
+                )
+            else:
+                rel = _reliability(std, fill)
+                if rel == "unreliable":
+                    row_class = "row-unreliable"
+                    status_html = ('<span class="confidence-tag '
+                                   'confidence-unreliable">⚠ SGBM falló</span>')
+                    depth_cell = '<span class=dim>—</span>'
+                    err_cell = '<span class=dim>—</span>'
+                elif abs_err <= center_threshold:
+                    # Reliable AND close to target
+                    row_class = "row-reliable"
+                    status_html = ('<span class="confidence-tag '
+                                   'confidence-reliable">✓ Coincide</span>')
+                    depth_cell = f"{depth:.0f} mm"
+                    err_cell = f'<span class="good">{err_pct:+.2f}%</span>'
+                else:
+                    # Reliable (or partial) but measuring a different plane
+                    row_class = "row-different"
+                    label = ("● Otro plano (precisión limitada)"
+                             if rel == "partial"
+                             else "● Otro plano")
+                    status_html = (f'<span class="confidence-tag '
+                                   f'confidence-different">{label}</span>')
+                    depth_cell = f"{depth:.0f} mm"
+                    err_cell = f'<span class=dim>{err_pct:+.2f}%</span>'
+
+            row_html = (
+                f'<tr class="{row_class}"><td>{name}</td>'
+                f'<td>{depth_cell}</td>'
+                f'<td>{std:.0f} mm</td>'
+                f'<td>{err_cell}</td>'
+                f'<td>{fill:.1f}%</td>'
+                f'<td>{status_html}</td></tr>'
+            )
+            if is_center:
+                center_row_html = row_html
+            else:
+                edge_rows_html.append(row_html)
+
+        all_rows = center_row_html + "".join(edge_rows_html)
+
         depth_html = f"""
 <h2>Validación de profundidad</h2>
-<p>Distancia real: <b>{distance_gt:.0f} mm</b> — Error centro: <b>{center_err:.2f}%</b> — Ratio borde/centro: <b>{edge_ratio:.2f}×</b></p>
-<table><thead><tr><th>Zona</th><th>Profundidad</th><th>Std</th><th>Error</th><th>Fill</th></tr></thead>
-<tbody>{''.join(rows)}</tbody></table>
-<p>{_pill('Depth validation', bool(depth_pass))}</p>
+
+<div class="depth-verdict">
+  <div class="verdict-grid">
+    <div class="verdict-cell">
+      <div class="verdict-label">Distancia real (cinta/láser)</div>
+      <div class="verdict-value">{distance_gt:.0f} <span class="unit">mm</span></div>
+    </div>
+    <div class="verdict-cell">
+      <div class="verdict-label">Error en el centro</div>
+      <div class="verdict-value {center_class}">{center_err:.2f}<span class="unit">%</span></div>
+      <div class="verdict-sub">umbral PASS ≤ {center_threshold:.1f}%</div>
+    </div>
+    <div class="verdict-cell verdict-pill-cell">
+      {verdict_pill}
+      <div class="verdict-sub">basado en error del centro</div>
+    </div>
+  </div>
+</div>
+
+<h3 class="zones-h3">Mediciones por zona</h3>
+<table class="zones-table">
+  <thead><tr>
+    <th>Zona</th><th>Profundidad</th><th>Std (SGBM)</th>
+    <th>Δ vs target</th><th>Fill</th><th>Estado</th>
+  </tr></thead>
+  <tbody>{all_rows}</tbody>
+</table>
+
+<p class="depth-note">
+  <b>Cómo leer este cuadro</b>. La fila <b>centro</b> es el verdict — es la
+  única zona cuya distancia se mide con cinta/láser. Las 4 zonas perimetrales
+  miden lo que haya en esa parte del frame; no se garantiza que estén al
+  mismo plano que el centro.
+  <br>
+  <b>✓ Coincide</b>: SGBM matcheó limpio y la profundidad cae dentro del
+  threshold del centro — la zona ve el mismo target.
+  <b>● Otro plano</b>: SGBM matcheó limpio pero a otra distancia — la zona
+  está midiendo un objeto/pared distinto, no es error de calibración.
+  <b>⚠ SGBM falló</b>: alta varianza o bajo fill — la medición no es
+  significativa (escena oscura, superficie reflectante, sin textura).
+  <br>
+  Ratio borde/centro: <b>{edge_ratio:.2f}×</b> — solo significativo en escenas
+  con target plano cubriendo todo el FOV. No gate del verdict.
+</p>
 """
 
     # Per-pair residual analysis
@@ -234,6 +352,30 @@ th{{background:#f5f5f5}}
 .tile-label{{font-size:12px;color:#555;margin-bottom:4px}}
 .outlier-badge{{background:#e74c3c;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:4px}}
 .miss{{background:#eee;padding:30px;text-align:center;color:#999}}
+/* Depth validation panel */
+.depth-verdict{{background:#fafafa;border:1px solid #e3e3e3;border-radius:8px;padding:18px 22px;margin:14px 0 22px}}
+.verdict-grid{{display:grid;grid-template-columns:1fr 1fr auto;gap:28px;align-items:center}}
+.verdict-cell{{}}
+.verdict-pill-cell{{text-align:right}}
+.verdict-label{{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}}
+.verdict-value{{font-size:26px;font-weight:600;color:#2c3e50;line-height:1.1}}
+.verdict-value .unit{{font-size:14px;font-weight:400;color:#888;margin-left:2px}}
+.verdict-value.good{{color:#27ae60}}
+.verdict-value.bad{{color:#e74c3c}}
+.verdict-sub{{font-size:11px;color:#aaa;margin-top:4px}}
+.verdict-pill-cell .pill{{font-size:13px;padding:5px 14px}}
+.zones-h3{{font-size:14px;color:#555;margin-top:14px;margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}}
+.zones-table tr.row-center{{background:#fff8e1}}
+.zones-table tr.row-center td{{font-weight:500;border-top:2px solid #f39c12;border-bottom:2px solid #f39c12}}
+.zones-table tr.row-center td:first-child{{border-left:2px solid #f39c12}}
+.zones-table tr.row-center td:last-child{{border-right:2px solid #f39c12}}
+.zones-table tr.row-unreliable td{{color:#999}}
+.badge-verdict{{background:#f39c12;color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:.5px}}
+.confidence-tag{{font-size:11px;padding:2px 8px;border-radius:10px;display:inline-block;font-weight:500;white-space:nowrap}}
+.confidence-reliable{{background:#d4edda;color:#155724}}
+.confidence-different{{background:#e2e3e5;color:#383d41}}
+.confidence-unreliable{{background:#fff3cd;color:#856404}}
+.depth-note{{font-size:.85em;color:#666;background:#f8f8f8;padding:12px 16px;border-radius:6px;border-left:3px solid #2c3e50;margin-top:16px;line-height:1.55}}
 </style></head>
 <body>
 <h1>Reporte de calibración — {device_id}</h1>

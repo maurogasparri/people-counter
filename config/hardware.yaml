@@ -1,0 +1,42 @@
+# Hardware-design constants.
+#
+# **DO NOT EDIT** — these are invariants of the people-counter bracket and
+# sensors. Every device built to spec has the same values here. If you find
+# yourself wanting to change something in this file, you have a hardware
+# defect, a non-standard build, or a misunderstanding — investigate before
+# editing, otherwise you risk silently breaking calibration or depth.
+#
+# This file ships with the codebase. Per-site / per-device settings live
+# in /etc/people-counter/config.yaml — those are the ones operators tune.
+
+bracket:
+  baseline_mm: 140                # Mechanical L↔R lens center distance.
+                                  # Determined by the bracket cut at fabrication.
+                                  # Calibration .npz baseline must match this
+                                  # within ±5mm — divergence indicates either
+                                  # a degenerate calibration or a damaged bracket.
+  camera_left_csi: 0              # CSI bus index for the LEFT lens (looking from
+                                  # the camera into the scene). Determined by
+                                  # which physical CSI port the left ribbon is
+                                  # plugged into during assembly.
+  camera_right_csi: 1             # CSI bus index for the RIGHT lens.
+
+sensor:
+  model: imx708
+  full_res: [4608, 2592]          # Native full resolution.
+  default_res: [2304, 1296]       # 2x2 binned, full FOV — the working resolution
+                                  # for focus, calibration, and runtime. Bench
+                                  # session 2026-04-28 confirmed this is the
+                                  # right tradeoff for ChArUco detection speed
+                                  # and SNR vs full-res.
+  default_fps: 15                 # Max stable FPS at default_res with two
+                                  # picamera2 instances.
+  nominal_focal_full_px: 2050     # Pinhole-equivalent focal length at full_res,
+                                  # center region. Used as starting K for
+                                  # calibration bootstrap and for distance
+                                  # estimation in focus_assist.
+
+lens:
+  type: m12_120deg                # Arducam B0310 (M12 mount, 120° HFOV / 152° diag,
+                                  # fisheye Kannala-Brandt model).
+  hfov_deg: 120

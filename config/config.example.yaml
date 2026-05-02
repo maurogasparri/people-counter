@@ -20,19 +20,19 @@ device:
   store_id: "store-001"           # Site/store identifier
   store_name: "Store Name"        # Human-readable (display only)
 
-# --- LOCAL: Camera & stereo hardware (depends on physical installation) ---
+# --- LOCAL: Camera & stereo settings ---
+# Note: bracket geometry (baseline, L/R camera CSI assignment) and sensor
+# defaults (model, resolution, focal) live in config/hardware.yaml — those
+# are hardware invariants set by the bracket assembly procedure, not per-site
+# settings. The values below are the ones that actually depend on installation.
 vision:
-  camera_left: 0                  # CSI bus ID for left IMX708 (lente izquierda mirando desde la cámara hacia la escena)
-  camera_right: 1                 # CSI bus ID for right IMX708
-  resolution: [2304, 1296]        # IMX708 binned mode, full FOV. Must match the
-                                  # resolution used at calibration time — calibrate.py
-                                  # defaults to this. Bench session 2026-04-28 showed
-                                  # full-res 4608x2592 makes ChArUco detection drop
-                                  # below 2 FPS on Pi 5, which intermittently fails
-                                  # marker detection at fisheye edges and produces
-                                  # degenerate calibrations.
+  resolution: [2304, 1296]        # Override hardware default if needed.
+                                  # IMX708 binned mode (full FOV). Must match the
+                                  # resolution used at calibration time. Bench
+                                  # session 2026-04-28 showed full-res 4608x2592
+                                  # makes ChArUco detection drop below 2 FPS on
+                                  # Pi 5 and produce degenerate calibrations.
   fps: 15                         # Capture frame rate
-  baseline_cm: 14                 # Physical distance between cameras (measured)
   calibration_file: "/etc/people-counter/calibration.npz"  # ChArUco stereo cal output
   mounting_height_m: 3.0          # Camera mount height from floor in meters. Default 3.0m (our mode door height; cam at threshold level). Adjust per site if mounted higher due to structural constraints.
   counting_line_y: 0.5            # Virtual line position (0.0=top, 1.0=bottom)
