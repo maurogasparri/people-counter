@@ -455,6 +455,29 @@ def load_calibration(path: str) -> dict[str, np.ndarray]:
     if not cal_path.exists():
         raise FileNotFoundError(f"Calibration file not found: {path}")
     data = dict(np.load(cal_path))
+    # Convert the float32 rectify maps into fixed-point INT16 + UINT16 form
+    # (cv2 CV_16SC2 / CV_16UC1) once at load time. cv2.remap with these maps
+    # is ~2x faster than with float32 maps because the lookup is integer +
+    # bilinear-table lookup instead of float interpolation. The .npz on disk
+    # stores the float32 maps for compatibility — we re-derive the fast form
+    # at every load.
+    if "map_l_x" in data and "map_l_y" in data:
+        try:
+            data["map_l_x"], data["map_l_y"] = cv2.convertMaps(
+                data["map_l_x"], data["map_l_y"], cv2.CV_16SC2,
+            )
+            data["map_r_x"], data["map_r_y"] = cv2.convertMaps(
+                data["map_r_x"], data["map_r_y"], cv2.CV_16SC2,
+            )
+            logger.info(
+                "rectify_maps_optimized",
+                extra={"format": "CV_16SC2 + CV_16UC1"},
+            )
+        except cv2.error as e:
+            logger.warning(
+                "rectify_maps_optimization_failed",
+                extra={"error": str(e)},
+            )
     logger.info("Calibration loaded", extra={"path": path, "keys": list(data.keys())})
     return data
 

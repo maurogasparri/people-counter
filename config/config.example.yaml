@@ -44,11 +44,14 @@ vision:
   # by 16) only if you want to override.
   num_disparities: auto           # or a number like 192
   block_size: 9                   # Odd number, typically 5-15
-  sgbm_downscale: 2               # SGBM matching resolution: 1=full, 2=half, 4=quarter.
-                                  # Default 2: ~4x faster on Pi 5 with negligible
+  sgbm_downscale: 4               # SGBM matching resolution: 1=full, 2=half, 4=quarter, 8=eighth.
+                                  # Default 4: ~16x faster than full-res with negligible
                                   # accuracy loss for head detection at the operational
-                                  # depth scale. Set to 1 only if you need fine depth
-                                  # resolution (e.g., diagnostics) at the cost of FPS.
+                                  # depth scale (head ~22cm at 0.8m depth → 80px box at
+                                  # downscale=4, more than enough for blob centroid).
+                                  # 8 is fastest but depth resolution becomes coarse;
+                                  # use only if pipeline FPS is critical.
+                                  # 2 / 1 trade speed for depth precision (diagnostics).
 
 # --- LOCAL: Detection model (compiled for Hailo-8L, won't change remotely) ---
 detection:

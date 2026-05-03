@@ -362,12 +362,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # correct. Default 2 = half-res matching, ~4x faster on Pi 5 with negligible
     # accuracy impact at the operational head-detection scale.
     sgbm_downscale = int(vision_cfg.get("sgbm_downscale", 2))
-    if sgbm_downscale not in (1, 2, 4):
+    if sgbm_downscale not in (1, 2, 4, 8):
         logger.warning(
-            "vision.sgbm_downscale=%d invalid (use 1/2/4) — falling back to 2",
+            "vision.sgbm_downscale=%d invalid (use 1/2/4/8) — falling back to 4",
             sgbm_downscale,
         )
-        sgbm_downscale = 2
+        sgbm_downscale = 4
     # Pass scaled num_disparities to create_sgbm so the matcher operates at
     # the downscaled resolution; compute_disparity rescales values back up.
     sgbm_num_disp = (
@@ -680,19 +680,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 baseline_mm = float(np.linalg.norm(T))
                 logger.info("Focal length: %.1f px, Baseline: %.1f mm", focal_length_px, baseline_mm)
 
-            # --- Depth map ---
-            if calibration is not None and focal_length_px is not None:
-                disparity = compute_disparity(
-                    rect_l, rect_r, sgbm=sgbm, downscale=sgbm_downscale,
-                )
-                depth_map = disparity_to_depth(
-                    disparity, focal_length_px, baseline_mm
-                )
-            else:
-                depth_map = None
-            t_depth_end = time.perf_counter()
-
-            # --- Detection ---
+            # --- Detection FIRST (depth on demand below) ---
+            # Reordering: detect → compute depth only if there are detections.
+            # SGBM dominates the per-frame budget (~80ms). Skipping it on
+            # detection-empty frames (the majority of frames in real deploys)
+            # frees that budget for higher overall FPS without losing depth
+            # info where it actually matters (on detected people).
             try:
                 detections = detect_persons(
                     rect_l,
@@ -707,6 +700,25 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 time.sleep(0.1)
                 continue
             t_detect_end = time.perf_counter()
+
+            # --- Depth map (only when there are detections to query) ---
+            if (
+                calibration is not None
+                and focal_length_px is not None
+                and detections
+            ):
+                # CLAHE off — the IMX708 indoor histogram is well-behaved
+                # for SGBM matching and the ~10ms CLAHE cost isn't worth it.
+                disparity = compute_disparity(
+                    rect_l, rect_r, sgbm=sgbm,
+                    downscale=sgbm_downscale, use_clahe=False,
+                )
+                depth_map = disparity_to_depth(
+                    disparity, focal_length_px, baseline_mm
+                )
+            else:
+                depth_map = None
+            t_depth_end = time.perf_counter()
 
             # --- Build 3D positions + per-detection metadata ---
             vision_cfg = config.get("vision", {})
@@ -758,15 +770,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 if profile_frame_idx % profile_every_n == 0:
                     cap_ms = (t_capture_end - t_capture_start) * 1000
                     rect_ms = (t_rectify_end - t_capture_end) * 1000
-                    depth_ms = (t_depth_end - t_rectify_end) * 1000
-                    detect_ms = (t_detect_end - t_depth_end) * 1000
-                    track_ms = (t_track_end - t_detect_end) * 1000
+                    detect_ms = (t_detect_end - t_rectify_end) * 1000
+                    depth_ms = (t_depth_end - t_detect_end) * 1000
+                    track_ms = (t_track_end - t_depth_end) * 1000
                     total_ms = (t_track_end - t_iter_start) * 1000
+                    has_dets = "Y" if depth_map is not None else "N"
                     logger.info(
-                        "PROFILE frame=%d cap=%.0fms rect=%.0fms depth=%.0fms "
-                        "detect=%.0fms track=%.0fms TOTAL=%.0fms (%.1f FPS)",
-                        profile_frame_idx, cap_ms, rect_ms, depth_ms,
-                        detect_ms, track_ms, total_ms,
+                        "PROFILE frame=%d cap=%.0fms rect=%.0fms detect=%.0fms "
+                        "depth=%.0fms (det=%s) track=%.0fms TOTAL=%.0fms (%.1f FPS)",
+                        profile_frame_idx, cap_ms, rect_ms, detect_ms,
+                        depth_ms, has_dets, track_ms, total_ms,
                         1000.0 / total_ms if total_ms > 0 else 0.0,
                     )
 
