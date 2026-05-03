@@ -25,10 +25,12 @@ sensor:
   model: imx708
   full_res: [4608, 2592]          # Native full resolution.
   default_res: [2304, 1296]       # 2x2 binned, full FOV — the working resolution
-                                  # for focus, calibration, and runtime. Bench
-                                  # session 2026-04-28 confirmed this is the
-                                  # right tradeoff for ChArUco detection speed
-                                  # and SNR vs full-res.
+                                  # for focus, calibration, and runtime. Chosen
+                                  # because ChArUco detection runs ~4× faster
+                                  # than at full-res 4608×2592 (≥8 FPS vs <2 FPS
+                                  # on Pi 5), the 2x2 bin improves SNR, and
+                                  # rectify + SGBM still fit in the 30+ FPS
+                                  # runtime budget.
   default_fps: 15                 # Max stable FPS at default_res with two
                                   # picamera2 instances.
   nominal_focal_full_px: 2050     # Pinhole-equivalent focal length at full_res,

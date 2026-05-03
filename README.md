@@ -73,11 +73,11 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 451/451 pasando | Visión, tracking, MQTT, WiFi/BLE, config (hardware + user), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño |
+| Tests | 492/492 pasando | Visión, tracking, MQTT, WiFi/BLE, config (hardware + user), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (download_roboflow + bench_detector) |
 | Config | Hardware + Local + Cloud | Tres niveles: `config/hardware.yaml` (en repo, inmutable — bracket geometry + sensor invariants), `/etc/people-counter/config.yaml` (per-device, mutable — mounting_height, paths, MQTT), AWS IoT Shadow (cloud, business-driven — schedule, scaling, toggles). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
-| Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode 2304×1296 (binned full-FOV) para foco, calibración y runtime — full-res 4608×2592 fue descartado tras bench 2026-04-28: detección a <2 FPS y calibración degenerada |
-| Detección | Validada | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN |
+| Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
+| Detección | Software validado, modelo en fine-tuning | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN. El detector se entrena específicamente para geometría cenital (no se usa el stock COCO porque CrowdHuman entrena vistas frontales/laterales). Phase A en marcha: fine-tune con dataset Roboflow `coding-compass-nmjfb/overhead-head-detection-cwetj v2` (15.4k imgs `head-top-view`), entreno en Kaggle T4 → ONNX → `hailomz compile` en WSL2 → HEF a la Pi. Pipeline en `scripts/training/` |
 | Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab: poses a 1.0/2.0/3.0m, foco único a 2.0m ±20cm para toda la flota. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
 | Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. Target range lab protocol 1.80–2.20m por default. Lens locking con Trabasil AM3 + activador anaeróbico (cura parcial 15min) y llave dedicada en el barrel — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
 | Preview en vivo | Disponible | `preview.py` — tool minimal browser-driven con UX consistente con focus / calib (start overlay, header). MJPEG side-by-side L|R con grid de tercios + crosshair central. Para apuntar el bracket, verificar oclusiones, o sanity check del wiring antes de correr foco/calibración. Sin detección, sin análisis. Flag `--meter centre/spot` |
@@ -243,9 +243,17 @@ scripts/
 ├── export_events.py       # Export de eventos desde el buffer local
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
 ├── deploy_lambda.sh       # Packaging del Lambda dedup L3
-├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics)
+├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock
+├── capture_baseline_frames.py  # Captura frames rectificados de la Pi para validation bench (no training)
+├── training/
+│   ├── README.md          # Walkthrough Phase A → B end-to-end
+│   ├── download_roboflow.py    # Pull de dataset Roboflow Universe a dataset/
+│   ├── bench_detector.py       # Bench de inferencia + diff de reportes (baseline vs fine-tuned)
+│   └── .env.example       # Convención del env var ROBOFLOW_API_KEY
 ├── verify_hardware.py     # Verificación de hardware
 └── setup_device.sh        # Setup automático del dispositivo (pasos 4-10)
+notebooks/
+└── train_yolov8n_heads.ipynb    # Notebook Kaggle T4 (training Phase A)
 config/
 ├── config.example.yaml           # User config anotado con estrategia local/cloud
 ├── hardware.yaml                 # Hardware design constants (baseline, CSI L/R, sensor) — inmutable
@@ -258,6 +266,7 @@ docs/
 ├── setup-guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
 ├── lab-calibration-guide.md      # Protocolo de foco + calibración en lab (universal para la flota)
 └── pilot-operator-guide.md       # Guía para el operador en sitio (foco → calibración → verificación)
+dataset/                          # Drop-zone gitignoreado para datasets de training (Roboflow, WEPDTOF)
 debug/                            # Drop-zone gitignoreado para reportes, capturas y logs de test
 ```
 

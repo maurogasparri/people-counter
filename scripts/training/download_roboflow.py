@@ -7,8 +7,9 @@ clicking through the UI.
 
 The dataset goes to ``dataset/roboflow_<workspace>_<project>_v<N>/`` with
 the standard YOLOv8 layout (``data.yaml`` + ``train/`` + ``valid/`` +
-``test/``). That folder path is what you upload to Google Drive for
-Colab, or what bench_detector.py expects.
+``test/``). That folder is what bench_detector.py expects locally; the
+Kaggle notebook re-pulls the same dataset directly from the Roboflow API
+inside its own runtime.
 
 Usage:
     # API key via env (preferred — avoids leaking it to shell history)
@@ -197,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Images per split: %s", info["image_counts"])
 
     print(f"\nDataset ready at: {location}")
-    print(f"Use this path as the dataset root in the Colab notebook.\n")
+    print(f"Use this path as the dataset root for bench_detector.py.\n")
     return 0
 
 

@@ -1075,8 +1075,8 @@ def _session_params(args: argparse.Namespace) -> dict:
         "dist_mid_mm": getattr(args, "dist_mid_mm", DEFAULT_DIST_MID_MM),
         "dist_far_mm": getattr(args, "dist_far_mm", DEFAULT_DIST_FAR_MM),
         # Resolution must match across resume — calibration needs all frames
-        # at the same size or the math breaks. 2026-04-28 session would have
-        # silently corrupted if the operator had retried at a different res.
+        # at the same size or the math breaks. Mixing different resolutions
+        # silently corrupts intrinsics (different K per pose), so we pin it.
         "resolution": list(getattr(args, "resolution", [2304, 1296])),
     }
 
@@ -1490,9 +1490,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             )
 
             # Track asymmetric detection — one camera consistently failing
-            # while the other detects fine is the silent killer the 2026-04-28
-            # session ran into (R returned 0 corners on C1/C2 while L saw 40,
-            # operator had no signal in the UI).
+            # while the other detects fine is a silent killer (operator sees
+            # "captura rechazada" but doesn't know which camera is the cause).
+            # We surface it explicitly via a panel alert.
             l_detected = corners_l is not None and ids_l is not None and len(ids_l) >= 4
             r_detected = corners_r is not None and ids_r is not None and len(ids_r) >= 4
             if l_detected and not r_detected:
@@ -2644,8 +2644,8 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     # usable detection (≥ 8 common corners is what calibrate_stereo's
     # _detect_all_pairs gates on). If too many pairs fail this re-detect,
     # the live capture loop accepted frames that won't actually feed the
-    # calibration math — and we'd silently calibrate on a tiny subset
-    # (2026-04-28 session: 7 of 15 valid → degenerate fit).
+    # calibration math — and we'd silently calibrate on a tiny subset,
+    # producing a degenerate fit.
     valid_both = 0
     invalid_lines: list[str] = []
     for lf, rf, pid, n_l, n_r in pair_meta:
@@ -2697,8 +2697,8 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     )
     # Critical gaps are hard-blockers: missing entire pose groups or
     # distance bands produces degenerate calibrations (low RMS but
-    # geometrically wrong) — exactly the failure mode of the 2026-04-28
-    # session. Operator can override with --force-degenerate-coverage.
+    # geometrically wrong). Operator can override with
+    # --force-degenerate-coverage when they know what they're doing.
     critical_gaps = coverage.get("critical", [])
     force_flag = getattr(args, "force_degenerate_coverage", False)
     if critical_gaps and not force_flag:
@@ -3089,13 +3089,14 @@ def main() -> None:
     p_wiz.add_argument("--left", type=int, default=0)
     p_wiz.add_argument("--right", type=int, default=1)
     p_wiz.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
-                        help="Capture resolution. Default 2304x1296 (binned, full FOV). "
-                             "Full-res 4608x2592 makes per-frame detection 4x slower, "
-                             "which on Pi 5 dropped FPS to <2 and caused intermittent "
-                             "marker detection at the FOV edges (B/C/D corner poses) — "
-                             "the calibration came out degenerate (low RMS but failing "
-                             "ground-truth) on 2026-04-28 lab session because of that. "
-                             "Runtime config must match this resolution.")
+                        help="Capture resolution. Default 2304x1296 (binned, "
+                             "full FOV) — the canonical mode for the fleet. "
+                             "Full-res 4608x2592 is available for special cases "
+                             "but makes per-frame detection ~4x slower (<2 FPS on "
+                             "Pi 5) and is more prone to marker dropping at the "
+                             "fisheye corners, which can produce a calibration "
+                             "with low RMS but a geometrically wrong fit. Runtime "
+                             "config must match this resolution.")
     p_wiz.add_argument("--fps", type=int, default=5)
     p_wiz.add_argument("--port", type=int, default=8080)
     p_wiz.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0])
@@ -3156,8 +3157,8 @@ def main() -> None:
                              "wizard refuses to calibrate when entire pose groups "
                              "(A/B/C/D) or distance bands (near/mid/far) are "
                              "missing, because that produces a low-RMS but "
-                             "geometrically wrong fit (2026-04-28 session). Use "
-                             "this flag only if you understand the trade-off.")
+                             "geometrically wrong fit. Use this flag only if you "
+                             "understand the trade-off.")
     p_wiz.add_argument("--min-detect-rate", type=float, default=0.7,
                         help="Pre-calibration sanity threshold: if fewer than this "
                              "fraction of captured pairs survive a strict "

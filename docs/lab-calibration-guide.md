@@ -143,7 +143,7 @@ Defaults aplicados: resolución 2304×1296 binned (4× más rápido que full-res
 
 ### Si necesitás restart limpio
 
-Después de una sesión que terminó mal (degenerada, abortada, etc.):
+Para arrancar la sesión desde cero (limpia capturas previas, `session.json` y `.npz`):
 
 ```bash
 python scripts/calibrate.py reset --yes
