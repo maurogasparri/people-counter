@@ -162,6 +162,15 @@ people-counter/
 │   │                         de ChArUco (badge "N esquinas" en su lugar) para
 │   │                         no tapar el área del ghost; R sí lo dibuja como
 │   │                         diagnóstico de la cámara derecha.
+│   │                         Flags AE: --meter matrix|centre|spot expone para
+│   │                         centro cuando hay zonas brillantes en la periferia
+│   │                         (ventanas, lámparas) que descompensan el AE
+│   │                         matrix-default. --lock-ae lockea exposición tras
+│   │                         settle de 1s (default off — AE auto durante toda
+│   │                         la sesión). Bootstrap diferido hasta tener al
+│   │                         menos una captura en cada banda (near/mid/far)
+│   │                         para evitar fitted_K erróneo cuando las primeras
+│   │                         poses están concentradas en una sola distancia.
 │   ├── focus_assist.py    <- asistente de foco guiado, UI web: start overlay,
 │   │                         barras de nitidez central + corners (absoluto) + simetría L/R,
 │   │                         peak tracker, masking de zonas de bajo contraste,
@@ -177,7 +186,27 @@ people-counter/
 │   │                         --low-light: preset PoC que afloja todos los gates
 │   │                         (centro/corners/L-R/distancia) y fuerza scene=compact
 │   │                         para validar el flujo en cuarto chico/oscuro.
-│   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad
+│   │                         Flag AE: --meter matrix|centre|spot expone para
+│   │                         centro cuando hay zonas brillantes en periferia.
+│   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad. 5 zonas
+│   │                         (centro + 4 esquinas) con clasificación de
+│   │                         confianza por zona (std + fill rate): ✓ Coincide /
+│   │                         ● Otro plano / ⚠ SGBM falló. Verdict basado solo en
+│   │                         centro (única zona con distancia medida con
+│   │                         cinta/láser); ratio borde/centro mostrado pero
+│   │                         informativo, gate solo en escenas con target plano.
+│   │                         Lee camera CSI + default_res de `hardware.yaml`.
+│   │                         Flags: --meter centre/spot, --lock-ae.
+│   ├── preview.py         <- preview en vivo browser-driven, mismo UX que
+│   │                         focus_assist + calibrate (start overlay, header).
+│   │                         MJPEG side-by-side L|R con grid de tercios +
+│   │                         crosshair central. Para apuntar el bracket o
+│   │                         verificar oclusión / centrado / wiring antes de
+│   │                         correr foco o calibración. Sin detección, sin
+│   │                         análisis. Flag --meter centre/spot para luz baja.
+│   ├── download_model.py  <- descarga YOLOv8n: HEF pre-compilado del Hailo
+│   │                         Model Zoo (subcomando `hef`) o exportación ONNX
+│   │                         vía ultralytics (subcomando `onnx`).
 │   ├── provision.py       <- provisioning + disaster recovery (create/deploy/harvest/reprovision/list)
 │   ├── verify_hardware.py <- verificación de hardware
 │   └── setup_device.sh    <- setup automático del dispositivo (pasos 4-10)
@@ -274,5 +303,24 @@ people-counter/
 
 - **RMS estéreo <0.5px** es condición necesaria pero NO suficiente. Mide self-consistency: si el solver encuentra parámetros que fitean bien los datos. Con capturas degeneradas (pocas poses, similares entre sí) hay infinitos sets de parámetros que fitean igual — el solver elige uno, pero puede ser geométricamente incorrecto.
 - **Baseline estimada** (se calcula del set, no se mide): con 20 poses diversas sobre trípode debe caer a ±1-2mm del diseño 140mm. Si cae ±5-70mm, el problema es capturas insuficientes / poco diversas, no el bracket. El warning del reporte y del log lo explica en ese orden.
-- **Validación ground-truth** (depth check contra distancia conocida) es el test real: error centro <5% a 2m, <10% a 3m, edge/center ratio <2×. Si la calibración pasa esto, sabés que la calibración sirve.
+- **Validación ground-truth** (depth check contra distancia conocida) es el test real: error centro <5% a 2m, <10% a 3m. **El verdict depende solo del centro** — es la única zona cuya distancia se mide con cinta/láser. Las 4 zonas perimetrales miden cualquier cosa que esté en esa parte del frame (otros objetos, paredes a distintas profundidades), no necesariamente al mismo plano que el centro. El ratio borde/centro se calcula y muestra como dato de diagnóstico, pero **no gate el verdict** — solo es significativo si el target ocupa todo el FOV (pared plana). En escenas reales con profundidad variable el ratio se infla sin que eso refleje un problema de calibración.
+- **Tags de confianza por zona** en el reporte: cada zona perimetral se clasifica según `std × fill_rate`:
+  - **✓ Coincide**: SGBM matcheó limpio y la profundidad cae dentro del threshold del centro — la zona ve el mismo target.
+  - **● Otro plano**: SGBM matcheó limpio pero a otra distancia — está midiendo un objeto/pared distinto, no es error de calibración.
+  - **⚠ SGBM falló**: alta varianza o bajo fill — la medición no es significativa (escena oscura, superficie reflectante, sin textura). Los valores de profundidad/error se ocultan por irrelevantes.
 - Protocolo recomendado para el piloto: **20 poses estándar del wizard en todos los dispositivos** (el wizard las genera deterministically). Misma secuencia → números comparables entre unidades, outliers detectables por QA.
+
+## Pipeline runtime — knobs de operación
+
+`src/main.py` orquestra el pipeline completo (capture → rectify → SGBM → detect Hailo → track → count → MQTT). Settings clave:
+
+- **`vision.num_disparities: auto`** (default) deriva el rango de búsqueda de SGBM desde `mounting_height_m` cubriendo exactamente las profundidades donde aparecen cabezas + piso. Sites altos corren SGBM más rápido, sites bajos obtienen más rango automáticamente. Se puede override con un int explícito (ej. `192`, `256`).
+- **`vision.sgbm_downscale: 2`** (default): SGBM matchea a resolución reducida (1=full, 2=half, 4=quarter) y `compute_disparity` upscalea la disparidad de vuelta rescalando los valores para que el depth siga correcto. Calibración es resolución-independiente (K, D no cambian), así matchear a menor res es ~4× más rápido en Pi 5 con impacto despreciable a la escala de detección de cabezas. Default 2; para diagnósticos con depth fina, 1; para más FPS y depth coarser, 4.
+- **`--no-mqtt`** (CLI flag): skipea la conexión MQTT entera y reemplaza el cliente por un no-op que loggea publishes a stdout. Útil para correr pipeline localmente antes de provisionar AWS, validando detect/track/count sin transmitir nada. Mismo comportamiento end-to-end de capture → SGBM → detect → track → count, solo cambia el sink de eventos.
+
+## Convenciones de las tools de visión
+
+- **Compartido entre `focus_assist`, `calibrate`, `preview`, `diagnose_depth`**:
+  - **`--meter matrix|centre|spot`**: AE metering mode. `matrix` (default) pondera todo el frame; `centre` / `spot` exponen solo el área central, útiles cuando hay zonas brillantes en periferia (ventanas, lámparas) que descompensan el AE en luz baja.
+  - **`--lock-ae` (calibrate + diagnose_depth)**: lockea exposición tras 1s de settle. Default off — para condiciones estables (lab, indoor con luz constante) el AE auto produce capturas más representativas. Activar solo en escenas con luz variable (luz natural, puertas que abren).
+  - Los CLI tools standalone (foco, calib, preview) usan los CSI defaults de `hardware.yaml` (camera_left=0, camera_right=1) sin necesidad de flags.

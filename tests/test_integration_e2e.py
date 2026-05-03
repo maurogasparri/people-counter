@@ -217,7 +217,7 @@ def _install_common_patches(
     # Disparity: fixed map for predictable depth.
     monkeypatch.setattr(
         "src.main.compute_disparity",
-        lambda left, right, sgbm=None: _fixed_disparity_map(),
+        lambda left, right, sgbm=None, downscale=1: _fixed_disparity_map(),
     )
 
     # Detector: scripted per-frame detections. Pad with [] so the loop can

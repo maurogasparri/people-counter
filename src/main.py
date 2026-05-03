@@ -129,13 +129,62 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
     return cap
 
 
-def build_mqtt(config: dict[str, Any]) -> tuple[MQTTClient, MessageBuffer]:
-    """Build MQTT client and buffer from config."""
+class _NullMQTTClient:
+    """No-op MQTT client for local debugging.
+
+    Used when --no-mqtt is passed: skips all network I/O and logs every
+    publish to stdout instead. The pipeline runs end-to-end so the
+    operator can validate detect / track / count events, but nothing
+    is transmitted to AWS IoT — useful before AWS infra is provisioned
+    or while iterating on the runtime.
+    """
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.disconnect_count = 0
+        self.on_connected = None
+
+    def connect(self) -> None:
+        logger.info(
+            "MQTT disabled (--no-mqtt) — publishes will be logged to stdout, "
+            "nothing transmitted to AWS IoT.",
+        )
+        self.connected = True
+        if self.on_connected is not None:
+            try:
+                self.on_connected()
+            except Exception:
+                logger.exception("on_connected callback raised")
+
+    def disconnect(self) -> None:
+        self.connected = False
+
+    def subscribe_shadow_delta(self, device_id, handler) -> None:  # noqa: ARG002
+        pass
+
+    def publish_shadow_reported(self, device_id, reported) -> None:  # noqa: ARG002
+        logger.info("[no-mqtt][shadow.reported] %s", reported)
+
+    def publish_event(self, topic_key: str, event: dict) -> None:
+        logger.info("[no-mqtt][%s] %s", topic_key, event)
+
+
+def build_mqtt(
+    config: dict[str, Any], no_mqtt: bool = False,
+) -> tuple[Any, MessageBuffer]:
+    """Build MQTT client and buffer from config.
+
+    When no_mqtt=True, returns a no-op client that logs publishes to
+    stdout instead of connecting to AWS IoT.
+    """
     buf_cfg = config["buffer"]
     buffer = MessageBuffer(
         db_path=buf_cfg["db_path"],
         max_age_hours=buf_cfg.get("max_age_hours", 72),
     )
+
+    if no_mqtt:
+        return _NullMQTTClient(), buffer
 
     mqtt_cfg = config["mqtt"]
     store_id = config["device"]["store_id"]
@@ -308,9 +357,30 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         num_disp_resolved = _auto_num_disparities(vision_cfg, logger)
     else:
         num_disp_resolved = int(num_disp_cfg)
+    # SGBM downscale: process at lower resolution for speed. depth.compute_disparity
+    # then upscales the disparity map and rescales values so depth math remains
+    # correct. Default 2 = half-res matching, ~4x faster on Pi 5 with negligible
+    # accuracy impact at the operational head-detection scale.
+    sgbm_downscale = int(vision_cfg.get("sgbm_downscale", 2))
+    if sgbm_downscale not in (1, 2, 4):
+        logger.warning(
+            "vision.sgbm_downscale=%d invalid (use 1/2/4) — falling back to 2",
+            sgbm_downscale,
+        )
+        sgbm_downscale = 2
+    # Pass scaled num_disparities to create_sgbm so the matcher operates at
+    # the downscaled resolution; compute_disparity rescales values back up.
+    sgbm_num_disp = (
+        max(16, (num_disp_resolved // sgbm_downscale // 16) * 16)
+        if sgbm_downscale > 1 else num_disp_resolved
+    )
     sgbm = create_sgbm(
-        num_disparities=num_disp_resolved,
+        num_disparities=sgbm_num_disp,
         block_size=vision_cfg.get("block_size", 9),
+    )
+    logger.info(
+        "SGBM: downscale=%d, num_disparities=%d (effective at downscaled res)",
+        sgbm_downscale, sgbm_num_disp,
     )
 
     # --- Build tracker + counter ---
@@ -329,7 +399,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     counter: LineCounter | ROICounter | None = None
 
     # --- Build MQTT ---
-    mqtt_client, buffer = build_mqtt(config)
+    mqtt_client, buffer = build_mqtt(
+        config, no_mqtt=getattr(args, "no_mqtt", False),
+    )
 
     # --- Shadow delta wiring -------------------------------------------------
     # Deltas arrive in the paho network thread; the queue is the thread-safe
@@ -401,6 +473,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     last_purge = time.time()
     last_watchdog = 0.0
     within_hours = True  # assume open until first check
+    profile_enabled = bool(getattr(args, "profile", False))
+    profile_every_n = max(1, int(getattr(args, "profile_every_n", 30)))
+    profile_frame_idx = 0
 
     # --- Observability state (sliding windows) ---
     # Rolling buffers of per-frame latency and detection counts. Cleared after
@@ -497,8 +572,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         )
                     else:
                         nd_resolved = int(nd_cfg)
+                    sgbm_num_disp = (
+                        max(16, (nd_resolved // sgbm_downscale // 16) * 16)
+                        if sgbm_downscale > 1 else nd_resolved
+                    )
                     sgbm = create_sgbm(
-                        num_disparities=nd_resolved,
+                        num_disparities=sgbm_num_disp,
                         block_size=config["vision"].get("block_size", 9),
                     )
                     logger.info("SGBM rebuilt after shadow delta")
@@ -515,9 +594,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     logger.exception("Publishing shadow reported failed")
 
             # --- Check operating hours every 60 seconds ---
+            # --ignore-schedule bypasses the gate entirely — useful for PoC
+            # runs and debug sessions where the operating_hours config
+                # would otherwise pause the pipeline.
+            ignore_schedule = getattr(args, "ignore_schedule", False)
             now = time.time()
             if now - last_hours_check >= 60.0:
-                if schedule_invalid:
+                if ignore_schedule:
+                    within_hours = True
+                elif schedule_invalid:
                     # fail_closed: treat as outside hours; fail_open: count.
                     within_hours = invalid_mode != "fail_closed"
                 else:
@@ -561,6 +646,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 continue
 
             t_iter_start = time.perf_counter()
+            t_capture_start = t_iter_start
             try:
                 frame_l, frame_r = capture.read()
                 health_signals.capture_ok = True
@@ -572,12 +658,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 health_signals.capture_ok = False
                 time.sleep(0.1)
                 continue
+            t_capture_end = time.perf_counter()
 
             # --- Rectification ---
             if calibration is not None:
                 rect_l, rect_r = rectify_pair(frame_l, frame_r, calibration)
             else:
                 rect_l, rect_r = frame_l, frame_r
+            t_rectify_end = time.perf_counter()
 
             # --- Initialize counter with actual frame height ---
             if counter is None:
@@ -594,12 +682,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
             # --- Depth map ---
             if calibration is not None and focal_length_px is not None:
-                disparity = compute_disparity(rect_l, rect_r, sgbm=sgbm)
+                disparity = compute_disparity(
+                    rect_l, rect_r, sgbm=sgbm, downscale=sgbm_downscale,
+                )
                 depth_map = disparity_to_depth(
                     disparity, focal_length_px, baseline_mm
                 )
             else:
                 depth_map = None
+            t_depth_end = time.perf_counter()
 
             # --- Detection ---
             try:
@@ -615,6 +706,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 health_signals.detect_ok = False
                 time.sleep(0.1)
                 continue
+            t_detect_end = time.perf_counter()
 
             # --- Build 3D positions + per-detection metadata ---
             vision_cfg = config.get("vision", {})
@@ -655,6 +747,28 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
             # --- Counting ---
             events = counter.check_all(tracks)
+            t_track_end = time.perf_counter()
+
+            # --- Profile log ---
+            # When --profile is set, log a per-stage breakdown every PROFILE_EVERY_N
+                # frames. Helps identify the actual bottleneck (capture / rectify /
+                # depth / detect / track) instead of guessing from total FPS.
+            if profile_enabled:
+                profile_frame_idx += 1
+                if profile_frame_idx % profile_every_n == 0:
+                    cap_ms = (t_capture_end - t_capture_start) * 1000
+                    rect_ms = (t_rectify_end - t_capture_end) * 1000
+                    depth_ms = (t_depth_end - t_rectify_end) * 1000
+                    detect_ms = (t_detect_end - t_depth_end) * 1000
+                    track_ms = (t_track_end - t_detect_end) * 1000
+                    total_ms = (t_track_end - t_iter_start) * 1000
+                    logger.info(
+                        "PROFILE frame=%d cap=%.0fms rect=%.0fms depth=%.0fms "
+                        "detect=%.0fms track=%.0fms TOTAL=%.0fms (%.1f FPS)",
+                        profile_frame_idx, cap_ms, rect_ms, depth_ms,
+                        detect_ms, track_ms, total_ms,
+                        1000.0 / total_ms if total_ms > 0 else 0.0,
+                    )
 
             # --- Publish counting events ---
             scaling = get_scaling_factor(config)
@@ -769,6 +883,35 @@ def main() -> None:
         choices=["auto", "hailo", "opencv"],
         default="auto",
         help="Detection backend (default: auto-detect from model extension)",
+    )
+    parser.add_argument(
+        "--no-mqtt",
+        action="store_true",
+        help="Skip MQTT entirely (useful before AWS infra is provisioned). "
+             "All publishes are logged to stdout instead of transmitted. "
+             "The pipeline runs end-to-end so detect / track / count events "
+             "are visible in logs.",
+    )
+    parser.add_argument(
+        "--ignore-schedule",
+        action="store_true",
+        help="Bypass the operating_hours gate. The pipeline counts always, "
+             "regardless of weekday/time of day. Useful for PoC runs and "
+             "debug sessions outside the configured store hours.",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Log per-stage timing (capture / rectify / depth / detect / "
+             "track) every N frames so the actual bottleneck is visible "
+             "instead of just total FPS. Use with --profile-every-n to tune "
+             "the log frequency.",
+    )
+    parser.add_argument(
+        "--profile-every-n",
+        type=int, default=30,
+        help="When --profile is set, emit a PROFILE log every N frames "
+             "(default 30 — about every 6 seconds at 5 FPS).",
     )
     args = parser.parse_args()
 

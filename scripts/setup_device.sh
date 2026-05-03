@@ -114,7 +114,8 @@ dpkg -i "/tmp/$NEXMON_DKMS"
 info "Step 7: Installing project dependencies..."
 apt install -y \
     python3-pip \
-    python3-opencv python3-numpy \
+    python3-opencv python3-numpy python3-scipy \
+    python3-yaml python3-paho-mqtt \
     libopencv-dev \
     python3-gpiozero python3-lgpio \
     git

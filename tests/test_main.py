@@ -518,8 +518,8 @@ def test_run_pipeline_publishes_shadow_reconciliation_on_boot(
 
     real_build_mqtt = _main_mod.build_mqtt
 
-    def _wrap_build_mqtt(config):
-        client, buf = real_build_mqtt(config)
+    def _wrap_build_mqtt(config, no_mqtt=False):
+        client, buf = real_build_mqtt(config, no_mqtt=no_mqtt)
         captured_clients.append(client)
         return client, buf
 

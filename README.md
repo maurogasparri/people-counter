@@ -73,13 +73,15 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 456/456 pasando | Visión, tracking, MQTT, WiFi/BLE, config, cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño |
-| Config | Local + Cloud | YAML (hardware) + IoT Shadow (negocio). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
+| Tests | 451/451 pasando | Visión, tracking, MQTT, WiFi/BLE, config (hardware + user), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño |
+| Config | Hardware + Local + Cloud | Tres niveles: `config/hardware.yaml` (en repo, inmutable — bracket geometry + sensor invariants), `/etc/people-counter/config.yaml` (per-device, mutable — mounting_height, paths, MQTT), AWS IoT Shadow (cloud, business-driven — schedule, scaling, toggles). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode 2304×1296 (binned full-FOV) para foco, calibración y runtime — full-res 4608×2592 fue descartado tras bench 2026-04-28: detección a <2 FPS y calibración degenerada |
 | Detección | Validada | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN |
 | Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab: poses a 1.0/2.0/3.0m, foco único a 2.0m ±20cm para toda la flota. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
-| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. Target range lab protocol 1.80–2.20m por default. Lens locking con Trabasil AM3 + activador anaeróbico (cura parcial 15min) y llave dedicada en el barrel — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact) |
+| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. Target range lab protocol 1.80–2.20m por default. Lens locking con Trabasil AM3 + activador anaeróbico (cura parcial 15min) y llave dedicada en el barrel — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
+| Preview en vivo | Disponible | `preview.py` — tool minimal browser-driven con UX consistente con focus / calib (start overlay, header). MJPEG side-by-side L|R con grid de tercios + crosshair central. Para apuntar el bracket, verificar oclusiones, o sanity check del wiring antes de correr foco/calibración. Sin detección, sin análisis. Flag `--meter centre/spot` |
+| Validación de profundidad | Reformulada | `diagnose_depth.py` y la fase ground-truth del wizard reportan **verdict basado solo en error del centro** (única zona con distancia conocida). Las 4 zonas perimetrales se clasifican con tags: ✓ Coincide / ● Otro plano / ⚠ SGBM falló según `std × fill_rate` — distinción honesta entre "calibración errada" vs "está midiendo otro objeto" vs "SGBM no puede matchear esta superficie". Reporte HTML con verdict card prominente arriba + tabla por zonas con tags de confianza |
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
@@ -101,7 +103,8 @@ pytest
 
 | Paquete | Instalar vía | Notas |
 |---------|------------|-------|
-| opencv-contrib-python, numpy, paho-mqtt, pyyaml, scapy, bleak | `pip install -e ".[dev]"` | Multiplataforma, funciona en máquinas de desarrollo |
+| opencv-contrib-python, numpy, scipy, paho-mqtt, pyyaml, scapy, bleak | `pip install -e ".[dev]"` | Multiplataforma, funciona en máquinas de desarrollo |
+| python3-numpy, python3-scipy, python3-opencv, python3-yaml, python3-paho-mqtt | `apt` (binarios precompilados) | En la Pi se instalan vía apt — pip-compilar scipy/opencv en la Pi tarda mucho. Ver `setup_device.sh` |
 | picamera2, libcamera | `apt` (python3-picamera2) | Solo RPi, provisto por RPi OS Trixie |
 | hailo_platform | `apt` (hailort + hailort-pcie-driver + python3-hailort) | Solo RPi, requiere Hailo-8L + PCIe |
 | aircrack-ng, nexmon | `apt` + paquetes `.deb` | Solo RPi, WiFi monitor mode |
@@ -214,30 +217,38 @@ src/
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
 ├── cloud/           # Lambda dedup L3 (inter-cámara)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
-├── config/          # Carga de YAML + merge con IoT Shadow + runtime-safe prefixes
+├── config/          # Loader de hardware.yaml + user config.yaml + merge con IoT Shadow + runtime-safe prefixes
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
-└── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT)
-tests/               # 449 tests espejando src/ + tests/scripts/ para el wizard
+└── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
+tests/               # 451 tests espejando src/ + tests/scripts/ para el wizard
 scripts/
-├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard
+├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,
 │                          # ghost silueta, pose-announce atómico, tolerance preset,
-│                          # ground-truth en UI, reporte HTML con viz embedded
+│                          # ground-truth en UI, reporte HTML con viz embedded.
+│                          # Flags: --meter centre/spot, --lock-ae, --low-light
 ├── focus_assist.py        # Asistente de foco browser-driven: start overlay, barras
 │                          # visuales, peak tracker, masking, audio TTS, reporte auto-open.
 │                          # Corner sharpness absoluta + auto-detección de escena compacta
-│                          # (bbox board/frame >25% → omite check de corners)
-├── diagnose_depth.py      # Validación de profundidad: 5 zonas + PASS/FAIL vs distancia conocida
+│                          # (bbox board/frame >25% → omite check de corners). L/R parity
+│                          # check. Flags: --meter centre/spot, --low-light
+├── preview.py             # Preview en vivo browser-driven (start overlay, header).
+│                          # Side-by-side L|R con grid + crosshair. Para apuntar el bracket
+│                          # antes de correr foco / calib. Flag --meter centre/spot
+├── diagnose_depth.py      # Validación de profundidad: 5 zonas con tags de confianza
+│                          # (✓ Coincide / ● Otro plano / ⚠ SGBM falló). Verdict solo
+│                          # por error del centro. Flags: --meter, --lock-ae
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── roi_picker.py          # Seleccionador de ROI + línea virtual
 ├── export_events.py       # Export de eventos desde el buffer local
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
 ├── deploy_lambda.sh       # Packaging del Lambda dedup L3
-├── download_model.py      # Descarga YOLOv8n HEF/ONNX
+├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics)
 ├── verify_hardware.py     # Verificación de hardware
 └── setup_device.sh        # Setup automático del dispositivo (pasos 4-10)
 config/
-├── config.example.yaml           # Config anotado con estrategia local/cloud
+├── config.example.yaml           # User config anotado con estrategia local/cloud
+├── hardware.yaml                 # Hardware design constants (baseline, CSI L/R, sensor) — inmutable
 ├── people-counter.service        # Servicio systemd principal
 ├── people-counter-reset.*        # Timer de reset diario de dedup (04:00)
 └── logrotate.conf                # Rotación de logs

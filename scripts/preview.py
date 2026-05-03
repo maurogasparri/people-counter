@@ -188,6 +188,65 @@ def _draw_overlay(vis: np.ndarray, label: str) -> None:
     )
 
 
+def _draw_counter_overlay(
+    vis: np.ndarray,
+    counter_cfg: dict,
+    src_w: int,
+    src_h: int,
+) -> None:
+    """Draw ROI rectangle + virtual counting line + direction labels on the
+    preview, matching the runtime config of the pipeline. Coords in the
+    config are at the source frame resolution (e.g. 2304x1296); we scale
+    them to the preview resolution.
+    """
+    ph, pw = vis.shape[:2]
+    sx = pw / src_w
+    sy = ph / src_h
+
+    roi = counter_cfg.get("roi") or {}
+    line = counter_cfg.get("line") or {}
+    labels = counter_cfg.get("direction_labels") or {}
+
+    # ROI rectangle (yellow)
+    if all(k in roi for k in ("x_min", "x_max", "y_min", "y_max")):
+        x1 = int(roi["x_min"] * sx)
+        x2 = int(roi["x_max"] * sx)
+        y1 = int(roi["y_min"] * sy)
+        y2 = int(roi["y_max"] * sy)
+        cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 220, 220), 2)
+        cv2.putText(
+            vis, "ROI", (x1 + 6, y1 + 22),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 220), 2, cv2.LINE_AA,
+        )
+
+    # Counting line (red) + direction labels on each side
+    label_a = labels.get("side_a_to_b", "ingress")
+    label_b = labels.get("side_b_to_a", "egress")
+    if line.get("orientation") == "horizontal" and "position" in line:
+        ly = int(line["position"] * sy)
+        cv2.line(vis, (0, ly), (pw, ly), (0, 0, 255), 2)
+        # Side A above the line, Side B below (per main.py convention)
+        cv2.putText(
+            vis, f"-> {label_a}", (12, ly - 8),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            vis, f"<- {label_b}", (12, ly + 22),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+        )
+    elif line.get("orientation") == "vertical" and "position" in line:
+        lx = int(line["position"] * sx)
+        cv2.line(vis, (lx, 0), (lx, ph), (0, 0, 255), 2)
+        cv2.putText(
+            vis, f"v {label_a}", (lx + 6, 22),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            vis, f"^ {label_b}", (lx + 6, ph - 12),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+        )
+
+
 def main() -> None:
     global latest_jpeg, shutting_down
 
@@ -205,7 +264,48 @@ def main() -> None:
                         help="AE metering mode. Use 'centre' / 'spot' when "
                              "bright zones in the periphery (windows, lights) "
                              "drag exposure down on the centre.")
+    parser.add_argument("--config", default=None,
+                        help="Optional path to the runtime config.yaml. When "
+                             "provided, the preview matches the pipeline's "
+                             "actual setup: takes resolution from config, "
+                             "rectifies frames using the calibration .npz, "
+                             "and draws the ROI rectangle + counting line + "
+                             "direction labels on the L preview. Use this to "
+                             "verify the runtime layout before launching "
+                             "main.py.")
     args = parser.parse_args()
+
+    # Optional: load runtime config so the preview reflects the pipeline's
+    # actual setup (resolution, calibration, ROI / line overlay).
+    runtime_cfg = None
+    calibration = None
+    counter_cfg = None
+    if args.config:
+        from src.config.loader import load_config
+        runtime_cfg = load_config(args.config)
+        vision_cfg = runtime_cfg.get("vision", {})
+        # Honour the resolution from config so the ROI/line scale match
+        # whatever main.py will see.
+        cfg_res = vision_cfg.get("resolution")
+        if cfg_res and tuple(cfg_res) != tuple(args.resolution):
+            print(f"Resolución del config: {cfg_res} (override del default "
+                  f"{args.resolution})")
+            args.resolution = list(cfg_res)
+        # Calibration for rectification — without it the ROI overlay still
+        # shows but at the un-rectified frame, which won't match the
+        # pipeline's coordinate system exactly.
+        cal_path = vision_cfg.get("calibration_file")
+        if cal_path and Path(cal_path).exists():
+            from src.vision.calibration import load_calibration
+            calibration = load_calibration(cal_path)
+            print(f"Calibración cargada: {cal_path} (frames serán rectificados)")
+        elif cal_path:
+            print(f"⚠ calibration_file en config ({cal_path}) no existe — "
+                  f"frames sin rectificar; ROI/línea pueden no coincidir "
+                  f"exacto con lo que ve el pipeline.")
+        counter_cfg = runtime_cfg.get("counter")
+        if counter_cfg:
+            print("ROI + línea de conteo se dibujarán sobre el preview L.")
 
     from picamera2 import Picamera2
     from libcamera import controls as _libcam_controls
@@ -274,10 +374,23 @@ def main() -> None:
                 cam_r.capture_array("main"), cv2.COLOR_RGB2BGR,
             )
 
+            # Optional rectification — when --config gave us a calibration,
+            # the preview shows what the pipeline actually sees post-rectify.
+            # Without it the raw frames are shown.
+            if calibration is not None:
+                from src.vision.calibration import rectify_pair
+                frame_l, frame_r = rectify_pair(frame_l, frame_r, calibration)
+
+            src_h, src_w = frame_l.shape[:2]
             vis_l = cv2.resize(frame_l, (half_w, half_h))
             vis_r = cv2.resize(frame_r, (half_w, half_h))
             _draw_overlay(vis_l, "IZQ")
             _draw_overlay(vis_r, "DER")
+
+            # ROI + counting line drawn only on L (the preview reference for
+            # alignment), in the same coordinate system the pipeline uses.
+            if counter_cfg is not None:
+                _draw_counter_overlay(vis_l, counter_cfg, src_w, src_h)
 
             combined = np.hstack([vis_l, vis_r])
             _, jpeg = cv2.imencode(
@@ -289,7 +402,7 @@ def main() -> None:
 
             time.sleep(0.05)
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        print("\nCerrando...")
     finally:
         shutting_down = True
         try:

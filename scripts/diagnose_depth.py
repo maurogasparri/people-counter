@@ -101,7 +101,7 @@ def main() -> None:
 
     # --- Print calibration parameters ---
     print("=" * 70)
-    print("CALIBRATION PARAMETERS")
+    print("PARÁMETROS DE CALIBRACIÓN")
     print("=" * 70)
     K_l, K_r = cal["camera_matrix_l"], cal["camera_matrix_r"]
     P1, P2, T, Q = cal["P1"], cal["P2"], cal["T"], cal["Q"]
@@ -113,11 +113,11 @@ def main() -> None:
     print(f"Baseline ||T|| = {baseline_T:.1f} mm  /  P2[0,3]/fx = {baseline_P2:.1f} mm")
 
     if abs(baseline_T - baseline_P2) > 5:
-        print(f"  WARNING: baseline mismatch (>5mm)")
+        print(f"  ATENCIÓN: discrepancia de baseline (>5mm)")
 
     # --- Capture ---
     print(f"\n{'=' * 70}")
-    print("CAPTURING...")
+    print("CAPTURANDO...")
     print("=" * 70)
 
     cap = StereoCapture(
@@ -130,13 +130,13 @@ def main() -> None:
     if args.delay > 0:
         import time
         for i in range(args.delay, 0, -1):
-            print(f"  Capturing in {i}...", end="\r", flush=True)
+            print(f"  Capturando en {i}...", end="\r", flush=True)
             time.sleep(1)
         print()
 
     left, right = cap.read()
     cap.close()
-    print(f"Captured: {left.shape}, rectifying...")
+    print(f"Capturado: {left.shape}, rectificando...")
 
     rect_l, rect_r = rectify_pair(left, right, cal)
 
@@ -166,17 +166,17 @@ def main() -> None:
 
     # --- Per-zone analysis ---
     print(f"\n{'=' * 70}")
-    print(f"DEPTH PER ZONE  (ground truth: {args.distance:.0f} mm = {args.distance/1000:.2f} m)")
-    print(f"Zone size: {2*half}×{2*half} px  ({args.zone_fraction*100:.0f}% of frame side)")
+    print(f"PROFUNDIDAD POR ZONA  (distancia real: {args.distance:.0f} mm = {args.distance/1000:.2f} m)")
+    print(f"Tamaño de zona: {2*half}×{2*half} px  ({args.zone_fraction*100:.0f}% del lado del frame)")
     print("=" * 70)
-    print(f"{'Zone':<14s} {'Valid':>7s} {'Fill%':>7s} {'Depth(mm)':>11s} {'Std(mm)':>9s} {'Error':>9s}")
+    print(f"{'Zona':<14s} {'Válidos':>7s} {'Fill%':>7s} {'Prof(mm)':>11s} {'Std(mm)':>9s} {'Error':>9s}")
     print("-" * 70)
 
     results = {}
     for name, (cy, cx) in zones.items():
         n, median, std, fill = analyze_zone(disparity, fx_p1, baseline_T, cy, cx, half)
         if n == 0:
-            print(f"{name:<14s} {'NO DATA':>7s}")
+            print(f"{name:<14s} {'SIN DATOS':>7s}")
             results[name] = None
             continue
         err_pct = (median - args.distance) / args.distance * 100
@@ -185,14 +185,14 @@ def main() -> None:
 
     # --- Consistency analysis ---
     print(f"\n{'=' * 70}")
-    print("CENTER vs EDGES CONSISTENCY")
+    print("CONSISTENCIA CENTRO vs BORDES")
     print("=" * 70)
 
     center = results.get("center")
     edges = [v for k, v in results.items() if k != "center" and v is not None]
 
     if center is None or not edges:
-        print("Cannot compute consistency — missing zones")
+        print("No se puede computar consistencia — faltan zonas")
         edge_ratio = float("nan")
     else:
         center_err = abs(center[2])
@@ -201,14 +201,14 @@ def main() -> None:
         mean_edge_err = sum(edge_errs) / len(edge_errs)
         edge_ratio = max_edge_err / max(center_err, 0.1)
 
-        print(f"Center |error|:        {center_err:5.2f}%")
-        print(f"Mean edge |error|:     {mean_edge_err:5.2f}%")
-        print(f"Max edge |error|:      {max_edge_err:5.2f}%")
-        print(f"Max edge / center:     {edge_ratio:5.2f}×")
+        print(f"Error |centro|:        {center_err:5.2f}%")
+        print(f"Error medio |bordes|:  {mean_edge_err:5.2f}%")
+        print(f"Error max |bordes|:    {max_edge_err:5.2f}%")
+        print(f"Max bordes / centro:   {edge_ratio:5.2f}×")
 
     # --- PASS/FAIL ---
     print(f"\n{'=' * 70}")
-    print("VALIDATION VERDICT")
+    print("VEREDICTO DE VALIDACIÓN")
     print("=" * 70)
 
     # Threshold scales linearly between 2m and 3m
@@ -225,23 +225,23 @@ def main() -> None:
     checks = []
     if center is not None:
         ok = abs(center[2]) <= center_threshold
-        checks.append(("Center error", f"{abs(center[2]):.2f}% ≤ {center_threshold:.1f}%", ok))
+        checks.append(("Error centro", f"{abs(center[2]):.2f}% ≤ {center_threshold:.1f}%", ok))
     # Edge/center ratio is shown as INFO only — it assumes a flat target
     # scene which most real environments don't have. Multi-depth scenes
     # inflate edge errors without that being a calibration problem.
     if not np.isnan(edge_ratio):
         info_ok = edge_ratio <= PASS_EDGE_CENTER_RATIO
         flag = "OK" if info_ok else "INFO"
-        print(f"  [{flag}] Edge/center ratio: {edge_ratio:.2f}× "
-              f"(reference {PASS_EDGE_CENTER_RATIO:.1f}× — informativo, "
-              f"only meaningful on flat targets)")
+        print(f"  [{flag}] Ratio bordes/centro: {edge_ratio:.2f}× "
+              f"(referencia {PASS_EDGE_CENTER_RATIO:.1f}× — informativo, "
+              f"solo significativo con target plano)")
 
     for name, detail, ok in checks:
         status = "PASS" if ok else "FAIL"
         print(f"  [{status}] {name}: {detail}")
 
     overall = all(ok for _, _, ok in checks) if checks else False
-    print(f"\nOVERALL: {'PASS — calibration is good for depth' if overall else 'FAIL — recalibrate (more captures, better focus, check rigidity)'}")
+    print(f"\nVEREDICTO: {'PASS — calibración correcta para depth' if overall else 'FAIL — recalibrar (más capturas, mejor foco, verificar rigidez)'}")
 
     # --- Save annotated visualization ---
     cv2.imwrite("/tmp/diagnose_rect_l.jpg", rect_l)
@@ -257,12 +257,12 @@ def main() -> None:
         if results.get(name) is not None:
             label = f"{results[name][0]:.0f}mm ({results[name][2]:+.1f}%)"
         else:
-            label = "no data"
+            label = "sin datos"
         cv2.putText(depth_vis, label, (x1 + 5, y1 + 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
 
     cv2.imwrite("/tmp/diagnose_depth.jpg", depth_vis)
-    print(f"\nSaved: /tmp/diagnose_rect_l.jpg, /tmp/diagnose_rect_r.jpg, /tmp/diagnose_depth.jpg")
+    print(f"\nGuardado: /tmp/diagnose_rect_l.jpg, /tmp/diagnose_rect_r.jpg, /tmp/diagnose_depth.jpg")
 
 
 if __name__ == "__main__":
