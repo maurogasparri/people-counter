@@ -799,6 +799,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "scaled_in": round(counter.total_in * scaling),
                         "scaled_out": round(counter.total_out * scaling),
                         "height_class": event.height_class,
+                        "height_m": (
+                            round(event.height_m, 2)
+                            if event.height_m is not None else None
+                        ),
+                        "head_depth_m": (
+                            round(event.head_depth_m, 2)
+                            if event.head_depth_m is not None else None
+                        ),
                     },
                 )
 

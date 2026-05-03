@@ -37,6 +37,12 @@ class CountEvent:
     # Optional per-track attributes populated when classifier is enabled.
     # "unknown" when height data is missing (no depth, classifier disabled).
     height_class: str = "unknown"
+    # Median head height (m) and head depth (m) across the track's detection
+    # history. None when no depth was sampled (classifier disabled or every
+    # detected frame fell outside the depth map). Useful for downstream
+    # analytics — total_in/out alone doesn't tell you the demographic mix.
+    height_m: Optional[float] = None
+    head_depth_m: Optional[float] = None
 
 
 def _aggregate_height_class_from_track(track: Track) -> str:
@@ -50,6 +56,35 @@ def _aggregate_height_class_from_track(track: Track) -> str:
     from src.vision.world_coords import aggregate_height_class
     samples = [rec.get("height_class", "unknown") for rec in history]
     return aggregate_height_class(samples)
+
+
+def _aggregate_height_m_from_track(track: Track) -> Optional[float]:
+    """Median head height in metres across detection history. None if no
+    sample has a measured head_height_mm (classifier disabled, no depth)."""
+    history = track.meta.get("detection_history", [])
+    samples = [
+        rec.get("head_height_mm") for rec in history
+        if rec.get("head_height_mm") is not None
+    ]
+    if not samples:
+        return None
+    samples.sort()
+    median_mm = samples[len(samples) // 2]
+    return float(median_mm) / 1000.0
+
+
+def _aggregate_head_depth_m_from_track(track: Track) -> Optional[float]:
+    """Median head depth (distance from lens to top of head) in metres."""
+    history = track.meta.get("detection_history", [])
+    samples = [
+        rec.get("near_depth_mm") for rec in history
+        if rec.get("near_depth_mm") is not None and rec.get("near_depth_mm") > 0
+    ]
+    if not samples:
+        return None
+    samples.sort()
+    median_mm = samples[len(samples) // 2]
+    return float(median_mm) / 1000.0
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +124,8 @@ class LineCounter:
             return CountEvent(
                 track.track_id, "in", time.time(), curr_y,
                 height_class=_aggregate_height_class_from_track(track),
+                height_m=_aggregate_height_m_from_track(track),
+                head_depth_m=_aggregate_head_depth_m_from_track(track),
             )
 
         if prev_y > self.line_y >= curr_y:
@@ -101,6 +138,8 @@ class LineCounter:
             return CountEvent(
                 track.track_id, "out", time.time(), curr_y,
                 height_class=_aggregate_height_class_from_track(track),
+                height_m=_aggregate_height_m_from_track(track),
+                head_depth_m=_aggregate_head_depth_m_from_track(track),
             )
 
         return None
@@ -300,6 +339,8 @@ class ROICounter:
                     timestamp=time.time(),
                     position_y=cy,
                     height_class=_aggregate_height_class_from_track(track),
+                    height_m=_aggregate_height_m_from_track(track),
+                    head_depth_m=_aggregate_head_depth_m_from_track(track),
                 )
             logger.debug(
                 "roi_no_count_indeciso",
