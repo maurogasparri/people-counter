@@ -43,6 +43,10 @@ class CountEvent:
     # analytics — total_in/out alone doesn't tell you the demographic mix.
     height_m: Optional[float] = None
     head_depth_m: Optional[float] = None
+    # Median YOLO confidence across the track's detection history. Lets
+    # downstream filter out low-confidence events (likely false positives or
+    # marginal poses).
+    confidence: Optional[float] = None
 
 
 def _aggregate_height_class_from_track(track: Track) -> str:
@@ -87,6 +91,19 @@ def _aggregate_head_depth_m_from_track(track: Track) -> Optional[float]:
     return float(median_mm) / 1000.0
 
 
+def _aggregate_confidence_from_track(track: Track) -> Optional[float]:
+    """Median YOLO confidence across the track's detection history."""
+    history = track.meta.get("detection_history", [])
+    samples = [
+        rec.get("confidence") for rec in history
+        if rec.get("confidence") is not None
+    ]
+    if not samples:
+        return None
+    samples.sort()
+    return float(samples[len(samples) // 2])
+
+
 # ---------------------------------------------------------------------------
 # Legacy line counter (preserved for backward compatibility)
 # ---------------------------------------------------------------------------
@@ -126,6 +143,7 @@ class LineCounter:
                 height_class=_aggregate_height_class_from_track(track),
                 height_m=_aggregate_height_m_from_track(track),
                 head_depth_m=_aggregate_head_depth_m_from_track(track),
+                confidence=_aggregate_confidence_from_track(track),
             )
 
         if prev_y > self.line_y >= curr_y:
@@ -140,6 +158,7 @@ class LineCounter:
                 height_class=_aggregate_height_class_from_track(track),
                 height_m=_aggregate_height_m_from_track(track),
                 head_depth_m=_aggregate_head_depth_m_from_track(track),
+                confidence=_aggregate_confidence_from_track(track),
             )
 
         return None
@@ -341,6 +360,7 @@ class ROICounter:
                     height_class=_aggregate_height_class_from_track(track),
                     height_m=_aggregate_height_m_from_track(track),
                     head_depth_m=_aggregate_head_depth_m_from_track(track),
+                    confidence=_aggregate_confidence_from_track(track),
                 )
             logger.debug(
                 "roi_no_count_indeciso",

@@ -749,6 +749,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     head_mm = None
                     height_class = "unknown"
                 metas.append({
+                    "confidence": float(det.confidence),
                     "near_depth_mm": near_z,
                     "head_height_mm": head_mm,
                     "height_class": height_class,
@@ -806,6 +807,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "head_depth_m": (
                             round(event.head_depth_m, 2)
                             if event.head_depth_m is not None else None
+                        ),
+                        "confidence": (
+                            round(event.confidence, 3)
+                            if event.confidence is not None else None
                         ),
                     },
                 )
