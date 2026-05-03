@@ -516,8 +516,14 @@ def build_reported_state(
 
 
 def _validate(config: dict[str, Any]) -> None:
-    """Validate required config keys are present."""
-    required = ["device", "vision", "detection", "mqtt", "buffer"]
+    """Validate required config keys are present.
+
+    `buffer` is no longer required at the config layer — its defaults live in
+    hardware.yaml (db_path/max_age_hours are install conventions). Same for
+    most of `tracking`, `mqtt.{port,topics}`, `detection.{thresholds}`.
+    `detection` stays required because `model_path` is per-device install.
+    """
+    required = ["device", "vision", "detection", "mqtt"]
     missing = [k for k in required if k not in config]
     if missing:
         raise ValueError(f"Missing required config sections: {missing}")

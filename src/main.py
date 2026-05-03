@@ -106,10 +106,11 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
     """Build the appropriate capture source."""
     if replay_dir:
         logger.info("Using file replay from %s", replay_dir)
+        hw = load_hardware_config()
         cap = FileCapture(
             directory=replay_dir,
             loop=True,
-            fps=config["vision"].get("fps", 15),
+            fps=config["vision"].get("fps", hw["sensor"]["default_fps"]),
         )
     else:
         # camera_left / camera_right come from hardware.yaml — they're
@@ -177,28 +178,34 @@ def build_mqtt(
     When no_mqtt=True, returns a no-op client that logs publishes to
     stdout instead of connecting to AWS IoT.
     """
-    buf_cfg = config["buffer"]
+    # Buffer paths/retention are a fleet-wide install convention living in
+    # hardware.yaml; config.yaml may override per-deployment (tests do).
+    hw_buf = load_hardware_config()["buffer"]
+    buf_cfg = config.get("buffer", {}) or {}
     buffer = MessageBuffer(
-        db_path=buf_cfg["db_path"],
-        max_age_hours=buf_cfg.get("max_age_hours", 72),
+        db_path=buf_cfg.get("db_path", hw_buf["db_path"]),
+        max_age_hours=buf_cfg.get("max_age_hours", hw_buf["max_age_hours"]),
     )
 
     if no_mqtt:
         return _NullMQTTClient(), buffer
 
     mqtt_cfg = config["mqtt"]
+    hw_mqtt = load_hardware_config()["mqtt"]
     store_id = config["device"]["store_id"]
     device_id = config["device"]["id"]
 
-    # Expand topic templates
+    # Topic shape is a fleet-wide protocol contract (see hardware.yaml).
+    # config.yaml may still override per-deployment.
+    topic_templates = mqtt_cfg.get("topics") or hw_mqtt["topics"]
     topics = {}
-    for key, template in mqtt_cfg.get("topics", {}).items():
+    for key, template in topic_templates.items():
         topics[key] = template.replace("{store_id}", store_id).replace("{device_id}", device_id)
 
     client = MQTTClient(
         device_id=config["device"]["id"],
         endpoint=mqtt_cfg["endpoint"],
-        port=mqtt_cfg.get("port", 8883),
+        port=mqtt_cfg.get("port", hw_mqtt["port"]),
         cert_path=mqtt_cfg["cert_path"],
         key_path=mqtt_cfg["key_path"],
         ca_path=mqtt_cfg["ca_path"],
@@ -274,16 +281,22 @@ def _auto_num_disparities(
     vision_cfg: dict[str, Any], logger: logging.Logger,
 ) -> int:
     """Derive a num_disparities that matches the head-distance range at this
-    site. Uses the calibration focal length (from the .npz loaded elsewhere
-    or a nominal if unknown), design baseline 140mm, and the operator-set
-    mounting_height_m. Rounded up to the next multiple of 16 (SGBM constraint).
+    site. Uses the design baseline + a focal length scaled to the runtime
+    resolution, plus the operator-set mounting_height_m. Rounded up to the
+    next multiple of 16 (SGBM constraint).
     """
     mount_m = float(vision_cfg.get("mounting_height_m", 3.0) or 3.0)
-    # f_px and baseline — we don't yet have the calibration loaded at this
-    # point in the pipeline, so we use the nominal optical values. Fine for
-    # sizing the disparity search; the actual depth will use the real K/T.
-    f_px = 2050.0
-    baseline_mm = 140.0
+    hw = load_hardware_config()
+    full_w = float(hw["sensor"]["full_res"][0])
+    nominal_focal_full_px = float(hw["sensor"]["nominal_focal_full_px"])
+    baseline_mm = float(hw["bracket"]["baseline_mm"])
+    runtime_w = float(
+        tuple(vision_cfg.get("resolution") or hw["sensor"]["default_res"])[0]
+    )
+    # f_px scales linearly with width (pinhole-equiv center region). The .npz
+    # focal will be close to this once calibration loads; this estimate only
+    # has to be good enough to size the SGBM search range.
+    f_px = nominal_focal_full_px * runtime_w / full_w
     head_max_m = 1.85  # tallest adult head
     floor_margin_m = 0.5  # a bit beyond the floor so SGBM covers the full bg
 
@@ -300,9 +313,10 @@ def _auto_num_disparities(
     # Clamp to a sane envelope.
     num_disparities = max(64, min(512, raw))
     logger.info(
-        "num_disparities auto: mount=%.2fm → z=[%.2f,%.2f]m → disp=[%.0f,%.0f]"
-        " → num_disparities=%d",
-        mount_m, z_min, z_max, disp_min, disp_max, num_disparities,
+        "num_disparities auto: %dpx wide, mount=%.2fm → z=[%.2f,%.2f]m"
+        " → disp=[%.0f,%.0f] → num_disparities=%d",
+        int(runtime_w), mount_m, z_min, z_max, disp_min, disp_max,
+        num_disparities,
     )
     return num_disparities
 
@@ -311,8 +325,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     """Run the main processing pipeline."""
     device_id = config["device"]["id"]
     store_id = config["device"]["store_id"]
+    # hardware.yaml holds bracket/sensor invariants + fleet-uniform tuning
+    # (SGBM, detection thresholds, tracker params, MQTT topics, buffer/log
+    # paths). config.yaml carries per-site settings + the cloud-overridable
+    # block. Reads of moved keys use config[...].get(key, hw[section][key])
+    # so cloud shadow deltas still win when present.
+    hw = load_hardware_config()
     vision_cfg = config["vision"]
-    detect_cfg = config["detection"]
+    detect_cfg = config.get("detection", {}) or {}
     track_cfg = config.get("tracking", {})
     telem_cfg = config.get("telemetry", {})
     status_cfg = config.get("status_led", {}) or {}
@@ -331,6 +351,25 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         health_monitor = HealthMonitor(led=status_led, signals=health_signals)
         health_monitor.start()
 
+    # --- Resolution sanity ---
+    # vision.resolution is a legitimate per-site override (used when the
+    # calibration .npz was rescaled to a non-default resolution via
+    # scripts/rescale_calibration.py). Log loudly when it diverges from
+    # the hardware default so the operator notices if it was set by mistake
+    # — calibration_file MUST match the runtime resolution or depth is wrong.
+    runtime_res = tuple(
+        vision_cfg.get("resolution") or hw["sensor"]["default_res"]
+    )
+    default_res = tuple(hw["sensor"]["default_res"])
+    if runtime_res != default_res:
+        logger.warning(
+            "vision.resolution=%s differs from hardware default %s. "
+            "Confirm calibration_file=%s was captured/rescaled to %s — "
+            "mismatched resolution silently corrupts depth.",
+            runtime_res, default_res,
+            vision_cfg.get("calibration_file"), runtime_res,
+        )
+
     # --- Load calibration ---
     cal_file = vision_cfg.get("calibration_file")
     if cal_file:
@@ -347,21 +386,23 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     model = load_model(model_path, backend=detection_backend)
 
     # --- Build SGBM ---
+    # SGBM tuning lives in hardware.yaml under `vision_runtime.sgbm` (fleet-
+    # uniform). config.yaml may override per-deployment; cloud shadow may
+    # override at runtime via the RUNTIME_SAFE whitelist in loader.py.
+    hw_sgbm = hw["vision_runtime"]["sgbm"]
     # num_disparities can be a concrete int or the literal "auto" — in which
-    # case we derive the search range from mounting_height_m so the solver
-    # covers exactly the depth band where heads will appear (1.2-1.85m
-    # below the camera) plus a small floor margin. Saves compute at high
-    # mounts and gives wider search at low mounts, transparently per site.
-    num_disp_cfg = vision_cfg.get("num_disparities", 192)
+    # case we derive the search range from mounting_height_m + runtime
+    # resolution so the solver covers exactly the depth band where heads
+    # will appear plus a small floor margin.
+    num_disp_cfg = vision_cfg.get("num_disparities", hw_sgbm["num_disparities"])
     if isinstance(num_disp_cfg, str) and num_disp_cfg.lower() == "auto":
         num_disp_resolved = _auto_num_disparities(vision_cfg, logger)
     else:
         num_disp_resolved = int(num_disp_cfg)
     # SGBM downscale: process at lower resolution for speed. depth.compute_disparity
     # then upscales the disparity map and rescales values so depth math remains
-    # correct. Default 2 = half-res matching, ~4x faster on Pi 5 with negligible
-    # accuracy impact at the operational head-detection scale.
-    sgbm_downscale = int(vision_cfg.get("sgbm_downscale", 2))
+    # correct.
+    sgbm_downscale = int(vision_cfg.get("sgbm_downscale", hw_sgbm["downscale"]))
     if sgbm_downscale not in (1, 2, 4, 8):
         logger.warning(
             "vision.sgbm_downscale=%d invalid (use 1/2/4/8) — falling back to 4",
@@ -376,7 +417,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
     sgbm = create_sgbm(
         num_disparities=sgbm_num_disp,
-        block_size=vision_cfg.get("block_size", 9),
+        block_size=vision_cfg.get("block_size", hw_sgbm["block_size"]),
     )
     logger.info(
         "SGBM: downscale=%d, num_disparities=%d (effective at downscaled res)",
@@ -384,15 +425,25 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
 
     # --- Build tracker + counter ---
+    # Tracker tuning lives in hardware.yaml under `tracking` (fleet-uniform
+    # after pilot). config.yaml + cloud shadow can still override per-site.
+    hw_track = hw["tracking"]
+    hw_sm = hw_track["state_machine"]
     counter_cfg = config.get("counter", {})
     tracker_cfg = counter_cfg.get("tracker", {})
     tracker = EuclideanTracker(
-        max_disappeared=track_cfg.get("max_disappeared", 30),
-        max_distance=track_cfg.get("max_distance", 50.0),
-        max_depth_delta=tracker_cfg.get("depth_gate_m", 0.5) * 1000.0,
-        confirm_frames=tracker_cfg.get("confirm_frames", 3),
-        pending_max_frames=tracker_cfg.get("pending_max_frames", 5),
-        reid_gate_px=tracker_cfg.get("reid_gate_px", 60.0),
+        max_disappeared=track_cfg.get(
+            "max_disappeared", hw_track["max_disappeared"]),
+        max_distance=track_cfg.get(
+            "max_distance", hw_track["max_distance"]),
+        max_depth_delta=tracker_cfg.get(
+            "depth_gate_m", hw_sm["depth_gate_m"]) * 1000.0,
+        confirm_frames=tracker_cfg.get(
+            "confirm_frames", hw_sm["confirm_frames"]),
+        pending_max_frames=tracker_cfg.get(
+            "pending_max_frames", hw_sm["pending_max_frames"]),
+        reid_gate_px=tracker_cfg.get(
+            "reid_gate_px", hw_sm["reid_gate_px"]),
     )
     line_y = vision_cfg.get("counting_line_y", 0.5)
     # Counter built lazily once frame height is known (needed for legacy line_y relative values)
@@ -440,9 +491,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     capture.open()
 
     # --- Focal length + baseline for depth ---
-    # Use calibration values if available, config as fallback
+    # Calibration .npz overrides both at load time (see _bootstrap_optical_*).
+    # Until then, fall back to the bracket design constant from hardware.yaml.
     focal_length_px = None
-    baseline_mm = vision_cfg.get("baseline_cm", 14) * 10.0
+    baseline_mm = float(hw["bracket"]["baseline_mm"])
 
     # --- Telemetry timer ---
     telem_interval = telem_cfg.get("interval_seconds", 300)
@@ -565,7 +617,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                           "vision.mounting_height_m")
                     for k in applied_keys
                 ):
-                    nd_cfg = config["vision"].get("num_disparities", 192)
+                    nd_cfg = config["vision"].get(
+                        "num_disparities", hw_sgbm["num_disparities"])
                     if isinstance(nd_cfg, str) and nd_cfg.lower() == "auto":
                         nd_resolved = _auto_num_disparities(
                             config["vision"], logger,
@@ -578,7 +631,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     )
                     sgbm = create_sgbm(
                         num_disparities=sgbm_num_disp,
-                        block_size=config["vision"].get("block_size", 9),
+                        block_size=config["vision"].get(
+                            "block_size", hw_sgbm["block_size"]),
                     )
                     logger.info("SGBM rebuilt after shadow delta")
                 if any(k == "telemetry.interval_seconds" for k in applied_keys):
@@ -690,8 +744,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 detections = detect_persons(
                     rect_l,
                     model,
-                    confidence_threshold=detect_cfg.get("confidence_threshold", 0.5),
-                    nms_threshold=detect_cfg.get("nms_threshold", 0.45),
+                    confidence_threshold=detect_cfg.get(
+                        "confidence_threshold",
+                        hw["detection"]["confidence_threshold"],
+                    ),
+                    nms_threshold=detect_cfg.get(
+                        "nms_threshold", hw["detection"]["nms_threshold"],
+                    ),
                 )
                 health_signals.detect_ok = True
             except Exception:

@@ -70,6 +70,11 @@ def test_build_config_generates_yaml():
 
 
 def test_build_config_sets_remote_paths():
+    """The cert paths come from REMOTE_CERT_DIR. buffer.db_path and
+    logging.file are no longer rewritten per-device — they fall back to
+    hardware.yaml's install convention (same path), so they don't appear
+    in the per-device config.yaml at all.
+    """
     tmpdir = tempfile.mkdtemp()
     device_dir = Path(tmpdir) / "device"
     device_dir.mkdir()
@@ -87,8 +92,10 @@ def test_build_config_sets_remote_paths():
     assert config["mqtt"]["cert_path"] == "/etc/people-counter/certs/device.pem.crt"
     assert config["mqtt"]["key_path"] == "/etc/people-counter/certs/device.pem.key"
     assert config["mqtt"]["ca_path"] == "/etc/people-counter/certs/AmazonRootCA1.pem"
-    assert config["buffer"]["db_path"] == "/var/lib/people-counter/buffer.db"
-    assert config["logging"]["file"] == "/var/log/people-counter/app.log"
+    # buffer + logging.file now come from hardware.yaml at runtime; no
+    # per-device override needed.
+    assert "buffer" not in config
+    assert config.get("logging", {}).get("file") is None
 
 
 # ---------------------------------------------------------------------------

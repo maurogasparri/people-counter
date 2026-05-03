@@ -1,138 +1,113 @@
 # =============================================================================
-# People Counter — Device Configuration
+# People Counter — Per-Device Configuration
 # =============================================================================
 #
 # Configuration strategy:
 #
-# LOCAL (this file) — Hardware-intrinsic settings. Only change with physical
-#   access or SSH. Set once during installation.
+# HARDWARE (config/hardware.yaml — committed) — Fleet invariants. Bracket
+#   geometry, sensor defaults, SGBM/detection/tracking tuning, MQTT contract,
+#   buffer/log paths. Set once in lab; never touched per-site.
 #
-# CLOUD (AWS IoT Device Shadow) — Business-driven settings. Pushed from the
-#   cloud without touching the device. Shadow values override local defaults.
+# THIS FILE (/etc/people-counter/config.yaml — per-device) — Per-site
+#   identity, geometry, credentials, and operational policies. Rarely edited
+#   after install except via the cloud shadow.
 #
-# NOT IMPLEMENTED (deferred post-MVP) — Features to add later.
+# CLOUD (AWS IoT Device Shadow) — Business-driven values inside the
+#   `cloud_defaults` block, pushed remotely without SSH. Whitelisted runtime-
+#   safe keys also apply live (see RUNTIME_SAFE_KEYS in src/config/loader.py).
 #
+# Any key that appears here AND in hardware.yaml: this file wins. The
+# fallback to hardware.yaml only kicks in when the key is missing here.
 # =============================================================================
 
-# --- LOCAL: Device identity (set once during provisioning) ---
+# --- Device identity (set once during provisioning) ---
 device:
   id: "store-001-cam-01"          # Unique device ID (matches IoT Core thing name)
   store_id: "store-001"           # Site/store identifier
   store_name: "Store Name"        # Human-readable (display only)
 
-# --- LOCAL: Camera & stereo settings ---
-# Note: bracket geometry (baseline, L/R camera CSI assignment) and sensor
-# defaults (model, resolution, focal) live in config/hardware.yaml — those
-# are hardware invariants set by the bracket assembly procedure, not per-site
-# settings. The values below are the ones that actually depend on installation.
+# --- Camera + per-site geometry ---
+# Bracket geometry (baseline, L/R CSI assignment) and sensor defaults
+# (model, full_res, default_res, default_fps, nominal focal) live in
+# config/hardware.yaml — those are invariants set by the bracket assembly
+# procedure.
 vision:
-  resolution: [2304, 1296]        # Override hardware default if needed.
-                                  # IMX708 binned mode (full FOV). Must match the
-                                  # resolution used at calibration time. Bench
-                                  # session 2026-04-28 showed full-res 4608x2592
-                                  # makes ChArUco detection drop below 2 FPS on
-                                  # Pi 5 and produce degenerate calibrations.
-  fps: 15                         # Capture frame rate
-  calibration_file: "/etc/people-counter/calibration.npz"  # ChArUco stereo cal output
-  mounting_height_m: 3.0          # Camera mount height from floor in meters. Default 3.0m (our mode door height; cam at threshold level). Adjust per site if mounted higher due to structural constraints.
-  counting_line_y: 0.5            # Virtual line position (0.0=top, 1.0=bottom)
-  # SGBM depth parameters (tuned per installation)
-  # f_px ~ 1330 at full res; disparity at 3m ~ 62px, at 1.3m ~ 143px
-  # "auto" derives num_disparities from mounting_height_m so SGBM searches
-  # exactly the depth band where heads + floor appear at this site. Fastest
-  # per-site performance with no manual tuning. Set an explicit int (divisible
-  # by 16) only if you want to override.
-  num_disparities: auto           # or a number like 192
-  block_size: 9                   # Odd number, typically 5-15
-  sgbm_downscale: 4               # SGBM matching resolution: 1=full, 2=half, 4=quarter, 8=eighth.
-                                  # Default 4: ~16x faster than full-res with negligible
-                                  # accuracy loss for head detection at the operational
-                                  # depth scale (head ~22cm at 0.8m depth → 80px box at
-                                  # downscale=4, more than enough for blob centroid).
-                                  # 8 is fastest but depth resolution becomes coarse;
-                                  # use only if pipeline FPS is critical.
-                                  # 2 / 1 trade speed for depth precision (diagnostics).
+  # Optional: override the hardware default resolution. MUST match the
+  # resolution of the calibration .npz; mismatched resolution silently
+  # corrupts depth. Leave commented to use sensor.default_res.
+  # resolution: [1152, 648]
+  # fps: 15                       # Optional: override sensor.default_fps
+  calibration_file: "/etc/people-counter/calibration.npz"
+  mounting_height_m: 3.0          # Camera mount height from floor in meters.
+                                  # Drives auto num_disparities + height classifier.
+  # SGBM overrides (rare — defaults in hardware.yaml.vision_runtime.sgbm).
+  # Leave commented unless a specific deployment needs to deviate.
+  # num_disparities: auto
+  # block_size: 9
+  # sgbm_downscale: 2
 
-# --- LOCAL: Detection model (compiled for Hailo-8L, won't change remotely) ---
+# --- Detection model ---
+# Thresholds (confidence, NMS) live in hardware.yaml.detection. Only the
+# install path is per-device (HEF location on filesystem).
 detection:
-  model_path: "/usr/src/people-counter/models/yolov8n.hef"  # HEF compiled for Hailo-8L 13T
-  confidence_threshold: 0.5       # Person detection confidence
-  nms_threshold: 0.45             # Non-maximum suppression IoU threshold
+  model_path: "/usr/src/people-counter/models/yolov8n.hef"
 
-# --- LOCAL: Tracker parameters ---
-tracking:
-  max_disappeared: 30             # Frames before dropping a track
-  max_distance: 50                # Max pixel distance for track association
-
-# --- LOCAL: Counter (ROI + virtual line) ---
+# --- Counter (ROI + virtual line) — site geometry ---
 # Counts a track only when it exits the ROI on the opposite side of where it
 # entered, having crossed the line in between. Tracks that enter and leave on
 # the same side (or never cross the line) are "indeciso" and not counted.
 counter:
-  # Counting ROI (rectangle in image pixel coords)
   roi:
     x_min: 100
     x_max: 540
     y_min: 180
     y_max: 300
-  # Virtual line inside the ROI. Must lie strictly inside the ROI bounds.
   line:
     orientation: horizontal       # horizontal | vertical
     position: 240                 # y-coord if horizontal, x-coord if vertical
-  # Event labels for reporting (optional)
   direction_labels:
     side_a_to_b: ingress          # entered side_a, exited side_b -> this label
     side_b_to_a: egress
-  # State machine + re-identification
-  tracker:
-    confirm_frames: 3             # N consecutive hits to promote CANDIDATE -> CONFIRMED
-    pending_max_frames: 5         # max missed frames before PENDING -> LOST
-    reid_gate_px: 60              # max px distance to re-match a PENDING track
-    depth_gate_m: 0.5             # max |dz| (m) for matching across frames
+  # Tracker state-machine overrides — defaults in
+  # hardware.yaml.tracking.state_machine. Uncomment only to deviate.
+  # tracker:
+  #   confirm_frames: 3
+  #   pending_max_frames: 5
+  #   reid_gate_px: 60
+  #   depth_gate_m: 0.5
 
-# --- LOCAL: WiFi/BLE probe capture hardware ---
+# --- WiFi/BLE — site privacy + sensitivity ---
+# Protocol constants (interface, intervals, cross-protocol windows) live in
+# hardware.yaml.wifi_ble. The toggles + RSSI thresholds stay here because
+# privacy/legal toggles and RSSI noise floor are site-dependent.
 wifi_ble:
   enabled: true                   # Master switch (overridable from cloud)
-  wifi_interface: "wlan0"         # Monitor-mode interface for probe capture
   ble_enabled: true               # BLE advertising capture
-  probe_interval_seconds: 900     # Aggregation window (15 min)
   # Dual RSSI thresholds:
   #   passerby = -75 dBm → present in the zone
   #   shopper  = -55 dBm → very close / entered
-  #   Turn In Rate = shoppers / passersby
   rssi_passerby_threshold: -75
   rssi_shopper_threshold: -55
-  cross_protocol_window_seconds: 2
-  cross_protocol_rssi_delta: 5
 
-# --- LOCAL: MQTT connection (certs are per-device, set during provisioning) ---
+# --- MQTT — endpoint + per-device certs ---
+# Port (8883) and topic templates live in hardware.yaml.mqtt (fleet-wide
+# protocol contract). Certs are per-device, set during provisioning.
 mqtt:
   endpoint: "xxxxx.iot.us-east-1.amazonaws.com"
-  port: 8883
   cert_path: "/etc/people-counter/certs/device.pem.crt"
   key_path: "/etc/people-counter/certs/device.pem.key"
   ca_path: "/etc/people-counter/certs/AmazonRootCA1.pem"
-  topics:
-    counting: "store/{store_id}/counting"
-    wifi_ble: "store/{store_id}/wifi_ble"
-    telemetry: "store/{store_id}/telemetry"
-    shadow: "$aws/things/{device_id}/shadow"  # For cloud config sync
 
-# --- LOCAL: Buffer & logging ---
-buffer:
-  db_path: "/var/lib/people-counter/buffer.db"
-  max_age_hours: 72
-
+# --- Logging level (operator-tunable for debug) ---
+# Format/file convention live in hardware.yaml.logging.
 logging:
   level: "INFO"
-  format: "json"
-  file: "/var/log/people-counter/app.log"
 
-# --- LOCAL: Telemetry defaults (overridable from cloud) ---
+# --- Telemetry interval (cloud-overridable) ---
 telemetry:
   interval_seconds: 300           # Report CPU temp, uptime, etc. every 5 min
 
-# --- LOCAL: Status LED (3mm common-cathode RGB on the GPIO header) ---
+# --- Status LED (per-site aesthetics) ---
 # Field-visible operator indicator. Set enabled=false to silence the LED if
 # it's visually intrusive at the deploy site (e.g. retail aesthetics, dim
 # corner where the brightness bothers customers).

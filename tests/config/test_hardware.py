@@ -30,6 +30,38 @@ VALID_HW = {
         "type": "m12_120deg",
         "hfov_deg": 120,
     },
+    "vision_runtime": {
+        "sgbm": {"num_disparities": "auto", "block_size": 9, "downscale": 2},
+    },
+    "detection": {"confidence_threshold": 0.5, "nms_threshold": 0.45},
+    "tracking": {
+        "max_disappeared": 30,
+        "max_distance": 50,
+        "state_machine": {
+            "confirm_frames": 3,
+            "pending_max_frames": 5,
+            "reid_gate_px": 60,
+            "depth_gate_m": 0.5,
+        },
+    },
+    "wifi_ble": {
+        "wifi_interface": "wlan0",
+        "probe_interval_seconds": 900,
+        "cross_protocol_window_seconds": 2,
+        "cross_protocol_rssi_delta": 5,
+    },
+    "mqtt": {
+        "port": 8883,
+        "topics": {
+            "counting": "store/{store_id}/counting",
+            "wifi_ble": "store/{store_id}/wifi_ble",
+            "telemetry": "store/{store_id}/telemetry",
+            "shadow": "$aws/things/{device_id}/shadow",
+        },
+    },
+    "buffer": {"db_path": "/var/lib/people-counter/buffer.db",
+               "max_age_hours": 72},
+    "logging": {"format": "json", "file": "/var/log/people-counter/app.log"},
 }
 
 
@@ -98,14 +130,11 @@ class TestLoadHardware:
             load_hardware_config(p)
 
     def test_csi_indices_must_differ(self, tmp_path):
-        bad = {
-            "bracket": {
-                "baseline_mm": 140,
-                "camera_left_csi": 0,
-                "camera_right_csi": 0,  # Same as left — invalid
-            },
-            "sensor": VALID_HW["sensor"],
-            "lens": VALID_HW["lens"],
+        bad = dict(VALID_HW)
+        bad["bracket"] = {
+            "baseline_mm": 140,
+            "camera_left_csi": 0,
+            "camera_right_csi": 0,  # Same as left — invalid
         }
         p = _write_yaml(tmp_path, bad)
         with pytest.raises(ValueError, match="must differ"):

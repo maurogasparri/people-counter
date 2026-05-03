@@ -40,3 +40,64 @@ lens:
   type: m12_120deg                # Arducam B0310 (M12 mount, 120° HFOV / 152° diag,
                                   # fisheye Kannala-Brandt model).
   hfov_deg: 120
+
+# =============================================================================
+# Fleet-uniform runtime tuning
+# =============================================================================
+# Everything below is decided at lab and is the same for every device built
+# to spec. Keys can still be overridden remotely via the cloud shadow when
+# whitelisted in src/config/loader.py — those overrides land in config[...]
+# at runtime, and main.py reads as `config[...].get(key, hw[...][key])` so
+# the cloud value wins when present and the lab default applies otherwise.
+
+# --- Stereo depth (SGBM) ---
+vision_runtime:
+  sgbm:
+    num_disparities: auto         # "auto" derives from mounting_height_m +
+                                  # runtime resolution. Multiple-of-16 int
+                                  # to override (rare, diagnostic only).
+    block_size: 9                 # Odd, 5..15.
+    downscale: 2                  # 1=full, 2=half, 4=quarter, 8=eighth.
+
+# --- Detection thresholds (model-specific, fleet-uniform after lab tune) ---
+detection:
+  confidence_threshold: 0.5       # Person/head detection score floor.
+  nms_threshold: 0.45             # IoU threshold for non-maximum suppression.
+
+# --- Tracker + state machine (algo tuning, fleet-uniform after pilot) ---
+tracking:
+  max_disappeared: 30             # Frames a track can miss before drop.
+  max_distance: 50                # Max px distance for frame-to-frame
+                                  # association. Scale linearly with
+                                  # runtime resolution if you change it.
+  state_machine:
+    confirm_frames: 3             # Hits to promote CANDIDATE -> CONFIRMED.
+    pending_max_frames: 5         # Misses before PENDING -> LOST.
+    reid_gate_px: 60              # Re-id distance gate.
+    depth_gate_m: 0.5             # |Δz| gate for re-id across frames.
+
+# --- WiFi/BLE protocol constants (cross-device dedup contract) ---
+wifi_ble:
+  wifi_interface: wlan0           # CYW43455 onboard, monitor mode.
+  probe_interval_seconds: 900     # 15-min aggregation window.
+  cross_protocol_window_seconds: 2
+  cross_protocol_rssi_delta: 5
+
+# --- MQTT protocol contract (topic shape is fleet-wide) ---
+mqtt:
+  port: 8883                      # AWS IoT Core TLS.
+  topics:
+    counting:  "store/{store_id}/counting"
+    wifi_ble:  "store/{store_id}/wifi_ble"
+    telemetry: "store/{store_id}/telemetry"
+    shadow:    "$aws/things/{device_id}/shadow"
+
+# --- Local persistence convention ---
+buffer:
+  db_path: /var/lib/people-counter/buffer.db
+  max_age_hours: 72
+
+# --- Logging convention (operator may still override `level` in config.yaml) ---
+logging:
+  format: json
+  file: /var/log/people-counter/app.log

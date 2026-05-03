@@ -42,6 +42,10 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+# Windows reserved device name — Git Bash on Windows sometimes materializes
+# `nul` in the cwd from `2>nul` redirects (PowerShell doesn't see it as a
+# file but git does). Always ignore.
+/nul
 
 # Models (downloaded, not committed)
 /models/
@@ -61,5 +65,12 @@ Thumbs.db
 # Ad-hoc debug / session artifacts — anything dropped here is ignored.
 # Use this for downloaded reports, screenshots, pasted outputs, etc.
 /debug/
+
+# Training datasets — Roboflow overhead_person, WEPDTOF, etc. Big binary
+# blobs that don't belong in git. Path referenced by scripts/training/*.
+# Use /dataset/* (not /dataset/) so the README exception below works —
+# gitignore can't re-include a file when its parent directory is ignored.
+/dataset/*
+!/dataset/README.md
 
 .claude/

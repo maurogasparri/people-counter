@@ -57,6 +57,15 @@ def _validate(data: dict[str, Any]) -> None:
         "sensor": ("model", "full_res", "default_res", "default_fps",
                    "nominal_focal_full_px"),
         "lens": ("type", "hfov_deg"),
+        "vision_runtime": ("sgbm",),
+        "detection": ("confidence_threshold", "nms_threshold"),
+        "tracking": ("max_disappeared", "max_distance", "state_machine"),
+        "wifi_ble": ("wifi_interface", "probe_interval_seconds",
+                     "cross_protocol_window_seconds",
+                     "cross_protocol_rssi_delta"),
+        "mqtt": ("port", "topics"),
+        "buffer": ("db_path", "max_age_hours"),
+        "logging": ("format", "file"),
     }
     for section, keys in required.items():
         if section not in data:
@@ -76,6 +85,25 @@ def _validate(data: dict[str, Any]) -> None:
         raise ValueError(
             "bracket.camera_left_csi and camera_right_csi must differ"
         )
+
+    # Nested sub-sections.
+    sgbm = data["vision_runtime"]["sgbm"]
+    for k in ("num_disparities", "block_size", "downscale"):
+        if k not in sgbm:
+            raise ValueError(f"hardware.yaml missing key: vision_runtime.sgbm.{k}")
+
+    sm = data["tracking"]["state_machine"]
+    for k in ("confirm_frames", "pending_max_frames",
+              "reid_gate_px", "depth_gate_m"):
+        if k not in sm:
+            raise ValueError(
+                f"hardware.yaml missing key: tracking.state_machine.{k}"
+            )
+
+    topics = data["mqtt"]["topics"]
+    for k in ("counting", "wifi_ble", "telemetry", "shadow"):
+        if k not in topics:
+            raise ValueError(f"hardware.yaml missing key: mqtt.topics.{k}")
 
 
 def reset_cache() -> None:

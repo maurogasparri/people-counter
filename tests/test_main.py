@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from src.main import (
+    _auto_num_disparities,
     build_capture,
     build_mqtt,
     get_telemetry,
@@ -97,6 +98,51 @@ def test_build_capture_live():
 
     assert isinstance(cap, StereoCapture)
     assert cap.fps == 15
+
+
+# ---------------------------------------------------------------------------
+# _auto_num_disparities
+# ---------------------------------------------------------------------------
+
+
+def test_auto_num_disparities_scales_with_runtime_resolution():
+    """f_px must scale with runtime width — same site at half-res should get
+    roughly half the disparity envelope, not the full-res value."""
+    logger = logging.getLogger("test")
+    full = _auto_num_disparities(
+        {"mounting_height_m": 2.56, "resolution": [4608, 2592]}, logger,
+    )
+    half = _auto_num_disparities(
+        {"mounting_height_m": 2.56, "resolution": [2304, 1296]}, logger,
+    )
+    quarter = _auto_num_disparities(
+        {"mounting_height_m": 2.56, "resolution": [1152, 648]}, logger,
+    )
+    # disp_max ∝ f_px ∝ width. Each step should roughly halve, give or take
+    # the multiple-of-16 rounding and the +1 margin bucket.
+    assert half < full
+    assert quarter < half
+    # At 1152x648, mount=2.56m, baseline=140mm, f_px≈512 → disp_max≈100px
+    # → next multiple of 16 + margin ≈ 128. Allow some slack for clamp.
+    assert quarter <= 144
+    # At 4608x2592 the same site gets ~4× the disparity envelope, but the
+    # function clamps to 512 max — make sure we hit the upper region.
+    assert full >= 256
+
+
+def test_auto_num_disparities_clamps_to_envelope():
+    """Output must stay in [64, 512] regardless of mount/resolution."""
+    logger = logging.getLogger("test")
+    # Tiny resolution + tall mount → very low disp_max; should clamp to 64.
+    out = _auto_num_disparities(
+        {"mounting_height_m": 5.0, "resolution": [320, 240]}, logger,
+    )
+    assert out >= 64
+    # Full-res + low mount → very high disp_max; should clamp to 512.
+    out = _auto_num_disparities(
+        {"mounting_height_m": 1.5, "resolution": [4608, 2592]}, logger,
+    )
+    assert out <= 512
 
 
 # ---------------------------------------------------------------------------

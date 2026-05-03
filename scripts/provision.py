@@ -249,11 +249,9 @@ def _build_config(device_dir: Path, args: argparse.Namespace) -> None:
     config["mqtt"]["key_path"] = f"{REMOTE_CERT_DIR}/device.pem.key"
     config["mqtt"]["ca_path"] = f"{REMOTE_CERT_DIR}/AmazonRootCA1.pem"
 
-    # Buffer
-    config["buffer"]["db_path"] = f"{REMOTE_DATA_DIR}/buffer.db"
-
-    # Logging
-    config["logging"]["file"] = f"{REMOTE_LOG_DIR}/app.log"
+    # buffer.db_path and logging.file follow the install convention from
+    # hardware.yaml (REMOTE_DATA_DIR/buffer.db, REMOTE_LOG_DIR/app.log) — no
+    # per-device write needed unless a deployment deviates.
 
     config_path = device_dir / "config.yaml"
     with open(config_path, "w") as f:
