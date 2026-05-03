@@ -89,8 +89,17 @@ def _make_fake_roboflow(extracted_location: str):
     return fake_rf_class, fake_version
 
 
+def _seed_data_yaml(at: Path) -> None:
+    """Place a stub data.yaml so download() doesn't raise the 'no data.yaml'
+    SystemExit guard during tests."""
+    at.mkdir(parents=True, exist_ok=True)
+    (at / "data.yaml").write_text("nc: 1\nnames: ['head']\n")
+
+
 def test_download_calls_sdk_with_expected_args(tmp_path):
-    fake_rf_class, fake_version = _make_fake_roboflow(str(tmp_path / "out"))
+    out = tmp_path / "out"
+    _seed_data_yaml(out)
+    fake_rf_class, fake_version = _make_fake_roboflow(str(out))
 
     fake_module = MagicMock()
     fake_module.Roboflow = fake_rf_class
@@ -101,19 +110,21 @@ def test_download_calls_sdk_with_expected_args(tmp_path):
             project="myproj",
             version=2,
             api_key="dummy",
-            out_dir=tmp_path / "out",
+            out_dir=out,
             fmt="yolov8",
         )
 
     fake_rf_class.assert_called_once_with(api_key="dummy")
     fake_version.download.assert_called_once_with(
-        "yolov8", location=str(tmp_path / "out"),
+        "yolov8", location=str(out), overwrite=True,
     )
-    assert location == tmp_path / "out"
+    assert location == out
 
 
-def test_download_creates_output_dir(tmp_path):
+def test_download_creates_parent_dir(tmp_path):
+    """Parent dir must exist; the SDK creates the leaf itself."""
     target = tmp_path / "nested" / "sub" / "out"
+    _seed_data_yaml(target)
     fake_rf_class, _ = _make_fake_roboflow(str(target))
     fake_module = MagicMock()
     fake_module.Roboflow = fake_rf_class
@@ -124,7 +135,24 @@ def test_download_creates_output_dir(tmp_path):
             api_key="k", out_dir=target,
         )
 
-    assert target.is_dir()
+    assert target.parent.is_dir()
+
+
+def test_download_raises_when_no_data_yaml_after_call(tmp_path):
+    """If the SDK no-ops silently (returns location with no files), we
+    must SystemExit with a useful message rather than declare success."""
+    out = tmp_path / "empty_out"
+    out.mkdir()  # exists but no data.yaml inside
+    fake_rf_class, _ = _make_fake_roboflow(str(out))
+    fake_module = MagicMock()
+    fake_module.Roboflow = fake_rf_class
+
+    with patch.dict(sys.modules, {"roboflow": fake_module}):
+        with pytest.raises(SystemExit, match="no data.yaml"):
+            download_roboflow.download(
+                workspace="ws", project="p", version=1,
+                api_key="k", out_dir=out,
+            )
 
 
 def test_download_missing_sdk_raises(tmp_path, monkeypatch):

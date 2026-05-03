@@ -75,12 +75,22 @@ def download(
     api_key: str,
     out_dir: Path,
     fmt: str = "yolov8",
+    overwrite: bool = True,
 ) -> Path:
     """Download dataset to ``out_dir`` and return the path Roboflow wrote.
 
     The Roboflow SDK's ``Version.download(format, location=...)`` returns
     a ``Dataset`` object whose ``.location`` is the absolute path of the
     extracted folder — that's what we return.
+
+    Important: the SDK silently no-ops if the target directory already
+    exists and ``overwrite=False`` (its default). It still returns a
+    non-None ``Dataset`` object pointing at the empty path, so the caller
+    has no way to detect the no-op. We pass ``overwrite=True`` by default
+    so a re-run with an existing (possibly partial) directory always
+    re-downloads. Also: we DO NOT pre-create the directory, because that
+    pre-creation alone was enough to trigger the silent no-op on some SDK
+    versions even with a fresh-but-empty target.
     """
     try:
         from roboflow import Roboflow
@@ -92,18 +102,25 @@ def download(
             "the Pi never downloads training data)."
         ) from e
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Make sure the parent exists; let the SDK create the leaf directory.
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(
-        "Downloading roboflow://%s/%s/v%d -> %s (format=%s)",
-        workspace, project, version, out_dir, fmt,
+        "Downloading roboflow://%s/%s/v%d -> %s (format=%s, overwrite=%s)",
+        workspace, project, version, out_dir, fmt, overwrite,
     )
     rf = Roboflow(api_key=api_key)
     proj = rf.workspace(workspace).project(project)
     ver = proj.version(version)
-    dataset = ver.download(fmt, location=str(out_dir))
+    dataset = ver.download(fmt, location=str(out_dir), overwrite=overwrite)
 
     location = Path(getattr(dataset, "location", out_dir))
+    if not (location / "data.yaml").exists():
+        raise SystemExit(
+            f"Roboflow SDK returned location={location} but no data.yaml "
+            "is there. The SDK likely no-op'd because of a stale state. "
+            "Delete the target directory and re-run."
+        )
     logger.info("Dataset extracted to: %s", location)
     return location
 

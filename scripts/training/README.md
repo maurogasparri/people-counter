@@ -1,117 +1,123 @@
-# People Counter — Phase A training pipeline
+# People Counter — Pipeline de training Phase A
 
-Fine-tune `yolov8n` for cenital head/person detection so the Hailo-8L
-sees a model that was actually trained on the geometry your bracket
-produces (top-down rectified frames), instead of CrowdHuman frontal
-faces. End-to-end the path is:
+Fine-tune de `yolov8n` para detección de cabezas/personas cenitales,
+para que el Hailo-8L vea un modelo realmente entrenado en la geometría
+que produce el bracket (frames rectificados top-down) en lugar de caras
+frontales tipo CrowdHuman. End-to-end:
 
 ```
-download_roboflow.py  ->  train in Colab (T4)  ->  export ONNX
-        ->  hailomz compile (WSL2)  ->  drop-in HEF on the Pi
+download_roboflow.py  ->  train en Colab (T4)  ->  export ONNX
+        ->  hailomz compile (WSL2)  ->  drop-in del HEF en la Pi
 ```
 
-This folder holds the **workstation-side** pieces. Colab does training.
-WSL2 does compilation. The Pi only ever sees the final `.hef`.
+Esta carpeta tiene las piezas **del lado del workstation**. Colab hace el
+training. WSL2 hace la compilación. La Pi solamente ve el `.hef` final.
 
-Phase A uses **only Roboflow `overhead_person`** (already in pinhole
-projection ≈ what your `rectify_pair` outputs). If post-bench the recall
-isn't enough, Phase B adds WEPDTOF (fisheye, undistorted with their
-intrinsics).
+Phase A usa **únicamente Roboflow `overhead_person`** (ya viene en
+proyección pinhole ≈ a lo que produce tu `rectify_pair`). Si después del
+bench la recall no alcanza, Phase B agrega WEPDTOF (fisheye, undistort
+con sus propios intrínsecos).
 
 ---
 
-## 1. Find a dataset on Roboflow Universe
+## 1. Elegir un dataset en Roboflow Universe
 
-Go to <https://universe.roboflow.com/> and search for `overhead person`,
-`cenital head`, or `top-down people`. Pick a dataset where:
+Andá a <https://universe.roboflow.com/> y buscá `overhead person`,
+`cenital head` o `top-down people`. Pickeá un dataset donde:
 
-- camera is **ceiling-mounted, top-down** (NOT eye-level — that's the
-  wrong geometry for our use case),
-- 5k+ images,
-- single class (`person` or `head`),
-- exports YOLOv8 format.
+- la cámara esté **montada en el techo, top-down** (NO eye-level — esa
+  geometría es la que estamos tratando de evitar),
+- 5k+ imágenes,
+- una sola clase (`person` o `head`),
+- exporte formato YOLOv8.
 
-Open the dataset; the URL has the shape
+Abrí el dataset; la URL tiene la forma
 
 ```
 https://universe.roboflow.com/<workspace>/<project>/<version>
 ```
 
-Note those three slugs.
+Anotate esos tres slugs.
 
-## 2. Download
+## 2. Descargar el dataset
 
 ```bash
-# One-time
+# Una vez por workstation
 pip install roboflow
 
-# Set your API key (get one at https://app.roboflow.com — free)
+# Cargá tu API key (sacala — free — en https://app.roboflow.com)
 export ROBOFLOW_API_KEY=xxxxxxxxxxxxxx
 
-# Pull the dataset
+# Bajá el dataset
 python scripts/training/download_roboflow.py \
     --workspace <ws-slug> --project <proj-slug> --version <N>
 ```
 
-Output lands in `dataset/roboflow_<ws>_<proj>_v<N>/` with the standard
-YOLOv8 layout (`data.yaml` + `train/` + `valid/` + `test/`). The script
-prints a per-split image count so you can sanity-check.
+El output queda en `dataset/roboflow_<ws>_<proj>_v<N>/` con el layout
+estándar de YOLOv8 (`data.yaml` + `train/` + `valid/` + `test/`). El
+script imprime el conteo de imágenes por split para chequeo de cordura.
 
-## 3. Baseline bench (before training)
+## 3. Bench baseline (antes de entrenar)
 
-Quantify how badly the off-the-shelf model misses on YOUR scene before
-retraining. Use ~50 frames captured from the Pi (any folder of `.jpg`s
-will do):
+Cuantificá qué tan mal anda el modelo off-the-shelf en TU escena antes
+de re-entrenar. Necesitás ~30-50 frames de la Pi (cualquier carpeta de
+`.jpg`s sirve):
 
 ```bash
 pip install ultralytics
 python scripts/training/bench_detector.py bench \
     --weights yolov8n.pt \
-    --frames  /path/to/captured_frames/ \
+    --frames  /path/a/frames_capturados/ \
     --conf 0.25 \
     --report debug/bench_baseline.json
 ```
 
-The report has detection-rate + per-zone counts (center / 4 corners) +
-confidence stats. Keep it for the diff later.
+El reporte tiene detection-rate + counts por zona (centro / 4 esquinas)
++ stats de confidence. Guardalo para el diff posterior.
 
-## 4. Train in Colab
+**Nota importante:** los frames del Pi se usan **sólo para validación
+(inferencia)**, nunca para training. No salen del repo, no se anotan,
+no fluyen gradientes hacia el modelo.
+
+## 4. Entrenar en Colab
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/maurogasparri/people-counter/blob/main/notebooks/train_yolov8n_heads.ipynb)
 
-Click the badge above (or open `notebooks/train_yolov8n_heads.ipynb`
-directly via Colab's *File → Open notebook → GitHub* tab and paste the
-repo URL). Colab pulls the notebook live from GitHub on every open, so
-any commit to `main` is immediately what you'd run.
+Click en el badge de arriba (o abrí
+`notebooks/train_yolov8n_heads.ipynb` directamente vía la pestaña
+*File → Open notebook → GitHub* de Colab pegando la URL del repo).
+Colab pulls el notebook live desde GitHub cada vez que se abre, así
+que cualquier commit a `main` es lo que vas a correr.
 
-Then:
+Después:
 
 1. `Runtime` → `Change runtime type` → `T4 GPU`.
-2. Sidebar 🔑 → add secret `ROBOFLOW_API_KEY` (so it isn't baked into
-   the notebook).
-3. In cell 4, replace `WORKSPACE` / `PROJECT` / `VERSION` with the
-   slugs from step 1.
+2. Sidebar 🔑 → agregá secret `ROBOFLOW_API_KEY` (así no queda
+   hardcoded en el notebook).
+3. En cell 4, reemplazá `WORKSPACE` / `PROJECT` / `VERSION` con los
+   slugs del paso 1.
 4. `Runtime` → `Run all`.
 
-Edits you make inside Colab don't auto-commit back to GitHub — if you
-tweak the notebook and want to keep the change, use Colab's
-*File → Save a copy in GitHub* or copy the diff back into the repo.
+Las ediciones que hagas dentro de Colab no se auto-commitean a GitHub
+— si tweakeás el notebook y querés conservar el cambio, usá
+*File → Save a copy in GitHub* o copiá el diff de vuelta al repo.
 
-Wall-time ~2-4 h on T4. Checkpoints save every 10 epochs to
-`Drive/people-counter-training/runs/`. If the session disconnects,
-re-running cell 5 picks up from the last checkpoint.
+Wall-time en T4: ~2-4 h para ~5k imágenes × 50 epochs. Los
+checkpoints se salvan a Drive cada 10 epochs en
+`Drive/people-counter-training/runs/`. Si la sesión se desconecta,
+re-correr la cell 5 retoma desde el último checkpoint.
 
-After training, cells 7-8 export ONNX + a 200-image calibration set
-to `Drive/people-counter-training/export/<run-name>/`.
+Después del training, las cells 7-8 exportan ONNX + un calibration set
+de 200 imágenes a `Drive/people-counter-training/export/<run-name>/`.
 
-## 5. Post-train bench
+## 5. Bench post-train
 
-Download `best.pt` from Drive to your workstation, then:
+Bajá `best.pt` de Drive al workstation, después:
 
 ```bash
 python scripts/training/bench_detector.py bench \
     --weights /path/to/best.pt \
-    --frames  /path/to/captured_frames/ \
+    --frames  /path/a/frames_capturados/ \
     --conf 0.25 \
     --report debug/bench_finetuned.json
 
@@ -119,46 +125,49 @@ python scripts/training/bench_detector.py diff \
     debug/bench_baseline.json debug/bench_finetuned.json
 ```
 
-The diff shows detection-rate + zone-by-zone deltas. Decision rule:
+El diff te muestra detection-rate + deltas zona por zona. Regla de
+decisión:
 
-- `detection_rate` improvement ≥ **+0.20** AND mean confidence up by
-  **≥ +0.10** → ship Phase A. Compile to HEF (step 6) and drop in.
-- improvements smaller → run Phase B (add WEPDTOF) before compiling.
+- mejora de `detection_rate` ≥ **+0.20** Y mean confidence sube por
+  **≥ +0.10** → shippeamos Phase A. Compilamos a HEF (paso 6) y
+  drop-in.
+- mejoras menores → corremos Phase B (suma WEPDTOF) antes de compilar.
 
-## 6. Compile to HEF (WSL2)
+## 6. Compilar a HEF (WSL2)
 
-Compilation runs on x86 Linux only — the Pi is ARM and Windows can't
-run the Hailo Dataflow Compiler natively. Inside WSL2 Ubuntu:
+La compilación corre solo sobre x86 Linux — la Pi es ARM y Windows no
+puede correr el Hailo Dataflow Compiler en nativo. Adentro de WSL2
+Ubuntu:
 
 ```bash
 # One-time (~30 min)
 pip install hailo-dataflow-compiler
-# Verify
+# Verificación
 hailomz --version
 
-# Each model
+# Cada modelo
 hailomz compile yolov8n \
     --ckpt /mnt/c/.../export/<run-name>/best.onnx \
     --hw-arch hailo8l \
     --calib-path /mnt/c/.../export/<run-name>/calib/
 ```
 
-Output: `yolov8n.hef`. SCP to the Pi:
+Output: `yolov8n.hef`. SCP a la Pi:
 
 ```bash
 scp yolov8n.hef pi@<device>:/usr/src/people-counter/models/
 sudo systemctl restart people-counter
 ```
 
-`config.yaml` already points at that path via `detection.model_path`.
+`config.yaml` ya apunta a ese path vía `detection.model_path`.
 
 ---
 
-## File map
+## Mapa de archivos
 
-| File | Phase | What it does |
+| Archivo | Phase | Qué hace |
 |---|---|---|
-| `download_roboflow.py` | A | Pull a Roboflow Universe dataset to `dataset/`. |
-| `bench_detector.py` | A + post | Inference benchmark + report diff. |
-| `../../notebooks/train_yolov8n_heads.ipynb` | A | Colab T4 training notebook. |
-| `.env.example` | A | API-key env-var convention (gitignored at runtime). |
+| `download_roboflow.py` | A | Pull de un dataset de Roboflow Universe a `dataset/`. |
+| `bench_detector.py` | A + post | Benchmark de inferencia + diff de reportes. |
+| `../../notebooks/train_yolov8n_heads.ipynb` | A | Notebook de Colab T4 para training. |
+| `.env.example` | A | Convención del env-var de la API key (el `.env` real está gitignoreado). |
