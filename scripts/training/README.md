@@ -108,11 +108,41 @@ entrena este dataset (~15k imágenes overhead heads) estable a batch=8.
 5. (Opcional) Editá `WORKSPACE` / `PROJECT` / `VERSION` en la cell 4
    si vas a entrenar otro dataset que no sea el de
    `coding-compass-nmjfb/overhead-head-detection-cwetj v2`.
-6. **Run All**.
+6. Esquina superior derecha → **Save Version** → elegí **Save & Run
+   All (Commit)** → click **Save**.
 
-Wall-time esperado en T4: ~1-2 h para ~12k imágenes train × 50 epochs
-con BATCH=8. Kaggle preserva `/kaggle/working/` así que checkpoints,
-ONNX y calibration set quedan disponibles para descarga al final.
+Save & Run All corre el notebook en background en infra de Kaggle —
+podés cerrar el browser, no requiere mantener la sesión activa, y al
+terminar los outputs quedan inmutables como Output de la Version.
+
+Wall-time esperado en T4: ~3 h para ~12k imágenes train × 50 epochs
+con BATCH=8.
+
+### Bajar los outputs
+
+Setup one-time del Kaggle CLI:
+
+```powershell
+py -m pip install kaggle
+
+# API token: kaggle.com/settings → API → Create New API Token
+# Guardalo en %USERPROFILE%\.kaggle\access_token
+mkdir $env:USERPROFILE\.kaggle -Force
+"<TU-TOKEN>" | Out-File "$env:USERPROFILE\.kaggle\access_token" -Encoding ASCII -NoNewline
+
+# Si el script no está en PATH (caso típico de Windows + py launcher):
+$env:Path += ";$env:USERPROFILE\AppData\Local\Programs\Python\Python312\Scripts"
+```
+
+Descarga (cuando la Version 1 esté completed):
+
+```powershell
+mkdir C:\path\to\repo\debug\kaggle_output -Force
+kaggle kernels output <username>/<notebook-slug> -p C:\path\to\repo\debug\kaggle_output
+```
+
+Te baja `best.pt`, `best.onnx`, `data.yaml`, `calib/` y el `.log` del
+run. Funciona indefinidamente — la Version es inmutable.
 
 ## 5. Bench post-train
 
@@ -144,33 +174,120 @@ decisión:
   drop-in.
 - mejoras menores → corremos Phase B (suma WEPDTOF) antes de compilar.
 
-## 6. Compilar a HEF (WSL2)
+## 6. Compilar a HEF y deployar
 
 La compilación corre solo sobre x86 Linux — la Pi es ARM y Windows no
-puede correr el Hailo Dataflow Compiler en nativo. Adentro de WSL2
-Ubuntu:
+puede correr el Hailo Dataflow Compiler en nativo. Vamos a usar **WSL2
+Ubuntu** (que ya tenés instalado por Docker Desktop) como entorno de
+compilación.
+
+### 6.1. Bajar el output de Kaggle al workstation
+
+1. En la pestaña de Kaggle del notebook, sidebar derecho → **Output**.
+2. Botón **Download All** (arriba a la derecha del panel) → te baja un
+   `.zip` con todo `/kaggle/working/`.
+3. Descomprimí en algún path del workstation, por ejemplo
+   `C:\Users\MauroGasparri\source\repos\people-counter\debug\kaggle_output\`.
+4. Verificá que adentro de `export/<run-name>/` están:
+   - `best.pt` — pesos PyTorch (para bench local con `bench_detector.py`)
+   - `best.onnx` — para compilar a HEF
+   - `data.yaml` — referencia del dataset
+   - `calib/` — ~200 jpgs random del train, calibration set para int8
+     quantization.
+
+### 6.2. Setup one-time del Hailo SDK en WSL2
+
+Si todavía no tenés el SDK adentro de WSL2 (es lo más probable, Docker
+Desktop no incluye Hailo), hacelo una sola vez:
+
+1. Crear cuenta en <https://hailo.ai/developer-zone/> (gratis,
+   verificación por email).
+2. **Software Downloads** → descargar:
+   - `hailo_dataflow_compiler-X.X.X-py3-none-linux_x86_64.whl`
+   - `hailo_model_zoo-X.X.X-py3-none-any.whl`
+3. Adentro de WSL2 Ubuntu 22.04 (`wsl -d Ubuntu-22.04`):
+
+   ```bash
+   # Sistema base
+   sudo apt update
+   sudo apt install -y python3.10 python3.10-venv python3-pip \
+       libgraphviz-dev graphviz build-essential
+
+   # Virtualenv aislado para evitar conflictos
+   python3.10 -m venv ~/hailo-env
+   source ~/hailo-env/bin/activate
+   pip install --upgrade pip wheel setuptools
+
+   # Instalá los .whl que bajaste (los path son al disco Windows
+   # vía /mnt/c/ — ajustá si los moviste a otro lado)
+   pip install /mnt/c/Users/MauroGasparri/Downloads/hailo_dataflow_compiler-*.whl
+   pip install /mnt/c/Users/MauroGasparri/Downloads/hailo_model_zoo-*.whl
+
+   # Verificación
+   hailomz --version
+   ```
+
+   Si `hailomz --version` te imprime la versión sin error → SDK listo.
+   El virtualenv queda en `~/hailo-env/`; cada vez que abrís WSL2 para
+   compilar tenés que correr `source ~/hailo-env/bin/activate` primero.
+
+### 6.3. Compilar el HEF
 
 ```bash
-# One-time (~30 min)
-pip install hailo-dataflow-compiler
-# Verificación
-hailomz --version
+# WSL2, dentro del venv
+cd /mnt/c/Users/MauroGasparri/source/repos/people-counter/debug/kaggle_output/export/<RUN_NAME>/
 
-# Cada modelo
 hailomz compile yolov8n \
-    --ckpt /mnt/c/.../export/<run-name>/best.onnx \
+    --ckpt best.onnx \
     --hw-arch hailo8l \
-    --calib-path /mnt/c/.../export/<run-name>/calib/
+    --calib-path calib/
 ```
 
-Output: `yolov8n.hef`. SCP a la Pi:
+Esto dispara el flujo completo: parse del ONNX → optimización del grafo
+→ quantization int8 usando las imágenes de `calib/` → compile final al
+binario `.hef`. Tarda **10-20 min** según tu CPU.
+
+Output esperado: `yolov8n.hef` en el cwd, ~5-10 MB.
+
+### 6.4. SCP a la Pi y restart del servicio
 
 ```bash
-scp yolov8n.hef pi@<device>:/usr/src/people-counter/models/
+# WSL2 sigue activo
+scp yolov8n.hef pi@<ip-de-la-pi>:/tmp/yolov8n.hef
+
+# SSH a la Pi para mover y reiniciar
+ssh pi@<ip-de-la-pi> << 'EOF'
+sudo mv /tmp/yolov8n.hef /usr/src/people-counter/models/yolov8n.hef
+sudo chown root:root /usr/src/people-counter/models/yolov8n.hef
 sudo systemctl restart people-counter
+sleep 3
+sudo systemctl status people-counter --no-pager | head -20
+EOF
 ```
 
-`config.yaml` ya apunta a ese path vía `detection.model_path`.
+`config.yaml` ya apunta a ese path vía `detection.model_path`, no hace
+falta tocar nada del lado de configuración.
+
+### 6.5. Smoke test post-deploy
+
+En la Pi, verificar que el modelo levantó y que detecta:
+
+```bash
+# Logs del servicio — buscá la línea de carga del modelo
+ssh pi@<ip-de-la-pi> "sudo journalctl -u people-counter -n 50 --no-pager"
+```
+
+Lo que buscás:
+- ✓ `Loading model: /usr/src/people-counter/models/yolov8n.hef`
+  (sin error siguiente)
+- ✓ Líneas de detección periódicas si pasás delante de la cámara
+- ✗ Cualquier traceback de Hailo o ImportError → algo salió mal en la
+  compilación, revisá el log del `hailomz compile`.
+
+Si todo OK, ese HEF queda como production. Si querés volver al stock
+yolov8n por cualquier razón (ej. el fine-tune resultó peor en bench),
+revertís cambiando `detection.model_path` o restoreando el HEF anterior
+desde tu workstation.
 
 ---
 
