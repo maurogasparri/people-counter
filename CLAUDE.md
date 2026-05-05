@@ -214,33 +214,32 @@ people-counter/
 │   │                         path que main.py (StereoCapture + rectify_pair),
 │   │                         pero guarda a JPG en lugar de detectar. Solo
 │   │                         para validación (inferencia), nunca training.
-│   ├── training/          <- pipeline de fine-tuning del detector cenital.
-│   │   ├── README.md      <- walkthrough Phase A → B end-to-end (Roboflow
-│   │   │                     → Kaggle T4 → ONNX → WSL2 hailomz → HEF).
+│   ├── training/          <- infraestructura del lado del workstation
+│   │   │                     para el pipeline de training del detector
+│   │   │                     cenital. El notebook específico se materializa
+│   │   │                     cuando se decide el dataset; las herramientas
+│   │   │                     de abajo son reutilizables a través de
+│   │   │                     iteraciones.
+│   │   ├── README.md      <- estado actual del pipeline + workflow del bench
+│   │   │                     + workflow Kaggle (Save & Run All) + setup
+│   │   │                     WSL2/Hailo y deploy a la Pi.
 │   │   ├── download_roboflow.py <- pull de dataset Roboflow Universe a
 │   │   │                     dataset/, formato YOLOv8 (data.yaml + train/
 │   │   │                     valid/test). API key vía env var. Pasa
-│   │   │                     overwrite=True por default — el SDK silenciosamente
-│   │   │                     no-opea si la dir existe (bug, lo aprendimos
-│   │   │                     en sesión 2026-05-03).
+│   │   │                     overwrite=True por default — el SDK no-opea
+│   │   │                     silencioso si la dir existe.
 │   │   ├── bench_detector.py <- bench de inferencia (cualquier .pt o .onnx)
 │   │   │                     sobre folder de frames. Reporta detection rate
 │   │   │                     + per-zone counts (centro+4 esquinas) + stats
 │   │   │                     de confidence. Subcommands `bench` y `diff`
-│   │   │                     para comparar baseline vs fine-tuned.
+│   │   │                     para comparar dos modelos.
 │   │   └── .env.example   <- convención del env-var ROBOFLOW_API_KEY
 │   ├── provision.py       <- provisioning + disaster recovery (create/deploy/harvest/reprovision/list)
 │   ├── verify_hardware.py <- verificación de hardware
 │   └── setup_device.sh    <- setup automático del dispositivo (pasos 4-10)
-├── notebooks/
-│   └── train_yolov8n_heads.ipynb <- notebook Kaggle T4: setup paths,
-│                              install ultralytics+roboflow, lee API key
-│                              de Kaggle Secrets, baja dataset, train 50
-│                              epochs (BATCH=8 default — T4 OOMea con 16+),
-│                              val, export ONNX, stash de outputs +
-│                              calibration set en /kaggle/working/.
-├── dataset/               <- gitignoreado. Datasets de training bajados
-│                              (Roboflow, WEPDTOF). Solo el README es tracked.
+├── dataset/               <- gitignoreado salvo el README. Datasets de
+│                              training (zips o folders descargados) van
+│                              acá. Tracked: solo el README.
 ├── calibration/
 │   └── calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf <- board ChArUco (PDF vectorial calib.io, A3 landscape)
 ├── infra/
@@ -276,9 +275,9 @@ people-counter/
 
 - COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main, status (led + health + monitor)
 - INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
-- TRAINING PIPELINE READY: scripts/training/ + notebooks/train_yolov8n_heads.ipynb. 22 tests cubriendo download_roboflow + bench_detector (mocks Roboflow SDK + ultralytics).
+- TRAINING TOOLING: scripts/training/ (download_roboflow + bench_detector) + scripts/capture_baseline_frames.py. 22 tests cubriendo las herramientas. El notebook específico se materializa cuando se decide el dataset.
 - POR VALIDAR EN PILOTO: detección cenital con people counting real en los 3 locales del S11
-- EN PROGRESO: fine-tune YOLOv8n cenital corriendo en Kaggle (Phase A — Roboflow `coding-compass-nmjfb/overhead-head-detection-cwetj v2`).
+- POR DEFINIR: dataset de fine-tuning del detector cenital. Iteraciones previas con Coding Compass overhead-head-detection y Person counter quedaron descartadas; próxima apuesta planeada es WEPDTOF (in-the-wild fisheye undistorted con K/D propios).
 
 ## Alcance del diseño
 
@@ -357,13 +356,13 @@ El detector cenital es un YOLOv8n fine-tuneado, NO el stock COCO. El stock falla
 
 ### Decisiones del pipeline
 
-- **Plan en fases:** Phase A entrena solo con Roboflow Universe (datasets ya en proyección rectilínea ≈ a la salida de `rectify_pair`); Phase B agrega WEPDTOF (fisheye in-the-wild, undistortado con su K/D propio) **solo si Phase A no alcanza el umbral del bench**. La probabilidad de necesitar B bajó cuando el dataset Roboflow elegido (Coding Compass `overhead-head-detection-cwetj v2`, 15.4k imgs) resultó más grande de lo que estimamos inicialmente.
-- **Dataset canónico Phase A:** `coding-compass-nmjfb/overhead-head-detection-cwetj` versión 2. Clase única `head-top-view`. 15,446 imágenes (incluye augmentations Roboflow-side). Bajada con `scripts/training/download_roboflow.py`.
-- **Entorno de training:** Kaggle Notebooks con T4 (Free tier). 30 h/semana de GPU sin sistema de compute units, y el T4 viene con los 16 GB efectivos sin sharing — entrena este dataset estable a `BATCH=8`, `IMGSZ=640` sin OOM.
-- **Hyperparams:** YOLOv8n init desde `yolov8n.pt` (COCO pretrained — el prior de "personas" ayuda como starter aunque vayamos a re-targetearlo). 50 epochs, BATCH=8 (16 OOMea por la cantidad de targets/imagen del dataset overhead), IMGSZ=640, AdamW, lr0=0.001, save_period=10 para checkpoints resilientes a desconexión.
-- **Bench como gate de decisión:** `bench_detector.py` corre el modelo viejo (`yolov8n.pt` stock) y el nuevo (`best.pt`) sobre los mismos frames del Pi y reporta detection rate + confidence + per-zone counts. Regla para shippear Phase A: detection_rate +0.20 Y mean confidence +0.10. Por debajo, Phase B (sumar WEPDTOF al training).
-- **Frames del Pi para bench, NO para training:** `scripts/capture_baseline_frames.py` genera el corpus de validación (frames rectificados left, mismos que ve el detector). Solo se usan para inferencia comparativa, nunca para training — la pureza de "training es 100% data pública" se preserva. Los frames no se commitean al repo, viven en `debug/baseline_frames/`.
-- **Compilación a HEF:** `hailomz compile` corre solo en x86 Linux. El user usa WSL2 Ubuntu adentro de Windows (ya configurado por Docker Desktop). Calibration set para int8 quantization = 200 imgs random del train split, copiadas en cell 8 del notebook a `/kaggle/working/export/<run-name>/calib/`.
+- **Próximo dataset planeado: WEPDTOF** (Boston VIP COSSY, 14k frames in-the-wild fisheye top-down). Requiere preprocessing del lado del workstation: undistortar fisheye con la K/D propia del dataset + convertir bboxes rotados a axis-aligned + estructurar a formato YOLOv8. Después se sube como Kaggle Dataset y se entrena. Iteraciones previas con datasets cenitales de Roboflow (Coding Compass overhead-head-detection, Person counter) quedaron descartadas por bias o mismatch de domain — single source con WEPDTOF para evitar contaminación cruzada de bias.
+- **Entorno de training:** Kaggle Notebooks con T4 (Free tier). 30 h/semana de GPU sin sistema de compute units, y el T4 viene con los 16 GB efectivos sin sharing — entrena estable a `BATCH=8`, `IMGSZ=640`.
+- **Workflow de Kaggle:** **Save Version → Save & Run All (Commit)**. Quick Save NO captura `/kaggle/working/`, Run All interactivo se pierde con idle disconnect. Save & Run All es el único método robusto.
+- **Hyperparams para fine-tune cenital:** YOLOv8n init desde `yolov8n.pt` (COCO pretrained — prior de "personas"). 50 epochs, BATCH=8 (16+ OOMea cuando el dataset tiene muchos targets/imagen), IMGSZ=640, AdamW, lr0=0.001, save_period=10 para checkpoints resilientes a desconexión.
+- **Bench como gate de decisión:** `bench_detector.py` corre el modelo viejo (`yolov8n.pt` stock) y el nuevo (`best.pt`) sobre los mismos frames del Pi y reporta detection rate + confidence + per-zone counts. Regla para shippear: detection_rate +0.20 Y mean confidence +0.10.
+- **Frames del Pi para bench, NO para training:** `scripts/capture_baseline_frames.py` genera el corpus de validación (frames rectificados left, mismos que ve el detector). Solo se usan para inferencia comparativa, nunca para training — la pureza de "training es 100% data pública" se preserva. Los frames no se commitean al repo, viven en `debug/baseline_frames/`. Para que el bench sea informativo: buena iluminación, sin objetos circulares cotidianos en escena (posavasos, latas) que el modelo confunda con cabezas, persona caminando despacio con cabeza centrada y nítida, mezcla de ~10 frames vacíos + ~20 con cabeza.
+- **Compilación a HEF:** `hailomz compile` corre solo en x86 Linux. El user usa WSL2 Ubuntu adentro de Windows (ya configurado por Docker Desktop). Calibration set para int8 quantization = 200 imgs random del train split.
 
 ### Boundary fuerte que no romper
 
