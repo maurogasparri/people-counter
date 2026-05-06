@@ -52,6 +52,8 @@ from src.vision.depth import (
 )
 from src.vision.world_coords import classify_height, head_height_above_floor
 from src.vision.detect import detect_persons, load_model
+from src.web.annotate import annotate_left, compose_3panel, depth_to_colormap
+from src.web.viewer import WebViewer
 
 # Size of the rolling windows used for frame-latency percentiles and
 # detection-rate calculations. 100 covers ~7s at 15 FPS — enough to smooth
@@ -350,6 +352,20 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         status_led = StatusLED()
         health_monitor = HealthMonitor(led=status_led, signals=health_signals)
         health_monitor.start()
+
+    # --- Live web viewer ----------------------------------------------------
+    # Default ON, port 80 (--web-viewer-port 0 disables). Bind failure logs
+    # a warning and leaves ``viewer = None`` so the pipeline continues
+    # without it. Port 80 needs CAP_NET_BIND_SERVICE under systemd; the
+    # service unit grants it. Off-systemd dev runs need root to bind <1024.
+    viewer: WebViewer | None = None
+    web_port = int(getattr(args, "web_viewer_port", 80))
+    if web_port > 0:
+        viewer = WebViewer(port=web_port)
+        if not viewer.start():
+            viewer = None
+    last_depth_panel: np.ndarray | None = None
+    last_fps_estimate: float = 0.0
 
     # --- Resolution sanity ---
     # vision.resolution is a legitimate per-site override (used when the
@@ -880,6 +896,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             elapsed = time.time() - fps_start
             if elapsed >= 10.0:
                 fps = frame_count / elapsed
+                last_fps_estimate = fps
                 logger.info(
                     "Pipeline: %.1f FPS, %d detections, in=%d out=%d",
                     fps,
@@ -889,6 +906,40 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 )
                 frame_count = 0
                 fps_start = time.time()
+
+            # --- Web viewer push ---
+            # 3-panel composite (L annotated | R raw | depth colormap).
+            # Depth panel is cached: SGBM is computed only on frames with
+            # detections (see depth section), so between detections we
+            # show the most recent depth map instead of a black panel.
+            # ``push`` is non-blocking; failures are logged but don't
+            # break the pipeline.
+            if viewer is not None:
+                try:
+                    if depth_map is not None:
+                        last_depth_panel = depth_to_colormap(depth_map)
+                    elif last_depth_panel is None:
+                        last_depth_panel = depth_to_colormap(None)
+                    left_annot = annotate_left(
+                        rect_l, detections, tracks, counter,
+                        fps=last_fps_estimate,
+                    )
+                    composite = compose_3panel(
+                        left_annot, rect_r, last_depth_panel,
+                    )
+                    confirmed_or_pending = sum(
+                        1 for t in tracks.values()
+                        if getattr(t, "state", None) in ("confirmed", "pending")
+                    )
+                    viewer.push(composite, {
+                        "total_in": counter.total_in,
+                        "total_out": counter.total_out,
+                        "fps": last_fps_estimate,
+                        "tracks": confirmed_or_pending,
+                        "dets": len(detections),
+                    })
+                except Exception:
+                    logger.exception("Web viewer push failed")
 
             # --- Observability: record per-frame latency + detection count ---
             frame_latencies_ms.append(
@@ -939,6 +990,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     finally:
         sd_notify("STOPPING=1")
+        if viewer is not None:
+            viewer.stop()
         if health_monitor is not None:
             health_monitor.stop()
         if status_led is not None:
@@ -997,6 +1050,16 @@ def main() -> None:
         type=int, default=30,
         help="When --profile is set, emit a PROFILE log every N frames "
              "(default 30 — about every 6 seconds at 5 FPS).",
+    )
+    parser.add_argument(
+        "--web-viewer-port",
+        type=int, default=80,
+        help="HTTP port for the live debug viewer. Streams a 3-panel "
+             "composite (left annotated | right raw | depth colormap) "
+             "as MJPEG. Open the device IP in a browser to watch live. "
+             "Default 80 (needs CAP_NET_BIND_SERVICE under systemd; the "
+             "service unit grants it). Pass 0 to disable. Bind failures "
+             "are logged but don't kill the pipeline.",
     )
     args = parser.parse_args()
 

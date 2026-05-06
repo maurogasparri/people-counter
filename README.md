@@ -53,7 +53,7 @@ La config cloud usa una estrategia de **caché local de shadow**: al bootear, `m
 
 ### Status LED para diagnóstico en sitio
 
-Un LED RGB en el frente del enclosure le da al operador del local un código visual del estado del dispositivo sin SSH. Esquema alineado con FootfallCam (cascada worst-first por capa: hardware > pipeline > internet > cloud > OK):
+Un LED RGB en el frente del enclosure le da al operador del local un código visual del estado del dispositivo sin SSH. Cascada worst-first por capa (hardware > pipeline > internet > cloud > OK):
 
 | LED | Patrón | Significado |
 |-----|--------|-------------|
@@ -266,7 +266,7 @@ docs/
 ├── setup-guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
 ├── lab-calibration-guide.md      # Protocolo de foco + calibración en lab (universal para la flota)
 └── pilot-operator-guide.md       # Guía para el operador en sitio (foco → calibración → verificación)
-dataset/                          # Drop-zone gitignoreado para datasets de training (Roboflow, WEPDTOF)
+dataset/                          # Drop-zone gitignoreado para datasets públicos (Roboflow, WEPDTOF, etc.)
 debug/                            # Drop-zone gitignoreado para reportes, capturas y logs de test
 ```
 

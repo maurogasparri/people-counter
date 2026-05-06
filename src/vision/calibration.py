@@ -4,7 +4,7 @@ Uses the OpenCV fisheye model (cv2.fisheye.*, Kannala-Brandt angular polynomial
 k1..k4). The Arducam IMX708 M12 lens is fisheye (120° HFOV / 152° diagonal) —
 pinhole + CALIB_RATIONAL_MODEL fits the centre but leaves measurable residuals
 at the edges of the frame, which matters for wide-coverage cenital counting
-(FootfallCam-style, ~40% frame eccentricity for the tracking zone).
+(~40% frame eccentricity for the tracking zone).
 
 The ghost overlay renderer in project_pose() stays pinhole — it's a coarse
 visual guide for the operator, and at the wizard's alignment tolerances the

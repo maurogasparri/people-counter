@@ -48,7 +48,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 ## Decisiones técnicas clave
 
 ### Pipeline de visión
-- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), **modelo fisheye Kannala-Brandt** con `cv2.fisheye.calibrate` (4 coef angulares k1–k4), apropiado para el lens Arducam 120°×152° que opera en zona útil hasta ±40% horizontal del frame (cobertura tipo FootfallCam). El flag `--dict` en `calibrate.py` permite usar boards alternativos. R y T del par se derivan de los extrínsecos per-pose que devuelve `fisheye.calibrate` (promedio + proyección SO(3)), manejando counts de puntos variables entre poses. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. **Protocolo de lab (universal para toda la flota)**: foco y calibración se hacen una sola vez en laboratorio con distancias fijas, no por sitio. Foco a 2.0m ±20cm (el DoF del M12 120° cubre 1.15–3.30m, o sea mount 3–4.5m). Calibración con poses a 1.0/2.0/3.0m (interpola hasta el operativo 3.0m, extrapola 30cm hasta 3.30m; fisheye Kannala-Brandt tolera bien esa extrapolación). `mounting_height_m` en `config.yaml` es solo para runtime (SGBM auto-tune, head-height gating). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
+- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), **modelo fisheye Kannala-Brandt** con `cv2.fisheye.calibrate` (4 coef angulares k1–k4), apropiado para el lens Arducam 120°×152° que opera en zona útil hasta ±40% horizontal del frame. El flag `--dict` en `calibrate.py` permite usar boards alternativos. R y T del par se derivan de los extrínsecos per-pose que devuelve `fisheye.calibrate` (promedio + proyección SO(3)), manejando counts de puntos variables entre poses. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. **Protocolo de lab (universal para toda la flota)**: foco y calibración se hacen una sola vez en laboratorio con distancias fijas, no por sitio. Foco a 2.0m ±20cm (el DoF del M12 120° cubre 1.15–3.30m, o sea mount 3–4.5m). Calibración con poses a 1.0/2.0/3.0m (interpola hasta el operativo 3.0m, extrapola 30cm hasta 3.30m; fisheye Kannala-Brandt tolera bien esa extrapolación). `mounting_height_m` en `config.yaml` es solo para runtime (SGBM auto-tune, head-height gating). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
 - **Óptica de las cámaras**: Arducam B0310 con M12 120° HFOV (fisheye). Focal física 2.87mm / pixel pitch 1.4μm → pinhole-equivalente `f_px = 2050` a full-res 4608x2592 (`NOMINAL_FOCAL_PX` en `src/vision/calibration.py`). El FOV es fisheye real, no rectilíneo — la fórmula `f = (W/2)/tan(HFOV/2)` no aplica y daría valores erróneos.
 - **Sensor modes (IMX708)**: el modo canónico para este pipeline es **2304×1296 binned 2x2** (full FOV, 16:9, hasta 56 fps). `focus_assist.py` y `calibrate.py` lo pinean con `raw={"size": (2304, 1296)}`. Razones por las que es el modo elegido frente al full-res 4608×2592: ChArUco detection corre 4× más rápido (≥8 FPS vs <2 FPS en Pi 5 a full-res), el binning 2x2 mejora SNR, y la rectificación + SGBM cabe en el budget de 30+ FPS. Otros modos disponibles (`2304×1296 @ 30fps HDR`, `1536×864 @ 120fps` partial-FOV crop) quedan reservados para casos especiales. Para runtime de inferencia, `vision.resolution` puede ser una rescala lineal del modo de calibración (ej. 1152×648 vía `scripts/rescale_calibration.py`) — la calibración Kannala-Brandt es resolución-independiente en intrínsecos angulares, así que el K se reescala analíticamente.
 - **Rectificación**: mapas precomputados vía `cv2.fisheye.initUndistortRectifyMap` (balance=0.0 para cero bordes negros, que ensucian SGBM). Aplicados por par de frames con `cv2.remap`.
@@ -74,7 +74,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Status LED
 - **Hardware**: RGB 3mm common cathode en GPIO 17 (R, 150Ω) / 18 (G, 100Ω) / 27 (B, 100Ω) + GND pin 14, dupont 2x2. Resistencias asimétricas porque G y B (InGaN, Vf≈3.1V) tienen apenas 0.2V de headroom contra los 3.3V del GPIO mientras que R (AlGaInP, Vf≈2.1V) tiene 1.2V — los valores apuntan a brillo perceptualmente parejo entre canales, no a corrientes iguales. Sin esa asimetría las mezclas tiran al verde por la mayor eficiencia luminosa del eye response.
-- **Esquema**: 8 estados alineados con el código de FootfallCam (apagado / rojo fijo / amarillo fijo / amarillo parpadeante / verde parpadeante / verde fijo / azul fijo / azul parpadeante) — el operador del local interpreta sin SSH. Cascada de prioridad worst-first: HW > pipeline > internet > cloud > OK.
+- **Esquema**: 8 estados (apagado / rojo fijo / amarillo fijo / amarillo parpadeante / verde parpadeante / verde fijo / azul fijo / azul parpadeante) — el operador del local interpreta sin SSH. Cascada de prioridad worst-first: HW > pipeline > internet > cloud > OK.
 - **Health checks** (`src/status/health.py`): CPU temp <80°C, Hailo temp <85°C, disco free >10%, calibración cargable, captura/inferencia OK, pipeline watchdog (`last_loop_ts` <5s), internet TCP a 1.1.1.1:53 (cacheado 30s), MQTT `connected` flag.
 - **Monitor en thread separado** (`src/status/monitor.py`): probes blocking (socket connect 3s timeout) no estresan el hot path del pipeline. `HealthSignals` es shared state mutable; el pipeline escribe, el monitor lee — atomicidad garantizada por el GIL para tipos primitivos.
 - **Fail-safe**: si `gpiozero` no está disponible o los pines no se pueden abrir, `StatusLED` cae a no-op + log INFO. Permite correr el servicio en bench sin LED conectado y los tests sin GPIO real.
@@ -233,6 +233,21 @@ people-counter/
 │   │   │                     + per-zone counts (centro+4 esquinas) + stats
 │   │   │                     de confidence. Subcommands `bench` y `diff`
 │   │   │                     para comparar dos modelos.
+│   │   ├── bench_roboflow_api.py <- triage de modelos publicados en Roboflow
+│   │   │                     Universe via inference REST. Compara detection
+│   │   │                     rate / mean conf / FP rate sin descargar pesos.
+│   │   │                     Soporta endpoints `detect.*` y `serverless.*`.
+│   │   ├── capture_mjpeg.py <- capturador multi-site de streams MJPEG
+│   │   │                     HTTP. Sites configurables vía YAML. Modos:
+│   │   │                     random-interval (cobertura temporal uniforme)
+│   │   │                     o motion-trigger (cv2.absdiff entre frames
+│   │   │                     consecutivos, multiplica × 10-50 la fracción
+│   │   │                     útil para validation). --background-interval:
+│   │   │                     en motion mode guarda también un frame "bg"
+│   │   │                     cada N seg independiente del motion (control
+│   │   │                     para medir FP rate del detector después).
+│   │   │                     --operating-hours START:END filtra por horario
+│   │   │                     local. Filenames distinguen `_motion_` vs `_bg_`.
 │   │   └── .env.example   <- convención del env-var ROBOFLOW_API_KEY
 │   ├── provision.py       <- provisioning + disaster recovery (create/deploy/harvest/reprovision/list)
 │   ├── verify_hardware.py <- verificación de hardware
@@ -260,7 +275,7 @@ people-counter/
 |--------|------|-----------|--------|
 | S3 | PoC | Captura estéreo + YOLOv8n en RPi5. Probar que funciona. | **HARDWARE VALIDADO** — capture.py adaptado a picamera2, captura estéreo verificada en RPi5. detect.py (backends Hailo + OpenCV). |
 | S4 | Calibración | Pipeline ChArUco. Rectificación. Mapa de profundidad. | **DONE** — calibration.py modelo fisheye Kannala-Brandt (`cv2.fisheye.*`). Board: 9x6 / 45mm / 33mm / DICT_4X4_100 (A3, en `calibration/`). Baseline 140mm por diseño. diagnose_depth.py valida 5 zonas con umbrales PASS/FAIL. |
-| S5 | Detección | Compilación HEF. Integración Hailo SDK. 30+ FPS. | **EN PROGRESO** — detect.py con backends Hailo + OpenCV, pre/postproceso testeado (16 tests). Hailo-8L verificado (fw 4.23.0, PCIe Gen 3). YOLOv8n stock COCO probado y descartado por mismatch geométrico (entrenado frontal/lateral, no cenital). Pipeline de fine-tuning Phase A en marcha (Roboflow `coding-compass-nmjfb/overhead-head-detection-cwetj v2`, 15.4k imgs head-top-view, train en Kaggle T4). Compilación a HEF vía `hailomz compile` en WSL2 pendiente del export ONNX del fine-tune. |
+| S5 | Detección | Compilación HEF. Integración Hailo SDK. 30+ FPS. | **EN PROGRESO** — detect.py con backends Hailo + OpenCV, pre/postproceso testeado (16 tests). Hailo-8L verificado (fw 4.23.0, PCIe Gen 3). Modelo elegido: RAPiD pretrained MWHB1024 (rotation-aware, 80% recall sobre baseline frames out-of-the-box). Postproceso: filter geométrico + ROI mask. Pipeline `.ckpt` → ONNX → HEF vía `hailomz compile` en WSL2/Docker. |
 | S6 | Tracking | Tracker 3D. Línea virtual. Eventos ingreso/egreso. | **DONE** — tracker.py (13 tests) + counter.py (24 tests). main.py conectado E2E (21 tests). |
 | S7 | WiFi/BLE | nexmon + captura BLE. Hashing. Dedup L1+L2. | **HARDWARE VALIDADO** — wifi_probe.py (nexmon + airmon-ng + scapy, probes capturadas, 13 tests), ble_scan.py (bleak, 343 adverts/8 dispositivos únicos, 11 tests). hasher.py (5 tests) + dedup.py (12 tests). |
 | S8 | MQTT | Cliente IoT Core. Buffer SQLite. Reconexión. | **DONE** — client.py con TLS, replay de buffer, backoff (15 tests) + buffer.py SQLite (3 tests). |
@@ -275,9 +290,9 @@ people-counter/
 
 - COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main, status (led + health + monitor)
 - INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
-- TRAINING TOOLING: scripts/training/ (download_roboflow + bench_detector) + scripts/capture_baseline_frames.py. 22 tests cubriendo las herramientas. El notebook específico se materializa cuando se decide el dataset.
-- POR VALIDAR EN PILOTO: detección cenital con people counting real en los 3 locales del S11
-- POR DEFINIR: dataset de fine-tuning del detector cenital. Iteraciones previas con Coding Compass overhead-head-detection y Person counter quedaron descartadas; próxima apuesta planeada es WEPDTOF (in-the-wild fisheye undistorted con K/D propios).
+- DETECCIÓN: el modelo es **RAPiD pretrained** (Boston VIP COSSY, weights `pL1_MWHB1024_Mar11_4000`, license non-commercial — uso en TFG). Detección rotated-bbox sobre raw fisheye. Sobre nuestros baseline frames generaliza a 80% detection rate sin training. Postproceso: filter geométrico (size + aspect ratio) + ROI mask configurable per-deployment. Pipeline detect → ONNX → HEF.
+- TRAINING / VALIDACIÓN TOOLING: scripts/training/ con download_roboflow, bench_detector (modelos locales `.pt`/`.onnx`), bench_roboflow_api (modelos publicados en Roboflow Universe via REST), y un capturador multi-site de streams MJPEG con motion-trigger + background sampling para armar set de validación. 22 tests sobre las herramientas.
+- POR VALIDAR EN PILOTO: detección cenital con people counting real en los 3 locales del S11.
 
 ## Alcance del diseño
 
@@ -350,25 +365,30 @@ people-counter/
 - **`vision.sgbm_downscale: 2`** (default): SGBM matchea a resolución reducida (1=full, 2=half, 4=quarter) y `compute_disparity` upscalea la disparidad de vuelta rescalando los valores para que el depth siga correcto. Calibración es resolución-independiente (K, D no cambian), así matchear a menor res es ~4× más rápido en Pi 5 con impacto despreciable a la escala de detección de cabezas. Default 2; para diagnósticos con depth fina, 1; para más FPS y depth coarser, 4.
 - **`--no-mqtt`** (CLI flag): skipea la conexión MQTT entera y reemplaza el cliente por un no-op que loggea publishes a stdout. Útil para correr pipeline localmente antes de provisionar AWS, validando detect/track/count sin transmitir nada. Mismo comportamiento end-to-end de capture → SGBM → detect → track → count, solo cambia el sink de eventos.
 
-## Pipeline de training del detector
+## Pipeline del detector
 
-El detector cenital es un YOLOv8n fine-tuneado, NO el stock COCO. El stock falla porque sus etiquetas de `person` están aprendidas sobre vistas frontales de CrowdHuman; un overhead head desde 2.5-3m es geometría no vista en training. Esto se confirmó empíricamente y el plan de fine-tuning está en `scripts/training/README.md`.
+El detector cenital es **RAPiD pretrained** (Rotation-Aware People Detection, Boston VIP COSSY). Backbone Darknet-53 con head custom rotated-bbox; output `[cx, cy, w, h, angle, conf]`. Funciona directo sobre raw fisheye sin necesitar undistortion. License non-commercial: uso autorizado en TFG; en eventual paso a producto comercial se entrenaría un sustituto sobre data real recolectada en pilotos.
 
 ### Decisiones del pipeline
 
-- **Próximo dataset planeado: WEPDTOF** (Boston VIP COSSY, 14k frames in-the-wild fisheye top-down). Requiere preprocessing del lado del workstation: undistortar fisheye con la K/D propia del dataset + convertir bboxes rotados a axis-aligned + estructurar a formato YOLOv8. Después se sube como Kaggle Dataset y se entrena. Iteraciones previas con datasets cenitales de Roboflow (Coding Compass overhead-head-detection, Person counter) quedaron descartadas por bias o mismatch de domain — single source con WEPDTOF para evitar contaminación cruzada de bias.
-- **Entorno de training:** Kaggle Notebooks con T4 (Free tier). 30 h/semana de GPU sin sistema de compute units, y el T4 viene con los 16 GB efectivos sin sharing — entrena estable a `BATCH=8`, `IMGSZ=640`.
-- **Workflow de Kaggle:** **Save Version → Save & Run All (Commit)**. Quick Save NO captura `/kaggle/working/`, Run All interactivo se pierde con idle disconnect. Save & Run All es el único método robusto.
-- **Hyperparams para fine-tune cenital:** YOLOv8n init desde `yolov8n.pt` (COCO pretrained — prior de "personas"). 50 epochs, BATCH=8 (16+ OOMea cuando el dataset tiene muchos targets/imagen), IMGSZ=640, AdamW, lr0=0.001, save_period=10 para checkpoints resilientes a desconexión.
-- **Bench como gate de decisión:** `bench_detector.py` corre el modelo viejo (`yolov8n.pt` stock) y el nuevo (`best.pt`) sobre los mismos frames del Pi y reporta detection rate + confidence + per-zone counts. Regla para shippear: detection_rate +0.20 Y mean confidence +0.10.
-- **Frames del Pi para bench, NO para training:** `scripts/capture_baseline_frames.py` genera el corpus de validación (frames rectificados left, mismos que ve el detector). Solo se usan para inferencia comparativa, nunca para training — la pureza de "training es 100% data pública" se preserva. Los frames no se commitean al repo, viven en `debug/baseline_frames/`. Para que el bench sea informativo: buena iluminación, sin objetos circulares cotidianos en escena (posavasos, latas) que el modelo confunda con cabezas, persona caminando despacio con cabeza centrada y nítida, mezcla de ~10 frames vacíos + ~20 con cabeza.
-- **Compilación a HEF:** `hailomz compile` corre solo en x86 Linux. El user usa WSL2 Ubuntu adentro de Windows (ya configurado por Docker Desktop). Calibration set para int8 quantization = 200 imgs random del train split.
+- **Weights elegidos**: `pL1_MWHB1024_Mar11_4000.ckpt` (entrenado COCO + MW-R + HABBOF, input 1024×1024). Sobre nuestros baseline frames generaliza a 80% detection rate sin tocarlo. Las variantes con CEPDOF training (HBCP, MWCP) sobre-disparan en clutter (false positive rate alto en objetos blandos cenitales tipo ropa apilada), por eso elegimos MWHB.
+- **Conf threshold operativo**: 0.30 con MWHB. Subir a 0.50 mejora precision pero pierde TPs reales de baja confianza (motion blur, oclusión parcial).
+- **Bbox semantics**: RAPiD detecta personas, no cabezas; el bbox es person-full rotated. En geometría cenital extrema (lente 120° HFOV centrado, mounting 2.5-4m) el centroide del bbox cae aproximadamente sobre la cabeza, suficiente para nuestro pipeline. Para depth lookup robusto, en lugar del centroide se usa el argmax de disparity dentro del bbox (la cabeza es siempre la parte más cercana al techo, máxima disparity).
+- **Postprocesado geométrico** (cero costo, on-CPU post-NMS):
+  - `area in [8000, 120000]` px² (para frames 1152×648)
+  - `min(w, h) >= 60` px (filtra slivers)
+  - `max(w,h)/min(w,h) <= 3` (rechaza shapes elongadas no humanas)
+- **ROI mask** per-deployment: máscara binaria que excluye zonas de clutter conocidas (rack, escritorio, maniquíes). Aplicada antes de detect. Cero costo de inference, alta efectividad para FPs estructurales.
+- **Compilación a HEF**: `hailomz compile` corre solo en x86 Linux. WSL2 Ubuntu o Docker dentro de Windows. Hailo AI SW Suite (registro free en Developer Zone) es bloqueante para este paso. Para RAPiD el path es `.ckpt` → ONNX (con `export_onnx.py` del repo) → HEF compilado para `hailo8l`. Calibration set para int8 quantization = 200 imgs random representativas del deployment.
+- **Bench tooling**:
+  - `bench_detector.py` para modelos locales `.pt`/`.onnx` (ultralytics-compatible)
+  - `bench_roboflow_api.py` para evaluar cualquier modelo publicado en Roboflow Universe via REST sin descargar pesos. Útil para triage rápido de candidatos. Soporta endpoints `detect.*` y `serverless.*`.
+- **Validation set en construcción**: capturador multi-site de streams MJPEG (en `scripts/training/`) corre durante horario de operación con motion-trigger (guarda solo cuando hay cambio significativo entre frames consecutivos) más sampling de fondo para medir FP rate. Filenames con prefijo `_motion_` o `_bg_` permiten distinguir tipos al post-procesar.
 
 ### Boundary fuerte que no romper
 
-- **Training corre en Kaggle (cloud) o workstation (cualquier GPU NVIDIA con 12 GB+ VRAM).** La Pi nunca entrena — solo ejecuta el `.hef` ya compilado.
 - **Compilación corre en WSL2/Linux x86.** La Pi es ARM, el compiler es x86-only, Windows nativo no es soportado por Hailo.
-- **Inferencia corre en la Pi.** El `.hef` se SCP-ea a `/usr/src/people-counter/models/yolov8n.hef` y `detection.model_path` en `config.yaml` apunta ahí.
+- **Inferencia corre en la Pi.** El `.hef` se SCP-ea a `/usr/src/people-counter/models/` y `detection.model_path` en `config.yaml` apunta ahí.
 
 ## Convenciones de las tools de visión
 

@@ -274,8 +274,7 @@ scp pi@people-counter.local:/tmp/test_cam*.jpg .
 ### 11.1. LED de status — código de colores
 
 El LED RGB es la fuente visual de estado para diagnóstico en sitio sin SSH.
-Esquema alineado con FootfallCam para que un operador entrenado en ese sistema
-lo pueda interpretar sin re-aprender:
+Cascada worst-first por capa (hardware > pipeline > internet > cloud > OK):
 
 | LED | Patrón | Significado | Acción del operador |
 |-----|--------|-------------|---------------------|

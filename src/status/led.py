@@ -1,7 +1,8 @@
 """RGB status LED for field diagnosis.
 
-8-state pattern aligned with FootfallCam's operator codes — retail staff
-can interpret device health from the LED color/blink without SSH access.
+8-state pattern (off / red / yellow / yellow blink / green blink / green /
+blue / blue blink) — retail staff can interpret device health from the
+LED color/blink without SSH access.
 
 Hardware: 3mm common-cathode RGB on the GPIO header.
     GPIO 17 (pin 11) -> R via 150 ohm
