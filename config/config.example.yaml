@@ -5,19 +5,24 @@
 # Configuration strategy:
 #
 # HARDWARE (config/hardware.yaml — committed) — Fleet invariants. Bracket
-#   geometry, sensor defaults, SGBM/detection/tracking tuning, MQTT contract,
-#   buffer/log paths. Set once in lab; never touched per-site.
+#   geometry, sensor defaults, runtime resolution + fps, calibration file
+#   path, SGBM/detection/tracking tuning, MQTT contract, buffer/log paths.
+#   Set once in lab; never touched per-site.
 #
 # THIS FILE (/etc/people-counter/config.yaml — per-device) — Per-site
-#   identity, geometry, credentials, and operational policies. Rarely edited
-#   after install except via the cloud shadow.
+#   identity, geometry that changes with the physical layout (mounting
+#   height, ROI/lines for the local door, classifier thresholds), MQTT
+#   credentials, operational policies. Rarely edited after install except
+#   via the cloud shadow.
 #
 # CLOUD (AWS IoT Device Shadow) — Business-driven values inside the
 #   `cloud_defaults` block, pushed remotely without SSH. Whitelisted runtime-
 #   safe keys also apply live (see RUNTIME_SAFE_KEYS in src/config/loader.py).
 #
 # Any key that appears here AND in hardware.yaml: this file wins. The
-# fallback to hardware.yaml only kicks in when the key is missing here.
+# fallback to hardware.yaml only kicks in when the key is missing here, so
+# keep this file lean — only override fleet defaults when the site truly
+# requires it.
 # =============================================================================
 
 # --- Device identity (set once during provisioning) ---
@@ -26,55 +31,71 @@ device:
   store_id: "store-001"           # Site/store identifier
   store_name: "Store Name"        # Human-readable (display only)
 
-# --- Camera + per-site geometry ---
-# Bracket geometry (baseline, L/R CSI assignment) and sensor defaults
-# (model, full_res, default_res, default_fps, nominal focal) live in
-# config/hardware.yaml — those are invariants set by the bracket assembly
-# procedure.
+# --- Per-site geometry ---
+# Camera resolution, fps, calibration_file path, SGBM tuning all live in
+# hardware.yaml.vision_runtime — those are fleet-wide. The only per-site
+# override here is the camera mounting height (varies with the local
+# ceiling height).
 vision:
-  # Optional: override the hardware default resolution. MUST match the
-  # resolution of the calibration .npz; mismatched resolution silently
-  # corrupts depth. Leave commented to use sensor.default_res.
-  # resolution: [1152, 648]
-  # fps: 15                       # Optional: override sensor.default_fps
-  calibration_file: "/etc/people-counter/calibration.npz"
-  mounting_height_m: 3.0          # Camera mount height from floor in meters.
-                                  # Drives auto num_disparities + height classifier.
-  # SGBM overrides (rare — defaults in hardware.yaml.vision_runtime.sgbm).
-  # Leave commented unless a specific deployment needs to deviate.
-  # num_disparities: auto
-  # block_size: 9
-  # sgbm_downscale: 2
+  mounting_height_m: 3.0          # Distance from floor to camera mount, in
+                                  # metres. Drives auto num_disparities and
+                                  # the head-height classifier. Must be
+                                  # accurate to ±5cm or depth-derived heights
+                                  # drift.
 
-# --- Detection model ---
-# Thresholds (confidence, NMS) live in hardware.yaml.detection. Only the
-# install path is per-device (HEF location on filesystem).
-detection:
-  model_path: "/usr/src/people-counter/models/yolov8n.hef"
-
-# --- Counter (ROI + virtual line) — site geometry ---
-# Counts a track only when it exits the ROI on the opposite side of where it
-# entered, having crossed the line in between. Tracks that enter and leave on
-# the same side (or never cross the line) are "indeciso" and not counted.
+# --- Counter (ROI + N directional lines) — site geometry ---
+#
+# Lifecycle: a track that enters the ROI, crosses one of the configured
+# lines in a labelled direction, and exits the ROI emits an event with that
+# label. Crossings in unlabelled directions are silently ignored — that's
+# how a one-way gate is modelled (one door is IN-only, the other OUT-only,
+# or both ways on the same line).
+#
+# Examples:
+#   * One door, both directions count (typical retail entrance):
+#       counter:
+#         roi: { x_min: 100, x_max: 540, y_min: 180, y_max: 300 }
+#         lines:
+#           - from: [100, 240]
+#             to:   [540, 240]
+#             labels:
+#               top_to_bottom: ingress
+#               bottom_to_top: egress
+#
+#   * Two physically separate doors (one IN, one OUT):
+#       counter:
+#         roi: { x_min: 100, x_max: 540, y_min: 100, y_max: 400 }
+#         lines:
+#           - from: [120, 250]    # left half — IN gate
+#             to:   [320, 250]
+#             labels: { top_to_bottom: ingress }
+#           - from: [340, 250]    # right half — OUT gate
+#             to:   [540, 250]
+#             labels: { bottom_to_top: egress }
+#
+# Lines must be axis-aligned (horizontal: same y, vertical: same x). Valid
+# direction keys: horizontal lines use top_to_bottom / bottom_to_top;
+# vertical lines use left_to_right / right_to_left.
 counter:
   roi:
     x_min: 100
     x_max: 540
     y_min: 180
     y_max: 300
-  line:
-    orientation: horizontal       # horizontal | vertical
-    position: 240                 # y-coord if horizontal, x-coord if vertical
-  direction_labels:
-    side_a_to_b: ingress          # entered side_a, exited side_b -> this label
-    side_b_to_a: egress
-  # Tracker state-machine overrides — defaults in
-  # hardware.yaml.tracking.state_machine. Uncomment only to deviate.
-  # tracker:
-  #   confirm_frames: 3
-  #   pending_max_frames: 5
-  #   reid_gate_px: 60
-  #   depth_gate_m: 0.5
+  lines:
+    - from: [100, 240]
+      to:   [540, 240]
+      labels:
+        top_to_bottom: ingress
+        bottom_to_top: egress
+  # Adult/child classifier based on head height above floor (uses stereo
+  # depth + mounting_height_m). adult_min_m may need per-site tuning
+  # depending on local demographics.
+  height_classifier:
+    enabled: true
+    adult_min_m: 1.55             # Head height (m) ≥ this => adult, else child.
+                                  # 1.55m sits near the P25 of adult women in
+                                  # Argentina, so few adults misclassify.
 
 # --- WiFi/BLE — site privacy + sensitivity ---
 # Protocol constants (interface, intervals, cross-protocol windows) live in
@@ -83,11 +104,8 @@ counter:
 wifi_ble:
   enabled: true                   # Master switch (overridable from cloud)
   ble_enabled: true               # BLE advertising capture
-  # Dual RSSI thresholds:
-  #   passerby = -75 dBm → present in the zone
-  #   shopper  = -55 dBm → very close / entered
-  rssi_passerby_threshold: -75
-  rssi_shopper_threshold: -55
+  rssi_passerby_threshold: -75    # Present in the zone
+  rssi_shopper_threshold: -55     # Very close / entered
 
 # --- MQTT — endpoint + per-device certs ---
 # Port (8883) and topic templates live in hardware.yaml.mqtt (fleet-wide
@@ -105,31 +123,23 @@ logging:
 
 # --- Telemetry interval (cloud-overridable) ---
 telemetry:
-  interval_seconds: 300           # Report CPU temp, uptime, etc. every 5 min
+  interval_seconds: 300
 
 # --- Status LED (per-site aesthetics) ---
-# Field-visible operator indicator. Set enabled=false to silence the LED if
-# it's visually intrusive at the deploy site (e.g. retail aesthetics, dim
-# corner where the brightness bothers customers).
 status_led:
   enabled: true
 
 # =============================================================================
 # CLOUD-PUSHED CONFIG (AWS IoT Device Shadow)
 # =============================================================================
-# These values are defaults. On startup the device fetches its IoT Shadow
-# and merges cloud values over these. Cloud takes precedence.
+# Defaults below are applied at boot if the cloud shadow is unavailable.
+# The shadow takes precedence at runtime when it is reachable.
 #
 # To push a change:
 #   aws iot-data update-thing-shadow --thing-name <device_id> \
 #     --payload '{"state":{"desired":{"operating_hours":{"monday":"10:00-22:00"}}}}'
-#
-# The device subscribes to shadow/update/delta and applies changes at runtime.
 # =============================================================================
 cloud_defaults:
-  # Operating hours per day of week. Site-level config — the cloud pushes
-  # the same schedule to all devices in a store.
-  # Format: "HH:MM-HH:MM" or null for closed
   operating_hours:
     monday: "10:00-22:00"
     tuesday: "10:00-22:00"
@@ -139,46 +149,11 @@ cloud_defaults:
     saturday: "10:00-22:00"
     sunday: "10:00-21:00"
 
-  # Behavior when operating_hours is malformed (bad HH:MM, end before start,
-  # wrong type, etc.). Default fail_open keeps counting to avoid losing data
-  # on a config typo; fail_closed pauses counting until a valid schedule is
-  # pushed, trading false positives for strict adherence.
-  #   fail_open   — log WARNING once, continue counting (default, back-compat)
-  #   fail_closed — log CRITICAL, pause counting, keep service alive for
-  #                 telemetry and shadow re-config
+  # fail_open: log WARNING, keep counting (default — no data loss on typo)
+  # fail_closed: log CRITICAL, pause counting until valid schedule is pushed
   on_invalid_schedule: "fail_open"
 
-  # Post-calibration correction multiplier. Default 1.0 = no correction.
   footfall_scaling_factor: 1.0
-
-  # Runtime overrides (can be toggled from cloud without SSH)
-  counting_enabled: true          # Pause counting during maintenance
-  wifi_ble_enabled: true          # Disable WiFi/BLE for legal/privacy reasons
-  telemetry_interval_seconds: 300 # Can be reduced for debugging
-
-  # Adult/child classifier based on head height above floor. Derived from
-  # stereo depth + local mounting_height_m. Disabled by default.
-  counter:
-    height_classifier:
-      enabled: false              # Toggle from cloud per-store
-      adult_min_m: 1.55           # Head height (m) — >= threshold → "adult", else "child". 1.55m is near the P25 of adult women in Argentina, so few adults are misclassified as children. Tall children (<12) rarely exceed it. Adjust per site if your demographics differ.
-
-# =============================================================================
-# NOT IMPLEMENTED — Deferred post-MVP
-# =============================================================================
-# These features are documented for future reference but NOT active in code.
-#
-# Short-term:
-# - Local web UI on device (MVP is headless)
-# - Custom operating hours / exceptions for holidays
-#
-# Medium-term:
-# - Audit log of config changes
-# - Data integrity report (gap/anomaly detection)
-# - Remote Access toggle
-#
-# Long-term:
-# - Age/Gender/Staff classifiers
-# - Multi-camera management (master/slave)
-# - Dashboard builder (currently QuickSight)
-# =============================================================================
+  counting_enabled: true
+  wifi_ble_enabled: true
+  telemetry_interval_seconds: 300

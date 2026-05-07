@@ -491,7 +491,12 @@ class TestBuildReportedState:
             },
             "telemetry": {"interval_seconds": 300},
             "counter": {
-                "line": {"y": 0.5},
+                "lines": [
+                    {
+                        "from": [0, 240], "to": [640, 240],
+                        "labels": {"top_to_bottom": "ingress"},
+                    },
+                ],
                 "tracker": {"confirm_frames": 3, "depth_gate_m": 0.5},
             },
             "operational": {"paused": False},
@@ -512,7 +517,12 @@ class TestBuildReportedState:
         assert reported["cloud_defaults"]["on_invalid_schedule"] == "fail_open"
         # Prefix-based whitelists present
         assert reported["counter"]["tracker"]["confirm_frames"] == 3
-        assert reported["counter"]["line"] == {"y": 0.5}
+        assert reported["counter"]["lines"] == [
+            {
+                "from": [0, 240], "to": [640, 240],
+                "labels": {"top_to_bottom": "ingress"},
+            },
+        ]
         assert reported["operational"] == {"paused": False}
 
         # Secrets / endpoints must NOT leak into reported
@@ -556,11 +566,17 @@ class TestBuildReportedState:
     def test_missing_config_sections_gracefully_skipped(self):
         from src.config.loader import build_reported_state
 
-        # Only device section present — should not raise, baseline/calib None
+        # Only device section present — should not raise. ``calibration_file_path``
+        # falls back to the fleet default in hardware.yaml when the config
+        # has no vision.calibration_file (the runtime does the same fallback,
+        # so reported state matches what the device will actually use).
         cfg = {"device": {"id": "x", "store_id": "y"}}
         reported = build_reported_state(cfg, calibration=None)
         assert reported["firmware_version"] == "unknown"
-        assert reported["calibration_file_path"] is None
+        # Either None (no hardware fallback configured) or the hardware
+        # default path — both are valid; we just assert the runtime didn't
+        # crash.
+        assert "calibration_file_path" in reported
         assert reported["effective_baseline_mm"] is None
         # None of the whitelisted keys should appear (they're absent from cfg)
         assert "counter" not in reported

@@ -24,15 +24,18 @@ bracket:
 sensor:
   model: imx708
   full_res: [4608, 2592]          # Native full resolution.
-  default_res: [2304, 1296]       # 2x2 binned, full FOV — the working resolution
-                                  # for focus, calibration, and runtime. Chosen
-                                  # because ChArUco detection runs ~4× faster
-                                  # than at full-res 4608×2592 (≥8 FPS vs <2 FPS
-                                  # on Pi 5), the 2x2 bin improves SNR, and
-                                  # rectify + SGBM still fit in the 30+ FPS
-                                  # runtime budget.
+  default_res: [2304, 1296]       # 2x2 binned, full FOV — the canonical mode for
+                                  # focus and calibration. Chosen because ChArUco
+                                  # detection runs ~4× faster than at full-res
+                                  # 4608×2592 (≥8 FPS vs <2 FPS on Pi 5), the
+                                  # 2x2 bin improves SNR, and the rectified pair
+                                  # plus SGBM still fit in the runtime budget at
+                                  # this resolution.
   default_fps: 15                 # Max stable FPS at default_res with two
-                                  # picamera2 instances.
+                                  # picamera2 instances. Used by the calibration
+                                  # tool. The runtime pipeline uses
+                                  # vision_runtime.fps below (typically faster
+                                  # because runtime res is a downscale of this).
   nominal_focal_full_px: 2050     # Pinhole-equivalent focal length at full_res,
                                   # center region. Used as starting K for
                                   # calibration bootstrap and for distance
@@ -52,18 +55,41 @@ lens:
 # at runtime, and main.py reads as `config[...].get(key, hw[...][key])` so
 # the cloud value wins when present and the lab default applies otherwise.
 
-# --- Stereo depth (SGBM) ---
+# --- Runtime capture + stereo depth ---
 vision_runtime:
+  resolution: [1152, 648]         # Runtime resolution (downscale of sensor.default_res).
+                                  # 1152×648 keeps the binned full-FOV geometry
+                                  # while quartering the SGBM cost vs default_res.
+                                  # Calibration .npz must be rescaled to match
+                                  # via scripts/rescale_calibration.py.
+  fps: 30                         # Capture frame rate at runtime resolution.
+  calibration_file: /etc/people-counter/calibration.npz
+                                  # Stereo calibration .npz path. The contents
+                                  # are per-device (each pair has its own
+                                  # extrinsics) but the path is the same on
+                                  # every install.
   sgbm:
     num_disparities: auto         # "auto" derives from mounting_height_m +
                                   # runtime resolution. Multiple-of-16 int
                                   # to override (rare, diagnostic only).
     block_size: 9                 # Odd, 5..15.
-    downscale: 2                  # 1=full, 2=half, 4=quarter, 8=eighth.
+    downscale: 8                  # 1=full, 2=half, 4=quarter, 8=eighth.
+                                  # 8 keeps SGBM cheap enough to run every
+                                  # frame at 30 fps on Pi 5; depth resolution
+                                  # is coarse but enough for head-height
+                                  # gating + ROI lookup at the operational
+                                  # 2.5–3.5 m mounting range.
 
 # --- Detection thresholds (model-specific, fleet-uniform after lab tune) ---
 detection:
-  confidence_threshold: 0.5       # Person/head detection score floor.
+  model_path: /usr/src/people-counter/models/yolov8n.hef
+                                  # HEF compiled for Hailo-8L. Same path on
+                                  # every device; the .hef itself is shipped
+                                  # with the install.
+  confidence_threshold: 0.15      # Person/head detection score floor.
+                                  # Tuned for YOLOv8n stock on top-down — when
+                                  # the fine-tuned RAPiD HEF replaces it the
+                                  # threshold typically rises to 0.30.
   nms_threshold: 0.45             # IoU threshold for non-maximum suppression.
 
 # --- Tracker + state machine (algo tuning, fleet-uniform after pilot) ---
@@ -73,9 +99,16 @@ tracking:
                                   # association. Scale linearly with
                                   # runtime resolution if you change it.
   state_machine:
-    confirm_frames: 3             # Hits to promote CANDIDATE -> CONFIRMED.
-    pending_max_frames: 5         # Misses before PENDING -> LOST.
-    reid_gate_px: 60              # Re-id distance gate.
+    confirm_frames: 1             # Hits to promote CANDIDATE -> CONFIRMED.
+                                  # Tuned aggressive (1) for the current YOLO
+                                  # stock that has gappy detections; with a
+                                  # fine-tuned detector this raises back to
+                                  # 3 for less false-positive churn.
+    pending_max_frames: 20        # Misses before PENDING -> LOST.
+    reid_gate_px: 300             # Re-id distance gate. Wide because the
+                                  # tracker is single-camera and the YOLO
+                                  # stock occasionally drops the track for
+                                  # several frames between re-detections.
     depth_gate_m: 0.5             # |Δz| gate for re-id across frames.
 
 # --- WiFi/BLE protocol constants (cross-device dedup contract) ---

@@ -55,8 +55,7 @@ RUNTIME_SAFE_KEYS = frozenset(
         "cloud_defaults.rssi_shopper",
         "telemetry.interval_seconds",
         "counter.roi",
-        "counter.line",
-        "counter.direction_labels",
+        "counter.lines",
         # counter.tracker.* handled via prefix below
         # vision.num_disparities / block_size explicit entries
         "vision.num_disparities",
@@ -497,6 +496,14 @@ def build_reported_state(
     vision_cfg = config.get("vision", {})
     if isinstance(vision_cfg, dict):
         cal_path = vision_cfg.get("calibration_file")
+    if not cal_path:
+        # Fall back to the fleet default in hardware.yaml.
+        try:
+            from src.config.hardware import load_hardware_config
+            hw = load_hardware_config()
+            cal_path = hw.get("vision_runtime", {}).get("calibration_file")
+        except Exception:
+            cal_path = None
     reported["calibration_file_path"] = cal_path
 
     baseline_mm: float | None = None
@@ -518,12 +525,13 @@ def build_reported_state(
 def _validate(config: dict[str, Any]) -> None:
     """Validate required config keys are present.
 
-    `buffer` is no longer required at the config layer — its defaults live in
-    hardware.yaml (db_path/max_age_hours are install conventions). Same for
-    most of `tracking`, `mqtt.{port,topics}`, `detection.{thresholds}`.
-    `detection` stays required because `model_path` is per-device install.
+    Most fleet-uniform settings live in hardware.yaml (resolution, fps,
+    calibration_file path, model_path, detection thresholds, tracker params,
+    SGBM tuning, MQTT topics, buffer paths, log paths). config.yaml only
+    needs the device identity and the MQTT endpoint + cert paths
+    (per-device install).
     """
-    required = ["device", "vision", "detection", "mqtt"]
+    required = ["device", "mqtt"]
     missing = [k for k in required if k not in config]
     if missing:
         raise ValueError(f"Missing required config sections: {missing}")

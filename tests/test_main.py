@@ -262,7 +262,25 @@ def _make_pipeline_config(tmpdir: str) -> dict:
             "resolution": [640, 480],
             "fps": 15,
             "baseline_cm": 14,
-            "counting_line_y": 0.5,
+            # Explicit null disables the hardware.yaml fallback to a real
+            # path that doesn't exist in the test environment.
+            "calibration_file": None,
+        },
+        "counter": {
+            "roi": {
+                "x_min": 0, "x_max": 640,
+                "y_min": 100, "y_max": 380,
+            },
+            "lines": [
+                {
+                    "from": [0, 240],
+                    "to": [640, 240],
+                    "labels": {
+                        "top_to_bottom": "ingress",
+                        "bottom_to_top": "egress",
+                    },
+                },
+            ],
         },
         "detection": {
             "model_path": "/tmp/model.onnx",
@@ -352,7 +370,7 @@ def test_run_pipeline_no_calibration(mock_build_cap, mock_load_model, mock_mqtt_
 
     tmpdir = tempfile.mkdtemp()
     config = _make_pipeline_config(tmpdir)
-    config["vision"].pop("calibration_file", None)
+    config["vision"]["calibration_file"] = None
     args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
 
     run_pipeline(config, args)
@@ -422,7 +440,7 @@ def test_run_pipeline_publishes_counting_events(mock_build_cap, mock_load_model,
 
     tmpdir = tempfile.mkdtemp()
     config = _make_pipeline_config(tmpdir)
-    config["vision"].pop("calibration_file", None)
+    config["vision"]["calibration_file"] = None
     args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
 
     run_pipeline(config, args)
@@ -447,7 +465,7 @@ def test_run_pipeline_invalid_schedule_fail_open_continues(
 
     tmpdir = tempfile.mkdtemp()
     config = _make_pipeline_config(tmpdir)
-    config.pop("calibration_file", None)
+    config["vision"]["calibration_file"] = None
     config["_schedule_error"] = "monday: invalid start time '25:00'"
     config["cloud_defaults"]["on_invalid_schedule"] = "fail_open"
     args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
@@ -583,7 +601,7 @@ def test_run_pipeline_publishes_shadow_reconciliation_on_boot(
 
     tmpdir = tempfile.mkdtemp()
     config = _make_pipeline_config(tmpdir)
-    config["vision"].pop("calibration_file", None)
+    config["vision"]["calibration_file"] = None
     config["device"]["firmware_version"] = "0.1.0-pilot"
     args = argparse.Namespace(
         replay_dir="/fake", detection_backend="opencv", config="/fake/config.yaml"

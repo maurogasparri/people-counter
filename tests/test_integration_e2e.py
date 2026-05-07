@@ -74,11 +74,16 @@ def _make_config(tmpdir: str) -> dict[str, Any]:
         },
         "counter": {
             "roi": {"x_min": 100, "x_max": 540, "y_min": 180, "y_max": 300},
-            "line": {"orientation": "horizontal", "position": 240},
-            "direction_labels": {
-                "side_a_to_b": "ingress",
-                "side_b_to_a": "egress",
-            },
+            "lines": [
+                {
+                    "from": [100, 240],
+                    "to": [540, 240],
+                    "labels": {
+                        "top_to_bottom": "ingress",
+                        "bottom_to_top": "egress",
+                    },
+                },
+            ],
             "tracker": {
                 "confirm_frames": 3,
                 "pending_max_frames": 5,

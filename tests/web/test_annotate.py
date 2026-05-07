@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from src.tracking.counter import Counter, Line
 from src.tracking.tracker import CONFIRMED, PENDING, CANDIDATE
 from src.web.annotate import (
     annotate_left,
@@ -29,36 +30,43 @@ class _FakeTrack:
     meta: dict = field(default_factory=dict)
 
 
-class _FakeROICounter:
-    def __init__(self):
-        self._roi = (50.0, 250.0, 100.0, 200.0)
-        self._orientation = "horizontal"
-        self._line_pos = 150.0
-        self.total_in = 7
-        self.total_out = 3
+def _two_way_counter() -> Counter:
+    return Counter(
+        lines=[Line(
+            from_xy=(50, 150), to_xy=(250, 150),
+            labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
+        )],
+        roi={"x_min": 50, "x_max": 250, "y_min": 100, "y_max": 200},
+    )
 
 
-class _FakeLineCounter:
-    def __init__(self):
-        self.line_y = 240.0
-        self.total_in = 2
-        self.total_out = 1
+def _no_roi_counter() -> Counter:
+    return Counter(
+        lines=[Line(
+            from_xy=(0, 240), to_xy=(400, 240),
+            labels={"top_to_bottom": "ingress"},
+        )],
+    )
 
 
 def test_compose_3panel_handles_none_panels():
     out = compose_3panel(None, None, None, target_height=120)
-    assert out.shape[0] == 120
+    # 2-row layout: top is target_height, bottom is target_height // 2.
+    assert out.shape[0] == 120 + 120 // 2
     assert out.shape[2] == 3
 
 
-def test_compose_3panel_resizes_to_target_height():
-    a = np.zeros((300, 400, 3), dtype=np.uint8)
-    b = np.zeros((100, 200, 3), dtype=np.uint8)
-    c = np.zeros((600, 800, 3), dtype=np.uint8)
+def test_compose_3panel_two_row_layout():
+    a = np.zeros((300, 400, 3), dtype=np.uint8)   # left
+    b = np.zeros((100, 200, 3), dtype=np.uint8)   # right
+    c = np.zeros((600, 800, 3), dtype=np.uint8)   # depth
     out = compose_3panel(a, b, c, target_height=120)
-    assert out.shape[0] == 120
-    # 3 panels concatenated horizontally
-    assert out.shape[1] >= 120 * 3
+    # Top row height = target_height; bottom row spans the full top width.
+    expected_h = 120 + 120 // 2
+    assert out.shape[0] == expected_h
+    # Top row holds two panels side by side, both at target_height after
+    # resize, so total width is at least 2 * smallest aspect ratio.
+    assert out.shape[1] > 120
 
 
 def test_depth_colormap_handles_none():
@@ -86,7 +94,7 @@ def test_annotate_left_with_empty_inputs_does_not_crash():
 
 def test_annotate_left_draws_roi_and_tracks():
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
-    counter = _FakeROICounter()
+    counter = _two_way_counter()
     dets = [_FakeDet(bbox=(150, 130, 200, 180), centroid=(175, 155))]
     tracks = {
         1: _FakeTrack(
@@ -109,13 +117,15 @@ def test_annotate_left_draws_roi_and_tracks():
     }
     out = annotate_left(frame, dets, tracks, counter, fps=15.0)
     assert out.shape == frame.shape
-    # Bottom overlay region must have been drawn (non-zero pixels at the
-    # text band).
-    assert out[290:298, 10:30].any()
+    # Anything was drawn (the all-zero input makes that easy to detect).
+    assert out.any()
+    # The bottom overlay band (last ~60 px) must contain text pixels.
+    assert out[-60:, :, :].any()
 
 
-def test_annotate_left_with_line_counter():
+def test_annotate_left_with_no_roi_counter():
+    """Counter without ROI should still draw the line + arrow."""
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
-    out = annotate_left(frame, [], {}, _FakeLineCounter(), fps=0.0)
-    # Line band must have non-zero pixels somewhere along y=240.
+    out = annotate_left(frame, [], {}, _no_roi_counter(), fps=0.0)
+    # The line at y=240 should produce non-zero pixels along that row.
     assert out[240, :, :].any()

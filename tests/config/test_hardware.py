@@ -31,9 +31,16 @@ VALID_HW = {
         "hfov_deg": 120,
     },
     "vision_runtime": {
+        "resolution": [1152, 648],
+        "fps": 30,
+        "calibration_file": "/etc/people-counter/calibration.npz",
         "sgbm": {"num_disparities": "auto", "block_size": 9, "downscale": 2},
     },
-    "detection": {"confidence_threshold": 0.5, "nms_threshold": 0.45},
+    "detection": {
+        "model_path": "/usr/src/people-counter/models/yolov8n.hef",
+        "confidence_threshold": 0.5,
+        "nms_threshold": 0.45,
+    },
     "tracking": {
         "max_disappeared": 30,
         "max_distance": 50,

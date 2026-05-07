@@ -42,7 +42,7 @@ from src.mqtt.client import MQTTClient
 from src.status.led import StatusLED
 from src.status.monitor import HealthMonitor, HealthSignals
 from src.telemetry import collect_telemetry
-from src.tracking.counter import LineCounter, ROICounter, build_counter
+from src.tracking.counter import Counter, build_counter
 from src.tracking.tracker import EuclideanTracker
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
@@ -104,30 +104,54 @@ def setup_logging(config: dict[str, Any]) -> None:
     logging.basicConfig(level=level, format=fmt, handlers=handlers)
 
 
+def _runtime_resolution(
+    config: dict[str, Any], hw: dict[str, Any],
+) -> tuple[int, int]:
+    """Pick the runtime resolution. Order of preference:
+    1. ``config.vision.resolution`` (per-site override)
+    2. ``hardware.yaml: vision_runtime.resolution`` (fleet runtime default)
+    3. ``hardware.yaml: sensor.default_res`` (legacy fallback for tests
+       that pre-date the vision_runtime section)
+    """
+    cfg_res = (config.get("vision") or {}).get("resolution")
+    if cfg_res:
+        return tuple(cfg_res)
+    runtime = hw.get("vision_runtime", {}).get("resolution")
+    if runtime:
+        return tuple(runtime)
+    return tuple(hw["sensor"]["default_res"])
+
+
+def _runtime_fps(config: dict[str, Any], hw: dict[str, Any]) -> int:
+    cfg_fps = (config.get("vision") or {}).get("fps")
+    if cfg_fps:
+        return int(cfg_fps)
+    return int(
+        hw.get("vision_runtime", {}).get("fps")
+        or hw["sensor"]["default_fps"]
+    )
+
+
 def build_capture(config: dict[str, Any], replay_dir: str | None = None):
     """Build the appropriate capture source."""
+    hw = load_hardware_config()
     if replay_dir:
         logger.info("Using file replay from %s", replay_dir)
-        hw = load_hardware_config()
         cap = FileCapture(
             directory=replay_dir,
             loop=True,
-            fps=config["vision"].get("fps", hw["sensor"]["default_fps"]),
+            fps=_runtime_fps(config, hw),
         )
     else:
         # camera_left / camera_right come from hardware.yaml — they're
         # determined by the bracket assembly procedure (which CSI port the
         # left/right ribbon plugs into) and are invariant across the fleet.
         # See config/hardware.yaml.
-        hw = load_hardware_config()
         cap = StereoCapture(
             cam_left_id=hw["bracket"]["camera_left_csi"],
             cam_right_id=hw["bracket"]["camera_right_csi"],
-            resolution=tuple(
-                config["vision"].get("resolution",
-                                     hw["sensor"]["default_res"])
-            ),
-            fps=config["vision"].get("fps", hw["sensor"]["default_fps"]),
+            resolution=_runtime_resolution(config, hw),
+            fps=_runtime_fps(config, hw),
         )
     return cap
 
@@ -333,7 +357,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # block. Reads of moved keys use config[...].get(key, hw[section][key])
     # so cloud shadow deltas still win when present.
     hw = load_hardware_config()
-    vision_cfg = config["vision"]
+    vision_cfg = config.get("vision") or {}
     detect_cfg = config.get("detection", {}) or {}
     track_cfg = config.get("tracking", {})
     telem_cfg = config.get("telemetry", {})
@@ -342,9 +366,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # --- Status LED + health monitor (started before any heavy init so it can
     # surface hardware faults during model load / camera open). The LED falls
     # back to a no-op when gpiozero is missing, so this is safe off-RPi.
+    if "calibration_file" in vision_cfg:
+        _cal_path_for_signals = vision_cfg["calibration_file"]
+    else:
+        _cal_path_for_signals = hw.get("vision_runtime", {}).get(
+            "calibration_file"
+        )
     health_signals = HealthSignals(
         provisioned=True,
-        calibration_path=vision_cfg.get("calibration_file"),
+        calibration_path=_cal_path_for_signals,
     )
     status_led: StatusLED | None = None
     health_monitor: HealthMonitor | None = None
@@ -368,26 +398,33 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     last_fps_estimate: float = 0.0
 
     # --- Resolution sanity ---
-    # vision.resolution is a legitimate per-site override (used when the
-    # calibration .npz was rescaled to a non-default resolution via
-    # scripts/rescale_calibration.py). Log loudly when it diverges from
-    # the hardware default so the operator notices if it was set by mistake
-    # — calibration_file MUST match the runtime resolution or depth is wrong.
-    runtime_res = tuple(
-        vision_cfg.get("resolution") or hw["sensor"]["default_res"]
+    # config.vision.resolution is a per-site override on top of the fleet
+    # default in hardware.yaml.vision_runtime.resolution. Log loudly when
+    # the per-site override diverges from the fleet default so the operator
+    # notices if it was set by mistake — calibration_file MUST match the
+    # runtime resolution or depth is silently wrong.
+    runtime_res = _runtime_resolution(config, hw)
+    fleet_res = tuple(
+        hw.get("vision_runtime", {}).get("resolution")
+        or hw["sensor"]["default_res"]
     )
-    default_res = tuple(hw["sensor"]["default_res"])
-    if runtime_res != default_res:
+    if runtime_res != fleet_res:
         logger.warning(
-            "vision.resolution=%s differs from hardware default %s. "
+            "vision.resolution=%s differs from fleet default %s. "
             "Confirm calibration_file=%s was captured/rescaled to %s — "
             "mismatched resolution silently corrupts depth.",
-            runtime_res, default_res,
+            runtime_res, fleet_res,
             vision_cfg.get("calibration_file"), runtime_res,
         )
 
     # --- Load calibration ---
-    cal_file = vision_cfg.get("calibration_file")
+    # Resolution: per-site override (config.vision.calibration_file) wins
+    # over the fleet default in hardware.yaml. Explicit ``null`` in config
+    # disables calibration entirely (used by tests / pre-calibration runs).
+    if "calibration_file" in vision_cfg:
+        cal_file = vision_cfg["calibration_file"]
+    else:
+        cal_file = hw.get("vision_runtime", {}).get("calibration_file")
     if cal_file:
         logger.info("Loading calibration from %s", cal_file)
         calibration = load_calibration(cal_file)
@@ -396,7 +433,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         logger.warning("No calibration file configured — skipping rectification")
 
     # --- Load detection model ---
-    model_path = detect_cfg["model_path"]
+    model_path = detect_cfg.get("model_path") or hw["detection"]["model_path"]
     detection_backend = getattr(args, "detection_backend", "auto")
     logger.info("Loading model: %s (backend=%s)", model_path, detection_backend)
     model = load_model(model_path, backend=detection_backend)
@@ -463,7 +500,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
     line_y = vision_cfg.get("counting_line_y", 0.5)
     # Counter built lazily once frame height is known (needed for legacy line_y relative values)
-    counter: LineCounter | ROICounter | None = None
+    counter: Counter | None = None
 
     # --- Build MQTT ---
     mqtt_client, buffer = build_mqtt(
@@ -633,11 +670,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                           "vision.mounting_height_m")
                     for k in applied_keys
                 ):
-                    nd_cfg = config["vision"].get(
+                    vision_live = config.get("vision") or {}
+                    nd_cfg = vision_live.get(
                         "num_disparities", hw_sgbm["num_disparities"])
                     if isinstance(nd_cfg, str) and nd_cfg.lower() == "auto":
                         nd_resolved = _auto_num_disparities(
-                            config["vision"], logger,
+                            vision_live, logger,
                         )
                     else:
                         nd_resolved = int(nd_cfg)
@@ -647,7 +685,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     )
                     sgbm = create_sgbm(
                         num_disparities=sgbm_num_disp,
-                        block_size=config["vision"].get(
+                        block_size=vision_live.get(
                             "block_size", hw_sgbm["block_size"]),
                     )
                     logger.info("SGBM rebuilt after shadow delta")
@@ -777,10 +815,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             t_detect_end = time.perf_counter()
 
             # --- Depth map (only when there are detections to query) ---
+            # When the live viewer is enabled we compute SGBM on every frame
+            # regardless of detections — otherwise the depth panel stays
+            # blank between detections (especially with the stock YOLO that
+            # rarely fires on top-down) and the operator can't tell whether
+            # depth is broken or just inactive. This costs FPS but is debug
+            # mode.
+            depth_always = viewer is not None
             if (
                 calibration is not None
                 and focal_length_px is not None
-                and detections
+                and (detections or depth_always)
             ):
                 # CLAHE off — the IMX708 indoor histogram is well-behaved
                 # for SGBM matching and the ~10ms CLAHE cost isn't worth it.

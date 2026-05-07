@@ -38,17 +38,18 @@ _HTML = b"""<!DOCTYPE html>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <title>People Counter \xe2\x80\x94 Live</title>
   <style>
-    body { margin: 0; background: #1a1a1a; color: #eee;
+    body { margin: 0; background: #000; color: #eee;
            font-family: ui-monospace, Menlo, monospace; }
-    #stats { padding: 10px 14px; background: #2a2a2a;
-             border-bottom: 1px solid #3c3c3c; display: flex;
-             flex-wrap: wrap; gap: 18px; font-size: 14px; }
+    /* Single compact stats line so the image gets nearly the full
+       viewport height. */
+    #stats { padding: 4px 12px; background: #1a1a1a;
+             border-bottom: 1px solid #2c2c2c; font-size: 12px;
+             line-height: 1.4; white-space: nowrap; overflow-x: auto; }
+    #stats span { margin-right: 14px; }
     #stats b { color: #fff; }
     #stats .label { color: #999; }
-    img { display: block; width: 100%; max-width: 100%;
-          background: #000; }
-    .legend { padding: 6px 14px; background: #232323; color: #888;
-              font-size: 12px; border-top: 1px solid #3c3c3c; }
+    img { display: block; max-width: 100%; max-height: calc(100vh - 26px);
+          margin: 0 auto; }
   </style>
 </head>
 <body>
@@ -60,12 +61,6 @@ _HTML = b"""<!DOCTYPE html>
     <span><span class='label'>Dets:</span> <b id='dets'>0</b></span>
   </div>
   <img src='/stream' alt='live stream'/>
-  <div class='legend'>
-    Izq: c\xc3\xa1mara L con ROI (amarillo), l\xc3\xadnea (azul),
-    detecciones, tracks (verde=confirmed, naranja=pending,
-    gris=candidate). Centro: c\xc3\xa1mara R cruda. Der: depth map
-    (JET, 0.5 - 5 m).
-  </div>
   <script>
     setInterval(async () => {
       try {

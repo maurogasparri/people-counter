@@ -19,10 +19,22 @@ _COLOR_CONFIRMED = (0, 255, 0)
 _COLOR_PENDING = (0, 165, 255)
 _COLOR_CANDIDATE = (180, 180, 180)
 _COLOR_DET = (90, 90, 90)
-_COLOR_ROI = (0, 255, 255)
-_COLOR_LINE = (255, 0, 0)
+_COLOR_ROI = (0, 0, 255)         # red
 _COLOR_TEXT = (255, 255, 255)
 _COLOR_OVERLAY_BG = (0, 0, 0)
+
+# Counting-line palette by direction label. Anything else falls back to
+# white so an exotic label still renders visibly. Greens for IN-side
+# events, blues for OUT-side — matches the operator's mental model.
+_LINE_COLOR_BY_LABEL = {
+    "ingress": (0, 255, 0),       # green: IN
+    "egress": (255, 0, 0),        # blue: OUT
+    "in": (0, 255, 0),
+    "out": (255, 0, 0),
+    "enter": (0, 255, 0),
+    "leave": (255, 0, 0),
+}
+_LINE_COLOR_FALLBACK = (255, 255, 255)
 
 
 def annotate_left(
@@ -66,6 +78,9 @@ def annotate_left(
         PENDING: _COLOR_PENDING,
         CANDIDATE: _COLOR_CANDIDATE,
     }
+    # Larger fonts so the operator can read the overlay while walking
+    # under the cameras during a piloto check (the live viewer is meant
+    # for on-site debug, not for archival).
     for tid, track in tracks.items():
         colour = state_colour.get(getattr(track, "state", None))
         if colour is None:
@@ -74,9 +89,10 @@ def annotate_left(
         if not positions:
             continue
         cx, cy = int(positions[-1][0]), int(positions[-1][1])
-        cv2.circle(out, (cx, cy), 6, colour, -1)
-        cv2.putText(out, f"#{tid}", (cx + 8, cy - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1)
+        cv2.circle(out, (cx, cy), 10, colour, -1)
+        cv2.putText(out, f"#{tid}", (cx + 14, cy - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, colour, 2,
+                    cv2.LINE_AA)
         # Height label from the most recent detection meta on the track.
         meta = getattr(track, "meta", None)
         history = meta.get("detection_history") if isinstance(meta, dict) else None
@@ -88,8 +104,9 @@ def annotate_left(
                 label = f"{head_mm/1000:.2f}m {cls}"
             else:
                 label = cls
-            cv2.putText(out, label, (cx + 8, cy + 14),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, colour, 1)
+            cv2.putText(out, label, (cx + 14, cy + 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.85, colour, 2,
+                        cv2.LINE_AA)
 
     _draw_counter_overlay(out, counter, fps)
     return out
@@ -124,75 +141,129 @@ def compose_3panel(
     depth: Optional[np.ndarray],
     target_height: int = 480,
 ) -> np.ndarray:
-    """Resize each panel to ``target_height`` and concat horizontally.
+    """Two-row composite: top row is L | R side-by-side, bottom row is the
+    depth panel spanning the same width.
 
-    Missing / empty panels are filled with a dark gray placeholder of
-    aspect 1:1 so the composite never crashes on partial input (e.g.
-    depth panel not yet computed).
+    The L/R top row gives the operator the same view as the cameras see;
+    the depth row underneath stays roughly square so the colormap is
+    legible. Missing / empty panels are filled with a dark gray
+    placeholder so the composite never crashes on partial input.
     """
-    panels: list[np.ndarray] = []
-    for img in (left, right, depth):
+    def _to_bgr_height(img: Optional[np.ndarray], h_target: int,
+                       w_fallback: int) -> np.ndarray:
         if img is None or img.size == 0:
-            panels.append(np.full((target_height, target_height, 3), 30,
-                                  dtype=np.uint8))
-            continue
+            return np.full((h_target, w_fallback, 3), 30, dtype=np.uint8)
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         h, w = img.shape[:2]
-        if h != target_height:
-            scale = target_height / h
+        if h != h_target:
+            scale = h_target / h
             img = cv2.resize(
-                img, (max(1, int(w * scale)), target_height),
+                img, (max(1, int(w * scale)), h_target),
                 interpolation=cv2.INTER_AREA,
             )
-        panels.append(img)
-    return cv2.hconcat(panels)
+        return img
+
+    # Top row: L and R at target_height each.
+    l_img = _to_bgr_height(left, target_height, target_height)
+    r_img = _to_bgr_height(right, target_height, target_height)
+    top = cv2.hconcat([l_img, r_img])
+    top_w = top.shape[1]
+
+    # Bottom row: depth resized to span exactly the top width. Keep it
+    # roughly half the height so the layout looks balanced.
+    depth_h = max(1, target_height // 2)
+    if depth is None or depth.size == 0:
+        bottom = np.full((depth_h, top_w, 3), 30, dtype=np.uint8)
+    else:
+        d = depth
+        if d.ndim == 2:
+            d = cv2.cvtColor(d, cv2.COLOR_GRAY2BGR)
+        bottom = cv2.resize(
+            d, (top_w, depth_h), interpolation=cv2.INTER_AREA,
+        )
+    return cv2.vconcat([top, bottom])
 
 
 # ----------------------------------------------------------------- internals
 def _draw_counter_geometry(frame: np.ndarray, counter: Optional[Any]) -> None:
-    """Best-effort overlay of ROI rect + counting line.
+    """Overlay ROI rectangle (if any) and each line segment with a
+    perpendicular arrow showing the counted direction.
 
-    Reads counter private attributes (``_roi``, ``_orientation``,
-    ``_line_pos`` for ROICounter; ``line_y`` for LineCounter). Wrapped
-    in try/except so a future API change in the counter doesn't kill the
-    viewer.
+    Each line is drawn in the colour matching its dominant label
+    (``ingress`` -> green, ``egress`` -> blue, anything else white). One
+    arrow per labelled direction, perpendicular to the segment, pointing
+    towards the side a crossing must end on for that label to fire.
     """
     if counter is None:
         return
-    h, w = frame.shape[:2]
-    # ROICounter: stored as (x_min, x_max, y_min, y_max) tuple.
-    roi = getattr(counter, "_roi", None)
-    orientation = getattr(counter, "_orientation", None)
-    line_pos = getattr(counter, "_line_pos", None)
+    roi = getattr(counter, "roi", None)
     if roi is not None:
         try:
             x_min, x_max, y_min, y_max = roi
             cv2.rectangle(frame, (int(x_min), int(y_min)),
-                          (int(x_max), int(y_max)), _COLOR_ROI, 1)
-            if orientation == "horizontal" and line_pos is not None:
-                cv2.line(frame,
-                         (int(x_min), int(line_pos)),
-                         (int(x_max), int(line_pos)),
-                         _COLOR_LINE, 1)
-            elif orientation == "vertical" and line_pos is not None:
-                cv2.line(frame,
-                         (int(line_pos), int(y_min)),
-                         (int(line_pos), int(y_max)),
-                         _COLOR_LINE, 1)
+                          (int(x_max), int(y_max)), _COLOR_ROI, 4)
         except Exception:
             logger.debug("ROI overlay failed", exc_info=True)
-        return
-    # LineCounter: full-width horizontal line at line_y.
-    line_y = getattr(counter, "line_y", None)
-    if line_y is None:
-        line_y = getattr(counter, "_line_y", None)
-    if line_y is not None:
+
+    lines = getattr(counter, "lines", None) or []
+    for line in lines:
         try:
-            cv2.line(frame, (0, int(line_y)), (w, int(line_y)),
-                     _COLOR_LINE, 1)
+            _draw_line_with_arrows(frame, line)
         except Exception:
             logger.debug("Line overlay failed", exc_info=True)
+
+
+def _draw_line_with_arrows(frame: np.ndarray, line: Any) -> None:
+    """Draw one counting line + per-direction arrows.
+
+    The arrow length scales with segment length so it stays visible on
+    short ROIs without overflowing on big ones. If both directions are
+    labelled the segment renders white (neutral) and the per-arrow colour
+    encodes which side of the line is which event.
+    """
+    x1, y1 = int(line.from_xy[0]), int(line.from_xy[1])
+    x2, y2 = int(line.to_xy[0]), int(line.to_xy[1])
+    orientation = line.orientation
+    labels: dict[str, str] = line.labels
+
+    seg_len = max(1, abs(x2 - x1) + abs(y2 - y1))
+    arrow_len = max(20, min(60, seg_len // 6))
+    mx, my = (x1 + x2) // 2, (y1 + y2) // 2
+
+    if len(labels) >= 2:
+        seg_color = _LINE_COLOR_FALLBACK
+    else:
+        only_label = next(iter(labels.values()), None)
+        seg_color = _LINE_COLOR_BY_LABEL.get(
+            only_label or "", _LINE_COLOR_FALLBACK,
+        )
+    cv2.line(frame, (x1, y1), (x2, y2), seg_color, 4)
+
+    # The arrow's tail anchors on the line and the tip extends one
+    # ``arrow_len`` away on the side the crossing must end on. This keeps
+    # the arrow strictly on one side of the segment instead of straddling
+    # it, which makes the "go this way" reading immediate.
+    if orientation == "horizontal":
+        for direction, label in labels.items():
+            color = _LINE_COLOR_BY_LABEL.get(label, _LINE_COLOR_FALLBACK)
+            if direction == "top_to_bottom":
+                tail = (mx, my)
+                tip = (mx, my + arrow_len)
+            else:  # bottom_to_top
+                tail = (mx, my)
+                tip = (mx, my - arrow_len)
+            cv2.arrowedLine(frame, tail, tip, color, 4, tipLength=0.35)
+    else:
+        for direction, label in labels.items():
+            color = _LINE_COLOR_BY_LABEL.get(label, _LINE_COLOR_FALLBACK)
+            if direction == "left_to_right":
+                tail = (mx, my)
+                tip = (mx + arrow_len, my)
+            else:  # right_to_left
+                tail = (mx, my)
+                tip = (mx - arrow_len, my)
+            cv2.arrowedLine(frame, tail, tip, color, 4, tipLength=0.35)
 
 
 def _draw_counter_overlay(
@@ -202,6 +273,8 @@ def _draw_counter_overlay(
     in_n = getattr(counter, "total_in", 0) if counter else 0
     out_n = getattr(counter, "total_out", 0) if counter else 0
     text = f"IN: {in_n}  OUT: {out_n}  FPS: {fps:.1f}"
-    cv2.rectangle(frame, (0, h - 28), (w, h), _COLOR_OVERLAY_BG, -1)
-    cv2.putText(frame, text, (8, h - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, _COLOR_TEXT, 1)
+    bar_h = 56
+    cv2.rectangle(frame, (0, h - bar_h), (w, h), _COLOR_OVERLAY_BG, -1)
+    cv2.putText(frame, text, (12, h - 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.4, _COLOR_TEXT, 3,
+                cv2.LINE_AA)

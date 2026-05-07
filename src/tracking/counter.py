@@ -1,24 +1,48 @@
 """Counting logic for tracked persons.
 
-Two implementations live here:
+Single :class:`Counter` parameterised by:
 
-- :class:`LineCounter`: legacy virtual-line crossing counter (kept for
-  backwards compatibility with the original pipeline wiring).
-- :class:`ROICounter`: rectangular ROI + inner virtual line. A track is
-  counted only when it *exits* the ROI on the opposite side of where it
-  *entered*, having crossed the line in between. "Indeciso" tracks (same
-  entry/exit side or no line crossing) do not count. This avoids edge cases
-  at the threshold: somebody lingering on the line stays inside the ROI
-  until they leave, and they leave on the side they came from.
+- An optional rectangular ROI (gate of interest — tracks outside the ROI
+  are ignored).
+- One or more directional :class:`Line` segments. Each line carries
+  per-direction labels: a crossing in a configured direction emits the
+  associated label; crossings in unconfigured directions are silently
+  ignored (one-way gates).
 
-``build_counter(config)`` returns whichever implementation the config
-selects. New deployments should use the ``counter.roi`` + ``counter.line``
-schema; legacy ``vision.counting_line_y`` still works (with a deprecation
-warning) so the existing pipeline keeps running.
+A track is counted when:
+
+  1. It enters the ROI from outside (or appears in frame if no ROI).
+  2. It crosses one of the configured lines in a labelled direction
+     while inside the ROI.
+  3. It exits the ROI on the opposite side (or leaves the frame if no
+     ROI).
+
+When (3) fires, the track meta is reset so the same track can count
+another full cycle later — important when a person walks in and walks
+right back out without leaving the camera frame long enough for the
+track to die.
+
+``build_counter(config)`` constructs a :class:`Counter` from YAML.
+Schema:
+
+    counter:
+      roi:                                # optional
+        x_min: 100
+        x_max: 1050
+        y_min: 150
+        y_max: 500
+      lines:
+        - from: [200, 300]
+          to:   [500, 300]
+          labels:
+            top_to_bottom: ingress
+            bottom_to_top: egress
 """
+from __future__ import annotations
+
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.tracking.tracker import CONFIRMED, PENDING, Track
@@ -26,12 +50,17 @@ from src.tracking.tracker import CONFIRMED, PENDING, Track
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Public dataclasses
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class CountEvent:
     """A counting event."""
 
     track_id: int
-    direction: str  # "in" / "out" (legacy) or the configured label
+    direction: str  # the label configured on the line for this crossing
     timestamp: float
     position_y: float
     # Optional per-track attributes populated when classifier is enabled.
@@ -47,6 +76,113 @@ class CountEvent:
     # downstream filter out low-confidence events (likely false positives or
     # marginal poses).
     confidence: Optional[float] = None
+
+
+_HORIZONTAL_DIRECTIONS = ("top_to_bottom", "bottom_to_top")
+_VERTICAL_DIRECTIONS = ("left_to_right", "right_to_left")
+
+
+@dataclass
+class Line:
+    """An axis-aligned counting line segment with per-direction labels.
+
+    ``from_xy`` and ``to_xy`` define the segment endpoints. The segment
+    must be axis-aligned (purely horizontal or purely vertical) — oblique
+    segments are not supported because the operator-friendly direction
+    names (``top_to_bottom`` / ``bottom_to_top`` for horizontal,
+    ``left_to_right`` / ``right_to_left`` for vertical) only make sense
+    on axis-aligned segments.
+
+    ``labels`` maps a direction string to the label emitted when a track
+    crosses the segment in that direction. Directions absent from the
+    map are *one-way gates*: a crossing in that direction is silently
+    ignored. This is the natural way to model two physically separate
+    doors (one IN, one OUT) on the same frame.
+    """
+
+    from_xy: tuple[float, float]
+    to_xy: tuple[float, float]
+    labels: dict[str, str]
+    orientation: str = field(init=False)
+    _line_pos: float = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        x1, y1 = float(self.from_xy[0]), float(self.from_xy[1])
+        x2, y2 = float(self.to_xy[0]), float(self.to_xy[1])
+        self.from_xy = (x1, y1)
+        self.to_xy = (x2, y2)
+        if y1 == y2 and x1 != x2:
+            self.orientation = "horizontal"
+            self._line_pos = y1
+            valid = _HORIZONTAL_DIRECTIONS
+        elif x1 == x2 and y1 != y2:
+            self.orientation = "vertical"
+            self._line_pos = x1
+            valid = _VERTICAL_DIRECTIONS
+        else:
+            raise ValueError(
+                f"Line segment {self.from_xy}->{self.to_xy} must be axis-aligned "
+                "(purely horizontal or vertical)."
+            )
+        if not self.labels:
+            raise ValueError(
+                f"Line {self.from_xy}->{self.to_xy} has no direction labels — "
+                "configure at least one of "
+                f"{valid}."
+            )
+        for direction in self.labels:
+            if direction not in valid:
+                raise ValueError(
+                    f"Direction {direction!r} invalid for {self.orientation} "
+                    f"line. Valid: {valid}."
+                )
+
+    # ----------------------------------------------------------------- API
+    def side_of(self, cx: float, cy: float) -> int:
+        """Return +1, -1, or 0 for the side of the line the point is on.
+
+        Sign convention: for a horizontal line, ``-1`` means "above" (lower
+        ``y``), ``+1`` means "below" (higher ``y``); for a vertical line,
+        ``-1`` is "left" (lower ``x``) and ``+1`` is "right" (higher ``x``).
+        Zero means the point lies exactly on the line (edge case).
+        """
+        if self.orientation == "horizontal":
+            if cy < self._line_pos:
+                return -1
+            if cy > self._line_pos:
+                return 1
+            return 0
+        if cx < self._line_pos:
+            return -1
+        if cx > self._line_pos:
+            return 1
+        return 0
+
+    def within_segment(self, cx: float, cy: float) -> bool:
+        """True if ``(cx, cy)`` projects onto the segment's extent (between
+        the endpoints, not just on the infinite line). Used to ignore
+        crossings that pass the line's plane outside the actual gate."""
+        if self.orientation == "horizontal":
+            lo, hi = sorted([self.from_xy[0], self.to_xy[0]])
+            return lo <= cx <= hi
+        lo, hi = sorted([self.from_xy[1], self.to_xy[1]])
+        return lo <= cy <= hi
+
+    def crossing_label(self, prev_side: int, new_side: int) -> Optional[str]:
+        """Map a side transition to the configured label, or ``None`` if
+        the direction has no label (one-way gate, opposite direction)."""
+        if prev_side == 0 or new_side == 0 or prev_side == new_side:
+            return None
+        if self.orientation == "horizontal":
+            direction = "top_to_bottom" if prev_side == -1 else "bottom_to_top"
+        else:
+            direction = "left_to_right" if prev_side == -1 else "right_to_left"
+        return self.labels.get(direction)
+
+
+# ---------------------------------------------------------------------------
+# Aggregation helpers (per-event metadata pulled from the track)
+# ---------------------------------------------------------------------------
 
 
 def _aggregate_height_class_from_track(track: Track) -> str:
@@ -105,88 +241,13 @@ def _aggregate_confidence_from_track(track: Track) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Legacy line counter (preserved for backward compatibility)
+# ROI validation
 # ---------------------------------------------------------------------------
 
 
-class LineCounter:
-    """Detects when tracks cross a virtual counting line (legacy).
-
-    Kept intact so existing callers and tests continue to work. New
-    installations should use :class:`ROICounter` instead.
-    """
-
-    def __init__(self, line_y: float) -> None:
-        self.line_y = line_y
-        self._counted_tracks: set[int] = set()
-        self.total_in = 0
-        self.total_out = 0
-
-    def check(self, track: Track) -> Optional[CountEvent]:
-        if track.track_id in self._counted_tracks:
-            return None
-        if len(track.positions) < 2:
-            return None
-
-        prev_y = track.positions[-2][1]
-        curr_y = track.positions[-1][1]
-
-        if prev_y < self.line_y <= curr_y:
-            self._counted_tracks.add(track.track_id)
-            self.total_in += 1
-            logger.debug(
-                "line_crossing",
-                extra={"track_id": track.track_id, "direction": "in"},
-            )
-            return CountEvent(
-                track.track_id, "in", time.time(), curr_y,
-                height_class=_aggregate_height_class_from_track(track),
-                height_m=_aggregate_height_m_from_track(track),
-                head_depth_m=_aggregate_head_depth_m_from_track(track),
-                confidence=_aggregate_confidence_from_track(track),
-            )
-
-        if prev_y > self.line_y >= curr_y:
-            self._counted_tracks.add(track.track_id)
-            self.total_out += 1
-            logger.debug(
-                "line_crossing",
-                extra={"track_id": track.track_id, "direction": "out"},
-            )
-            return CountEvent(
-                track.track_id, "out", time.time(), curr_y,
-                height_class=_aggregate_height_class_from_track(track),
-                height_m=_aggregate_height_m_from_track(track),
-                head_depth_m=_aggregate_head_depth_m_from_track(track),
-                confidence=_aggregate_confidence_from_track(track),
-            )
-
-        return None
-
-    def check_all(self, tracks: dict[int, Track]) -> list[CountEvent]:
-        events = []
-        for track in tracks.values():
-            ev = self.check(track)
-            if ev is not None:
-                events.append(ev)
-        return events
-
-    def reset_daily(self) -> None:
-        self._counted_tracks.clear()
-        self.total_in = 0
-        self.total_out = 0
-
-
-# ---------------------------------------------------------------------------
-# ROI-based counter (new)
-# ---------------------------------------------------------------------------
-
-
-_SIDE_A = "a"
-_SIDE_B = "b"
-
-
-def _validate_roi(roi: dict[str, float]) -> tuple[float, float, float, float]:
+def _validate_roi(
+    roi: dict[str, float],
+) -> tuple[float, float, float, float]:
     try:
         x_min = float(roi["x_min"])
         x_max = float(roi["x_max"])
@@ -201,83 +262,71 @@ def _validate_roi(roi: dict[str, float]) -> tuple[float, float, float, float]:
     return x_min, x_max, y_min, y_max
 
 
-def _validate_line(
-    line: dict[str, Any],
-    roi: tuple[float, float, float, float],
-) -> tuple[str, float]:
-    orientation = line.get("orientation", "horizontal")
-    if orientation not in ("horizontal", "vertical"):
-        raise ValueError(
-            f"counter.line.orientation must be 'horizontal' or 'vertical', got {orientation!r}"
-        )
-    try:
-        position = float(line["position"])
-    except (KeyError, TypeError, ValueError) as e:
-        raise ValueError(f"counter.line.position required and numeric: {e}") from e
-
-    x_min, x_max, y_min, y_max = roi
-    if orientation == "horizontal":
-        if not (y_min < position < y_max):
-            raise ValueError(
-                f"counter.line.position {position} must lie strictly inside ROI "
-                f"y range ({y_min}, {y_max})"
-            )
-    else:
-        if not (x_min < position < x_max):
-            raise ValueError(
-                f"counter.line.position {position} must lie strictly inside ROI "
-                f"x range ({x_min}, {x_max})"
-            )
-    return orientation, position
+# ---------------------------------------------------------------------------
+# Counter
+# ---------------------------------------------------------------------------
 
 
-class ROICounter:
-    """Counts a track only when it exits the ROI on the opposite side of entry.
+class Counter:
+    """ROI + N directional lines counter.
 
-    Track state lives on ``track.meta`` under the ``roi_counter`` key so
-    re-identification (PENDING -> CONFIRMED) preserves entry side and the
-    "crossed the line" flag.
+    Track meta is keyed under ``META_KEY``. The counter manages:
+
+    - ``inside``: whether the track is currently inside the ROI.
+    - ``last_label``: the most recent label set by a valid line crossing
+      during the current ROI visit. Reset on entry/exit transitions.
+    - ``line_sides``: per-line cached "side" of the centroid from the
+      previous frame. Used to detect side transitions that imply a
+      crossing.
     """
 
-    META_KEY = "roi_counter"
+    META_KEY = "counter"
 
     def __init__(
         self,
-        roi: dict[str, float],
-        line: dict[str, Any],
-        direction_labels: Optional[dict[str, str]] = None,
+        lines: list[Line],
+        roi: Optional[dict[str, float]] = None,
     ) -> None:
-        self._roi = _validate_roi(roi)
-        self._orientation, self._line_pos = _validate_line(line, self._roi)
-        labels = direction_labels or {}
-        self._label_a_to_b = labels.get("side_a_to_b", "ingress")
-        self._label_b_to_a = labels.get("side_b_to_a", "egress")
-        # Totals keyed by label, plus legacy aliases for back-compat.
-        self._totals: dict[str, int] = {
-            self._label_a_to_b: 0,
-            self._label_b_to_a: 0,
-        }
-        self._counted: set[int] = set()
+        if not lines:
+            raise ValueError("Counter requires at least one line.")
+        self._lines: list[Line] = list(lines)
+        self._roi: Optional[tuple[float, float, float, float]] = (
+            _validate_roi(roi) if roi else None
+        )
+        all_labels: set[str] = set()
+        for line in self._lines:
+            all_labels.update(line.labels.values())
+        self._totals: dict[str, int] = {label: 0 for label in all_labels}
 
-    # ------------------------------------------------------------------ API
+    # ----------------------------------------------------------------- API
+    @property
+    def lines(self) -> list[Line]:
+        """The configured lines (read-only copy)."""
+        return list(self._lines)
+
+    @property
+    def roi(self) -> Optional[tuple[float, float, float, float]]:
+        """ROI as ``(x_min, x_max, y_min, y_max)`` or ``None`` if unset."""
+        return self._roi
+
     @property
     def total_in(self) -> int:
-        """Count of 'a -> b' (ingress) events. Legacy alias."""
-        return self._totals.get(self._label_a_to_b, 0)
+        """Count of ``ingress`` events. Convenience alias used by
+        the rest of the pipeline (telemetry, MQTT events)."""
+        return self._totals.get("ingress", 0)
 
     @property
     def total_out(self) -> int:
-        """Count of 'b -> a' (egress) events. Legacy alias."""
-        return self._totals.get(self._label_b_to_a, 0)
+        """Count of ``egress`` events. Convenience alias."""
+        return self._totals.get("egress", 0)
 
     @property
     def totals(self) -> dict[str, int]:
+        """All totals keyed by label. Includes any custom label set on
+        the line ``labels`` map (not just ``ingress``/``egress``)."""
         return dict(self._totals)
 
     def check_all(self, tracks: dict[int, Track]) -> list[CountEvent]:
-        # Tracks that silently disappear from the tracker (LOST) are simply
-        # not re-seen here. If they were inside the ROI, no count is emitted
-        # — the conservative default. Re-counts are blocked by self._counted.
         events: list[CountEvent] = []
         for track in tracks.values():
             ev = self._process_track(track)
@@ -286,75 +335,99 @@ class ROICounter:
         return events
 
     def reset_daily(self) -> None:
-        self._counted.clear()
         for k in self._totals:
             self._totals[k] = 0
 
-    # ----------------------------------------------------------- internals
-    def _side(self, cx: float, cy: float) -> str:
-        if self._orientation == "horizontal":
-            return _SIDE_A if cy < self._line_pos else _SIDE_B
-        return _SIDE_A if cx < self._line_pos else _SIDE_B
-
+    # ------------------------------------------------------------- internal
     def _inside_roi(self, cx: float, cy: float) -> bool:
+        if self._roi is None:
+            return True
         x_min, x_max, y_min, y_max = self._roi
         return x_min <= cx <= x_max and y_min <= cy <= y_max
 
     def _process_track(self, track: Track) -> Optional[CountEvent]:
-        if track.track_id in self._counted:
-            return None
-        # Only act on tracks eligible for counting. CANDIDATE tracks are too
-        # unstable. PENDING tracks use their last observed position and keep
-        # their meta until they recover or go LOST.
+        # CANDIDATE tracks are too unstable to count.
         if track.state not in (CONFIRMED, PENDING):
             return None
         if not track.positions:
             return None
 
-        cx, cy = float(track.positions[-1][0]), float(track.positions[-1][1])
+        cx = float(track.positions[-1][0])
+        cy = float(track.positions[-1][1])
         meta = track.meta.setdefault(self.META_KEY, {})
         was_inside = bool(meta.get("inside", False))
         is_inside = self._inside_roi(cx, cy)
-        current_side = self._side(cx, cy)
 
-        if is_inside:
-            if not was_inside:
-                meta["inside"] = True
-                meta["entry_side"] = current_side
-                meta["crossed"] = False
-            else:
-                entry_side = meta.get("entry_side")
-                if entry_side is not None and current_side != entry_side:
-                    meta["crossed"] = True
+        # Per-line previous-side cache (one slot per line). Created lazily;
+        # repaired if the configured line count changed between updates.
+        sides = meta.get("line_sides")
+        if not isinstance(sides, list) or len(sides) != len(self._lines):
+            sides = [0] * len(self._lines)
+            meta["line_sides"] = sides
+
+        if is_inside and not was_inside:
+            # Fresh entry: reset cycle state and snapshot current sides.
+            meta["inside"] = True
+            meta["last_label"] = None
+            for i, line in enumerate(self._lines):
+                sides[i] = line.side_of(cx, cy)
             return None
 
-        # Not inside now. If we were inside, this frame is the exit frame.
+        if is_inside and was_inside:
+            # Detect a side transition on each line. The track may cross
+            # multiple lines in one ROI visit; the most recent valid
+            # crossing wins (a defensive choice — in well-configured
+            # deployments the lines cover disjoint regions, so this rarely
+            # matters).
+            for i, line in enumerate(self._lines):
+                prev_side = sides[i]
+                new_side = line.side_of(cx, cy)
+                if (
+                    prev_side != 0
+                    and new_side != 0
+                    and prev_side != new_side
+                    and line.within_segment(cx, cy)
+                ):
+                    label = line.crossing_label(prev_side, new_side)
+                    if label is not None:
+                        meta["last_label"] = label
+                sides[i] = new_side
+            return None
+
+        # is_inside is False — if we *were* inside, this is the exit frame.
         if was_inside:
-            entry_side = meta.get("entry_side")
-            crossed = bool(meta.get("crossed", False))
-            # Determine exit side: for an exit frame we use the side the
-            # centroid is now on.
-            exit_side = current_side
+            # Detect crossings on the exit transition itself. Important if
+            # the track jumps from inside-one-side to outside-the-other in
+            # a single frame (low fps + fast motion, or detector gaps).
+            for i, line in enumerate(self._lines):
+                prev_side = sides[i]
+                new_side = line.side_of(cx, cy)
+                if (
+                    prev_side != 0
+                    and new_side != 0
+                    and prev_side != new_side
+                    and line.within_segment(cx, cy)
+                ):
+                    label = line.crossing_label(prev_side, new_side)
+                    if label is not None:
+                        meta["last_label"] = label
+            label = meta.get("last_label")
+            # Reset state so the same track can count another full cycle
+            # later. The antiglitch invariant holds: counting again requires
+            # re-entry from outside + a labelled line crossing + exit.
             meta["inside"] = False
-            self._counted.add(track.track_id)
-            if crossed and entry_side is not None and exit_side != entry_side:
-                if entry_side == _SIDE_A and exit_side == _SIDE_B:
-                    direction = self._label_a_to_b
-                else:
-                    direction = self._label_b_to_a
-                self._totals[direction] = self._totals.get(direction, 0) + 1
+            meta["last_label"] = None
+            for i in range(len(sides)):
+                sides[i] = 0
+            if label:
+                self._totals[label] = self._totals.get(label, 0) + 1
                 logger.debug(
-                    "roi_count",
-                    extra={
-                        "track_id": track.track_id,
-                        "direction": direction,
-                        "entry_side": entry_side,
-                        "exit_side": exit_side,
-                    },
+                    "count_event",
+                    extra={"track_id": track.track_id, "label": label},
                 )
                 return CountEvent(
                     track_id=track.track_id,
-                    direction=direction,
+                    direction=label,
                     timestamp=time.time(),
                     position_y=cy,
                     height_class=_aggregate_height_class_from_track(track),
@@ -363,13 +436,8 @@ class ROICounter:
                     confidence=_aggregate_confidence_from_track(track),
                 )
             logger.debug(
-                "roi_no_count_indeciso",
-                extra={
-                    "track_id": track.track_id,
-                    "entry_side": entry_side,
-                    "exit_side": exit_side,
-                    "crossed": crossed,
-                },
+                "exit_without_crossing",
+                extra={"track_id": track.track_id},
             )
         return None
 
@@ -381,34 +449,46 @@ class ROICounter:
 
 def build_counter(
     config: dict[str, Any],
-    frame_height: Optional[int] = None,
-):
-    """Pick the appropriate counter implementation from config.
+    frame_height: Optional[int] = None,  # noqa: ARG001 — kept for API stability
+) -> Counter:
+    """Build the counter from YAML config.
 
-    Preference order:
-      1. ``counter.roi`` + ``counter.line`` -> ROICounter
-      2. legacy ``vision.counting_line_y`` -> LineCounter (warn)
+    Schema (strict):
+
+        counter:
+          roi:                              # optional
+            x_min: 100
+            x_max: 1050
+            y_min: 150
+            y_max: 500
+          lines:
+            - from: [200, 300]
+              to:   [500, 300]
+              labels:
+                top_to_bottom: ingress
+                bottom_to_top: egress
     """
     counter_cfg = config.get("counter") or {}
-    if "roi" in counter_cfg and "line" in counter_cfg:
-        return ROICounter(
-            roi=counter_cfg["roi"],
-            line=counter_cfg["line"],
-            direction_labels=counter_cfg.get("direction_labels"),
+    raw_lines = counter_cfg.get("lines")
+    if not raw_lines:
+        raise ValueError(
+            "counter.lines is required and must not be empty. See the docstring "
+            "of build_counter() for the expected schema."
         )
-
-    vision_cfg = config.get("vision", {})
-    if "counting_line_y" in vision_cfg:
-        logger.warning(
-            "legacy_counting_line_config",
-            extra={"hint": "migrate to counter.roi + counter.line"},
-        )
-        line_y = float(vision_cfg["counting_line_y"])
-        if line_y <= 1.0 and frame_height is not None:
-            line_y = line_y * frame_height
-        return LineCounter(line_y=line_y)
-
-    raise ValueError(
-        "No counter configuration found. Set counter.roi + counter.line "
-        "(preferred) or vision.counting_line_y (legacy)."
-    )
+    lines: list[Line] = []
+    for idx, raw in enumerate(raw_lines):
+        try:
+            from_xy = tuple(raw["from"])
+            to_xy = tuple(raw["to"])
+        except (KeyError, TypeError) as e:
+            raise ValueError(
+                f"counter.lines[{idx}]: 'from' and 'to' required as [x, y] "
+                f"pairs ({e})."
+            ) from e
+        if len(from_xy) != 2 or len(to_xy) != 2:
+            raise ValueError(
+                f"counter.lines[{idx}]: 'from' and 'to' must be [x, y] pairs."
+            )
+        labels = dict(raw.get("labels") or {})
+        lines.append(Line(from_xy=from_xy, to_xy=to_xy, labels=labels))
+    return Counter(lines=lines, roi=counter_cfg.get("roi"))
