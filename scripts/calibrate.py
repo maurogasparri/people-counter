@@ -426,6 +426,12 @@ class _GuidedState:
         self.captured_pairs: list[tuple[Path, Path, str]] = []  # (l, r, pose_id)
         self.rms_text: str = "—"
         self.rms_color: str = "#888"
+        # Set by the background RMS worker when full coverage + RMS gate
+        # both pass — surfaced as a hint in the status panel telling the
+        # operator they can finalize early. Doesn't block; the existing
+        # Finalizar button is what they click.
+        self.early_stop_ready: bool = False
+        self.early_stop_msg: str = ""
         self.undo_requested = False
         self.skip_requested = False
         self.finish_requested = False
@@ -1012,8 +1018,20 @@ def _rms_color_for(rms: float) -> str:
 
 def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_len,
                            captures_dir: Path, stop_evt: threading.Event,
-                           legacy_pattern: bool = True) -> None:
-    """Every 3 new captures past the 8th, attempt an incremental calibration."""
+                           legacy_pattern: bool = True,
+                           all_poses: Optional[list] = None,
+                           early_stop_enabled: bool = True,
+                           near_mm: float = DEFAULT_DIST_NEAR_MM,
+                           mid_mm: float = DEFAULT_DIST_MID_MM,
+                           far_mm: float = DEFAULT_DIST_FAR_MM) -> None:
+    """Every 3 new captures past the 8th, attempt an incremental calibration.
+
+    Beyond the live RMS hint, also evaluates ``is_calibration_ready_for_early_stop``
+    and flips ``state.early_stop_ready`` when the calibration would already
+    pass lab-grade gates — letting the operator finalise without exhausting
+    all 20 canonical poses on a smooth session. Decision is informational;
+    the existing Finalizar button is what the operator clicks.
+    """
     last_attempt_count = 0
     while not stop_evt.is_set():
         time.sleep(2.0)
@@ -1038,6 +1056,31 @@ def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_le
             with state.lock:
                 state.rms_text = f"RMS≈{rms_l:.2f}px ({n} pares)"
                 state.rms_color = _rms_color_for(rms_l)
+
+            # Early-stop readiness — only if enabled and we have the pose
+            # list to compare against (the worker is created with all_poses
+            # passed in by the wizard).
+            if early_stop_enabled and all_poses is not None:
+                from src.vision.calibration import (
+                    analyze_pose_coverage,
+                    is_calibration_ready_for_early_stop,
+                )
+                pose_ids = [pid for _, _, pid in snapshot]
+                coverage = analyze_pose_coverage(
+                    pose_ids, all_poses=all_poses,
+                    near_mm=near_mm, mid_mm=mid_mm, far_mm=far_mm,
+                )
+                ready, reason = is_calibration_ready_for_early_stop(
+                    coverage, per_pair_rms_px=rms_l, captured_count=n,
+                )
+                with state.lock:
+                    state.early_stop_ready = ready
+                    state.early_stop_msg = (
+                        f"✓ Calibración lista — RMS={rms_l:.2f}px, "
+                        f"{n} capturas con cobertura completa. "
+                        f"Podés finalizar ahora si querés."
+                        if ready else ""
+                    )
         except Exception as e:
             logger.debug("Incremental calibration skipped: %s", e)
 
@@ -1295,6 +1338,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         args=(state, board, board_size, args.square_length,
               args.marker_length, output_dir, rms_stop,
               getattr(args, "legacy_pattern", True)),
+        kwargs={
+            "all_poses": poses,
+            "early_stop_enabled": not getattr(args, "no_early_stop", False),
+            "near_mm": getattr(args, "dist_near_mm", DEFAULT_DIST_NEAR_MM),
+            "mid_mm": getattr(args, "dist_mid_mm", DEFAULT_DIST_MID_MM),
+            "far_mm": getattr(args, "dist_far_mm", DEFAULT_DIST_FAR_MM),
+        },
         daemon=True,
     )
     rms_thread.start()
@@ -1908,11 +1958,21 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 f'{_detect_pill("R", n_r, r_zero_asym)}'
             )
 
+            early_stop_html = ""
+            if state.early_stop_ready and state.early_stop_msg:
+                early_stop_html = (
+                    f'<div style="margin-top:10px;padding:10px 14px;'
+                    f'background:#1e3b2c;border-left:4px solid #2ecc71;'
+                    f'border-radius:6px;color:#a8e6c5;font-size:14px;'
+                    f'font-weight:500">{state.early_stop_msg}</div>'
+                )
+
             status = f"""
 <div data-banner="{banner_escaped}" data-color="{banner_color}" data-progress="{hold_progress:.2f}" data-audioseq="{state.audio_event_seq}" data-audiotext="{audio_escaped}" data-captured="{captured_n}" data-pose-idx="{state.current_pose_idx}"></div>
 <div>Pose <b>{state.current_pose_idx + 1}/{len(poses)}</b> — {pose.label} · <b>{pose.tvec_mm[2] / 10.0:.0f}cm</b> <span class="pill-phase">{phase_label}</span></div>
 <div>Capturadas: <b>{captured_n}</b> · Skipped: <b>{skipped_n}</b> · Restantes: <b>{len(poses) - captured_n - skipped_n}</b></div>
 <div>{rms_html}</div>
+{early_stop_html}
 {warnings_html}
 {asymmetric_warn_html}
 <div style="color:#888;font-size:12px;margin-top:8px">Detección: {detect_pills} esquinas · matched L={err['matched'] if err else 0}{sync_note}</div>
@@ -2855,6 +2915,67 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     report_name = f"calibration_report_{args.device_id}_{ts:%Y%m%d_%H%M%S}.html"
     report_path = save_report(html, calib_out.parent / report_name)
 
+    # Emit a sibling JSON with the same metrics in a parseable form. Lets
+    # QA / cross-fleet comparisons grep numeric scores without parsing the
+    # HTML. Shape mirrors diagnose_depth.py --json so the same downstream
+    # tooling consumes either output.
+    try:
+        json_payload: dict[str, object] = {
+            "device_id": args.device_id,
+            "timestamp": ts.isoformat(timespec="seconds"),
+            "rms_stereo_px": (
+                None if rms_est is None else float(rms_est)
+            ),
+            "baseline_mm": float(baseline_mm),
+            "baseline_design_mm": 140.0,
+            "baseline_delta_mm": float(baseline_mm - 140.0),
+        }
+        try:
+            from src.vision.calibration import lens_alignment_metrics
+            json_payload["alignment"] = lens_alignment_metrics(
+                result["R"], result["T"],
+            )
+        except Exception:
+            pass
+        if diagnose_zones:
+            zones_out: dict[str, object] = {}
+            for k, v in diagnose_zones.items():
+                if k.startswith("_"):
+                    continue
+                if v is None:
+                    zones_out[k] = None
+                else:
+                    depth, std, err_pct, fill = v
+                    zones_out[k] = {
+                        "depth_mm": float(depth),
+                        "std_mm": float(std),
+                        "err_pct": float(err_pct),
+                        "fill_pct": float(fill),
+                    }
+            json_payload["depth_validation"] = {
+                "distance_mm": float(diagnose_zones.get("_distance_mm", 0)),
+                "center_threshold_pct": float(
+                    diagnose_zones.get("_center_threshold", 0),
+                ),
+                "center_err_pct": float(
+                    diagnose_zones.get("_center_err", 0),
+                ),
+                "edge_ratio": float(
+                    diagnose_zones.get("_edge_ratio", float("nan")),
+                ),
+                "verdict": (
+                    "PASS" if diagnose_zones.get("_pass") else "FAIL"
+                ),
+                "zones": zones_out,
+            }
+        json_path = report_path.with_suffix(".json")
+        json_path.write_text(
+            json.dumps(json_payload, indent=2), encoding="utf-8",
+        )
+        logger.info("  Reporte JSON: %s", json_path)
+    except Exception:
+        logger.exception("calibration JSON sidecar failed (non-fatal)")
+
     logger.info("=" * 60)
     logger.info("WIZARD COMPLETO")
     logger.info("  Calibración: %s", calib_out)
@@ -3159,6 +3280,16 @@ def main() -> None:
                              "missing, because that produces a low-RMS but "
                              "geometrically wrong fit. Use this flag only if you "
                              "understand the trade-off.")
+    p_wiz.add_argument("--no-early-stop", action="store_true",
+                        help="Disable the early-stop hint. By default, when "
+                             "the captures pass full coverage and RMS lands "
+                             "below the lab threshold, the wizard surfaces "
+                             "a green hint suggesting to finalise without "
+                             "exhausting all 20 poses. The hint is purely "
+                             "advisory; the existing Finalizar button is "
+                             "what actually ends the session. Pass this "
+                             "flag to suppress the hint entirely (full "
+                             "20-pose discipline).")
     p_wiz.add_argument("--min-detect-rate", type=float, default=0.7,
                         help="Pre-calibration sanity threshold: if fewer than this "
                              "fraction of captured pairs survive a strict "

@@ -425,6 +425,63 @@ def calibrate_stereo(
 
 
 # ---------------------------------------------------------------------------
+# Lens alignment diagnostics
+# ---------------------------------------------------------------------------
+
+
+def lens_alignment_metrics(
+    R: np.ndarray, T: np.ndarray,
+) -> dict[str, float]:
+    """Decompose stereo extrinsics into operator-friendly alignment metrics.
+
+    Diagnostic only — these numbers describe how cleanly the bracket built
+    a stereo pair, not whether the calibration is usable. The runtime
+    pipeline already accounts for any misalignment via R/T (rectification
+    absorbs the geometry), so a degree of yaw or a millimetre of vertical
+    offset is corrected internally and doesn't break depth. We surface
+    them so QA can compare units and flag fabrication outliers.
+
+    Returns:
+        Dict with:
+        - ``offset_x_mm`` / ``offset_y_mm`` / ``offset_z_mm``: components
+          of T (mm). Offset X is the baseline; Y and Z should be tiny
+          on a clean bracket.
+        - ``rotation_x_deg`` / ``rotation_y_deg`` / ``rotation_z_deg``:
+          Euler angles (XYZ convention) of R, in degrees. Pitch / yaw /
+          roll between the lenses. Perfect bracket = all zeros.
+    """
+    T_arr = np.asarray(T, dtype=np.float64).reshape(3)
+
+    R_arr = np.asarray(R, dtype=np.float64)
+    if R_arr.shape != (3, 3):
+        raise ValueError(f"R must be 3x3, got {R_arr.shape}")
+
+    # Standard XYZ-convention Euler decomposition. Handles the gimbal-lock
+    # singularity when |R[2,0]| ~ 1 (cos(pitch) ~ 0): in that case roll
+    # collapses into pitch and we report the combined value with roll=0
+    # (the standard convention — there's no unique decomposition there
+    # but for a real stereo bracket we never get close).
+    sy = math.sqrt(R_arr[0, 0] ** 2 + R_arr[1, 0] ** 2)
+    if sy > 1e-6:
+        rx = math.atan2(R_arr[2, 1], R_arr[2, 2])
+        ry = math.atan2(-R_arr[2, 0], sy)
+        rz = math.atan2(R_arr[1, 0], R_arr[0, 0])
+    else:
+        rx = math.atan2(-R_arr[1, 2], R_arr[1, 1])
+        ry = math.atan2(-R_arr[2, 0], sy)
+        rz = 0.0
+
+    return {
+        "offset_x_mm": float(T_arr[0]),
+        "offset_y_mm": float(T_arr[1]),
+        "offset_z_mm": float(T_arr[2]),
+        "rotation_x_deg": math.degrees(rx),
+        "rotation_y_deg": math.degrees(ry),
+        "rotation_z_deg": math.degrees(rz),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Rectification helpers
 # ---------------------------------------------------------------------------
 
@@ -955,6 +1012,84 @@ def analyze_pose_coverage(
         "critical": critical,
         "ok": len(warnings) == 0 and len(critical) == 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Early-stop readiness check (saves operator time on smooth sessions)
+# ---------------------------------------------------------------------------
+
+# Conservative thresholds. Lab-quality sessions land RMS <0.5 px easily; if
+# you're below that with full coverage, more poses won't materially improve
+# the calibration (diminishing returns). Min poses prevents the "captured 8
+# easy frames in a hurry" trap where coverage looks fine but the solver
+# hasn't seen enough variety. Wizard adds a manual confirm on top — the
+# operator always gets to keep going if they want.
+EARLY_STOP_MIN_POSES = 12
+EARLY_STOP_MAX_RMS_PX = 0.50
+EARLY_STOP_MIN_PER_BAND = 2
+EARLY_STOP_MIN_PER_GROUP = 1
+
+
+def is_calibration_ready_for_early_stop(
+    coverage: dict[str, object],
+    per_pair_rms_px: float,
+    captured_count: int,
+    *,
+    min_poses: int = EARLY_STOP_MIN_POSES,
+    max_rms_px: float = EARLY_STOP_MAX_RMS_PX,
+    min_per_band: int = EARLY_STOP_MIN_PER_BAND,
+    min_per_group: int = EARLY_STOP_MIN_PER_GROUP,
+) -> tuple[bool, str]:
+    """Decide whether the wizard could finalize before reaching all poses.
+
+    All conditions must hold simultaneously:
+      - Total captures >= ``min_poses`` (default 12, well below the canonical
+        20 — leaves room for the solver to see real variety).
+      - Coverage has zero ``critical`` gaps (no missing band/group).
+      - Each band (near/mid/far) has >= ``min_per_band`` captures.
+      - Each required group (A..D) has >= ``min_per_group`` captures.
+      - Current per-pair RMS estimate <= ``max_rms_px`` (finalize only when
+        the fit is already lab-grade).
+
+    Returns ``(ready, reason)``. ``reason`` is empty when ready, or a short
+    operator-friendly string explaining what's still missing.
+    """
+    if captured_count < min_poses:
+        return False, (
+            f"faltan capturas ({captured_count}/{min_poses} mínimo)"
+        )
+
+    critical = coverage.get("critical") or []
+    if critical:
+        return False, "cobertura incompleta: " + "; ".join(
+            str(c) for c in critical
+        )
+
+    by_band = coverage.get("by_distance") or {}
+    for band in ("near", "mid", "far"):
+        if int(by_band.get(band, 0)) < min_per_band:
+            return False, (
+                f"banda '{band}' con {by_band.get(band, 0)} capturas "
+                f"(mínimo {min_per_band})"
+            )
+
+    by_group = coverage.get("by_group") or {}
+    for group in ("A", "B", "C", "D"):
+        if int(by_group.get(group, 0)) < min_per_group:
+            return False, (
+                f"grupo {group} sin capturas suficientes "
+                f"(mínimo {min_per_group})"
+            )
+
+    if per_pair_rms_px != per_pair_rms_px:  # NaN
+        return False, "RMS no calculable todavía"
+    if per_pair_rms_px > max_rms_px:
+        return False, (
+            f"RMS={per_pair_rms_px:.2f}px sobre el umbral "
+            f"({max_rms_px:.2f}px) — seguí capturando"
+        )
+
+    return True, ""
 
 
 # ---------------------------------------------------------------------------

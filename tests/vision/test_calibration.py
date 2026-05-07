@@ -32,6 +32,8 @@ from src.vision.calibration import (
     compute_alignment_by_corners,
     compute_alignment_error,
     compute_per_pair_residuals,
+    is_calibration_ready_for_early_stop,
+    lens_alignment_metrics,
     corner_local_sharpness,
     count_common_corners,
     create_charuco_board,
@@ -293,6 +295,175 @@ class TestCalibration:
     def test_image_size_stored(self, synthetic_pairs):
         result = calibrate_stereo(synthetic_pairs)
         assert np.array_equal(result["image_size"], [IMAGE_W, IMAGE_H])
+
+
+class TestLensAlignmentMetrics:
+    """Operator-friendly decomposition of stereo extrinsics."""
+
+    def test_identity_R_zero_T_yields_all_zeros(self):
+        R = np.eye(3)
+        T = np.zeros(3)
+        m = lens_alignment_metrics(R, T)
+        for k, v in m.items():
+            assert abs(v) < 1e-6, f"{k}={v}"
+
+    def test_T_components_split_correctly(self):
+        # Pure translation, no rotation. T components map straight to
+        # offset_{x,y,z}_mm. The X axis is the baseline (negative when
+        # calibrate_stereo emits -baseline-on-X by convention; the test
+        # uses positive to keep the assertion simple).
+        R = np.eye(3)
+        T = np.array([140.0, 1.5, -0.8])
+        m = lens_alignment_metrics(R, T)
+        assert m["offset_x_mm"] == pytest.approx(140.0)
+        assert m["offset_y_mm"] == pytest.approx(1.5)
+        assert m["offset_z_mm"] == pytest.approx(-0.8)
+        assert abs(m["rotation_x_deg"]) < 1e-6
+        assert abs(m["rotation_y_deg"]) < 1e-6
+        assert abs(m["rotation_z_deg"]) < 1e-6
+
+    def test_pure_yaw_rotation(self):
+        # 5° around Y (yaw). XYZ-Euler convention: ry should pop out
+        # exactly, others zero.
+        ang = math.radians(5.0)
+        R = np.array([
+            [math.cos(ang), 0, math.sin(ang)],
+            [0, 1, 0],
+            [-math.sin(ang), 0, math.cos(ang)],
+        ])
+        m = lens_alignment_metrics(R, np.zeros(3))
+        assert m["rotation_y_deg"] == pytest.approx(5.0, abs=1e-5)
+        assert abs(m["rotation_x_deg"]) < 1e-5
+        assert abs(m["rotation_z_deg"]) < 1e-5
+
+    def test_pure_pitch_rotation(self):
+        # 2° around X (pitch).
+        ang = math.radians(2.0)
+        R = np.array([
+            [1, 0, 0],
+            [0, math.cos(ang), -math.sin(ang)],
+            [0, math.sin(ang), math.cos(ang)],
+        ])
+        m = lens_alignment_metrics(R, np.zeros(3))
+        assert m["rotation_x_deg"] == pytest.approx(2.0, abs=1e-5)
+        assert abs(m["rotation_y_deg"]) < 1e-5
+        assert abs(m["rotation_z_deg"]) < 1e-5
+
+    def test_pure_roll_rotation(self):
+        # 1.2° around Z (roll).
+        ang = math.radians(1.2)
+        R = np.array([
+            [math.cos(ang), -math.sin(ang), 0],
+            [math.sin(ang), math.cos(ang), 0],
+            [0, 0, 1],
+        ])
+        m = lens_alignment_metrics(R, np.zeros(3))
+        assert m["rotation_z_deg"] == pytest.approx(1.2, abs=1e-5)
+        assert abs(m["rotation_x_deg"]) < 1e-5
+        assert abs(m["rotation_y_deg"]) < 1e-5
+
+    def test_T_accepts_column_vector(self):
+        # cv2.fisheye.stereoCalibrate returns T as (3,1) column vector.
+        # The function should accept either shape.
+        R = np.eye(3)
+        T = np.array([[140.0], [1.5], [-0.8]])
+        m = lens_alignment_metrics(R, T)
+        assert m["offset_x_mm"] == pytest.approx(140.0)
+
+    def test_invalid_R_shape_raises(self):
+        with pytest.raises(ValueError, match="3x3"):
+            lens_alignment_metrics(np.eye(2), np.zeros(3))
+
+
+class TestEarlyStopReadiness:
+    """Helper that lets the wizard finalize when calibration is already
+    lab-grade, without forcing the operator through all 20 poses."""
+
+    def _full_coverage(self) -> dict:
+        return {
+            "by_distance": {"near": 4, "mid": 5, "far": 4},
+            "by_tilt_axis": {"frontal": 2, "pitch": 4, "yaw": 3, "roll": 2},
+            "by_group": {"A": 3, "B": 4, "C": 3, "D": 3},
+            "warnings": [],
+            "critical": [],
+            "ok": True,
+        }
+
+    def test_all_conditions_met_returns_ready(self):
+        ready, reason = is_calibration_ready_for_early_stop(
+            self._full_coverage(), per_pair_rms_px=0.30, captured_count=13,
+        )
+        assert ready is True
+        assert reason == ""
+
+    def test_too_few_captures_blocks(self):
+        ready, reason = is_calibration_ready_for_early_stop(
+            self._full_coverage(), per_pair_rms_px=0.20, captured_count=10,
+        )
+        assert ready is False
+        assert "10/12" in reason
+
+    def test_critical_gap_blocks(self):
+        cov = self._full_coverage()
+        cov["critical"] = ["Banda de distancia 'far' sin capturas"]
+        ready, reason = is_calibration_ready_for_early_stop(
+            cov, per_pair_rms_px=0.30, captured_count=14,
+        )
+        assert ready is False
+        assert "cobertura incompleta" in reason
+
+    def test_band_under_min_blocks(self):
+        cov = self._full_coverage()
+        cov["by_distance"]["far"] = 1  # below min_per_band=2
+        ready, reason = is_calibration_ready_for_early_stop(
+            cov, per_pair_rms_px=0.30, captured_count=14,
+        )
+        assert ready is False
+        assert "far" in reason
+
+    def test_missing_required_group_blocks(self):
+        cov = self._full_coverage()
+        cov["by_group"]["B"] = 0
+        ready, reason = is_calibration_ready_for_early_stop(
+            cov, per_pair_rms_px=0.30, captured_count=14,
+        )
+        assert ready is False
+        assert "grupo B" in reason or "grupo B" in reason.lower()
+
+    def test_rms_above_threshold_blocks(self):
+        ready, reason = is_calibration_ready_for_early_stop(
+            self._full_coverage(),
+            per_pair_rms_px=0.80,  # over default 0.50
+            captured_count=14,
+        )
+        assert ready is False
+        assert "RMS" in reason
+
+    def test_nan_rms_blocks(self):
+        ready, reason = is_calibration_ready_for_early_stop(
+            self._full_coverage(),
+            per_pair_rms_px=float("nan"),
+            captured_count=14,
+        )
+        assert ready is False
+        assert "RMS" in reason
+
+    def test_thresholds_are_overridable(self):
+        # Stricter min_poses keeps a session open even with great metrics.
+        ready, _ = is_calibration_ready_for_early_stop(
+            self._full_coverage(), per_pair_rms_px=0.20, captured_count=12,
+            min_poses=15,
+        )
+        assert ready is False
+
+    def test_e_group_not_required(self):
+        # Group E (extreme tilts) is bonus, not required.
+        cov = self._full_coverage()
+        cov["by_group"].pop("E", None)
+        ready, _ = is_calibration_ready_for_early_stop(
+            cov, per_pair_rms_px=0.30, captured_count=13,
+        )
+        assert ready is True
 
 
 class TestRectifyPair:

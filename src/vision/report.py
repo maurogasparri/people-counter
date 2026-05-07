@@ -77,6 +77,35 @@ def generate_html_report(
 
     rms_text = f"{rms_stereo:.3f} px" if rms_stereo is not None else "—"
 
+    # Lens alignment metrics — operator-friendly decomposition of R+T into
+    # offset_{x,y,z}_mm + rotation_{x,y,z}_deg. Diagnostic only, doesn't
+    # gate the report. Runtime pipeline rectifies away any misalignment;
+    # we surface these for cross-unit QA (detect bracket-fabrication
+    # outliers when comparing several devices side by side).
+    alignment_html = ""
+    R = calibration.get("R")
+    if R is not None:
+        try:
+            from src.vision.calibration import lens_alignment_metrics
+            am = lens_alignment_metrics(R, T)
+            alignment_html = f"""
+<h2>Alineamiento entre lentes</h2>
+<p style="color:#555;font-size:13px">Geometría relativa entre el lente izquierdo y el derecho (descomposición de
+R+T). <b>Diagnóstico de fabricación del bracket</b> — el runtime corrige cualquier desviación vía rectificación, así
+que estos números no gate el resultado. Útil para comparar unidades entre sí y detectar outliers de fabricación.
+Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p>
+<div class="kv">
+<b>Offset X (baseline)</b><span>{am['offset_x_mm']:+.2f} mm</span>
+<b>Offset Y (vertical)</b><span>{am['offset_y_mm']:+.2f} mm</span>
+<b>Offset Z (fore-aft)</b><span>{am['offset_z_mm']:+.2f} mm</span>
+<b>Pitch (rotación X)</b><span>{am['rotation_x_deg']:+.3f}°</span>
+<b>Yaw (rotación Y)</b><span>{am['rotation_y_deg']:+.3f}°</span>
+<b>Roll (rotación Z)</b><span>{am['rotation_z_deg']:+.3f}°</span>
+</div>
+"""
+        except Exception:
+            logger.exception("lens_alignment_metrics failed; skipping section")
+
     # Depth validation section
     depth_html = ""
     depth_pass = None
@@ -391,6 +420,8 @@ th{{background:#f5f5f5}}
 <b>Principal point L</b><span>cx={K_l[0,2]:.1f}, cy={K_l[1,2]:.1f}</span>
 <b>Principal point R</b><span>cx={K_r[0,2]:.1f}, cy={K_r[1,2]:.1f}</span>
 </div>
+
+{alignment_html}
 
 {depth_html}
 
