@@ -12,6 +12,13 @@ guarda frames según el modo elegido:
   cambio significativo entre frames consecutivos (cv2.absdiff). Multiplica
   la fracción de frames con eventos reales.
 
+Streams estéreo SBS (side-by-side, ambos lentes lado a lado en un solo
+frame) se soportan declarando ``sbs: true`` en el site. El frame se
+parte por la mitad horizontal y cada lado se procesa por separado.
+Si además se da ``calibration: <ruta a .npz>`` se rectifica on-the-fly
+usando los mapas precalculados — el output queda listo para training
+sin requerir post-processing.
+
 Resilient by design:
 - Si el stream se cae, reconecta solo
 - Si un frame está corrupto, lo skipea
@@ -24,15 +31,26 @@ Usage:
         --duration 3600 \\
         --motion-trigger \\
         --min-interval 5 \\
-        --background-interval 600
+        --background-interval 600 \\
+        --save-side left
 
 Config YAML format:
 
     sites:
+      # Mono stream — frames guardados tal cual.
       - name: site_a
         url: http://192.168.1.10/mjpg/video.mjpg
+
+      # SBS estéreo — partido por la mitad, rectificado por lente.
       - name: site_b
-        url: http://192.168.2.10/mjpg/video.mjpg
+        url: http://192.168.2.10/mjpg/raw.mjpg
+        sbs: true
+        calibration: debug/calib_dumps/192.168.2.10/calib.npz
+
+      # SBS sin calibración — partido pero sin rectificar.
+      - name: site_c
+        url: http://192.168.2.11/mjpg/raw.mjpg
+        sbs: true
 
 Output layout:
     <output>/
@@ -41,6 +59,7 @@ Output layout:
         20260506_104646_bg_db7865.jpg
         ...
       site_b/
+        20260507_120015_motion_L_a3f1c2.jpg   <- rectified left (or both)
         ...
       capture.log     <- per-site stats appended every 60s
 """
@@ -59,12 +78,104 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import cv2
+import numpy as np
 import yaml
 
 logger = logging.getLogger("capture_mjpeg")
+
+# Calibration .npz layout: arrays are stored at the calibration resolution
+# (160×120 in the FFC dumps we have). When the runtime SBS half is bigger
+# (e.g. 960×720 = 1920÷2), we scale K and P_rect linearly. Distortion is
+# dimensionless.
+_CALIB_REF_SIZE = (160, 120)
+
+
+def _load_site_calibration(
+    npz_path: Path, half_size: tuple[int, int],
+) -> dict[str, tuple[Any, Any]]:
+    """Precompute fisheye-rectification maps for one stereo lens pair.
+
+    Reads ``scaled_{left,right}_intrinsic_4`` (K) + ``{left,right}_distortion_4``
+    (D) + ``scaled_{left,right}_R_rect_4`` (R_rect) +
+    ``scaled_{left,right}_intrinsic_rect_4`` (P_rect) from the .npz, scales
+    K and P from the calibration resolution to ``half_size``, and returns a
+    dict with ``"left"`` and ``"right"`` mapping to ``(map1, map2)`` ready
+    for ``cv2.remap``.
+
+    Same recipe as the FFC binary uses internally before passing the frame
+    to its detector — i.e. produces the geometrically-correct rectified
+    image, not just an undistorted one.
+    """
+    cal = np.load(npz_path)
+    out_w, out_h = half_size
+    sx = out_w / _CALIB_REF_SIZE[0]
+    sy = out_h / _CALIB_REF_SIZE[1]
+
+    def _scale_K(K: np.ndarray) -> np.ndarray:
+        K2 = K.astype(np.float64).copy()
+        K2[0, 0] *= sx
+        K2[0, 2] *= sx
+        K2[1, 1] *= sy
+        K2[1, 2] *= sy
+        return K2
+
+    maps: dict[str, tuple[Any, Any]] = {}
+    for side in ("left", "right"):
+        K = _scale_K(cal[f"scaled_{side}_intrinsic_4"])
+        D = cal[f"{side}_distortion_4"].astype(np.float64).reshape(-1, 1)
+        R = cal[f"scaled_{side}_R_rect_4"].astype(np.float64)
+        P = _scale_K(cal[f"scaled_{side}_intrinsic_rect_4"])
+        m1, m2 = cv2.fisheye.initUndistortRectifyMap(
+            K, D, R, P, (out_w, out_h), cv2.CV_16SC2,
+        )
+        maps[side] = (m1, m2)
+    return maps
+
+
+def _split_sbs(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Split a side-by-side stereo frame in half horizontally."""
+    h, w = frame.shape[:2]
+    mid = w // 2
+    return frame[:, :mid], frame[:, mid:]
+
+
+def _process_frame(
+    frame: np.ndarray,
+    sbs: bool,
+    rect_maps: Optional[dict[str, tuple[Any, Any]]],
+    save_side: str,
+) -> list[tuple[str, np.ndarray]]:
+    """Apply SBS split + optional rectification, return saveable images.
+
+    Returns a list of ``(side_label, image)`` tuples. ``side_label`` is
+    ``""`` for mono streams, ``"L"`` or ``"R"`` for stereo. The label
+    ends up in the saved filename so the dataset is self-describing.
+    """
+    if sbs:
+        left, right = _split_sbs(frame)
+    else:
+        left, right = frame, None
+
+    out: list[tuple[str, np.ndarray]] = []
+    want_left = save_side in ("left", "both")
+    want_right = sbs and save_side in ("right", "both")
+
+    if want_left:
+        if rect_maps is not None:
+            m1, m2 = rect_maps["left"]
+            left = cv2.remap(left, m1, m2, cv2.INTER_LINEAR)
+        out.append(("L" if sbs else "", left))
+
+    if want_right and right is not None:
+        if rect_maps is not None:
+            m1, m2 = rect_maps["right"]
+            right = cv2.remap(right, m1, m2, cv2.INTER_LINEAR)
+        out.append(("R", right))
+
+    return out
 
 
 def _parse_hours(s: str | None) -> tuple[int, int] | None:
@@ -139,6 +250,7 @@ def _capture_site(
     motion_trigger: bool = False,
     motion_threshold: float = 5.0,
     background_interval: float = 0.0,
+    save_side: str = "left",
 ) -> None:
     """Run capture loop for one site until stop_event is set.
 
@@ -160,6 +272,14 @@ def _capture_site(
     url = site["url"]
     site_dir = output_dir / name
     site_dir.mkdir(parents=True, exist_ok=True)
+
+    sbs = bool(site.get("sbs", False))
+    rect_maps: Optional[dict[str, tuple[Any, Any]]] = None
+    # Calibration is loaded lazily on the first successful frame because
+    # we need the half-frame size to compute the scale factor; SBS streams
+    # are always horizontally split so half_size = (W//2, H).
+    calib_path = site.get("calibration")
+    calib_pending = bool(calib_path) and sbs
 
     while not stop_event.is_set():
         # Operating-hours gate antes de abrir el stream — evita conexiones
@@ -217,14 +337,53 @@ def _capture_site(
             stats.frames_read += 1
             now = time.time()
 
+            # Lazy-load rectification maps now that we know the frame
+            # size — half_size depends on SBS split, which depends on
+            # the actual stream resolution.
+            if calib_pending:
+                fh, fw = frame.shape[:2]
+                half_size = (fw // 2, fh)
+                try:
+                    rect_maps = _load_site_calibration(
+                        Path(calib_path), half_size,  # type: ignore[arg-type]
+                    )
+                    logger.info(
+                        "[%s] calibración cargada (%s) para half=%dx%d",
+                        name, calib_path, half_size[0], half_size[1],
+                    )
+                except Exception as e:
+                    stats.last_error = f"calibration load failed: {e!r}"
+                    logger.exception(
+                        "[%s] no pude cargar calibración %s — guardo sin rectificar",
+                        name, calib_path,
+                    )
+                    rect_maps = None
+                calib_pending = False
+
+            # Process the frame once (split + rectify) and reuse the
+            # output for both motion detection and the actual save.
+            processed = _process_frame(frame, sbs, rect_maps, save_side)
+
+            def _save_processed(kind: str = "") -> None:
+                for side, img in processed:
+                    _save_frame(img, site_dir, name, stats,
+                                kind=kind, side=side)
+
+            # Motion detection runs on the LEFT (or sole) processed image
+            # because that's the canonical view we'll feed to the detector.
+            motion_view = processed[0][1] if processed else None
+
             if motion_trigger:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                if prev_gray is not None:
+                if motion_view is not None:
+                    gray = cv2.cvtColor(motion_view, cv2.COLOR_BGR2GRAY)
+                else:
+                    gray = None
+                if gray is not None and prev_gray is not None \
+                        and gray.shape == prev_gray.shape:
                     diff_mean = float(cv2.absdiff(prev_gray, gray).mean())
                     if (diff_mean > motion_threshold
                             and now - last_motion_save_t > min_interval):
-                        _save_frame(frame, site_dir, name, stats,
-                                    kind="motion")
+                        _save_processed(kind="motion")
                         last_motion_save_t = now
                 prev_gray = gray
                 # Background sample independiente del motion — captura el
@@ -232,11 +391,11 @@ def _capture_site(
                 # medir FP rate del detector después
                 if (background_interval > 0
                         and now - last_bg_save_t >= background_interval):
-                    _save_frame(frame, site_dir, name, stats, kind="bg")
+                    _save_processed(kind="bg")
                     last_bg_save_t = now
             else:
                 if now >= next_save_at:
-                    _save_frame(frame, site_dir, name, stats)
+                    _save_processed()
                     next_save_at = now + random.uniform(min_interval, max_interval)
 
         cap.release()
@@ -248,17 +407,19 @@ def _capture_site(
 
 def _save_frame(
     frame: Any, site_dir: Path, name: str, stats: SiteStats,
-    kind: str = "",
+    kind: str = "", side: str = "",
 ) -> None:
-    """Encode + write a single JPEG. Filename: <ts>[_<kind>]_<rand>.jpg.
+    """Encode + write a single JPEG. Filename: <ts>[_<kind>][_<side>]_<rand>.jpg.
 
-    Si ``kind`` se da (ej. 'motion', 'bg'), se incluye en el filename
-    para distinguir el tipo de save al analizar el dataset después.
+    ``kind`` (motion/bg/empty) marca el origen del save; ``side`` (L/R/
+    empty) identifica el lente cuando el stream era estéreo. Ambos
+    quedan en el filename para que el dataset sea autodescriptivo.
     """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = secrets.token_hex(3)
     label = f"_{kind}" if kind else ""
-    out_path = site_dir / f"{ts}{label}_{suffix}.jpg"
+    side_label = f"_{side}" if side else ""
+    out_path = site_dir / f"{ts}{label}{side_label}_{suffix}.jpg"
     try:
         # cv2.imwrite uses default JPEG quality (95). Tweak with
         # [int(cv2.IMWRITE_JPEG_QUALITY), 92] in the params if needed.
@@ -339,6 +500,15 @@ def main() -> int:
              "rate del detector después). Default 0 = off. Sugerido: "
              "300-600 (cada 5-10 min). Filename incluye '_bg_'.",
     )
+    parser.add_argument(
+        "--save-side", choices=("left", "right", "both"), default="left",
+        help="Para sites con sbs: cuál de los dos lentes se guarda. "
+             "Default 'left' — el detector en producción corre sobre "
+             "rect_l, así que entrenar con left maximiza match de "
+             "dominio. 'both' duplica volumen pero los pares L/R son "
+             "casi idénticos a 14 cm de baseline; preferí más sites a "
+             "más ángulos por site. Sites mono ignoran este flag.",
+    )
     args = parser.parse_args()
 
     if not args.config.exists():
@@ -382,7 +552,14 @@ def main() -> int:
         f"{args.duration}s" if args.duration else "infinita", op_str,
     )
     for s in sites:
-        logger.info("  - %s -> %s", s["name"], s["url"])
+        flags = []
+        if s.get("sbs"):
+            flags.append("sbs")
+        if s.get("calibration"):
+            flags.append(f"rectify={s['calibration']}")
+        flag_str = f" [{', '.join(flags)}]" if flags else ""
+        logger.info("  - %s -> %s%s", s["name"], s["url"], flag_str)
+    logger.info("save-side: %s", args.save_side)
 
     stop_event = threading.Event()
 
@@ -402,6 +579,7 @@ def main() -> int:
                 operating_hours,
                 args.motion_trigger, args.motion_threshold,
                 args.background_interval,
+                args.save_side,
             ),
             daemon=True,
             name=f"capture-{site['name']}",

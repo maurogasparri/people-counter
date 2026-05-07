@@ -13,6 +13,8 @@ Focal length estimate for IMX708 120° HFOV at full resolution:
   disparity at 1.3m = 1330 * 140 / 1300 ≈ 143 px
 """
 
+from typing import Optional
+
 import cv2
 import numpy as np
 
@@ -260,6 +262,118 @@ def depth_at_bbox(
         return 0.0
 
     return float(np.percentile(valid, percentile))
+
+
+def head_depth_in_bbox(
+    depth_map: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    mounting_height_mm: float,
+    slice_thickness_mm: float = 100.0,
+    min_head_area_px: int = 15,
+    max_head_height_mm: float = 2100.0,
+    min_head_above_floor_mm: float = 500.0,
+) -> Optional[float]:
+    """Find head depth inside a bbox using histogram + connected components.
+
+    For zenith-mount stereo with a YOLO-COCO person bbox the centroid
+    sits on the torso, not the head, so neither the central-crop median
+    (measures the torso surface) nor a low percentile of the bbox depth
+    (single-pixel speckle wins) gives a reliable head-height reading.
+
+    The canonical fix is mode-based, not min-based: walk the depth
+    distribution from camera-nearest outward, and return the median of
+    the largest connected pixel cluster in the first 10 cm slice that
+    has enough area to be a real head. The torso, being further from
+    the camera, is automatically rejected because we stop at the first
+    closer cluster that passes the area gate. Single-pixel speckle is
+    rejected because it never accumulates the area to win.
+
+    Reference: Del Pizzo et al., "Counting people by RGB or depth
+    overhead cameras", Pattern Recognition Letters 2016.
+
+    Args:
+        depth_map: Depth map in mm from disparity_to_depth(). 0 = invalid.
+        bbox: (x1, y1, x2, y2) bounding box in pixel coordinates.
+        mounting_height_mm: Camera-to-floor distance.
+        slice_thickness_mm: Histogram bin width. 10 cm is wider than
+            SGBM's depth quantization at the operational range, so a
+            real head fills at least one bin solidly.
+        min_head_area_px: Minimum pixel count for a slice to qualify as
+            a head cluster. Tuned for the disparity grid at the runtime
+            resolution + downscale combo — small enough to catch a child
+            but big enough to reject speckle clusters.
+        max_head_height_mm: Anthropometric ceiling on head height; depths
+            below ``mount - max_head_height`` are rejected as impossible.
+        min_head_above_floor_mm: Anthropometric floor (ignore depths
+            corresponding to a head essentially on the ground — that's
+            the floor itself, not a person).
+
+    Returns:
+        Estimated head depth in mm, or None if no plausible head cluster
+        is found. Use ``head_height_above_floor()`` to convert to height.
+    """
+    if depth_map.size == 0:
+        return None
+    h, w = depth_map.shape[:2]
+    x1 = max(0, int(bbox[0]))
+    y1 = max(0, int(bbox[1]))
+    x2 = min(w, int(bbox[2]))
+    y2 = min(h, int(bbox[3]))
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    roi = depth_map[y1:y2, x1:x2]
+
+    # Anthropometric gate: heads live in [mount-max_head, mount-min_above_floor].
+    near = mounting_height_mm - max_head_height_mm
+    far = mounting_height_mm - min_head_above_floor_mm
+    if far <= near:
+        return None
+
+    valid = (roi > 0) & (roi >= near) & (roi <= far)
+    if int(valid.sum()) < min_head_area_px:
+        return None
+
+    # Despeckle: median blur over the gated ROI. Use NaN for invalids so
+    # the blur doesn't smear depth across holes. Fall back to plain median
+    # if medianBlur isn't applicable to the dtype/shape (paranoia).
+    roi_f = np.where(valid, roi.astype(np.float32), np.nan)
+    try:
+        smooth = cv2.medianBlur(roi_f, 3)
+    except cv2.error:
+        smooth = roi_f
+    valid_s = np.isfinite(smooth)
+    if int(valid_s.sum()) < min_head_area_px:
+        return None
+
+    d = smooth[valid_s]
+    bin_edges = np.arange(near, far + slice_thickness_mm, slice_thickness_mm)
+    if len(bin_edges) < 2:
+        return float(np.median(d))
+    hist, edges = np.histogram(d, bins=bin_edges)
+
+    # Walk from camera-nearest outward; first slice with >= min_head_area_px is the head.
+    candidates = np.where(hist >= min_head_area_px)[0]
+    if len(candidates) == 0:
+        return None
+    bin_idx = int(candidates[0])
+    d_lo = float(edges[bin_idx])
+    d_hi = float(edges[bin_idx + 1])
+
+    # Connected components within the head slice. The biggest blob is
+    # the head; smaller blobs in the same depth slice are usually noise.
+    head_mask = ((smooth >= d_lo) & (smooth < d_hi)).astype(np.uint8)
+    n, lbl, stats, _ = cv2.connectedComponentsWithStats(head_mask, connectivity=4)
+    if n <= 1:
+        return None
+    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    if int(stats[biggest, cv2.CC_STAT_AREA]) < min_head_area_px:
+        return None
+
+    blob_pixels = smooth[lbl == biggest]
+    if blob_pixels.size == 0:
+        return None
+    return float(np.median(blob_pixels))
 
 
 def min_depth_at_bbox(

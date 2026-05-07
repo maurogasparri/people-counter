@@ -48,6 +48,7 @@ from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
 from src.vision.depth import (
     compute_disparity, create_sgbm, depth_at_bbox, disparity_to_depth,
+    head_depth_in_bbox,
 )
 from src.vision.world_coords import classify_height, head_height_above_floor
 from src.vision.detect import detect_persons, load_model
@@ -879,28 +880,38 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             metas: list[dict] = []
             for det in detections:
                 cx, cy = det.centroid
+                # Tracker z = median of the bbox central crop. That's the
+                # body's "centre of mass" depth (torso for stock YOLO,
+                # head for RAPiD) — what we want for re-id gating across
+                # frames. Head depth needs a separate, head-specific
+                # estimate because in cenital geometry with the YOLO-COCO
+                # bbox the centroid is on the torso, not the head.
                 if depth_map is not None:
-                    # Median depth of the bbox's central 50% — same metric
-                    # for tracking (z coord) and head height (in cenital
-                    # geometry the head sits at the bbox centroid, so the
-                    # central-crop median IS the head depth). The previous
-                    # code used a low-percentile "near point" for height,
-                    # but with sgbm_downscale=8 a few speckle pixels could
-                    # pull that toward the noise floor and inflate height.
                     z = depth_at_bbox(depth_map, det.bbox)
+                    head_depth_mm = (
+                        head_depth_in_bbox(
+                            depth_map, det.bbox, mount_height_mm,
+                        )
+                        if hc_enabled and mount_height_mm > 0 else None
+                    )
                 else:
                     z = 0.0
+                    head_depth_mm = None
                 positions.append(np.array([cx, cy, z]))
 
-                if hc_enabled and mount_height_mm > 0 and z > 0:
-                    head_mm = head_height_above_floor(z, mount_height_mm)
+                if head_depth_mm is not None:
+                    head_mm = head_height_above_floor(
+                        head_depth_mm, mount_height_mm,
+                    )
                     height_class = classify_height(head_mm, adult_min_mm)
                 else:
                     head_mm = None
                     height_class = "unknown"
                 metas.append({
                     "confidence": float(det.confidence),
-                    "near_depth_mm": z,
+                    "near_depth_mm": (
+                        head_depth_mm if head_depth_mm is not None else z
+                    ),
                     "head_height_mm": head_mm,
                     "height_class": height_class,
                 })

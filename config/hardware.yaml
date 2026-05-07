@@ -104,7 +104,7 @@ detection:
                                   # the fine-tuned RAPiD HEF replaces it the
                                   # threshold typically rises to 0.30.
   nms_threshold: 0.45             # IoU threshold for non-maximum suppression.
-  cluster_distance_px: 100        # Post-NMS centroid clustering: detections
+  cluster_distance_px: 150        # Post-NMS centroid clustering: detections
                                   # whose centroids fall within this many
                                   # pixels are merged, keeping the highest-
                                   # confidence one. Catches stock YOLOv8's
@@ -112,13 +112,13 @@ detection:
                                   # torso + limbs of the same person produce
                                   # distinct boxes that NMS doesn't collapse
                                   # because their pairwise IoUs are <0.45).
-                                  # 100 px chosen after pilot tests where
-                                  # YOLOv8 stock fired bboxes on head and
-                                  # shoulder of the same person ~60-80 px
-                                  # apart; 50 was just under the gap. Two
-                                  # real people 60 cm apart at 2.56 m mount
-                                  # give centroids ~350 px apart, so 100 is
-                                  # well below the safe ceiling. 0 disables.
+                                  # 150 covers the wider patterns where the
+                                  # second box lands on an extended limb
+                                  # 100-150 px from the head; 100 left those
+                                  # cases as duplicates. Two real people 60
+                                  # cm apart at 2.56 m mount give centroids
+                                  # ~350 px apart, so 150 still has comfortable
+                                  # headroom against false merges. 0 disables.
 
 # --- Tracker + state machine (algo tuning, fleet-uniform after pilot) ---
 tracking:
