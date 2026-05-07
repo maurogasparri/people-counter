@@ -395,6 +395,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             viewer = None
     last_depth_panel: np.ndarray | None = None
     last_fps_estimate: float = 0.0
+    # Rate-limit SGBM for the live viewer when there are no detections.
+    # Otherwise the depth panel forces SGBM on every frame even when the
+    # store is empty (~95% of real-deploy frames), eating ~60ms per frame
+    # at sgbm_downscale=4 for nothing.
+    VIEWER_DEPTH_INTERVAL_S = 0.5  # 2 fps panel refresh when idle
+    last_viewer_depth_t: float = 0.0
 
     # --- Resolution sanity ---
     # config.vision.resolution is a per-site override on top of the fleet
@@ -826,17 +832,23 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             t_detect_end = time.perf_counter()
 
             # --- Depth map (only when there are detections to query) ---
-            # When the live viewer is enabled we compute SGBM on every frame
-            # regardless of detections — otherwise the depth panel stays
-            # blank between detections (especially with the stock YOLO that
-            # rarely fires on top-down) and the operator can't tell whether
-            # depth is broken or just inactive. This costs FPS but is debug
-            # mode.
-            depth_always = viewer is not None
+            # SGBM dominates the per-frame cost (~60ms at downscale=4 on
+            # Pi 5). We run it only when we actually need fresh depth:
+            #   - detections present → height + tracker z need it now,
+            #   - viewer enabled and the last refresh was >0.5s ago →
+            #     keep the depth panel updating at ~2 fps so an operator
+            #     can see liveness even when no one is in frame.
+            # When neither applies we leave depth_map=None and the
+            # viewer reuses last_depth_panel from the previous frame.
+            viewer_depth_due = (
+                viewer is not None
+                and (t_iter_start - last_viewer_depth_t)
+                    >= VIEWER_DEPTH_INTERVAL_S
+            )
             if (
                 calibration is not None
                 and focal_length_px is not None
-                and (detections or depth_always)
+                and (detections or viewer_depth_due)
             ):
                 # CLAHE off — the IMX708 indoor histogram is well-behaved
                 # for SGBM matching and the ~10ms CLAHE cost isn't worth it.
@@ -847,6 +859,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 depth_map = disparity_to_depth(
                     disparity, focal_length_px, baseline_mm
                 )
+                if viewer_depth_due:
+                    last_viewer_depth_t = t_iter_start
             else:
                 depth_map = None
             t_depth_end = time.perf_counter()
