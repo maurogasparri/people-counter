@@ -435,8 +435,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # --- Load detection model ---
     model_path = detect_cfg.get("model_path") or hw["detection"]["model_path"]
     detection_backend = getattr(args, "detection_backend", "auto")
-    logger.info("Loading model: %s (backend=%s)", model_path, detection_backend)
-    model = load_model(model_path, backend=detection_backend)
+    architecture = (
+        detect_cfg.get("architecture") or hw["detection"]["architecture"]
+    )
+    logger.info(
+        "Loading model: %s (backend=%s, arch=%s)",
+        model_path, detection_backend, architecture,
+    )
+    model = load_model(
+        model_path, backend=detection_backend, architecture=architecture,
+    )
 
     # --- Build SGBM ---
     # SGBM tuning lives in hardware.yaml under `vision_runtime.sgbm` (fleet-

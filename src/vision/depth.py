@@ -265,30 +265,40 @@ def depth_at_bbox(
 def min_depth_at_bbox(
     depth_map: np.ndarray,
     bbox: tuple[int, int, int, int],
-    low_percentile: float = 5.0,
+    low_percentile: float = 15.0,
 ) -> float:
     """Estimate the depth of the nearest point in a bbox (top of head for
     ceiling-mounted stereo).
 
-    Uses a low percentile (default 5%) rather than raw min() to be robust to
-    speckle noise in the disparity map. With zenith mount, this corresponds
-    to the highest point of the tracked object — typically the top of a
-    person's head.
+    Samples the central 50% of the bbox (matching ``depth_at_bbox``):
+    in zenith geometry the head sits near the bbox centroid, so the
+    central crop excludes peripheral SGBM noise from background pixels
+    that happen to fall inside the YOLO-stock person bbox. Then takes
+    a low percentile (default 15%) to stay robust to speckle outliers
+    — the raw min or 5th percentile is too easily pulled below the
+    true head depth at high SGBM downscale factors.
 
     Args:
         depth_map: Depth map in mm from disparity_to_depth().
         bbox: (x1, y1, x2, y2) bounding box in pixel coordinates.
-        low_percentile: Percentile for the "near" value (5 = 5th percentile,
-            more robust than raw minimum).
+        low_percentile: Percentile for the "near" value. 15 is the
+            empirical floor under which speckle clusters in the SGBM
+            output start dominating at downscale=8.
 
     Returns:
         Estimated near-depth in mm. Returns 0.0 if no valid pixels.
     """
     x1, y1, x2, y2 = bbox
-    roi_x1 = max(0, x1)
-    roi_y1 = max(0, y1)
-    roi_x2 = min(depth_map.shape[1], x2)
-    roi_y2 = min(depth_map.shape[0], y2)
+
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+    hw = (x2 - x1) // 4
+    hh = (y2 - y1) // 4
+
+    roi_x1 = max(0, cx - hw)
+    roi_y1 = max(0, cy - hh)
+    roi_x2 = min(depth_map.shape[1], cx + hw)
+    roi_y2 = min(depth_map.shape[0], cy + hh)
 
     roi = depth_map[roi_y1:roi_y2, roi_x1:roi_x2]
     valid = roi[roi > 0]

@@ -237,3 +237,81 @@ def test_reid_gate_rejects_far_reappearance():
     # The original ID should still exist but in PENDING.
     assert tid in tracks
     assert tracks[tid].state == PENDING
+
+
+def test_pass2_recovers_confirmed_with_bbox_jitter():
+    """Bbox jitter past max_distance should NOT spawn a phantom track.
+
+    Pass 1 fails at the tight gate, but pass 2 reruns Hungarian on the
+    leftovers with the wider reid_gate, so the original CONFIRMED track
+    catches the jittered detection. Without this, the same physical
+    person gets a new ID every time YOLO's bbox wobbles ±50 px.
+    """
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=1,
+        pending_max_frames=20,
+        reid_gate_px=300,
+    )
+    tracker.update([np.array([500, 300, 3000])])
+    tracker.update([np.array([510, 305, 3000])])  # promote to CONFIRMED
+    tid = list(tracker.tracks.keys())[0]
+    assert tracker.tracks[tid].state == CONFIRMED
+
+    # Jitter ~80 px in one frame — past max_distance=50, well under
+    # reid_gate_px=300. Pass 2 should bind it to the same track.
+    tracks = tracker.update([np.array([590, 325, 3000])])
+    assert len(tracks) == 1
+    assert tid in tracks
+    assert tracks[tid].state == CONFIRMED
+
+
+def test_pass2_respects_depth_gate():
+    """Pass 2 widens the 2D distance gate, NOT the depth gate.
+
+    Two physically distinct people at very different depths must not
+    swap IDs even when one drops off and another appears nearby in
+    pixel space.
+    """
+    tracker = EuclideanTracker(
+        max_distance=50,
+        max_depth_delta=500.0,
+        confirm_frames=1,
+        pending_max_frames=20,
+        reid_gate_px=300,
+    )
+    # Person A at depth 2000mm.
+    tracker.update([np.array([500, 300, 2000])])
+    tid_a = list(tracker.tracks.keys())[0]
+
+    # Frame 2: a detection 80 px away (past max_distance) but at depth
+    # 4000 — clearly a different person on a different floor level.
+    # Depth delta = 2000mm > max_depth_delta=500 → must NOT bind.
+    tracks = tracker.update([np.array([580, 320, 4000])])
+    assert tid_a in tracks
+    # New track was registered for the far-depth detection.
+    assert len(tracks) == 2
+
+
+def test_pass2_does_not_misroute_when_pass1_was_clean():
+    """When pass 1 already matched everything, pass 2 is a no-op."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=1,
+        pending_max_frames=20,
+        reid_gate_px=300,
+    )
+    tracker.update([
+        np.array([100, 200, 3000]),
+        np.array([400, 200, 3000]),
+    ])
+    tids_before = sorted(tracker.tracks.keys())
+
+    # Both move within the tight gate; pass 1 binds both.
+    tracks = tracker.update([
+        np.array([110, 205, 3000]),
+        np.array([405, 198, 3000]),
+    ])
+    assert sorted(tracks.keys()) == tids_before
+    for t in tracks.values():
+        assert t.state == CONFIRMED

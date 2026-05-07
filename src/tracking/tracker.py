@@ -197,7 +197,20 @@ class EuclideanTracker:
         det_arr: np.ndarray,
         track_ids: list[int],
     ) -> tuple[list[tuple[int, int]], list[int], list[int]]:
-        """Hungarian match with gating. Returns (matches, unmatched_t, unmatched_d)."""
+        """Hungarian match with gating, two-pass.
+
+        Pass 1 uses the state-aware gate (``reid_gate_px`` for PENDING,
+        ``max_distance`` otherwise). Pass 2 reruns Hungarian on whatever
+        is still unmatched with the wider ``reid_gate_px`` for everyone
+        — so a CONFIRMED that's about to go PENDING gets one shot at
+        re-matching the orphan detection before that detection is
+        registered as a brand-new track. Without pass 2, bbox jitter or
+        a single dropped detection produces phantom track pairs (the
+        original CONFIRMED transitions to PENDING while a fresh ID is
+        created from the same physical person).
+
+        Returns ``(matches, unmatched_t, unmatched_d)``.
+        """
         n_t, n_d = len(track_refs), len(det_arr)
         if n_t == 0 or n_d == 0:
             return [], list(range(n_t)), list(range(n_d))
@@ -213,9 +226,10 @@ class EuclideanTracker:
         else:
             depth_delta = np.zeros_like(dist_2d)
 
-        # Per-track gate: PENDING tracks use the wider re-id gate, others the
-        # standard max_distance. Expand to (n_t, n_d).
-        per_track_gate = np.array(
+        # Pass 1: per-track gate. PENDING gets the wider re-id gate to
+        # finish recovering; everyone else gets the tight gate to keep
+        # adjacent tracks from swapping.
+        gate_pass1 = np.array(
             [
                 self.reid_gate_px
                 if self._tracks[tid].state == PENDING
@@ -225,9 +239,53 @@ class EuclideanTracker:
             dtype=float,
         )[:, np.newaxis]
 
+        matches, matched_t, matched_d = self._hungarian_with_gate(
+            dist_2d, depth_delta, gate_pass1,
+        )
+
+        unmatched_t = [i for i in range(n_t) if i not in matched_t]
+        unmatched_d = [j for j in range(n_d) if j not in matched_d]
+
+        # Pass 2: relax gate to reid_gate_px for the leftovers. This is
+        # the safety net that prevents duplicate-track creation when a
+        # CONFIRMED's bbox jittered slightly past max_distance — the
+        # depth gate is unchanged, so two distinct people at different
+        # depths still can't swap IDs here.
+        if unmatched_t and unmatched_d:
+            sub_dist = dist_2d[np.ix_(unmatched_t, unmatched_d)]
+            sub_depth = depth_delta[np.ix_(unmatched_t, unmatched_d)]
+            sub_gate = np.full(
+                (len(unmatched_t), 1), self.reid_gate_px, dtype=float,
+            )
+            sub_matches, _, _ = self._hungarian_with_gate(
+                sub_dist, sub_depth, sub_gate,
+            )
+            for r_local, c_local in sub_matches:
+                t_idx = unmatched_t[r_local]
+                d_idx = unmatched_d[c_local]
+                matches.append((t_idx, d_idx))
+                matched_t.add(t_idx)
+                matched_d.add(d_idx)
+            unmatched_t = [i for i in range(n_t) if i not in matched_t]
+            unmatched_d = [j for j in range(n_d) if j not in matched_d]
+
+        return matches, unmatched_t, unmatched_d
+
+    def _hungarian_with_gate(
+        self,
+        dist_2d: np.ndarray,
+        depth_delta: np.ndarray,
+        gate_per_track: np.ndarray,
+    ) -> tuple[list[tuple[int, int]], set[int], set[int]]:
+        """Run Hungarian on a cost matrix with distance + depth gating.
+
+        ``gate_per_track`` is broadcast against ``dist_2d``; depths over
+        ``max_depth_delta`` are always rejected regardless of the gate.
+        Returns ``(matches, matched_track_indices, matched_det_indices)``.
+        """
         INF = 1e9
         cost = dist_2d.copy()
-        cost[dist_2d > per_track_gate] = INF
+        cost[dist_2d > gate_per_track] = INF
         cost[depth_delta > self.max_depth_delta] = INF
 
         row_ind, col_ind = linear_sum_assignment(cost)
@@ -241,10 +299,7 @@ class EuclideanTracker:
             matches.append((int(r), int(c)))
             matched_t.add(int(r))
             matched_d.add(int(c))
-
-        unmatched_t = [i for i in range(n_t) if i not in matched_t]
-        unmatched_d = [j for j in range(n_d) if j not in matched_d]
-        return matches, unmatched_t, unmatched_d
+        return matches, matched_t, matched_d
 
     # -------------------------------------------------- per-track updates
     def _register(self, centroid: np.ndarray) -> int:

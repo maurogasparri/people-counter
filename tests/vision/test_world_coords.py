@@ -109,3 +109,36 @@ class TestMinDepthAtBbox:
         near = min_depth_at_bbox(depth, (0, 0, 100, 100))
         median = depth_at_bbox(depth, (0, 0, 100, 100))
         assert near < median
+
+    def test_samples_central_crop_only(self):
+        """Peripheral pixels (closer to camera) outside the central 50%
+        of the bbox must NOT pull the near-depth down. In zenith view
+        the head sits near the bbox centroid; peripheral noise from
+        background pixels inside the YOLO-stock person bbox is what
+        was producing 1.88 m heights for a sitting user.
+        """
+        depth = np.full((100, 100), 1500.0, dtype=np.float32)
+        # Spurious very-near pixels along the bbox edges (peripheral).
+        depth[0:10, :] = 700.0
+        depth[90:100, :] = 700.0
+        depth[:, 0:10] = 700.0
+        depth[:, 90:100] = 700.0
+        # Bbox covers the whole array. Central 50% sees only 1500.
+        result = min_depth_at_bbox(depth, (0, 0, 100, 100))
+        assert abs(result - 1500.0) < 1, (
+            f"got {result}, expected ~1500 (peripheral noise should be "
+            "ignored by central-crop sampling)"
+        )
+
+    def test_default_percentile_robust_to_speckle_cluster(self):
+        """A small cluster of low-depth speckle pixels in the central
+        crop must not dominate the result. The 15% default is meant to
+        survive ~10% noise contamination at SGBM downscale=8.
+        """
+        # 50×50 central crop of a 100×100 bbox. Inject a 4×4 (16 px)
+        # cluster of bad-depth speckle = ~6.4% of central pixels.
+        depth = np.full((100, 100), 1500.0, dtype=np.float32)
+        depth[40:44, 40:44] = 600.0
+        result = min_depth_at_bbox(depth, (0, 0, 100, 100))
+        # 15th percentile of [600×16, 1500×(2500-16)] is 1500.
+        assert result > 1400

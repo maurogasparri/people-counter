@@ -82,6 +82,13 @@ vision_runtime:
 
 # --- Detection thresholds (model-specific, fleet-uniform after lab tune) ---
 detection:
+  architecture: yolov8            # Postprocessor selector: "yolov8" (raw or
+                                  # Hailo built-in NMS) or "rapid" (rotated-
+                                  # bbox head, anchors decoded on CPU). The
+                                  # registry in src/vision/detect.py maps the
+                                  # name to its expected input size + decode
+                                  # path. Switch to "rapid" together with the
+                                  # rapid_mwhb1024.hef model_path.
   model_path: /usr/src/people-counter/models/yolov8n.hef
                                   # HEF compiled for Hailo-8L. Same path on
                                   # every device; the .hef itself is shipped

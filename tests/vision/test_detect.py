@@ -9,8 +9,13 @@ import numpy as np
 import pytest
 
 from src.vision.detect import (
+    ARCHITECTURES,
+    RAPID_ANCHORS,
+    RAPID_STRIDES,
     Detection,
     postprocess,
+    postprocess_hailo_nms,
+    postprocess_rapid,
     preprocess,
 )
 
@@ -195,3 +200,174 @@ class TestDetection:
         assert d["bbox"] == [10, 20, 110, 220]
         assert d["confidence"] == 0.85
         assert d["centroid"] == [60.0, 120.0]
+
+
+class TestPostprocessRapid:
+    """RAPiD raw 3-scale output (sigmoid + anchor decode + axis-aligned NMS)."""
+
+    def _make_scale_tensor(self, h: int, w: int) -> np.ndarray:
+        # NHWC layout, 18 channels = 3 anchors * 6 (cx,cy,w,h,angle,conf).
+        # Confidence channels are 5/11/17. Default to large negative logits
+        # so sigmoid → ~0 and nothing fires unless we set a cell explicitly.
+        arr = np.zeros((h, w, 18), dtype=np.float32)
+        for anchor_idx in range(3):
+            arr[..., anchor_idx * 6 + 5] = -10.0
+        return arr
+
+    def _set_cell(
+        self,
+        arr: np.ndarray,
+        gy: int,
+        gx: int,
+        anchor_idx: int,
+        *,
+        tx: float = 0.0,
+        ty: float = 0.0,
+        tw: float = 0.0,
+        th: float = 0.0,
+        ta: float = 0.0,
+        tc: float = 4.0,
+    ) -> None:
+        base = anchor_idx * 6
+        arr[gy, gx, base + 0] = tx
+        arr[gy, gx, base + 1] = ty
+        arr[gy, gx, base + 2] = tw
+        arr[gy, gx, base + 3] = th
+        arr[gy, gx, base + 4] = ta
+        arr[gy, gx, base + 5] = tc
+
+    def _empty_scales(self) -> list[np.ndarray]:
+        return [
+            self._make_scale_tensor(128, 128),
+            self._make_scale_tensor(64, 64),
+            self._make_scale_tensor(32, 32),
+        ]
+
+    def test_invalid_input_returns_empty(self):
+        assert postprocess_rapid([], 0.3, 0.45, 1.0, 0, 0, (1024, 1024)) == []
+        assert (
+            postprocess_rapid(None, 0.3, 0.45, 1.0, 0, 0, (1024, 1024)) == []
+        )
+
+    def test_all_below_threshold(self):
+        scales = self._empty_scales()
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
+        )
+        assert dets == []
+
+    def test_single_detection_decoded_center(self):
+        # One positive cell at M-scale grid (32, 32), anchor 0:
+        # decoded center = ((sigmoid(0) + 32) * 16, (sigmoid(0) + 32) * 16)
+        # = (32.5*16, 32.5*16) = (520, 520).
+        # Anchor 0 size at stride 16 = (45.07, 101.47). With ta=0,
+        # angle = (0.5 - 0.5) * 360 = 0° → axis-aligned bbox = anchor.
+        scales = self._empty_scales()
+        self._set_cell(scales[1], 32, 32, anchor_idx=0, tc=4.0)
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
+        )
+        assert len(dets) == 1
+        cx, cy = dets[0].centroid
+        assert abs(cx - 520) < 2
+        assert abs(cy - 520) < 2
+        ax, ay = RAPID_ANCHORS[16][0]
+        x1, y1, x2, y2 = dets[0].bbox
+        assert abs((x2 - x1) - ax) < 2
+        assert abs((y2 - y1) - ay) < 2
+
+    def test_confidence_filtering(self):
+        scales = self._empty_scales()
+        # cell A: tc=4 → sigmoid ≈ 0.982 → keep
+        self._set_cell(scales[1], 10, 10, anchor_idx=0, tc=4.0)
+        # cell B: tc=-2 → sigmoid ≈ 0.119 → drop (below 0.3)
+        self._set_cell(scales[1], 20, 20, anchor_idx=1, tc=-2.0)
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
+        )
+        assert len(dets) == 1
+        assert dets[0].confidence > 0.9
+
+    def test_letterbox_undo(self):
+        scales = self._empty_scales()
+        self._set_cell(scales[1], 32, 32, anchor_idx=0, tc=4.0)
+        # If the 1024×1024 input was a letterboxed crop of an original
+        # 2048×1152 frame, scale=0.5, pad_y=64 (no x-pad), the decoded
+        # center (520, 520) maps back to ((520-0)/0.5, (520-64)/0.5) =
+        # (1040, 912) in original coords.
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 0.5, 0, 64, (2048, 1152),
+        )
+        assert len(dets) == 1
+        cx, cy = dets[0].centroid
+        assert abs(cx - 1040) < 4
+        assert abs(cy - 912) < 4
+
+    def test_nchw_layout_accepted(self):
+        # Some backends emit NCHW. The decoder should detect 18 in axis-0
+        # and transpose internally.
+        s = np.full((18, 128, 128), -10.0, dtype=np.float32)
+        m = np.zeros((18, 64, 64), dtype=np.float32)
+        for anchor_idx in range(3):
+            m[anchor_idx * 6 + 5] = -10.0
+        m[5, 32, 32] = 4.0  # anchor 0 conf at grid (32, 32)
+        large = np.full((18, 32, 32), -10.0, dtype=np.float32)
+        dets = postprocess_rapid(
+            [s, m, large], 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
+        )
+        assert len(dets) == 1
+        cx, cy = dets[0].centroid
+        assert abs(cx - 520) < 2
+        assert abs(cy - 520) < 2
+
+    def test_batch_dim_stripped(self):
+        # If the backend leaves a leading batch=1 dim, the decoder should
+        # strip it.
+        scales = self._empty_scales()
+        self._set_cell(scales[2], 16, 16, anchor_idx=0, tc=4.0)
+        scales[2] = scales[2][np.newaxis, ...]  # (1, 32, 32, 18)
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
+        )
+        assert len(dets) == 1
+
+
+class TestPostprocessHailoNmsInputSize:
+    def test_input_size_parametric(self):
+        # Hailo NMS output: list of 80 per-class arrays. Person class has
+        # one detection in normalized coords [y_min, x_min, y_max, x_max,
+        # score].
+        raw: list = [np.zeros((0, 5)) for _ in range(80)]
+        raw[0] = np.array([[0.4, 0.4, 0.6, 0.6, 0.9]], dtype=np.float32)
+        # input_size=1024 → normalized 0.5 maps to 512 px.
+        dets = postprocess_hailo_nms(
+            raw, 0.5, 1.0, 0, 0, (1024, 1024), input_size=(1024, 1024),
+        )
+        assert len(dets) == 1
+        cx, cy = dets[0].centroid
+        assert abs(cx - 512) < 2
+        assert abs(cy - 512) < 2
+
+    def test_default_input_size_640(self):
+        raw: list = [np.zeros((0, 5)) for _ in range(80)]
+        raw[0] = np.array([[0.4, 0.4, 0.6, 0.6, 0.9]], dtype=np.float32)
+        # Default input_size=(640, 640) → normalized 0.5 maps to 320 px.
+        dets = postprocess_hailo_nms(raw, 0.5, 1.0, 0, 0, (640, 640))
+        assert len(dets) == 1
+        cx, cy = dets[0].centroid
+        assert abs(cx - 320) < 2
+
+
+class TestArchitectureRegistry:
+    def test_yolov8_present(self):
+        assert "yolov8" in ARCHITECTURES
+        assert ARCHITECTURES["yolov8"]["input_size"] == (640, 640)
+        assert callable(ARCHITECTURES["yolov8"]["postprocess"])
+
+    def test_rapid_present(self):
+        assert "rapid" in ARCHITECTURES
+        assert ARCHITECTURES["rapid"]["input_size"] == (1024, 1024)
+        assert callable(ARCHITECTURES["rapid"]["postprocess"])
+
+    def test_rapid_strides_match_anchor_keys(self):
+        assert set(RAPID_STRIDES) == set(RAPID_ANCHORS.keys())

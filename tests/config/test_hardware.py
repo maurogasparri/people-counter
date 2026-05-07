@@ -37,6 +37,7 @@ VALID_HW = {
         "sgbm": {"num_disparities": "auto", "block_size": 9, "downscale": 2},
     },
     "detection": {
+        "architecture": "yolov8",
         "model_path": "/usr/src/people-counter/models/yolov8n.hef",
         "confidence_threshold": 0.5,
         "nms_threshold": 0.45,

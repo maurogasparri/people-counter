@@ -1,19 +1,30 @@
-"""Person detection using YOLOv8n on Hailo-8L accelerator.
+"""Person detection with pluggable model architectures.
 
-Supports two backends:
-  - hailo: Production. Runs HEF model on Hailo-8L via hailo_platform SDK.
-  - opencv: Development/testing. Runs ONNX model via OpenCV DNN.
+Two backends share the preprocessing path (letterbox + uint8 NHWC for
+Hailo, or float32 NCHW for OpenCV):
 
-The post-processing (NMS, bbox extraction, confidence filtering) is
-shared between both backends and fully testable without hardware.
+  - hailo: Production. Runs HEF on Hailo-8L via hailo_platform SDK.
+  - opencv: Development/testing. Runs ONNX via OpenCV DNN.
 
-COCO class 0 = "person". We filter for this class only.
+The post-processing path is **architecture-specific** and lives in the
+``ARCHITECTURES`` registry below. Each entry knows its input size and
+its decoder. Today we ship two:
+
+  - yolov8: COCO 80-class head. Auto-detects whether the HEF emitted a
+    Hailo-NMS list-of-arrays or a raw ``(1, 84, N)`` tensor.
+  - rapid:  Boston VIP rotated-bbox head, 1-class person. HEF emits
+    three raw per-scale tensors (strides 8/16/32). Decode runs on CPU
+    after Hailo since the rotated head is not supported by the on-chip
+    NMS unit.
+
+Adding a new architecture is one entry in ``ARCHITECTURES`` plus a
+postprocess callable with the same signature.
 """
 
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import cv2
 import numpy as np
@@ -21,7 +32,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 COCO_PERSON_CLASS = 0
-INPUT_SIZE = (640, 640)  # YOLOv8n standard input
+DEFAULT_ARCHITECTURE = "yolov8"
 
 
 # ---------------------------------------------------------------------------
@@ -53,16 +64,19 @@ class Detection:
 class DetectionBackend(Protocol):
     """Protocol for detection backends."""
 
-    def infer(self, preprocessed: np.ndarray) -> "np.ndarray | list":
+    def infer(self, preprocessed: np.ndarray) -> Any:
         """Run inference on preprocessed input.
 
         Args:
-            preprocessed: (1, 3, 640, 640) float32 normalized [0, 1].
+            preprocessed: ``(1, 3, H, W)`` float32 normalized [0, 1].
 
         Returns:
-            Raw model output. OpenCV backend returns an ndarray of shape
-            (1, 84, 8400) for YOLOv8n (transposed COCO). Hailo backend
-            returns a list of 80 per-class arrays from its built-in NMS.
+            Raw model output. Shape and structure depend on the
+            architecture (see ``ARCHITECTURES``):
+
+            - yolov8 + Hailo built-in NMS → list of 80 per-class arrays.
+            - yolov8 raw → ndarray of shape ``(1, 84, N)``.
+            - rapid raw → list of 3 per-scale ndarrays.
         """
         ...
 
@@ -78,6 +92,10 @@ class HailoBackend:
     Uses the VStream API with persistent activation — the network group
     and inference pipeline stay open for the lifetime of the backend,
     avoiding per-frame setup/teardown overhead.
+
+    Handles both single-output HEFs (e.g. YOLOv8 with on-chip NMS, where
+    the only output is the per-class detection list) and multi-output
+    HEFs (e.g. RAPiD raw, three per-scale tensors).
     """
 
     def __init__(self, hef_path: str) -> None:
@@ -126,6 +144,11 @@ class HailoBackend:
         )
 
         self._input_name = self._hef.get_input_vstream_infos()[0].name
+        # Capture HEF-declared output order so multi-output models decode
+        # in a deterministic order (S, M, L for RAPiD).
+        self._output_names = [
+            info.name for info in self._hef.get_output_vstream_infos()
+        ]
 
         # Activate network group and open inference pipeline persistently
         # instead of per-frame. Keeps the HW context warm.
@@ -136,21 +159,24 @@ class HailoBackend:
         )
         self._pipeline.__enter__()
 
-        logger.info("hailo_backend_loaded", extra={"path": hef_path})
+        logger.info(
+            "hailo_backend_loaded",
+            extra={"path": hef_path, "outputs": len(self._output_names)},
+        )
 
-    def infer(self, preprocessed: np.ndarray) -> list:
+    def infer(self, preprocessed: np.ndarray) -> Any:
         """Run inference on Hailo-8L.
 
         The HEF model expects uint8 NHWC input. This method handles the
         conversion from the float32 NCHW blob produced by preprocess().
 
         Returns:
-            List of 80 arrays (one per COCO class), each of shape (N, 5)
-            where 5 = [y_min, x_min, y_max, x_max, score] normalized [0,1].
-            N varies per class (ragged).
+            For single-output HEFs, the unwrapped output (batch dim
+            stripped). For multi-output HEFs, a list of per-output
+            arrays in HEF declaration order.
         """
-        # preprocess() outputs (1, 3, 640, 640) float32 [0,1]
-        # Hailo expects (1, 640, 640, 3) uint8 [0,255]
+        # preprocess() outputs (1, 3, H, W) float32 [0,1]
+        # Hailo expects (1, H, W, 3) uint8 [0,255]
         if preprocessed.ndim == 4 and preprocessed.shape[1] == 3:
             preprocessed = preprocessed.transpose(0, 2, 3, 1)
         img = (preprocessed * 255).clip(0, 255).astype(np.uint8)
@@ -159,9 +185,12 @@ class HailoBackend:
             {self._input_name: np.ascontiguousarray(img)}
         )
 
-        # Result is {name: [[class0_dets, class1_dets, ...]]}
-        raw = list(result.values())[0][0]
-        return raw  # list of 80 arrays
+        if len(self._output_names) == 1:
+            # Strip batch dim; for YOLOv8-NMS this yields the list of 80
+            # per-class arrays, for raw single-tensor heads it yields the
+            # decoded ndarray.
+            return result[self._output_names[0]][0]
+        return [result[name][0] for name in self._output_names]
 
     def close(self) -> None:
         """Release Hailo resources."""
@@ -215,21 +244,22 @@ class OpenCVBackend:
 
 def preprocess(
     frame: np.ndarray,
-    input_size: tuple[int, int] = INPUT_SIZE,
+    input_size: tuple[int, int] = (640, 640),
 ) -> tuple[np.ndarray, float, int, int]:
-    """Preprocess a frame for YOLOv8 inference.
+    """Preprocess a frame for letterboxed model inference.
 
     Applies letterbox resize maintaining aspect ratio, then normalizes.
 
     Args:
         frame: BGR image of any size.
-        input_size: Target (width, height) for the model.
+        input_size: Target ``(width, height)`` for the model.
 
     Returns:
-        (blob, scale, pad_x, pad_y) where:
-            blob: (1, 3, H, W) float32 normalized [0, 1].
-            scale: Scale factor applied during resize.
-            pad_x, pad_y: Padding offsets in pixels.
+        ``(blob, scale, pad_x, pad_y)`` where:
+
+        - ``blob``: ``(1, 3, H, W)`` float32 normalized [0, 1].
+        - ``scale``: Scale factor applied during resize.
+        - ``pad_x, pad_y``: Padding offsets in pixels.
     """
     target_w, target_h = input_size
     h, w = frame.shape[:2]
@@ -255,7 +285,7 @@ def preprocess(
 
 
 # ---------------------------------------------------------------------------
-# Post-processing (shared, hardware-independent)
+# Post-processing: YOLOv8 raw output (ONNX via OpenCV DNN)
 # ---------------------------------------------------------------------------
 
 
@@ -270,9 +300,10 @@ def postprocess(
 ) -> list[Detection]:
     """Post-process YOLOv8 raw output into person detections.
 
-    YOLOv8 output shape: (1, 84, 8400) where:
-        - 84 = 4 bbox coords (cx, cy, w, h) + 80 COCO class scores
-        - 8400 = number of prediction anchors
+    YOLOv8 output shape: ``(1, 84, 8400)`` where:
+
+    - 84 = 4 bbox coords (cx, cy, w, h) + 80 COCO class scores
+    - 8400 = number of prediction anchors
 
     Args:
         raw_output: Raw model output tensor.
@@ -280,7 +311,7 @@ def postprocess(
         nms_threshold: IoU threshold for NMS.
         scale: Scale factor from preprocessing.
         pad_x, pad_y: Padding offsets from preprocessing.
-        original_size: (width, height) of the original image.
+        original_size: ``(width, height)`` of the original image.
 
     Returns:
         List of Detection objects for persons only.
@@ -369,7 +400,7 @@ def postprocess(
 
 
 # ---------------------------------------------------------------------------
-# Post-processing: Hailo NMS output (HEF with built-in NMS)
+# Post-processing: YOLOv8 with Hailo built-in NMS
 # ---------------------------------------------------------------------------
 
 
@@ -380,20 +411,24 @@ def postprocess_hailo_nms(
     pad_x: int,
     pad_y: int,
     original_size: tuple[int, int],
+    input_size: tuple[int, int] = (640, 640),
 ) -> list[Detection]:
     """Post-process Hailo NMS output into person detections.
 
     Hailo NMS output is a list of 80 arrays (one per COCO class).
-    Each array has shape (N, 5) where:
-        - N: number of detections for that class (variable per class)
-        - 5: [y_min, x_min, y_max, x_max, score] normalized [0, 1]
+    Each array has shape ``(N, 5)`` where:
+
+    - N: number of detections for that class (variable per class)
+    - 5: ``[y_min, x_min, y_max, x_max, score]`` normalized [0, 1]
 
     Args:
         raw_output: List of 80 arrays from Hailo inference.
         confidence_threshold: Minimum confidence to keep.
         scale: Scale factor from preprocessing.
         pad_x, pad_y: Padding offsets from preprocessing.
-        original_size: (width, height) of the original image.
+        original_size: ``(width, height)`` of the original image.
+        input_size: ``(width, height)`` model input — used to undo the
+            normalized coords. YOLOv8 trained at 640.
 
     Returns:
         List of Detection objects for persons only.
@@ -405,7 +440,7 @@ def postprocess_hailo_nms(
         return []
 
     orig_w, orig_h = original_size
-    input_w, input_h = INPUT_SIZE
+    input_w, input_h = input_size
 
     detections = []
     for i in range(person_data.shape[0]):
@@ -447,19 +482,298 @@ def postprocess_hailo_nms(
 
 
 # ---------------------------------------------------------------------------
-# Public API (matches original interface + adds backend flexibility)
+# Post-processing: RAPiD raw 3-scale output
+# ---------------------------------------------------------------------------
+
+# RAPiD anchors for the MWHB1024 weights (Boston VIP). Per-scale 3 anchors,
+# one row each = (anchor_w_px, anchor_h_px) at the model's native 1024×1024
+# input. The HEF outputs raw per-scale tensors (no on-chip decode), so we
+# reproduce the original PyTorch decode here on CPU.
+RAPID_ANCHORS = {
+    8: np.array(
+        [[18.78, 33.47], [28.89, 61.75], [48.68, 68.39]], dtype=np.float32,
+    ),
+    16: np.array(
+        [[45.07, 101.47], [63.10, 113.54], [81.39, 134.46]], dtype=np.float32,
+    ),
+    32: np.array(
+        [[91.74, 144.99], [137.52, 178.48], [194.44, 250.80]], dtype=np.float32,
+    ),
+}
+RAPID_STRIDES = (8, 16, 32)
+RAPID_INPUT_SIZE = (1024, 1024)
+# Angle range used by RAPiD's head: sigmoid output mapped to (-180°, 180°).
+# The exact magnitude doesn't matter for our axis-aligned-bbox output (the
+# tight enclosing rectangle is the same up to a sign-symmetric flip), but
+# keeping the original parametrization avoids surprises if someone reuses
+# this decoder for rotated NMS later.
+_RAPID_ANGLE_RANGE_DEG = 360.0
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def _rapid_to_grid(
+    arr: np.ndarray, expected_channels: int = 18,
+) -> "np.ndarray | None":
+    """Normalize a RAPiD per-scale tensor to ``(H, W, n_anchors, 6)``.
+
+    Hailo VStream returns NHWC by default; the OpenCV path may return
+    NCHW. We accept both and any leading batch dim.
+    """
+    a = np.asarray(arr)
+    if a.ndim == 4 and a.shape[0] == 1:
+        a = a[0]
+    if a.ndim != 3:
+        return None
+
+    if a.shape[-1] == expected_channels:
+        h, w, _ = a.shape
+    elif a.shape[0] == expected_channels:
+        a = np.transpose(a, (1, 2, 0))
+        h, w, _ = a.shape
+    else:
+        return None
+
+    return a.reshape(h, w, 3, 6)
+
+
+def postprocess_rapid(
+    raw_output: list,
+    confidence_threshold: float,
+    nms_threshold: float,
+    scale: float,
+    pad_x: int,
+    pad_y: int,
+    original_size: tuple[int, int],
+    input_size: tuple[int, int] = RAPID_INPUT_SIZE,
+) -> list[Detection]:
+    """Post-process RAPiD raw 3-scale output into person detections.
+
+    The RAPiD HEF emits three per-scale tensors (S/M/L = strides 8/16/32),
+    each with 18 channels = ``3 anchors × (cx, cy, w, h, angle, conf)``.
+    We sigmoid + decode anchors on CPU, convert each rotated rectangle to
+    its tight axis-aligned enclosing box, and run plain NMS on those
+    enclosing boxes — the tracker downstream only consumes axis-aligned
+    bboxes, so we collapse the rotation here.
+
+    Args:
+        raw_output: List of 3 per-scale ndarrays in HEF order (S, M, L).
+        confidence_threshold: Min sigmoid confidence to keep.
+        nms_threshold: IoU threshold for axis-aligned NMS.
+        scale: Letterbox scale factor.
+        pad_x, pad_y: Letterbox padding offsets.
+        original_size: ``(width, height)`` of the original image.
+        input_size: Model input ``(W, H)`` — defaults to 1024×1024.
+    """
+    if not isinstance(raw_output, (list, tuple)) or len(raw_output) != 3:
+        return []
+
+    all_boxes: list[np.ndarray] = []  # axis-aligned [x1, y1, x2, y2]
+    all_scores: list[np.ndarray] = []
+
+    for arr, stride in zip(raw_output, RAPID_STRIDES):
+        grid = _rapid_to_grid(arr)
+        if grid is None:
+            continue
+
+        h, w = grid.shape[:2]
+        tx = grid[..., 0]
+        ty = grid[..., 1]
+        tw = grid[..., 2]
+        th = grid[..., 3]
+        ta = grid[..., 4]
+        tc = grid[..., 5]
+
+        conf = _sigmoid(tc)
+        mask = conf >= confidence_threshold
+        if not np.any(mask):
+            continue
+
+        # Build cell-grid offsets, broadcast across the 3 anchor slots.
+        gy_, gx_ = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+        gx = gx_[..., None].astype(np.float32)  # (h, w, 1)
+        gy = gy_[..., None].astype(np.float32)
+
+        bx = (_sigmoid(tx) + gx) * stride
+        by = (_sigmoid(ty) + gy) * stride
+        anchors = RAPID_ANCHORS[stride]  # (3, 2)
+        bw = anchors[None, None, :, 0] * np.exp(tw)
+        bh = anchors[None, None, :, 1] * np.exp(th)
+        angle_deg = (_sigmoid(ta) - 0.5) * _RAPID_ANGLE_RANGE_DEG
+
+        bx_f = bx[mask]
+        by_f = by[mask]
+        bw_f = bw[mask]
+        bh_f = bh[mask]
+        ang_f = angle_deg[mask]
+        conf_f = conf[mask]
+
+        # Tight axis-aligned bbox of the rotated rectangle: rotate the
+        # 4 corner offsets and take the per-row min/max. Vectorized over
+        # all surviving cells in this scale.
+        cos_a = np.cos(np.deg2rad(ang_f))
+        sin_a = np.sin(np.deg2rad(ang_f))
+        dx = np.stack(
+            [-bw_f / 2, bw_f / 2, bw_f / 2, -bw_f / 2], axis=1,
+        )
+        dy = np.stack(
+            [-bh_f / 2, -bh_f / 2, bh_f / 2, bh_f / 2], axis=1,
+        )
+        rx = dx * cos_a[:, None] - dy * sin_a[:, None]
+        ry = dx * sin_a[:, None] + dy * cos_a[:, None]
+        cx = bx_f[:, None] + rx
+        cy = by_f[:, None] + ry
+        x1 = cx.min(axis=1)
+        y1 = cy.min(axis=1)
+        x2 = cx.max(axis=1)
+        y2 = cy.max(axis=1)
+
+        all_boxes.append(np.stack([x1, y1, x2, y2], axis=1))
+        all_scores.append(conf_f)
+
+    if not all_boxes:
+        return []
+
+    boxes = np.concatenate(all_boxes, axis=0).astype(np.float32)
+    scores = np.concatenate(all_scores, axis=0).astype(np.float32)
+
+    # Undo letterbox to get back to original-image coords.
+    boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / scale
+    boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / scale
+
+    orig_w, orig_h = original_size
+    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, orig_w)
+    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, orig_h)
+
+    indices = cv2.dnn.NMSBoxes(
+        boxes.tolist(),
+        scores.tolist(),
+        confidence_threshold,
+        nms_threshold,
+    )
+    if len(indices) == 0:
+        return []
+
+    detections: list[Detection] = []
+    for i in np.asarray(indices).flatten():
+        bx1, by1, bx2, by2 = boxes[i]
+        detections.append(
+            Detection(
+                bbox=(int(bx1), int(by1), int(bx2), int(by2)),
+                confidence=float(scores[i]),
+                centroid=((bx1 + bx2) / 2.0, (by1 + by2) / 2.0),
+            )
+        )
+    return detections
+
+
+# ---------------------------------------------------------------------------
+# Architecture registry
 # ---------------------------------------------------------------------------
 
 
-def load_model(model_path: str, backend: str = "auto") -> dict[str, Any]:
+def _postprocess_yolov8(
+    raw_output: Any,
+    confidence_threshold: float,
+    nms_threshold: float,
+    scale: float,
+    pad_x: int,
+    pad_y: int,
+    original_size: tuple[int, int],
+    input_size: tuple[int, int],
+) -> list[Detection]:
+    """Dispatch yolov8 output to the right decoder.
+
+    Hailo HEF with built-in NMS yields a per-class list; the OpenCV /
+    raw-HEF path yields a single ndarray. We branch on type so the same
+    arch entry covers both.
+    """
+    if isinstance(raw_output, list):
+        return postprocess_hailo_nms(
+            raw_output,
+            confidence_threshold,
+            scale,
+            pad_x,
+            pad_y,
+            original_size,
+            input_size=input_size,
+        )
+    return postprocess(
+        raw_output,
+        confidence_threshold,
+        nms_threshold,
+        scale,
+        pad_x,
+        pad_y,
+        original_size,
+    )
+
+
+def _postprocess_rapid(
+    raw_output: Any,
+    confidence_threshold: float,
+    nms_threshold: float,
+    scale: float,
+    pad_x: int,
+    pad_y: int,
+    original_size: tuple[int, int],
+    input_size: tuple[int, int],
+) -> list[Detection]:
+    return postprocess_rapid(
+        raw_output,
+        confidence_threshold,
+        nms_threshold,
+        scale,
+        pad_x,
+        pad_y,
+        original_size,
+        input_size=input_size,
+    )
+
+
+# Each entry binds a name to its expected ``input_size`` (for letterbox)
+# and its ``postprocess`` callable. Adding a new model = one entry here +
+# a postprocess function with the same signature.
+PostprocessFn = Callable[
+    [Any, float, float, float, int, int, tuple[int, int], tuple[int, int]],
+    list[Detection],
+]
+ARCHITECTURES: dict[str, dict[str, Any]] = {
+    "yolov8": {
+        "input_size": (640, 640),
+        "postprocess": _postprocess_yolov8,
+    },
+    "rapid": {
+        "input_size": (1024, 1024),
+        "postprocess": _postprocess_rapid,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def load_model(
+    model_path: str,
+    backend: str = "auto",
+    architecture: str = DEFAULT_ARCHITECTURE,
+) -> dict[str, Any]:
     """Load detection model.
 
     Args:
         model_path: Path to HEF (Hailo) or ONNX (OpenCV) model file.
-        backend: "hailo", "opencv", or "auto" (detect from file extension).
+        backend: ``"hailo"``, ``"opencv"``, or ``"auto"`` (file-extension
+            based).
+        architecture: Postprocess selector — must be a key in
+            ``ARCHITECTURES``. Defaults to yolov8.
 
     Returns:
-        Dict with "backend" instance and "type" string.
+        Dict with ``backend`` instance, ``type`` string, ``architecture``
+        name, and ``input_size`` tuple.
     """
     path = Path(model_path)
 
@@ -474,14 +788,26 @@ def load_model(model_path: str, backend: str = "auto") -> dict[str, Any]:
                 "Use backend='hailo' or backend='opencv'."
             )
 
+    if architecture not in ARCHITECTURES:
+        raise ValueError(
+            f"Unknown architecture: {architecture!r}. "
+            f"Known: {sorted(ARCHITECTURES)}"
+        )
+
     if backend == "hailo":
-        model_backend = HailoBackend(model_path)
+        model_backend: Any = HailoBackend(model_path)
     elif backend == "opencv":
         model_backend = OpenCVBackend(model_path)
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
-    return {"backend": model_backend, "type": backend}
+    spec = ARCHITECTURES[architecture]
+    return {
+        "backend": model_backend,
+        "type": backend,
+        "architecture": architecture,
+        "input_size": spec["input_size"],
+    }
 
 
 def detect_persons(
@@ -494,7 +820,7 @@ def detect_persons(
 
     Args:
         frame: BGR image of any size.
-        model: Dict from load_model().
+        model: Dict from ``load_model()``.
         confidence_threshold: Minimum confidence for detections.
         nms_threshold: IoU threshold for NMS.
 
@@ -502,24 +828,17 @@ def detect_persons(
         List of Detection objects (person class only).
     """
     backend: DetectionBackend = model["backend"]
-    backend_type = model["type"]
+    architecture = model.get("architecture", DEFAULT_ARCHITECTURE)
+    input_size: tuple[int, int] = model.get(
+        "input_size", ARCHITECTURES[architecture]["input_size"],
+    )
+    postprocess_fn: PostprocessFn = ARCHITECTURES[architecture]["postprocess"]
 
-    blob, scale, pad_x, pad_y = preprocess(frame)
+    blob, scale, pad_x, pad_y = preprocess(frame, input_size=input_size)
     raw_output = backend.infer(blob)
 
     orig_h, orig_w = frame.shape[:2]
-
-    if backend_type == "hailo":
-        return postprocess_hailo_nms(
-            raw_output,
-            confidence_threshold,
-            scale,
-            pad_x,
-            pad_y,
-            (orig_w, orig_h),
-        )
-
-    return postprocess(
+    return postprocess_fn(
         raw_output,
         confidence_threshold,
         nms_threshold,
@@ -527,4 +846,5 @@ def detect_persons(
         pad_x,
         pad_y,
         (orig_w, orig_h),
+        input_size,
     )
