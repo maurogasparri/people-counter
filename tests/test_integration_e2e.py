@@ -231,7 +231,10 @@ def _install_common_patches(
     script = list(detections_per_frame)
     frame_idx = [0]
 
-    def _fake_detect(frame, model, confidence_threshold=0.5, nms_threshold=0.45):
+    def _fake_detect(
+        frame, model,
+        confidence_threshold=0.5, nms_threshold=0.45, cluster_distance_px=0.0,
+    ):
         i = frame_idx[0]
         frame_idx[0] += 1
         if i < len(script):

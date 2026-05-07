@@ -59,7 +59,7 @@ def _validate(data: dict[str, Any]) -> None:
         "lens": ("type", "hfov_deg"),
         "vision_runtime": ("sgbm", "resolution", "fps", "calibration_file"),
         "detection": ("architecture", "model_path", "confidence_threshold",
-                      "nms_threshold"),
+                      "nms_threshold", "cluster_distance_px"),
         "tracking": ("max_disappeared", "max_distance", "state_machine"),
         "wifi_ble": ("wifi_interface", "probe_interval_seconds",
                      "cross_protocol_window_seconds",

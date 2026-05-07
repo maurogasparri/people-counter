@@ -48,7 +48,6 @@ from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
 from src.vision.depth import (
     compute_disparity, create_sgbm, depth_at_bbox, disparity_to_depth,
-    min_depth_at_bbox,
 )
 from src.vision.world_coords import classify_height, head_height_above_floor
 from src.vision.detect import detect_persons, load_model
@@ -813,6 +812,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     nms_threshold=detect_cfg.get(
                         "nms_threshold", hw["detection"]["nms_threshold"],
                     ),
+                    cluster_distance_px=float(detect_cfg.get(
+                        "cluster_distance_px",
+                        hw["detection"]["cluster_distance_px"],
+                    )),
                 )
                 health_signals.detect_ok = True
             except Exception:
@@ -863,22 +866,27 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             for det in detections:
                 cx, cy = det.centroid
                 if depth_map is not None:
+                    # Median depth of the bbox's central 50% — same metric
+                    # for tracking (z coord) and head height (in cenital
+                    # geometry the head sits at the bbox centroid, so the
+                    # central-crop median IS the head depth). The previous
+                    # code used a low-percentile "near point" for height,
+                    # but with sgbm_downscale=8 a few speckle pixels could
+                    # pull that toward the noise floor and inflate height.
                     z = depth_at_bbox(depth_map, det.bbox)
-                    near_z = min_depth_at_bbox(depth_map, det.bbox)
                 else:
                     z = 0.0
-                    near_z = 0.0
                 positions.append(np.array([cx, cy, z]))
 
-                if hc_enabled and mount_height_mm > 0 and near_z > 0:
-                    head_mm = head_height_above_floor(near_z, mount_height_mm)
+                if hc_enabled and mount_height_mm > 0 and z > 0:
+                    head_mm = head_height_above_floor(z, mount_height_mm)
                     height_class = classify_height(head_mm, adult_min_mm)
                 else:
                     head_mm = None
                     height_class = "unknown"
                 metas.append({
                     "confidence": float(det.confidence),
-                    "near_depth_mm": near_z,
+                    "near_depth_mm": z,
                     "head_height_mm": head_mm,
                     "height_class": height_class,
                 })

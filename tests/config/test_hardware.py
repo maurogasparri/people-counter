@@ -41,6 +41,7 @@ VALID_HW = {
         "model_path": "/usr/src/people-counter/models/yolov8n.hef",
         "confidence_threshold": 0.5,
         "nms_threshold": 0.45,
+        "cluster_distance_px": 50,
     },
     "tracking": {
         "max_disappeared": 30,

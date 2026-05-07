@@ -13,6 +13,7 @@ from src.vision.detect import (
     RAPID_ANCHORS,
     RAPID_STRIDES,
     Detection,
+    cluster_detections,
     postprocess,
     postprocess_hailo_nms,
     postprocess_rapid,
@@ -371,3 +372,88 @@ class TestArchitectureRegistry:
 
     def test_rapid_strides_match_anchor_keys(self):
         assert set(RAPID_STRIDES) == set(RAPID_ANCHORS.keys())
+
+
+class TestClusterDetections:
+    """Centroid clustering safety net for stock-YOLOv8 multi-firing in
+    cenital geometry (head + torso + limbs of one person produce distinct
+    boxes that NMS can't collapse)."""
+
+    @staticmethod
+    def _det(cx: float, cy: float, conf: float) -> Detection:
+        # 20×20 bbox centered on (cx, cy).
+        return Detection(
+            bbox=(int(cx) - 10, int(cy) - 10, int(cx) + 10, int(cy) + 10),
+            confidence=conf,
+            centroid=(cx, cy),
+        )
+
+    def test_disabled_returns_input(self):
+        dets = [self._det(100, 100, 0.9), self._det(105, 105, 0.8)]
+        out = cluster_detections(dets, max_centroid_distance_px=0)
+        assert len(out) == 2
+
+    def test_empty_input(self):
+        assert cluster_detections([], max_centroid_distance_px=50) == []
+
+    def test_singleton_passes_through(self):
+        d = self._det(100, 100, 0.9)
+        assert cluster_detections([d], max_centroid_distance_px=50) == [d]
+
+    def test_close_pair_collapses_to_highest_conf(self):
+        a = self._det(100, 100, 0.85)
+        b = self._det(120, 110, 0.92)  # ~22 px from a, higher conf
+        out = cluster_detections([a, b], max_centroid_distance_px=50)
+        assert len(out) == 1
+        assert out[0].confidence == pytest.approx(0.92)
+
+    def test_far_pair_kept_separate(self):
+        a = self._det(100, 100, 0.85)
+        b = self._det(400, 400, 0.85)
+        out = cluster_detections([a, b], max_centroid_distance_px=50)
+        assert len(out) == 2
+
+    def test_three_on_one_person_collapse_to_one(self):
+        # Stock YOLOv8 on cenital firing on head + torso + limb of the
+        # same person at (100, 100). Even though pairwise IoU is < 0.45
+        # (different body parts), centroids cluster within 50 px.
+        head = self._det(100, 100, 0.65)
+        torso = self._det(120, 130, 0.55)
+        limb = self._det(80, 130, 0.42)
+        out = cluster_detections(
+            [head, torso, limb], max_centroid_distance_px=50,
+        )
+        assert len(out) == 1
+        assert out[0].confidence == pytest.approx(0.65)
+
+    def test_two_persons_stay_two_clusters(self):
+        # Two physically distinct people far apart, each with a multi-fire
+        # cluster. We should end up with exactly two detections, one per
+        # person, each the highest-confidence representative.
+        person_a = [
+            self._det(100, 100, 0.7),
+            self._det(120, 110, 0.6),
+        ]
+        person_b = [
+            self._det(500, 500, 0.8),
+            self._det(515, 510, 0.55),
+        ]
+        out = cluster_detections(
+            person_a + person_b, max_centroid_distance_px=50,
+        )
+        assert len(out) == 2
+        confs = sorted(d.confidence for d in out)
+        assert confs == pytest.approx([0.7, 0.8])
+
+    def test_chain_does_not_collapse_distant_endpoints(self):
+        # Three detections in a chain: A--B--C where A↔B and B↔C are
+        # within the gate but A↔C are not. Greedy from highest conf
+        # picks B first, absorbs A and C in turn.
+        a = self._det(100, 100, 0.5)
+        b = self._det(140, 100, 0.9)  # 40 px from a, 40 px from c
+        c = self._det(180, 100, 0.6)
+        out = cluster_detections([a, b, c], max_centroid_distance_px=50)
+        # B (highest conf) absorbs A then C since both are within 50 px
+        # of B's centroid.
+        assert len(out) == 1
+        assert out[0].confidence == pytest.approx(0.9)

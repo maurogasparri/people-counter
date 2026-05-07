@@ -753,6 +753,53 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
 
 
 # ---------------------------------------------------------------------------
+# Centroid clustering (post-NMS safety net)
+# ---------------------------------------------------------------------------
+
+
+def cluster_detections(
+    detections: list[Detection],
+    max_centroid_distance_px: float,
+) -> list[Detection]:
+    """Greedy centroid clustering — merge close-by detections.
+
+    Keeps the highest-confidence detection in each cluster. Two
+    detections are in the same cluster iff their centroids are within
+    ``max_centroid_distance_px`` of each other.
+
+    Why this on top of NMS: standard ``cv2.dnn.NMSBoxes`` collapses
+    overlapping bboxes, but stock YOLOv8 trained on COCO side-views
+    fires multiple distinct boxes on different body parts (head, torso,
+    limbs) of the same person in cenital geometry. Their pairwise bbox
+    IoUs are <0.45 so NMS keeps them — but their centroids are within
+    one bbox-width. Centroid distance catches that case where IoU
+    cannot.
+
+    Pass ``max_centroid_distance_px <= 0`` to disable (returns the
+    detections unchanged).
+    """
+    if max_centroid_distance_px <= 0 or len(detections) <= 1:
+        return list(detections)
+
+    threshold_sq = max_centroid_distance_px ** 2
+    # Highest-confidence first so each cluster's representative is the
+    # most reliable detection.
+    sorted_dets = sorted(detections, key=lambda d: -d.confidence)
+    kept: list[Detection] = []
+    for det in sorted_dets:
+        cx, cy = det.centroid
+        absorbed = False
+        for k in kept:
+            kx, ky = k.centroid
+            if (cx - kx) ** 2 + (cy - ky) ** 2 < threshold_sq:
+                absorbed = True
+                break
+        if not absorbed:
+            kept.append(det)
+    return kept
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -815,6 +862,7 @@ def detect_persons(
     model: dict[str, Any],
     confidence_threshold: float = 0.5,
     nms_threshold: float = 0.45,
+    cluster_distance_px: float = 0.0,
 ) -> list[Detection]:
     """Run person detection on a single frame.
 
@@ -823,6 +871,13 @@ def detect_persons(
         model: Dict from ``load_model()``.
         confidence_threshold: Minimum confidence for detections.
         nms_threshold: IoU threshold for NMS.
+        cluster_distance_px: If > 0, after NMS run a centroid clustering
+            pass (``cluster_detections``) that merges detections whose
+            centroids are within this many pixels. Used to absorb the
+            multi-firing of stock YOLOv8 on cenital geometry where the
+            same person spawns boxes on head + torso + limbs and NMS
+            cannot collapse them because their bbox IoUs are too low.
+            Default 0 disables.
 
     Returns:
         List of Detection objects (person class only).
@@ -838,7 +893,7 @@ def detect_persons(
     raw_output = backend.infer(blob)
 
     orig_h, orig_w = frame.shape[:2]
-    return postprocess_fn(
+    detections = postprocess_fn(
         raw_output,
         confidence_threshold,
         nms_threshold,
@@ -848,3 +903,6 @@ def detect_persons(
         (orig_w, orig_h),
         input_size,
     )
+    if cluster_distance_px > 0:
+        detections = cluster_detections(detections, cluster_distance_px)
+    return detections
