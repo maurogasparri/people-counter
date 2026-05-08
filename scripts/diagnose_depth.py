@@ -111,14 +111,34 @@ def main() -> None:
         if not args.quiet:
             print(*a, **kw)
 
-    # Hardware constants: camera CSI assignments + sensor defaults from
-    # config/hardware.yaml. Single source of truth across all tools.
+    # Hardware constants: camera CSI assignments from hardware.yaml.
     hw = load_hardware_config()
     cam_left = hw["bracket"]["camera_left_csi"]
     cam_right = hw["bracket"]["camera_right_csi"]
-    resolution = tuple(hw["sensor"]["default_res"])
 
     cal = load_calibration(args.calibration)
+
+    # Capture resolution must match the calibration's resolution, not
+    # sensor.default_res nor vision_runtime.resolution. Two valid flows
+    # exist on the same device:
+    #   - Wizard fresh output → .npz at --resolution (2304×1296 default).
+    #   - Deployed runtime    → rescaled .npz at vision_runtime.resolution
+    #                            (1152×648 typical) via rescale_calibration.py.
+    # The .npz carries ``image_size`` (the resolution at which the rectify
+    # maps were built); we use it as ground truth so diagnose works against
+    # either flow. Capture at any other size and cv2.remap silently clips
+    # the frame to the maps, which previously produced rectified pairs
+    # that only covered the top-left quadrant of the actual capture and
+    # invalidated the depth diagnosis entirely.
+    if "image_size" in cal:
+        cal_w, cal_h = (int(v) for v in cal["image_size"])
+        resolution = (cal_w, cal_h)
+    else:
+        # Fallback for older .npz that didn't store image_size: use the
+        # rectify map shape directly. cv2.convertMaps may have changed
+        # the dtype but the spatial dims are preserved.
+        map_h, map_w = cal["map_l_x"].shape[:2]
+        resolution = (map_w, map_h)
 
     # --- Print calibration parameters ---
     _emit("=" * 70)
@@ -158,6 +178,19 @@ def main() -> None:
     left, right = cap.read()
     cap.close()
     _emit(f"Capturado: {left.shape}, rectificando...")
+
+    # Sanity check: the rectification maps are sized to the calibration
+    # resolution. cv2.remap produces an output sized to the maps. Feeding
+    # a capture at a different resolution silently clips content (only
+    # the top-left quadrant of a 2× capture survives) — exactly the
+    # symptom the original tool exhibited before the resolution fix above.
+    map_h, map_w = cal["map_l_x"].shape[:2]
+    if (left.shape[1], left.shape[0]) != (map_w, map_h):
+        print(
+            f"  ATENCIÓN: capture {left.shape[1]}×{left.shape[0]} != "
+            f"calibration maps {map_w}×{map_h} — rectificación recortará "
+            "contenido. Verificá vision_runtime.resolution en hardware.yaml."
+        )
 
     rect_l, rect_r = rectify_pair(left, right, cal)
 

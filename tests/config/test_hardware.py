@@ -53,6 +53,7 @@ VALID_HW = {
             "depth_gate_m": 0.5,
         },
     },
+    "counter": {"foot_projection_enabled": False},
     "wifi_ble": {
         "wifi_interface": "wlan0",
         "probe_interval_seconds": 900,
@@ -192,6 +193,18 @@ class TestShippedHardware:
         assert bf.get("enabled") is False, (
             "best_frame.enabled must default to False in shipped config — "
             "see docs/privacy.md"
+        )
+
+    def test_shipped_foot_projection_default_off(self):
+        """Foot-point parallax projection ships disabled. The fix is
+        correct in lateral-door geometries but compresses trajectories
+        below the ROI exit threshold in central-door layouts (only
+        OUTs detected, no INs). Re-enable per-site only when the line
+        is off-center and parallax beats the ROI margin."""
+        cfg = load_hardware_config()
+        assert cfg["counter"]["foot_projection_enabled"] is False, (
+            "counter.foot_projection_enabled must default to False — "
+            "central-door geometries break when it's on"
         )
 
 
@@ -441,3 +454,42 @@ class TestBestFrameValidation:
             load_hardware_config(p)
         msgs = [r.message for r in caplog.records]
         assert any("weights sum" in m for m in msgs)
+
+
+class TestCounterToggle:
+    """counter.foot_projection_enabled is a fleet-wide bool toggle."""
+
+    def test_true_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["counter"] = {"foot_projection_enabled": True}
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["counter"]["foot_projection_enabled"] is True
+
+    def test_false_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["counter"] = {"foot_projection_enabled": False}
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["counter"]["foot_projection_enabled"] is False
+
+    def test_missing_block_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg.pop("counter", None)
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="missing section: counter"):
+            load_hardware_config(p)
+
+    def test_missing_key_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["counter"] = {}
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="counter.foot_projection_enabled"):
+            load_hardware_config(p)
+
+    def test_non_bool_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["counter"] = {"foot_projection_enabled": "yes"}
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="must be a bool"):
+            load_hardware_config(p)

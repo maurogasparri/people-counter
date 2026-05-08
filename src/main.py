@@ -51,6 +51,7 @@ from src.vision.depth import (
     create_sgbm,
     depth_at_bbox,
     disparity_to_depth,
+    enable_depth_debug,
     head_depth_in_bbox,
 )
 from src.vision.best_frame import BestFrameManager
@@ -912,15 +913,26 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             t_rectify_end = time.perf_counter()
 
             # --- Initialize counter with actual frame height ---
-            # Footpoint projection: when calibration is loaded we pull the
-            # principal point from P1 (rectified left projection matrix)
-            # and combine with vision.mounting_height_m so the counter
-            # uses parallax-corrected feet pixels for line crossings
-            # instead of the bbox centroid (the parallax error at frame
-            # borders is ~1 m at a 3 m mount). Without calibration or
-            # mount config, the counter falls back to the centroid path.
+            # Footpoint projection: when calibration is loaded AND
+            # ``counter.foot_projection_enabled`` is true (hardware.yaml,
+            # fleet-uniform), we pull the principal point from P1
+            # (rectified left projection matrix) and combine with
+            # vision.mounting_height_m so the counter uses parallax-
+            # corrected feet pixels for line crossings instead of the
+            # bbox centroid. Default disabled in hardware.yaml: in
+            # central-door geometries the projection compresses the
+            # foot-point trajectory inside the ROI and exits never
+            # trigger (only OUTs detected, no INs). When the toggle is
+            # off — or when calibration / mount aren't available — the
+            # counter falls back to the centroid path.
             if counter is None:
-                if calibration is not None:
+                foot_projection_enabled = bool(
+                    config.get("counter", {}).get(
+                        "foot_projection_enabled",
+                        hw["counter"]["foot_projection_enabled"],
+                    )
+                )
+                if foot_projection_enabled and calibration is not None:
                     p1 = calibration["P1"]
                     principal_pt: tuple[float, float] | None = (
                         float(p1[0, 2]),
@@ -938,9 +950,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     principal_point=principal_pt,
                 )
                 logger.info(
-                    "Counter initialized: %s (footpoint_projection=%s)",
+                    "Counter initialized: %s (footpoint_projection=%s, "
+                    "toggle=%s)",
                     type(counter).__name__,
                     bool(principal_pt is not None and mount_mm_for_counter),
+                    foot_projection_enabled,
                 )
 
             # --- Set focal length + baseline from calibration ---
@@ -1117,22 +1131,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 m: list[dict] = []
                 for det in dets:
                     cx, cy = det.centroid
-                    # TEMP DEBUG (height-bug triage): dump RAPiD's rotated
-                    # rectangle so we can confirm whether the polygon mask
-                    # is actually filtering anything. Remove once the
-                    # diagnosis is closed. Inline format because the
-                    # project's logger drops `extra` fields.
-                    _rot = det.rotated
-                    logger.info(
-                        "rapid_dump bbox=%s rotated=%s conf=%.3f",
-                        tuple(int(v) for v in det.bbox),
-                        (
-                            tuple(round(float(v), 2) for v in _rot)
-                            if _rot is not None
-                            else None
-                        ),
-                        float(det.confidence),
-                    )
                     # Tracker z = median of the bbox central crop. That's
                     # the body's "centre of mass" depth (torso for stock
                     # YOLO, head for RAPiD) — what we want for re-id
@@ -1169,6 +1167,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                                 max_head_height_mm=head_depth_max_mm,
                                 min_head_above_floor_mm=head_depth_min_mm,
                                 column_radius_mm=head_depth_column_radius_mm,
+                                # When --depth-debug is on, hand the
+                                # rectified frame + detection confidence
+                                # so the dump panel can show the actual
+                                # camera view alongside the depth analysis.
+                                # Cheap (None when toggle is off, the dump
+                                # function short-circuits before reading).
+                                debug_frame=rect_l,
+                                debug_confidence=float(det.confidence),
                             )
                             if (
                                 hc_enabled
@@ -1546,7 +1552,19 @@ def main() -> None:
         "service unit grants it). Pass 0 to disable. Bind failures "
         "are logged but don't kill the pipeline.",
     )
+    parser.add_argument(
+        "--depth-debug",
+        action="store_true",
+        help="Dump up to 5 PNGs to /tmp/depth_debug_*.png with the "
+        "depth heatmap + layered masks (anthropometric / column / "
+        "picked head blob) for the first detections. Each dump also "
+        "logs the histogram bin counts so the diagnosis stays useful "
+        "without the PNG. Auto-stops after 5 dumps; restart to re-arm.",
+    )
     args = parser.parse_args()
+
+    if args.depth_debug:
+        enable_depth_debug(True)
 
     config = load_config(args.config)
     setup_logging(config)

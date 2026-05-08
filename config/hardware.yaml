@@ -247,6 +247,28 @@ tracking:
                                   # High because we have no observed direction
                                   # yet — collapses on the first measurement.
 
+# --- Counter algorithm toggles (fleet-uniform, behaviour-defining) ---
+# Lines + ROI viven en config.yaml por sitio (la geometría de la puerta
+# cambia entre instalaciones). Acá vive sólo lo que decide cómo se
+# interpreta el track al cruzar la línea — uniforme entre dispositivos.
+counter:
+  foot_projection_enabled: false    # Cuando true, el counter proyecta el
+                                    # punto de cabeza del bbox al pie via
+                                    # altura 3D antes de evaluar la línea
+                                    # virtual + la ROI. Corrige la
+                                    # paralaje del lente fisheye en
+                                    # geometrías donde la puerta cae al
+                                    # borde del FOV (~1m de error a 3m de
+                                    # mount). Default false: en geometrías
+                                    # de puerta CENTRAL la proyección
+                                    # comprime la trayectoria del foot
+                                    # point dentro de la ROI y los exits
+                                    # nunca disparan (sintoma observado en
+                                    # piloto: solo OUTs, ningún IN).
+                                    # Activar SOLO cuando la línea esté
+                                    # off-center y la paralaje supere el
+                                    # margen de la ROI.
+
 # --- WiFi/BLE protocol constants (cross-device dedup contract) ---
 wifi_ble:
   wifi_interface: wlan0           # CYW43455 onboard, monitor mode.

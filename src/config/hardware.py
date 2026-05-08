@@ -174,6 +174,7 @@ def _validate(data: dict[str, Any]) -> None:
             "cluster_distance_px",
         ),
         "tracking": ("max_disappeared", "max_distance", "state_machine"),
+        "counter": ("foot_projection_enabled",),
         "wifi_ble": (
             "wifi_interface",
             "probe_interval_seconds",
@@ -224,6 +225,12 @@ def _validate(data: dict[str, Any]) -> None:
                     "hardware.yaml tracking.state_machine.kalman."
                     f"{k} must be a number"
                 )
+
+    counter_block = data["counter"]
+    if not isinstance(counter_block.get("foot_projection_enabled"), bool):
+        raise ValueError(
+            "hardware.yaml: counter.foot_projection_enabled must be a bool"
+        )
 
     topics = data["mqtt"]["topics"]
     for k in ("counting", "wifi_ble", "telemetry", "shadow"):

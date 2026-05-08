@@ -13,10 +13,52 @@ Focal length estimate for IMX708 120° HFOV at full resolution:
   disparity at 1.3m = 1330 * 140 / 1300 ≈ 143 px
 """
 
+import logging
+import os
 from typing import Optional
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Depth debug dump — diagnostic for the height-bug triage.
+# When enabled, ``head_depth_in_bbox`` saves up to DEPTH_DEBUG_MAX_DUMPS
+# side-by-side PNGs (depth heatmap + layered masks) under DEPTH_DEBUG_DIR
+# and then auto-stops. Cheap when off (single bool check). Use to confirm
+# what's at the picked head-depth slice when the histogram walk lands on
+# something it shouldn't (SGBM speckle on parquet floor, neighbouring
+# structure, etc.).
+#
+# Toggle via ``enable_depth_debug()`` — main.py wires it to the
+# ``--depth-debug`` CLI flag.
+# ---------------------------------------------------------------------------
+DEPTH_DEBUG_DIR = "/tmp"
+DEPTH_DEBUG_MAX_DUMPS = 5
+_depth_debug_enabled = False
+_depth_debug_count = 0
+
+
+def enable_depth_debug(enabled: bool = True) -> None:
+    """Toggle the head_depth_in_bbox diagnostic dump.
+
+    When enabled, the next ``DEPTH_DEBUG_MAX_DUMPS`` calls to
+    ``head_depth_in_bbox`` that produce a result write a PNG to
+    ``DEPTH_DEBUG_DIR`` and log a histogram summary. Subsequent calls
+    are no-ops until the counter is reset (call again with True after
+    a process restart, or call ``reset_depth_debug()`` to re-arm).
+    """
+    global _depth_debug_enabled
+    _depth_debug_enabled = bool(enabled)
+
+
+def reset_depth_debug() -> None:
+    """Reset the dump counter so the next ``DEPTH_DEBUG_MAX_DUMPS`` calls
+    fire again. Useful for tests and re-arming mid-process."""
+    global _depth_debug_count
+    _depth_debug_count = 0
 
 
 # SGBM parameters for Arducam IMX708 120° HFOV, 14cm baseline, 1.3-6m range.
@@ -287,6 +329,8 @@ def head_depth_in_bbox(
     max_head_height_mm: float = 1800.0,
     min_head_above_floor_mm: float = 500.0,
     column_radius_mm: float = 250.0,
+    debug_frame: Optional[np.ndarray] = None,
+    debug_confidence: Optional[float] = None,
 ) -> Optional[float]:
     """Find head depth inside a bbox using histogram + connected components,
     pre-filtered by a vertical column anchored on the body's 3-D centroid.
@@ -516,7 +560,203 @@ def head_depth_in_bbox(
     blob_pixels = smooth[lbl == biggest]
     if blob_pixels.size == 0:
         return None
-    return float(np.median(blob_pixels))
+    head_depth_mm = float(np.median(blob_pixels))
+
+    # Diagnostic dump — toggle-gated, auto-stops after MAX_DUMPS.
+    if _depth_debug_enabled:
+        _dump_depth_debug(
+            roi=roi,
+            valid=valid,
+            valid_col=valid_col,
+            head_blob_mask=(lbl == biggest),
+            bbox=(x1, y1, x2, y2),
+            rotated_bbox=rotated_bbox,
+            near_mm=near,
+            far_mm=far,
+            d_lo=d_lo,
+            d_hi=d_hi,
+            head_depth_mm=head_depth_mm,
+            mounting_height_mm=mounting_height_mm,
+            confidence=debug_confidence,
+            x_center=x_center,
+            y_center=y_center,
+            hist=hist,
+            edges=edges,
+            debug_frame=debug_frame,
+        )
+
+    return head_depth_mm
+
+
+def _dump_depth_debug(
+    *,
+    roi: np.ndarray,
+    valid: np.ndarray,
+    valid_col: np.ndarray,
+    head_blob_mask: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    rotated_bbox: Optional[tuple[float, float, float, float, float]],
+    near_mm: float,
+    far_mm: float,
+    d_lo: float,
+    d_hi: float,
+    head_depth_mm: float,
+    mounting_height_mm: float,
+    confidence: Optional[float],
+    x_center: float,
+    y_center: float,
+    hist: np.ndarray,
+    edges: np.ndarray,
+    debug_frame: Optional[np.ndarray],
+) -> None:
+    """Save a 3-panel composite PNG (frame | depth heatmap | masks) for triage.
+
+    When ``debug_frame`` is provided (the rectified left frame from main.py),
+    the first panel shows the bbox crop with rotated polygon + text overlay
+    so the visual scene is matched against the depth analysis side-by-side
+    in a single image.
+
+    Auto-disables after ``DEPTH_DEBUG_MAX_DUMPS`` to keep disk usage bounded.
+    One log line per dump summarises the picked slice + the histogram so the
+    diagnosis stays useful even without the PNG.
+    """
+    global _depth_debug_count
+    if _depth_debug_count >= DEPTH_DEBUG_MAX_DUMPS:
+        return
+    _depth_debug_count += 1
+    idx = _depth_debug_count
+
+    try:
+        x1, y1, x2, y2 = bbox
+        h, w = roi.shape[:2]
+
+        # ---- Panel 2: depth heatmap of the ROI ----
+        # Normalised to the anthropometric range so the head-band stands
+        # out visually. Pixels outside [near, far] (floor, sky, invalid)
+        # → black.
+        norm = np.zeros_like(roi, dtype=np.float32)
+        in_range = (roi >= near_mm) & (roi <= far_mm)
+        if far_mm > near_mm:
+            norm[in_range] = (roi[in_range] - near_mm) / (far_mm - near_mm)
+        norm = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
+        heatmap = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
+        heatmap[roi == 0] = 0  # invalid → black
+
+        # ---- Panel 3: layered masks ----
+        # Blue = anthropometric range; green = after column filter;
+        # red = picked head blob.
+        masks = np.zeros((h, w, 3), dtype=np.uint8)
+        masks[valid] = (180, 80, 0)         # B (anthropometric)
+        masks[valid_col] = (0, 200, 0)      # G (column filter)
+        masks[head_blob_mask] = (0, 0, 255) # R (picked head blob)
+
+        # ---- Panel 1: frame crop with bbox + rotated polygon + text ----
+        # Built only when main.py handed us the rectified frame.
+        if debug_frame is not None:
+            fh, fw = debug_frame.shape[:2]
+            fx1 = max(0, int(x1))
+            fy1 = max(0, int(y1))
+            fx2 = min(fw, int(x2))
+            fy2 = min(fh, int(y2))
+            crop = debug_frame[fy1:fy2, fx1:fx2].copy()
+            if crop.ndim == 2:
+                crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+            elif crop.shape[2] == 1:
+                crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+            # Resize to match the heatmap panel size if cropping clipped.
+            if crop.shape[:2] != (h, w):
+                crop = cv2.resize(crop, (w, h), interpolation=cv2.INTER_AREA)
+
+            # Draw rotated polygon (the body footprint detected by RAPiD)
+            # in green; axis-aligned envelope in white for contrast.
+            cv2.rectangle(
+                crop, (0, 0), (w - 1, h - 1), (255, 255, 255), 1,
+            )
+            if rotated_bbox is not None:
+                rcx, rcy, rw, rh, rang_deg = rotated_bbox
+                rang = float(np.deg2rad(rang_deg))
+                cos_a, sin_a = float(np.cos(rang)), float(np.sin(rang))
+                dx = np.array(
+                    [-rw / 2.0, rw / 2.0, rw / 2.0, -rw / 2.0],
+                    dtype=np.float32,
+                )
+                dy = np.array(
+                    [-rh / 2.0, -rh / 2.0, rh / 2.0, rh / 2.0],
+                    dtype=np.float32,
+                )
+                corners_x = rcx + dx * cos_a - dy * sin_a
+                corners_y = rcy + dx * sin_a + dy * cos_a
+                # Translate to crop-local coords (origin at bbox top-left).
+                poly = np.empty((4, 2), dtype=np.int32)
+                poly[:, 0] = np.round(corners_x - x1).astype(np.int32)
+                poly[:, 1] = np.round(corners_y - y1).astype(np.int32)
+                cv2.polylines(crop, [poly], True, (0, 255, 0), 2)
+
+            # Mark the picked head blob centroid on the crop with a red
+            # cross — main visual cue: matches what's at the blob in the
+            # actual scene.
+            ys, xs = np.where(head_blob_mask)
+            if ys.size > 0:
+                cv_crop_h, cv_crop_w = crop.shape[:2]
+                blob_cx = int(np.round(xs.mean() * cv_crop_w / w))
+                blob_cy = int(np.round(ys.mean() * cv_crop_h / h))
+                cv2.drawMarker(
+                    crop, (blob_cx, blob_cy), (0, 0, 255),
+                    cv2.MARKER_CROSS, 20, 2,
+                )
+
+            # Text overlay (top-left corner, two lines so it stays
+            # readable on small bboxes). White on black background for
+            # contrast on any image.
+            height_m = (mounting_height_mm - head_depth_mm) / 1000.0
+            line_a = f"d={head_depth_mm/1000.0:.2f}m h={height_m:.2f}m"
+            line_b = f"bin=[{int(d_lo)}-{int(d_hi)}]"
+            if confidence is not None:
+                line_b = f"{line_b} conf={confidence:.2f}"
+            for i, txt in enumerate((line_a, line_b)):
+                y_off = 16 + i * 18
+                cv2.putText(
+                    crop, txt, (4, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 0, 0), 3, cv2.LINE_AA,
+                )
+                cv2.putText(
+                    crop, txt, (4, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (255, 255, 255), 1, cv2.LINE_AA,
+                )
+            panel = np.concatenate([crop, heatmap, masks], axis=1)
+        else:
+            panel = np.concatenate([heatmap, masks], axis=1)
+
+        path = os.path.join(
+            DEPTH_DEBUG_DIR,
+            f"depth_debug_{idx:02d}_d{int(head_depth_mm)}mm.png",
+        )
+        cv2.imwrite(path, panel)
+
+        # Histogram dump: bin (mm range) → pixel count, only for bins
+        # that contain pixels. Pinpoints which depth bin won.
+        hist_summary = ", ".join(
+            f"[{int(edges[i])}-{int(edges[i + 1])}]={int(hist[i])}"
+            for i in range(len(hist))
+            if hist[i] > 0
+        )
+        logger.info(
+            "depth_debug dump=%d/%d path=%s bbox=%s "
+            "head_depth_mm=%.0f picked_bin=[%.0f,%.0f] "
+            "centroid_xy=(%.0f,%.0f) hist=%s",
+            idx,
+            DEPTH_DEBUG_MAX_DUMPS,
+            path,
+            tuple(int(v) for v in bbox),
+            head_depth_mm,
+            d_lo,
+            d_hi,
+            x_center,
+            y_center,
+            hist_summary,
+        )
+    except Exception as e:  # pragma: no cover — diagnostic, must never crash runtime
+        logger.warning("depth_debug_dump_failed err=%s", e)
 
 
 def min_depth_at_bbox(
