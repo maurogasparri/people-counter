@@ -50,6 +50,7 @@ from src.vision.depth import (
     compute_disparity, create_sgbm, depth_at_bbox, disparity_to_depth,
     head_depth_in_bbox,
 )
+from src.vision.best_frame import BestFrameManager
 from src.vision.world_coords import classify_height, head_height_above_floor
 from src.vision.detect import detect_persons, load_model
 from src.web.annotate import annotate_left, compose_3panel, depth_to_colormap
@@ -516,6 +517,86 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # Counter built lazily once frame height is known (needed for legacy line_y relative values)
     counter: Counter | None = None
 
+    # Height bounds (head_depth gate + sanity filter). Cualquier knob
+    # acepta "auto" o un valor literal en metros; "auto" calcula
+    # `min(anthropometric_default, mount - geometric_clearance)` así
+    # los valores siguen siendo coherentes incluso para mounts
+    # inusuales (muy bajos) donde el default haría que el gate
+    # colapse. Para mounts retail típicos (>2.4m) "auto" siempre
+    # resuelve al anthropometric default.
+    def _resolve_height_bound_mm(
+        value, anthropometric_default_m: float,
+        mount_m: float, geometric_clearance_m: float,
+    ) -> float:
+        if isinstance(value, str) and value.strip().lower() == "auto":
+            if mount_m <= 0:
+                return anthropometric_default_m * 1000.0
+            geometric = mount_m - geometric_clearance_m
+            return min(anthropometric_default_m, geometric) * 1000.0
+        return float(value) * 1000.0
+
+    mount_m_init = float(vision_cfg.get("mounting_height_m", 0.0) or 0.0)
+
+    hw_head_depth = hw.get("head_depth", {}) or {}
+    head_depth_max_mm = _resolve_height_bound_mm(
+        hw_head_depth.get("max_head_height_m", "auto"),
+        anthropometric_default_m=1.80, mount_m=mount_m_init,
+        geometric_clearance_m=0.30,
+    )
+    head_depth_min_mm = _resolve_height_bound_mm(
+        hw_head_depth.get("min_head_above_floor_m", 0.50),
+        anthropometric_default_m=0.50, mount_m=mount_m_init,
+        geometric_clearance_m=0.0,
+    )
+
+    hw_height = hw.get("height", {}) or {}
+    height_sanity_min_mm = _resolve_height_bound_mm(
+        hw_height.get("sanity_min_m", 0.80),
+        anthropometric_default_m=0.80, mount_m=mount_m_init,
+        geometric_clearance_m=0.0,
+    )
+    height_sanity_max_mm = _resolve_height_bound_mm(
+        hw_height.get("sanity_max_m", "auto"),
+        anthropometric_default_m=2.10, mount_m=mount_m_init,
+        geometric_clearance_m=0.20,
+    )
+
+    logger.info(
+        "Height bounds (mount=%.2fm): "
+        "head_depth=[%.2f, %.2f]m, sanity=[%.2f, %.2f]m",
+        mount_m_init,
+        head_depth_min_mm / 1000.0, head_depth_max_mm / 1000.0,
+        height_sanity_min_mm / 1000.0, height_sanity_max_mm / 1000.0,
+    )
+
+    # --- Best-frame selector (default OFF — privacy-safe baseline) ---
+    # When disabled in hardware.yaml the manager stays None and the per-frame
+    # paths below short-circuit with a single ``is None`` check, so there is
+    # zero overhead in the default deployment. See src/vision/best_frame.py
+    # and docs/privacy.md for the full design + legal context.
+    best_frame_mgr: BestFrameManager | None = None
+    bf_cfg = hw.get("best_frame", {}) or {}
+    if bool(bf_cfg.get("enabled", False)):
+        try:
+            best_frame_mgr = BestFrameManager(
+                output_dir=bf_cfg["output_dir"],
+                buffer_size=int(bf_cfg.get("buffer_size", 20)),
+                jpeg_quality=int(bf_cfg.get("jpeg_quality", 85)),
+                weights=bf_cfg.get("scoring") or None,
+            )
+            logger.warning(
+                "best_frame.enabled=True — JPGs will be written to %s "
+                "(retention=%dd). Confirm DPIA + signage + privacy policy "
+                "are in place.",
+                bf_cfg.get("output_dir"),
+                int(bf_cfg.get("retention_days", 7)),
+            )
+        except Exception:
+            logger.exception(
+                "best_frame manager init failed; feature disabled this run."
+            )
+            best_frame_mgr = None
+
     # --- Build MQTT ---
     mqtt_client, buffer = build_mqtt(
         config, no_mqtt=getattr(args, "no_mqtt", False),
@@ -891,6 +972,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     head_depth_mm = (
                         head_depth_in_bbox(
                             depth_map, det.bbox, mount_height_mm,
+                            max_head_height_mm=head_depth_max_mm,
+                            min_head_above_floor_mm=head_depth_min_mm,
                         )
                         if hc_enabled and mount_height_mm > 0 else None
                     )
@@ -907,6 +990,24 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 else:
                     head_mm = None
                     height_class = "unknown"
+
+                # Sanity gate: heights fuera del rango anthropometric son
+                # físicamente imposibles (overhead structure dominando el
+                # bbox, SGBM speckle cerca-cámara, calibration drift). El
+                # evento de conteo igual se emite porque hay detección
+                # real cruzando la línea, pero los campos de altura caen
+                # a None / "unknown" para que el dashboard no surface el
+                # valor falso. head_depth_mm también se limpia: si el
+                # head pick fue absurdo, su depth no es confiable como
+                # near_depth_mm para el tracker — better usar el z
+                # (median bbox central) como fallback estable.
+                if head_mm is not None and (
+                    head_mm < height_sanity_min_mm
+                    or head_mm > height_sanity_max_mm
+                ):
+                    head_mm = None
+                    head_depth_mm = None
+                    height_class = "unknown"
                 metas.append({
                     "confidence": float(det.confidence),
                     "near_depth_mm": (
@@ -918,6 +1019,48 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
             # --- Tracking ---
             tracks = tracker.update(positions, detection_metas=metas)
+
+            # --- Best-frame buffering (only when feature is enabled) ---
+            # For every CONFIRMED / PENDING track currently alive, find the
+            # detection whose centroid is closest to the track's last
+            # position and push that (frame, bbox, conf) into the rolling
+            # buffer. CANDIDATE tracks are intentionally skipped — they're
+            # the same noise floor the counter ignores, and buffering them
+            # would waste RAM on phantoms that never count.
+            #
+            # The matching is greedy nearest-neighbour with a 60 px gate
+            # (one tracker max_distance), cheap enough to be a no-op cost
+            # in the hot path. Misses (no detection within gate, e.g. a
+            # PENDING track being predicted) silently skip — the buffer
+            # only holds frames where we actually had a detection bbox.
+            if best_frame_mgr is not None and detections:
+                for tid, trk in tracks.items():
+                    if trk.state not in ("confirmed", "pending"):
+                        continue
+                    if not trk.positions:
+                        continue
+                    tx, ty = float(trk.positions[-1][0]), float(
+                        trk.positions[-1][1]
+                    )
+                    best_idx = -1
+                    best_dist = 60.0  # gate; same scale as tracker.max_distance
+                    for di, det in enumerate(detections):
+                        dx, dy = det.centroid
+                        d = ((dx - tx) ** 2 + (dy - ty) ** 2) ** 0.5
+                        if d < best_dist:
+                            best_dist = d
+                            best_idx = di
+                    if best_idx >= 0:
+                        det = detections[best_idx]
+                        best_frame_mgr.observe(
+                            track_id=tid,
+                            frame=rect_l,
+                            bbox=det.bbox,
+                            confidence=float(det.confidence),
+                        )
+                # Periodic GC: drop buffers for tracks no longer alive.
+                # Cheap (set diff) so we run it every frame.
+                best_frame_mgr.gc(set(tracks.keys()))
 
             # --- Counting ---
             events = counter.check_all(tracks)
@@ -948,33 +1091,44 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # --- Publish counting events ---
             scaling = get_scaling_factor(config)
             for event in events:
-                mqtt_client.publish_event(
-                    "counting",
-                    {
-                        "direction": event.direction,
-                        "track_id": event.track_id,
-                        "position_y": event.position_y,
-                        "event_time": event.timestamp,
-                        "total_in": counter.total_in,
-                        "total_out": counter.total_out,
-                        "scaling_factor": scaling,
-                        "scaled_in": round(counter.total_in * scaling),
-                        "scaled_out": round(counter.total_out * scaling),
-                        "height_class": event.height_class,
-                        "height_m": (
-                            round(event.height_m, 2)
-                            if event.height_m is not None else None
-                        ),
-                        "head_depth_m": (
-                            round(event.head_depth_m, 2)
-                            if event.head_depth_m is not None else None
-                        ),
-                        "confidence": (
-                            round(event.confidence, 3)
-                            if event.confidence is not None else None
-                        ),
-                    },
-                )
+                # Best-frame: write the chosen JPG locally and attach the
+                # path to the event payload. Only the path travels over
+                # MQTT — the image bytes never leave the device. When the
+                # feature is OFF (default) ``best_frame_path`` stays None
+                # and is omitted from the payload by the dict-build below.
+                best_frame_path: str | None = None
+                if best_frame_mgr is not None:
+                    best_frame_path = best_frame_mgr.commit(
+                        event.track_id, event.timestamp,
+                    )
+
+                payload = {
+                    "direction": event.direction,
+                    "track_id": event.track_id,
+                    "position_y": event.position_y,
+                    "event_time": event.timestamp,
+                    "total_in": counter.total_in,
+                    "total_out": counter.total_out,
+                    "scaling_factor": scaling,
+                    "scaled_in": round(counter.total_in * scaling),
+                    "scaled_out": round(counter.total_out * scaling),
+                    "height_class": event.height_class,
+                    "height_m": (
+                        round(event.height_m, 2)
+                        if event.height_m is not None else None
+                    ),
+                    "head_depth_m": (
+                        round(event.head_depth_m, 2)
+                        if event.head_depth_m is not None else None
+                    ),
+                    "confidence": (
+                        round(event.confidence, 3)
+                        if event.confidence is not None else None
+                    ),
+                }
+                if best_frame_path is not None:
+                    payload["best_frame_path"] = best_frame_path
+                mqtt_client.publish_event("counting", payload)
 
             # --- FPS tracking ---
             frame_count += 1

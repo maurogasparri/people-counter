@@ -167,7 +167,7 @@ class TestHeadDepthInBbox:
     def test_returns_none_when_only_speckle_present(self):
         """Below-floor speckle alone (no real head cluster) → None.
 
-        At mount=2.56m, max_head_height=2.10m → near gate at 460mm.
+        At mount=2.56m, max_head_height=1.80m → near gate at 760mm.
         Speckle at 200mm is below the gate and excluded; no remaining
         pixels above the gate (whole bbox is speckle).
         """
@@ -180,8 +180,8 @@ class TestHeadDepthInBbox:
         ~0.80 m floor (depth 1760 mm). Function must return ~1450.
         """
         depth = np.full((100, 100), 1760.0, dtype=np.float32)
-        # Head blob ~25 px in upper half of bbox.
-        depth[20:25, 40:45] = 1450.0
+        # Head blob 7×7 = 49 px, comfortably above the 40-px area gate.
+        depth[20:27, 40:47] = 1450.0
         result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
         assert result is not None
         assert abs(result - 1450.0) < 60.0  # within one slice (100mm)
@@ -197,16 +197,14 @@ class TestHeadDepthInBbox:
         assert abs(result - 880.0) < 60.0
 
     def test_rejects_below_anthropometric_floor(self):
-        """A spurious very-near cluster (depth 600 mm → height 1.96 m)
-        is below the head floor of 0.5 m above ground (depth gate at
-        2060 mm). Wait — 600 mm is closer than near gate? At mount=2.56,
-        near = 2560-2100 = 460. So 600 > 460 → it passes the gate. Need
-        a clearer test: use 300 mm (head height 2.26 m, exceeds the
-        2.10 m anthropometric ceiling) — that's below the near gate
-        and must be excluded.
+        """A spurious very-near cluster is below the anthropometric
+        ceiling and must be gated out. At mount=2.56m,
+        max_head_height=1.80m → near gate at 760mm. A cluster at 300mm
+        depth corresponds to a 2.26m-tall head, exceeds the cap, and
+        falls outside the gate.
         """
         depth = np.full((100, 100), 1500.0, dtype=np.float32)  # plausible head
-        depth[10:25, 10:25] = 300.0  # impossible (head >2.26m), excluded
+        depth[10:25, 10:25] = 300.0  # impossible (head 2.26m), excluded
         result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
         # The 300mm cluster is gated out, so we get the 1500mm plane.
         assert result is not None
@@ -215,13 +213,13 @@ class TestHeadDepthInBbox:
     def test_speckle_smaller_than_min_area_does_not_win(self):
         """A 3×3 cluster (9 px) of false-near depth must be rejected
         even though it sits closer to the camera than the real head —
-        below the min_head_area_px (15) gate, it's noise.
+        below the min_head_area_px (40) gate, it's noise.
         """
         depth = np.full((100, 100), 1500.0, dtype=np.float32)  # head plane
-        depth[5:8, 5:8] = 700.0  # 9 px speckle, closer
+        depth[5:8, 5:8] = 1100.0  # 9 px speckle, closer (within gate)
         result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
         assert result is not None
-        # Should land on the 1500 mm head plane, not the 700 speckle.
+        # Should land on the 1500 mm head plane, not the 1100 speckle.
         assert result > 1300
 
     def test_picks_head_when_torso_dominates_area(self):
@@ -230,8 +228,8 @@ class TestHeadDepthInBbox:
         that's the whole point of the algorithm.
         """
         depth = np.full((100, 100), 1700.0, dtype=np.float32)  # torso
-        # Small head cluster (25 px) — closer but covers less area.
-        depth[20:25, 45:50] = 1200.0
+        # Head cluster 7×7 = 49 px — closer, comfortably above area gate.
+        depth[20:27, 43:50] = 1200.0
         result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
         assert result is not None
         assert abs(result - 1200.0) < 100.0

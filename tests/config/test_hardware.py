@@ -68,8 +68,7 @@ VALID_HW = {
             "shadow": "$aws/things/{device_id}/shadow",
         },
     },
-    "buffer": {"db_path": "/var/lib/people-counter/buffer.db",
-               "max_age_hours": 72},
+    "buffer": {"db_path": "/var/lib/people-counter/buffer.db", "max_age_hours": 72},
     "logging": {"format": "json", "file": "/var/log/people-counter/app.log"},
 }
 
@@ -161,3 +160,107 @@ class TestShippedHardware:
         assert cfg["sensor"]["model"] == "imx708"
         assert tuple(cfg["sensor"]["default_res"]) == (2304, 1296)
         assert cfg["lens"]["type"] == "m12_120deg"
+
+    def test_shipped_best_frame_default_off(self):
+        """Hardware shipped to the fleet must have best_frame OFF —
+        this is the GDPR/LPDP-safe baseline. A repo PR that flips the
+        default to True without explicit DPIA should fail this test."""
+        cfg = load_hardware_config()
+        bf = cfg.get("best_frame", {})
+        assert bf.get("enabled") is False, (
+            "best_frame.enabled must default to False in shipped config — "
+            "see docs/privacy.md"
+        )
+
+
+class TestBestFrameValidation:
+    """Optional best_frame block: defaults when missing, validation when set."""
+
+    def test_best_frame_block_missing_uses_defaults(self, tmp_path):
+        # VALID_HW has no best_frame key; the loader inlines defaults.
+        p = _write_yaml(tmp_path, VALID_HW)
+        cfg = load_hardware_config(p)
+        bf = cfg["best_frame"]
+        assert bf["enabled"] is False
+        assert bf["retention_days"] == 7
+        assert bf["buffer_size"] == 20
+        assert bf["jpeg_quality"] == 85
+        assert "scoring" in bf
+        # scoring weights default to ~1.0 sum
+        assert sum(bf["scoring"].values()) == pytest.approx(1.0)
+
+    def test_best_frame_partial_block_fills_defaults(self, tmp_path):
+        data = dict(VALID_HW)
+        data["best_frame"] = {"enabled": True, "retention_days": 14}
+        p = _write_yaml(tmp_path, data)
+        cfg = load_hardware_config(p)
+        bf = cfg["best_frame"]
+        assert bf["enabled"] is True
+        assert bf["retention_days"] == 14
+        # Other fields fall back to defaults.
+        assert bf["buffer_size"] == 20
+        assert bf["jpeg_quality"] == 85
+
+    def test_best_frame_enabled_must_be_bool(self, tmp_path):
+        data = dict(VALID_HW)
+        data["best_frame"] = {"enabled": "yes"}
+        p = _write_yaml(tmp_path, data)
+        with pytest.raises(ValueError, match="enabled"):
+            load_hardware_config(p)
+
+    def test_best_frame_retention_must_be_positive(self, tmp_path):
+        data = dict(VALID_HW)
+        data["best_frame"] = {"retention_days": 0}
+        p = _write_yaml(tmp_path, data)
+        with pytest.raises(ValueError, match="retention_days"):
+            load_hardware_config(p)
+
+    def test_best_frame_buffer_size_must_be_positive(self, tmp_path):
+        data = dict(VALID_HW)
+        data["best_frame"] = {"buffer_size": -1}
+        p = _write_yaml(tmp_path, data)
+        with pytest.raises(ValueError, match="buffer_size"):
+            load_hardware_config(p)
+
+    def test_best_frame_jpeg_quality_range(self, tmp_path):
+        data = dict(VALID_HW)
+        data["best_frame"] = {"jpeg_quality": 150}
+        p = _write_yaml(tmp_path, data)
+        with pytest.raises(ValueError, match="jpeg_quality"):
+            load_hardware_config(p)
+
+    def test_best_frame_scoring_negative_weight_raises(self, tmp_path):
+        data = dict(VALID_HW)
+        data["best_frame"] = {
+            "scoring": {"confidence_weight": -0.5},
+        }
+        p = _write_yaml(tmp_path, data)
+        with pytest.raises(ValueError, match="confidence_weight"):
+            load_hardware_config(p)
+
+    def test_best_frame_must_be_mapping(self, tmp_path):
+        data = dict(VALID_HW)
+        data["best_frame"] = "not a dict"
+        p = _write_yaml(tmp_path, data)
+        with pytest.raises(ValueError, match="best_frame must be a mapping"):
+            load_hardware_config(p)
+
+    def test_best_frame_weights_off_by_factor_warns(self, tmp_path, caplog):
+        """Weights summing far from 1.0 produce a WARN log — soft guard
+        for operator typos, not a hard failure."""
+        import logging
+
+        data = dict(VALID_HW)
+        data["best_frame"] = {
+            "scoring": {
+                "confidence_weight": 0.5,
+                "bbox_area_weight": 0.5,
+                "centrality_weight": 0.5,
+                "sharpness_weight": 0.5,
+            },
+        }
+        p = _write_yaml(tmp_path, data)
+        with caplog.at_level(logging.WARNING):
+            load_hardware_config(p)
+        msgs = [r.message for r in caplog.records]
+        assert any("weights sum" in m for m in msgs)

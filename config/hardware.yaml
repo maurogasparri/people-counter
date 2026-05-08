@@ -121,6 +121,48 @@ detection:
                                   # ~350 px apart, so 150 still has comfortable
                                   # headroom against false merges. 0 disables.
 
+# --- Head-depth pick gate (anthropometric, mount-aware) ---
+# Bounds en altura-sobre-piso que `head_depth_in_bbox` usa para decidir
+# qué rango de profundidades dentro del bbox podría ser una cabeza
+# humana. Cualquier knob acepta "auto" o un valor literal en metros:
+#   auto → se calcula como min(anthropometric_default, mount - clearance)
+#   <float> → valor literal en m (override manual)
+# Para mounts de retail típicos (2.5-4m) el anthropometric gana y los
+# valores resueltos son los defaults; el cap geométrico solo entra
+# para mounts inusuales (muy bajos) donde el default haría que el
+# gate colapse.
+head_depth:
+  max_head_height_m: auto         # auto = min(1.80, mount - 0.30)
+                                  # P95 masculino global ~1.83m. Cap
+                                  # geométrico deja 30cm de near-range
+                                  # para SGBM. Override manual: float.
+  min_head_above_floor_m: 0.50    # Floor del head — anthropometric
+                                  # puro, no depende de mount. La
+                                  # cabeza humana plausible está al
+                                  # menos 50cm del piso (excluye niños
+                                  # gateando + objetos al ras).
+
+# --- Height sanity filter (defensa post-tracker, fleet-uniform) ---
+# Después de que head_depth_in_bbox + classifier corren, el evento de
+# conteo igual se emite si una persona cruzó la línea — pero si la
+# altura calculada es físicamente imposible (overhead structure que
+# pasó el primer gate, calibration drift, edge cases), height_m se
+# limpia a None y height_class cae a "unknown" para que los dashboards
+# no surface valores falsamente confiados. Distinto del adult_min_m
+# del classifier: ese decide adult/child dentro del rango plausible;
+# este descarta solo lo imposible. Mismo patrón auto/manual que
+# head_depth — más permisivos para que sea net de seguridad real.
+height:
+  sanity_min_m: 0.80              # Lower bound. Por debajo: piso,
+                                  # niño muy chico con bbox fallado,
+                                  # ruido. Anthropometric, no depende
+                                  # de mount.
+  sanity_max_m: auto              # auto = min(2.10, mount - 0.20).
+                                  # Override manual: float. P99 global
+                                  # ~1.92m, 2.10 deja headroom; cap
+                                  # geométrico solo activo en mounts
+                                  # muy bajos.
+
 # --- Tracker + state machine (algo tuning, fleet-uniform after pilot) ---
 tracking:
   max_disappeared: 30             # Frames a track can miss before drop.
@@ -160,6 +202,39 @@ mqtt:
 buffer:
   db_path: /var/lib/people-counter/buffer.db
   max_age_hours: 72
+
+# --- Best-frame selector (active-learning data, GDPR/LPDP-aware default-off) ---
+# Cuando se habilita, por cada count event guarda 1 JPG representativo del
+# track al cruzar la línea. El JPG vive solo on-device (jamás transmitido,
+# jamás publicado por MQTT — solo el path va en el evento como metadata),
+# retención enforceada por systemd timer + scripts/purge_best_frames.py,
+# propósito acotado a debugging + active learning durante piloto. Default
+# OFF para que zero-storage / zero-PII sea el comportamiento out-of-the-box;
+# activar requiere DPIA + cartelería + política de privacidad acompañando.
+# Ver docs/privacy.md para el procedimiento legal.
+best_frame:
+  enabled: false                  # Toggle a true SOLO con DPIA + cartelería
+                                  # + política de privacidad activa.
+  output_dir: /var/lib/people-counter/best_frames
+  retention_days: 7               # Purgado por scripts/purge_best_frames.py
+                                  # vía systemd timer (people-counter-purge-
+                                  # best-frames.timer, daily 03:30).
+  buffer_size: 20                 # Max frames buffereados por track activo.
+                                  # Rotativo: cuando se llena descarta el
+                                  # más viejo. Cap en memoria — no buffer
+                                  # en disco intermedio.
+  jpeg_quality: 85                # cv2.IMWRITE_JPEG_QUALITY. 85 es el
+                                  # sweet spot calidad/tamaño para training.
+  scoring:                        # Pesos del score; suman ~1.0 idealmente.
+    confidence_weight: 0.4        # Confianza del detector — más alta es
+                                  # mejor candidato.
+    bbox_area_weight: 0.2         # Área del bbox normalizada al frame.
+                                  # Más grande = persona más cerca = más
+                                  # detalle aprovechable.
+    centrality_weight: 0.2        # Cercanía al centro del frame. Menos
+                                  # distorsión fisheye en el centro.
+    sharpness_weight: 0.2         # Varianza Laplaciana del crop del bbox.
+                                  # Más alta = menos motion blur.
 
 # --- Logging convention (operator may still override `level` in config.yaml) ---
 logging:

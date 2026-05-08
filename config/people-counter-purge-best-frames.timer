@@ -1,0 +1,11 @@
+[Unit]
+Description=People Counter — daily purge of best-frame JPGs
+
+[Timer]
+# Daily at 03:30, well before the 04:00 reset and before stores open.
+# Persistent=true catches a missed run if the device was off at 03:30.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
