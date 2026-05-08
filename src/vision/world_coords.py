@@ -64,6 +64,86 @@ def classify_height(
     return "adult" if head_height_mm >= adult_min_mm else "child"
 
 
+def project_to_floor(
+    head_pixel: tuple[float, float],
+    head_height_mm: float,
+    mounting_height_mm: float,
+    cx_px: float,
+    cy_px: float,
+) -> tuple[float, float]:
+    """Project a head pixel to where the feet would land in image space.
+
+    Background — parallax in zenith fisheye
+    ---------------------------------------
+    With the bracket pointing straight down, the line from the principal
+    point through the lens centre is the only ray with zero parallax: a
+    person standing exactly under nadir projects with head and feet on
+    the same pixel. Everywhere else, head and feet land on *different*
+    pixels because they sit at different distances from the camera —
+    head is closer, so it projects further from the principal point than
+    the feet.
+
+    The detector's bbox does NOT contain feet (they sit hidden under the
+    torso in top-down view). So if we use ``bbox.center`` as the tracking
+    point and chase a virtual line drawn at floor level, we trip the line
+    when the *shoulder/torso projection* crosses it — which can happen
+    tens of centimetres before the feet actually do, depending on FOV
+    eccentricity and mounting height. At 60° eccentricity (frame border)
+    that error is ~110 cm for a 1.7 m person under a 3 m mount.
+
+    Math — pinhole projection of a vertical line
+    -------------------------------------------
+    Camera at height ``H`` above floor, principal point ``(cx, cy)``.
+    A point at height ``h`` above the floor sits at ``Z = H - h`` from
+    the camera's optical centre. Pinhole projection of a 3D point
+    ``(X, Y, Z)`` is ``(cx + f*X/Z, cy + f*Y/Z)``. The same physical
+    ``(X, Y)`` projected at the head's depth ``Z_head = H - h_head``
+    versus the floor's depth ``Z_foot = H`` differs only by the
+    multiplier ``Z_head / H`` — so the foot pixel is the head pixel
+    scaled toward the principal point by that factor.
+
+    Verification:
+    - Nadir (``head_pixel == (cx, cy)``) → ``foot_pixel == (cx, cy)``.
+    - Periphery → shift toward principal point, magnitude = parallax.
+    - As ``h_head → 0``, ``Z_head → H``, scale → 1, no shift (the head is
+      already on the floor).
+
+    The function operates on the rectified image plane, so ``(cx_px,
+    cy_px)`` are the principal-point coordinates of the rectified left
+    camera (i.e. ``P1[0,2]``, ``P1[1,2]`` from the calibration ``.npz``).
+    A pinhole approximation is fine here because the rectification map
+    has already removed the lens distortion — the rectified image IS a
+    pinhole projection of the world.
+
+    Args:
+        head_pixel: ``(u, v)`` of the head in rectified-image pixels.
+        head_height_mm: Person's head height above the floor (mm).
+            Coming from :func:`head_height_above_floor`.
+        mounting_height_mm: Camera height above the floor (mm).
+        cx_px, cy_px: Principal point of the rectified left camera (px).
+
+    Returns:
+        ``(u_foot, v_foot)`` — the pixel where the person's feet would
+        project if the camera could see through the torso. On degenerate
+        inputs (non-positive mount, non-positive head height, head at or
+        above the camera) returns the input unchanged so the caller can
+        fall back to centroid behaviour.
+    """
+    if mounting_height_mm <= 0 or head_height_mm <= 0:
+        return (float(head_pixel[0]), float(head_pixel[1]))
+    z_head = mounting_height_mm - head_height_mm
+    if z_head <= 0:
+        # Head above the camera plane (taller than mount, or sensor
+        # noise). Projection toward principal point would invert sign;
+        # the safe behaviour is to fall back to the input pixel.
+        return (float(head_pixel[0]), float(head_pixel[1]))
+    scale = z_head / mounting_height_mm
+    u_h, v_h = float(head_pixel[0]), float(head_pixel[1])
+    u_foot = cx_px + (u_h - cx_px) * scale
+    v_foot = cy_px + (v_h - cy_px) * scale
+    return (u_foot, v_foot)
+
+
 def aggregate_height_class(samples: list[str]) -> str:
     """Stabilise per-frame classifications into a single per-track verdict.
 

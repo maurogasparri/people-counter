@@ -209,11 +209,57 @@ def _validate(data: dict[str, Any]) -> None:
     for k in ("confirm_frames", "pending_max_frames", "reid_gate_px", "depth_gate_m"):
         if k not in sm:
             raise ValueError(f"hardware.yaml missing key: tracking.state_machine.{k}")
+    # Kalman block is OPTIONAL — tracker has sane defaults if absent.
+    # When present, every leaf must be a number; missing leaves still
+    # fall back to the tracker default rather than crashing.
+    kalman = sm.get("kalman")
+    if kalman is not None:
+        if not isinstance(kalman, dict):
+            raise ValueError(
+                "hardware.yaml tracking.state_machine.kalman must be a mapping"
+            )
+        for k in ("process_noise", "measurement_noise", "initial_velocity_uncertainty"):
+            if k in kalman and not isinstance(kalman[k], (int, float)):
+                raise ValueError(
+                    "hardware.yaml tracking.state_machine.kalman."
+                    f"{k} must be a number"
+                )
 
     topics = data["mqtt"]["topics"]
     for k in ("counting", "wifi_ble", "telemetry", "shadow"):
         if k not in topics:
             raise ValueError(f"hardware.yaml missing key: mqtt.topics.{k}")
+
+    # Optional two-stage matching threshold. Must be:
+    #   - missing or null  → feature disabled
+    #   - 0 < value < confidence_threshold → feature enabled, two-stage
+    #     matching pipes detections in [low, high) only into re-association
+    # Values >= confidence_threshold are silently coerced to "off" + warned
+    # so a misconfiguration never silently *expands* the spawn pool.
+    detection = data["detection"]
+    low = detection.get("low_confidence_threshold")
+    if low is not None:
+        if not isinstance(low, (int, float)) or isinstance(low, bool):
+            raise ValueError(
+                "hardware.yaml: detection.low_confidence_threshold "
+                "must be null or a number"
+            )
+        low_f = float(low)
+        if low_f <= 0.0:
+            raise ValueError(
+                "hardware.yaml: detection.low_confidence_threshold "
+                "must be > 0 (or null to disable)"
+            )
+        high_f = float(detection["confidence_threshold"])
+        if low_f >= high_f:
+            logger.warning(
+                "detection.low_confidence_threshold (%.3f) >= "
+                "confidence_threshold (%.3f) — disabling two-stage "
+                "matching (treated as null)",
+                low_f,
+                high_f,
+            )
+            detection["low_confidence_threshold"] = None
 
 
 def reset_cache() -> None:

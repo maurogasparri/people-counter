@@ -8,6 +8,7 @@ from src.vision.world_coords import (
     aggregate_height_class,
     classify_height,
     head_height_above_floor,
+    project_to_floor,
 )
 
 
@@ -76,6 +77,163 @@ class TestAggregateHeightClass:
         assert aggregate_height_class(["child", "adult"]) == "adult"
 
 
+class TestProjectToFloor:
+    """Footpoint projection (head pixel → foot pixel using head height).
+
+    Verifies the parallax-correction trick used by the counter: knowing
+    the actual head height above the floor (via SGBM depth) lets us scale
+    the head pixel toward the principal point by ``Z_head / H`` to get
+    the foot pixel. At nadir the scale is irrelevant; at the periphery
+    the shift is the parallax error a centroid-based tracker would
+    silently accumulate.
+    """
+
+    # Realistic geometry: 3 m mount, 1.7 m person, 1152×648 frame after
+    # the standard rescale of the 2304×1296 calibration. Principal
+    # point sits roughly at frame centre on rectified imagery.
+    MOUNT_MM = 3000.0
+    HEAD_MM = 1700.0
+    CX = 576.0
+    CY = 324.0
+
+    def test_nadir_no_shift(self):
+        """Head exactly at the principal point ⇒ scale is irrelevant,
+        feet project on the same pixel. The geometric invariant the
+        whole construction rests on."""
+        u, v = project_to_floor(
+            (self.CX, self.CY),
+            self.HEAD_MM,
+            self.MOUNT_MM,
+            self.CX,
+            self.CY,
+        )
+        assert u == pytest.approx(self.CX)
+        assert v == pytest.approx(self.CY)
+
+    def test_periphery_shifts_toward_principal_point(self):
+        """A head pixel offset from nadir scales TOWARD the principal
+        point — the foot pixel is closer to centre than the head pixel
+        by exactly the parallax factor.
+        """
+        # Head 200 px to the right of nadir.
+        head_pixel = (self.CX + 200.0, self.CY)
+        u, v = project_to_floor(
+            head_pixel,
+            self.HEAD_MM,
+            self.MOUNT_MM,
+            self.CX,
+            self.CY,
+        )
+        # Z_head/H = (3000-1700)/3000 = 0.4333..., so the offset shrinks
+        # from 200 px to 200*0.4333 = 86.67 px.
+        expected_offset = 200.0 * (self.MOUNT_MM - self.HEAD_MM) / self.MOUNT_MM
+        assert u == pytest.approx(self.CX + expected_offset)
+        assert v == pytest.approx(self.CY)
+        # Foot pixel is closer to principal point than head pixel.
+        assert abs(u - self.CX) < abs(head_pixel[0] - self.CX)
+
+    def test_diagonal_periphery(self):
+        """2D shift: both u and v scale by the same factor."""
+        head_pixel = (self.CX + 300.0, self.CY - 150.0)
+        u, v = project_to_floor(
+            head_pixel,
+            self.HEAD_MM,
+            self.MOUNT_MM,
+            self.CX,
+            self.CY,
+        )
+        scale = (self.MOUNT_MM - self.HEAD_MM) / self.MOUNT_MM
+        assert u == pytest.approx(self.CX + 300.0 * scale)
+        assert v == pytest.approx(self.CY + (-150.0) * scale)
+
+    def test_zero_head_height_is_no_op(self):
+        """No head height = no info. Returning the input lets the caller
+        fall back to centroid-based crossing logic transparently."""
+        head_pixel = (700.0, 200.0)
+        u, v = project_to_floor(
+            head_pixel,
+            0.0,
+            self.MOUNT_MM,
+            self.CX,
+            self.CY,
+        )
+        assert (u, v) == head_pixel
+
+    def test_zero_mount_is_no_op(self):
+        """Bad/missing mount config ⇒ no projection, no crash."""
+        head_pixel = (700.0, 200.0)
+        u, v = project_to_floor(
+            head_pixel,
+            self.HEAD_MM,
+            0.0,
+            self.CX,
+            self.CY,
+        )
+        assert (u, v) == head_pixel
+
+    def test_negative_inputs_are_no_op(self):
+        head_pixel = (700.0, 200.0)
+        assert (
+            project_to_floor(
+                head_pixel,
+                -5.0,
+                self.MOUNT_MM,
+                self.CX,
+                self.CY,
+            )
+            == head_pixel
+        )
+        assert (
+            project_to_floor(
+                head_pixel,
+                self.HEAD_MM,
+                -1.0,
+                self.CX,
+                self.CY,
+            )
+            == head_pixel
+        )
+
+    def test_head_taller_than_mount_is_no_op(self):
+        """Pathological: a taller-than-mount head means the camera is
+        looking at a torso, not a head — the depth estimate must be
+        wrong. Falling back to the head pixel keeps the counter from
+        sign-flipping the parallax shift."""
+        head_pixel = (800.0, 400.0)
+        # Head at 3.5 m, mount only 3 m → Z_head = -500 mm.
+        u, v = project_to_floor(
+            head_pixel,
+            3500.0,
+            self.MOUNT_MM,
+            self.CX,
+            self.CY,
+        )
+        assert (u, v) == head_pixel
+
+    def test_periphery_magnitude_matches_documented_geometry(self):
+        """Sanity-check against the geometric numbers documented on the
+        bug report: 1.7 m person under 3.0 m mount, head pixel near the
+        frame border (~60° eccentricity from optical axis at this FOV).
+        The shift is not exactly 110 cm here because we are computing in
+        IMAGE space, not floor-plane metres — but the scale factor must
+        be exactly Z_head/H."""
+        # 500 px is roughly ~80% of the half-frame width on 1152×648,
+        # i.e. nearly at the border.
+        head_pixel = (self.CX + 500.0, self.CY)
+        u_foot, _ = project_to_floor(
+            head_pixel,
+            self.HEAD_MM,
+            self.MOUNT_MM,
+            self.CX,
+            self.CY,
+        )
+        # The shift in image space relative to the head pixel:
+        shift_px = head_pixel[0] - u_foot
+        # Z_head/H = 1300/3000 ≈ 0.433, so foot is at offset 500*0.433 =
+        # 216.67 from centre, shift = 500 - 216.67 = 283.33 px.
+        assert shift_px == pytest.approx(500.0 - 500.0 * 1300.0 / 3000.0)
+
+
 class TestMinDepthAtBbox:
     def test_low_percentile_robust_to_speckle_noise(self):
         """Low percentile should reject a single noisy min pixel."""
@@ -106,6 +264,7 @@ class TestMinDepthAtBbox:
             # Vertical depth gradient — head at top (small depth)
             depth[row, :] = 1500.0 + row * 5.0
         from src.vision.depth import depth_at_bbox
+
         near = min_depth_at_bbox(depth, (0, 0, 100, 100))
         median = depth_at_bbox(depth, (0, 0, 100, 100))
         assert near < median
@@ -153,16 +312,26 @@ class TestHeadDepthInBbox:
 
     def test_returns_none_on_empty_depth_map(self):
         depth = np.zeros((0, 0), dtype=np.float32)
-        assert head_depth_in_bbox(
-            depth, (0, 0, 10, 10), self.MOUNT_MM,
-        ) is None
+        assert (
+            head_depth_in_bbox(
+                depth,
+                (0, 0, 10, 10),
+                self.MOUNT_MM,
+            )
+            is None
+        )
 
     def test_returns_none_when_bbox_outside_frame(self):
         depth = np.full((100, 100), 1500.0, dtype=np.float32)
         # Negative-area bbox (clipped to nothing).
-        assert head_depth_in_bbox(
-            depth, (50, 50, 40, 40), self.MOUNT_MM,
-        ) is None
+        assert (
+            head_depth_in_bbox(
+                depth,
+                (50, 50, 40, 40),
+                self.MOUNT_MM,
+            )
+            is None
+        )
 
     def test_returns_none_when_only_speckle_present(self):
         """Below-floor speckle alone (no real head cluster) → None.
@@ -246,9 +415,14 @@ class TestHeadDepthInBbox:
 
     def test_returns_none_with_no_valid_pixels(self):
         depth = np.zeros((100, 100), dtype=np.float32)
-        assert head_depth_in_bbox(
-            depth, (0, 0, 100, 100), self.MOUNT_MM,
-        ) is None
+        assert (
+            head_depth_in_bbox(
+                depth,
+                (0, 0, 100, 100),
+                self.MOUNT_MM,
+            )
+            is None
+        )
 
     def test_mount_height_zero_returns_none(self):
         # Pathological config: mount=0 collapses the gate and there's

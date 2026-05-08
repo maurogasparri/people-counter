@@ -104,6 +104,22 @@ detection:
                                   # Tuneado para RAPiD MWHB1024 — corta FPs
                                   # del modelo (alucinaciones en piso vacío).
                                   # El baseline YOLOv8n stock usaba 0.15.
+  low_confidence_threshold: null  # Two-stage matching (estilo ByteTrack).
+                                  # Cuando se setea (ej. 0.10), las
+                                  # detecciones en [low, confidence_threshold)
+                                  # entran al tracker SOLO para re-asociar
+                                  # tracks existentes que el high-conf no
+                                  # matcheó este frame. Nunca crean tracks
+                                  # nuevos. Si no matchean, se descartan
+                                  # silenciosamente. Sirve para no perder ID
+                                  # cuando una persona caminando tiene un
+                                  # frame de motion blur que baja la conf
+                                  # bajo confidence_threshold y reaparece a
+                                  # alta conf unos frames después. null
+                                  # (default) deja el feature off — el
+                                  # comportamiento out-of-box es idéntico al
+                                  # single-stage anterior. Debe ser estricto
+                                  # < confidence_threshold.
   nms_threshold: 0.45             # IoU threshold for non-maximum suppression.
   cluster_distance_px: 200        # Post-NMS centroid clustering: detections
                                   # whose centroids fall within this many
@@ -181,6 +197,22 @@ tracking:
                                   # stock occasionally drops the track for
                                   # several frames between re-detections.
     depth_gate_m: 0.5             # |Δz| gate for re-id across frames.
+    kalman:                       # Constant-velocity Kalman filter on each
+                                  # track's [cx, cy, vx, vy] state. Replaces
+                                  # the old `last + (last-prev)` linear
+                                  # extrapolation, which lost tracks when the
+                                  # detector dropped 2-5 frames at low FPS.
+      process_noise: 1.0          # Q diagonal — model uncertainty (px²/frame²).
+                                  # Higher = let velocity flex more between
+                                  # frames (erratic walks); lower = trust
+                                  # straight-line motion harder.
+      measurement_noise: 5.0      # R diagonal — detector position noise (px).
+                                  # ~5 px is typical for YOLO/RAPiD with
+                                  # well-confirmed bboxes at runtime res.
+      initial_velocity_uncertainty: 100.0
+                                  # P diagonal for vx/vy at track init.
+                                  # High because we have no observed direction
+                                  # yet — collapses on the first measurement.
 
 # --- WiFi/BLE protocol constants (cross-device dedup contract) ---
 wifi_ble:

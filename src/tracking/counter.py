@@ -38,6 +38,7 @@ Schema:
             top_to_bottom: ingress
             bottom_to_top: egress
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.tracking.tracker import CONFIRMED, PENDING, Track
+from src.vision.world_coords import project_to_floor
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +196,7 @@ def _aggregate_height_class_from_track(track: Track) -> str:
     if not history:
         return "unknown"
     from src.vision.world_coords import aggregate_height_class
+
     samples = [rec.get("height_class", "unknown") for rec in history]
     return aggregate_height_class(samples)
 
@@ -203,7 +206,8 @@ def _aggregate_height_m_from_track(track: Track) -> Optional[float]:
     sample has a measured head_height_mm (classifier disabled, no depth)."""
     history = track.meta.get("detection_history", [])
     samples = [
-        rec.get("head_height_mm") for rec in history
+        rec.get("head_height_mm")
+        for rec in history
         if rec.get("head_height_mm") is not None
     ]
     if not samples:
@@ -217,7 +221,8 @@ def _aggregate_head_depth_m_from_track(track: Track) -> Optional[float]:
     """Median head depth (distance from lens to top of head) in metres."""
     history = track.meta.get("detection_history", [])
     samples = [
-        rec.get("near_depth_mm") for rec in history
+        rec.get("near_depth_mm")
+        for rec in history
         if rec.get("near_depth_mm") is not None and rec.get("near_depth_mm") > 0
     ]
     if not samples:
@@ -227,12 +232,45 @@ def _aggregate_head_depth_m_from_track(track: Track) -> Optional[float]:
     return float(median_mm) / 1000.0
 
 
+def _latest_head_height_and_bbox(
+    track: Track,
+) -> tuple[Optional[float], Optional[tuple[float, float, float, float]]]:
+    """Most recent valid (head_height_mm, bbox) from the track's detection
+    history. Used by :meth:`Counter._tracking_point` to drive the
+    parallax-corrected footpoint projection.
+
+    Walks the history from the back so a stale value never displaces a
+    fresh one, and returns ``head_height_mm`` only when it is positive
+    (None-out is upstream's signal that the depth pick was implausible
+    — see the height sanity gate in ``main.py``).
+    """
+    history = track.meta.get("detection_history", [])
+    head_mm: Optional[float] = None
+    bbox: Optional[tuple[float, float, float, float]] = None
+    for rec in reversed(history):
+        if head_mm is None:
+            v = rec.get("head_height_mm")
+            if v is not None and float(v) > 0:
+                head_mm = float(v)
+        if bbox is None:
+            b = rec.get("bbox")
+            if b is not None and len(b) == 4:
+                bbox = (
+                    float(b[0]),
+                    float(b[1]),
+                    float(b[2]),
+                    float(b[3]),
+                )
+        if head_mm is not None and bbox is not None:
+            break
+    return head_mm, bbox
+
+
 def _aggregate_confidence_from_track(track: Track) -> Optional[float]:
     """Median YOLO confidence across the track's detection history."""
     history = track.meta.get("detection_history", [])
     samples = [
-        rec.get("confidence") for rec in history
-        if rec.get("confidence") is not None
+        rec.get("confidence") for rec in history if rec.get("confidence") is not None
     ]
     if not samples:
         return None
@@ -256,9 +294,7 @@ def _validate_roi(
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"counter.roi malformed: {e}") from e
     if not (x_min < x_max and y_min < y_max):
-        raise ValueError(
-            f"counter.roi requires x_min<x_max and y_min<y_max, got {roi}"
-        )
+        raise ValueError(f"counter.roi requires x_min<x_max and y_min<y_max, got {roi}")
     return x_min, x_max, y_min, y_max
 
 
@@ -275,9 +311,37 @@ class Counter:
     - ``inside``: whether the track is currently inside the ROI.
     - ``last_label``: the most recent label set by a valid line crossing
       during the current ROI visit. Reset on entry/exit transitions.
-    - ``line_sides``: per-line cached "side" of the centroid from the
-      previous frame. Used to detect side transitions that imply a
+    - ``line_sides``: per-line cached "side" of the tracking point from
+      the previous frame. Used to detect side transitions that imply a
       crossing.
+    - ``proj_active``: whether the previous frame's ``line_sides`` were
+      computed using the parallax-corrected footpoint (True) or the raw
+      bbox centroid (False). Toggling between conventions is handled by
+      resnapshotting sides instead of comparing across them.
+
+    Tracking point — parallax-corrected when possible
+    -------------------------------------------------
+    The detector's bbox in zenith fisheye encloses head + shoulders +
+    torso to roughly the waist; pies are not visible from above. Using
+    the centroid (≈ shoulders) as the tracking point makes the line
+    crossing fire when the person's *shoulder projection* — not the
+    feet — passes the line. With a 3 m mount that's ~1 m of error at
+    the frame border (60° eccentricity).
+
+    When the per-track metadata carries a valid ``head_height_mm`` from
+    SGBM and the calibration's principal point + mounting height are
+    available, the counter uses :func:`project_to_floor` to scale the
+    head pixel toward the principal point by ``Z_head / mount`` and
+    counts the crossing of the projected *foot* pixel instead. This is
+    the FootfallCam-old-firmware trick that the new RK3588 product line
+    lost — and the differentiator that depth lets us preserve.
+
+    When projection isn't viable for a track (no head height yet, no
+    calibration plumbed in, mount=0), the counter falls back to the
+    centroid behaviour. The two conventions are never mixed within a
+    single frame's side-comparison: ``proj_active`` records which one
+    was used for the cached sides, and a convention flip resnapshots
+    the sides without emitting a phantom crossing.
     """
 
     META_KEY = "counter"
@@ -286,12 +350,44 @@ class Counter:
         self,
         lines: list[Line],
         roi: Optional[dict[str, float]] = None,
+        *,
+        mounting_height_mm: Optional[float] = None,
+        principal_point: Optional[tuple[float, float]] = None,
     ) -> None:
+        """
+        Args:
+            lines: At least one axis-aligned counting line.
+            roi: Optional rectangular ROI gating the counted region.
+            mounting_height_mm: Camera height above the floor (mm). Set
+                this together with ``principal_point`` to enable the
+                parallax-corrected footpoint tracking. When either is
+                ``None`` the counter falls back to bbox-centroid
+                tracking — preserves the legacy semantics for tests and
+                pre-calibration runs.
+            principal_point: ``(cx, cy)`` of the rectified left camera
+                in pixels. Comes from ``P1[0,2], P1[1,2]`` of the
+                stereo calibration ``.npz``. Must be in the same pixel
+                space as the tracking positions (i.e. the rectified
+                runtime resolution).
+        """
         if not lines:
             raise ValueError("Counter requires at least one line.")
         self._lines: list[Line] = list(lines)
         self._roi: Optional[tuple[float, float, float, float]] = (
             _validate_roi(roi) if roi else None
+        )
+        # Footpoint projection params. Both must be populated for
+        # projection to engage; otherwise we behave exactly like the
+        # pre-parallax-fix counter.
+        self._mounting_height_mm: Optional[float] = (
+            float(mounting_height_mm)
+            if mounting_height_mm is not None and float(mounting_height_mm) > 0
+            else None
+        )
+        self._principal_point: Optional[tuple[float, float]] = (
+            (float(principal_point[0]), float(principal_point[1]))
+            if principal_point is not None
+            else None
         )
         all_labels: set[str] = set()
         for line in self._lines:
@@ -345,6 +441,76 @@ class Counter:
         x_min, x_max, y_min, y_max = self._roi
         return x_min <= cx <= x_max and y_min <= cy <= y_max
 
+    def _tracking_point(self, track: Track) -> tuple[float, float, bool]:
+        """Pick the pixel used for ROI + line crossing this frame.
+
+        Returns ``(x, y, projected)`` where ``projected`` is True when
+        the parallax-corrected footpoint was used. The caller stores
+        ``projected`` in the track meta so the next frame can detect a
+        convention flip and re-snapshot the cached line sides.
+
+        Selection rules:
+
+        1. If the counter wasn't built with calibration params
+           (``mounting_height_mm`` + ``principal_point``), fall back to
+           the centroid. Preserves legacy behaviour for tests and
+           pre-calibration runs.
+        2. If the track has a valid ``head_height_mm`` in its most
+           recent detection metadata, project the *top* of the bbox
+           (head pixel) to the floor. The bbox top is closer to the
+           true head than the centroid in zenith fisheye — bbox center
+           sits roughly on the shoulders, so projecting the centroid
+           would underestimate the parallax shift by ~30%.
+           Falls back to the centroid X when bbox is missing.
+        3. Otherwise centroid.
+
+        Pulling head height from the LATEST detection record (not the
+        median) keeps the projection responsive to depth changes — a
+        person bending down has a smaller head height; we should track
+        them where their feet currently are, not where their median
+        was. Speckle is already filtered upstream by
+        ``head_depth_in_bbox`` (anthropometric gates) and the height
+        sanity check in ``main.py`` (None-out implausible values), so
+        latest is safe.
+        """
+        cx = float(track.positions[-1][0])
+        cy = float(track.positions[-1][1])
+
+        if self._mounting_height_mm is None or self._principal_point is None:
+            return cx, cy, False
+
+        head_mm, bbox = _latest_head_height_and_bbox(track)
+        if head_mm is None or head_mm <= 0:
+            return cx, cy, False
+
+        # Head pixel = bbox top centre. In zenith fisheye the head sits
+        # near the upper edge of the person bbox (the bbox extends down
+        # through torso/waist). When bbox is unavailable (older meta),
+        # fall back to the centroid X with the centroid Y — better than
+        # nothing, and the projection still corrects most of the
+        # parallax because the radial direction is what matters.
+        if bbox is not None:
+            x1, y1, x2, _y2 = bbox
+            head_px = ((float(x1) + float(x2)) / 2.0, float(y1))
+        else:
+            head_px = (cx, cy)
+
+        cx_pp, cy_pp = self._principal_point
+        u_foot, v_foot = project_to_floor(
+            head_px,
+            head_mm,
+            self._mounting_height_mm,
+            cx_pp,
+            cy_pp,
+        )
+        # If project_to_floor rejected the inputs (degenerate), it
+        # returns the head pixel unchanged. We can't safely call that
+        # the "footpoint" — fall back to centroid so the convention
+        # flag accurately reflects what we used.
+        if (u_foot, v_foot) == head_px and head_px != (cx, cy):
+            return cx, cy, False
+        return u_foot, v_foot, True
+
     def _process_track(self, track: Track) -> Optional[CountEvent]:
         # CANDIDATE tracks are too unstable to count.
         if track.state not in (CONFIRMED, PENDING):
@@ -352,10 +518,14 @@ class Counter:
         if not track.positions:
             return None
 
-        cx = float(track.positions[-1][0])
-        cy = float(track.positions[-1][1])
+        # Tracking point — projected footpoint when depth + calibration
+        # are available, raw centroid otherwise. ``projected`` flags the
+        # convention so a flip across frames triggers a side-cache
+        # resnapshot below.
+        cx, cy, projected = self._tracking_point(track)
         meta = track.meta.setdefault(self.META_KEY, {})
         was_inside = bool(meta.get("inside", False))
+        prev_projected = bool(meta.get("proj_active", False))
         is_inside = self._inside_roi(cx, cy)
 
         # Per-line previous-side cache (one slot per line). Created lazily;
@@ -364,6 +534,25 @@ class Counter:
         if not isinstance(sides, list) or len(sides) != len(self._lines):
             sides = [0] * len(self._lines)
             meta["line_sides"] = sides
+
+        # Convention flip: previous frame cached sides under the *other*
+        # tracking-point convention (centroid vs projected footpoint).
+        # Comparing sides across conventions can fabricate a "crossing"
+        # — e.g. centroid was below the line, projection puts the foot
+        # above it, no real motion happened. Re-snapshot under the new
+        # convention without emitting a label this frame; the next
+        # frame will detect any genuine subsequent crossing cleanly.
+        convention_flipped = was_inside and (projected != prev_projected)
+        if convention_flipped:
+            for i, line in enumerate(self._lines):
+                sides[i] = line.side_of(cx, cy) if is_inside else 0
+            meta["proj_active"] = projected
+            if not is_inside:
+                # Treat as a benign exit (no crossing context to trust).
+                meta["inside"] = False
+                meta["last_label"] = None
+            return None
+        meta["proj_active"] = projected
 
         if is_inside and not was_inside:
             # Fresh entry: reset cycle state and snapshot current sides.
@@ -450,8 +639,17 @@ class Counter:
 def build_counter(
     config: dict[str, Any],
     frame_height: Optional[int] = None,  # noqa: ARG001 — kept for API stability
+    *,
+    mounting_height_mm: Optional[float] = None,
+    principal_point: Optional[tuple[float, float]] = None,
 ) -> Counter:
     """Build the counter from YAML config.
+
+    The optional ``mounting_height_mm`` and ``principal_point`` enable
+    parallax-corrected footpoint tracking (see :class:`Counter` for the
+    rationale). Both must be provided together; either omitted leaves
+    the counter on the legacy centroid-tracking path. Passed through
+    from ``main.py`` once calibration is loaded.
 
     Schema (strict):
 
@@ -491,4 +689,9 @@ def build_counter(
             )
         labels = dict(raw.get("labels") or {})
         lines.append(Line(from_xy=from_xy, to_xy=to_xy, labels=labels))
-    return Counter(lines=lines, roi=counter_cfg.get("roi"))
+    return Counter(
+        lines=lines,
+        roi=counter_cfg.get("roi"),
+        mounting_height_mm=mounting_height_mm,
+        principal_point=principal_point,
+    )

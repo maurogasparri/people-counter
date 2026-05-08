@@ -161,6 +161,12 @@ class TestShippedHardware:
         assert tuple(cfg["sensor"]["default_res"]) == (2304, 1296)
         assert cfg["lens"]["type"] == "m12_120deg"
 
+    def test_shipped_low_confidence_threshold_default_off(self):
+        """Two-stage matching feature ships disabled (null) so the
+        out-of-box behaviour is identical to the single-stage tracker."""
+        cfg = load_hardware_config()
+        assert cfg["detection"].get("low_confidence_threshold") is None
+
     def test_shipped_best_frame_default_off(self):
         """Hardware shipped to the fleet must have best_frame OFF —
         this is the GDPR/LPDP-safe baseline. A repo PR that flips the
@@ -171,6 +177,78 @@ class TestShippedHardware:
             "best_frame.enabled must default to False in shipped config — "
             "see docs/privacy.md"
         )
+
+
+class TestLowConfidenceThreshold:
+    def test_explicit_null_is_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["low_confidence_threshold"] = None
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["detection"]["low_confidence_threshold"] is None
+
+    def test_missing_is_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"].pop("low_confidence_threshold", None)
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        # Missing -> dict get returns None.
+        assert loaded["detection"].get("low_confidence_threshold") is None
+
+    def test_valid_low_threshold_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["confidence_threshold"] = 0.30
+        cfg["detection"]["low_confidence_threshold"] = 0.10
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["detection"]["low_confidence_threshold"] == 0.10
+
+    def test_zero_or_negative_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["low_confidence_threshold"] = 0.0
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="must be > 0"):
+            load_hardware_config(p)
+
+    def test_non_numeric_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["low_confidence_threshold"] = "low"
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="must be null or a number"):
+            load_hardware_config(p)
+
+    def test_above_high_threshold_disables_with_warning(self, tmp_path, caplog):
+        """If low >= high, the validator coerces to None (feature off) and
+        logs a warning — never silently expands the spawn pool.
+        """
+        import logging
+
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["confidence_threshold"] = 0.30
+        cfg["detection"]["low_confidence_threshold"] = 0.50  # >= high
+        p = _write_yaml(tmp_path, cfg)
+        with caplog.at_level(logging.WARNING):
+            loaded = load_hardware_config(p)
+        assert loaded["detection"]["low_confidence_threshold"] is None
+        assert any(
+            "low_confidence_threshold" in rec.message and "disabling" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_equal_to_high_threshold_disables(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["confidence_threshold"] = 0.30
+        cfg["detection"]["low_confidence_threshold"] = 0.30
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["detection"]["low_confidence_threshold"] is None
 
 
 class TestBestFrameValidation:

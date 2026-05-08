@@ -47,7 +47,10 @@ from src.tracking.tracker import EuclideanTracker
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
 from src.vision.depth import (
-    compute_disparity, create_sgbm, depth_at_bbox, disparity_to_depth,
+    compute_disparity,
+    create_sgbm,
+    depth_at_bbox,
+    disparity_to_depth,
     head_depth_in_bbox,
 )
 from src.vision.best_frame import BestFrameManager
@@ -99,6 +102,7 @@ def setup_logging(config: dict[str, Any]) -> None:
     log_file = log_cfg.get("file")
     if log_file:
         from pathlib import Path
+
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file))
 
@@ -106,7 +110,8 @@ def setup_logging(config: dict[str, Any]) -> None:
 
 
 def _runtime_resolution(
-    config: dict[str, Any], hw: dict[str, Any],
+    config: dict[str, Any],
+    hw: dict[str, Any],
 ) -> tuple[int, int]:
     """Pick the runtime resolution. Order of preference:
     1. ``config.vision.resolution`` (per-site override)
@@ -127,10 +132,7 @@ def _runtime_fps(config: dict[str, Any], hw: dict[str, Any]) -> int:
     cfg_fps = (config.get("vision") or {}).get("fps")
     if cfg_fps:
         return int(cfg_fps)
-    return int(
-        hw.get("vision_runtime", {}).get("fps")
-        or hw["sensor"]["default_fps"]
-    )
+    return int(hw.get("vision_runtime", {}).get("fps") or hw["sensor"]["default_fps"])
 
 
 def build_capture(config: dict[str, Any], replay_dir: str | None = None):
@@ -198,7 +200,8 @@ class _NullMQTTClient:
 
 
 def build_mqtt(
-    config: dict[str, Any], no_mqtt: bool = False,
+    config: dict[str, Any],
+    no_mqtt: bool = False,
 ) -> tuple[Any, MessageBuffer]:
     """Build MQTT client and buffer from config.
 
@@ -227,7 +230,9 @@ def build_mqtt(
     topic_templates = mqtt_cfg.get("topics") or hw_mqtt["topics"]
     topics = {}
     for key, template in topic_templates.items():
-        topics[key] = template.replace("{store_id}", store_id).replace("{device_id}", device_id)
+        topics[key] = template.replace("{store_id}", store_id).replace(
+            "{device_id}", device_id
+        )
 
     client = MQTTClient(
         device_id=config["device"]["id"],
@@ -305,7 +310,8 @@ def get_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def _auto_num_disparities(
-    vision_cfg: dict[str, Any], logger: logging.Logger,
+    vision_cfg: dict[str, Any],
+    logger: logging.Logger,
 ) -> int:
     """Derive a num_disparities that matches the head-distance range at this
     site. Uses the design baseline + a focal length scaled to the runtime
@@ -342,7 +348,12 @@ def _auto_num_disparities(
     logger.info(
         "num_disparities auto: %dpx wide, mount=%.2fm → z=[%.2f,%.2f]m"
         " → disp=[%.0f,%.0f] → num_disparities=%d",
-        int(runtime_w), mount_m, z_min, z_max, disp_min, disp_max,
+        int(runtime_w),
+        mount_m,
+        z_min,
+        z_max,
+        disp_min,
+        disp_max,
         num_disparities,
     )
     return num_disparities
@@ -370,9 +381,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     if "calibration_file" in vision_cfg:
         _cal_path_for_signals = vision_cfg["calibration_file"]
     else:
-        _cal_path_for_signals = hw.get("vision_runtime", {}).get(
-            "calibration_file"
-        )
+        _cal_path_for_signals = hw.get("vision_runtime", {}).get("calibration_file")
     health_signals = HealthSignals(
         provisioned=True,
         calibration_path=_cal_path_for_signals,
@@ -412,16 +421,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # runtime resolution or depth is silently wrong.
     runtime_res = _runtime_resolution(config, hw)
     fleet_res = tuple(
-        hw.get("vision_runtime", {}).get("resolution")
-        or hw["sensor"]["default_res"]
+        hw.get("vision_runtime", {}).get("resolution") or hw["sensor"]["default_res"]
     )
     if runtime_res != fleet_res:
         logger.warning(
             "vision.resolution=%s differs from fleet default %s. "
             "Confirm calibration_file=%s was captured/rescaled to %s — "
             "mismatched resolution silently corrupts depth.",
-            runtime_res, fleet_res,
-            vision_cfg.get("calibration_file"), runtime_res,
+            runtime_res,
+            fleet_res,
+            vision_cfg.get("calibration_file"),
+            runtime_res,
         )
 
     # --- Load calibration ---
@@ -442,15 +452,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # --- Load detection model ---
     model_path = detect_cfg.get("model_path") or hw["detection"]["model_path"]
     detection_backend = getattr(args, "detection_backend", "auto")
-    architecture = (
-        detect_cfg.get("architecture") or hw["detection"]["architecture"]
-    )
+    architecture = detect_cfg.get("architecture") or hw["detection"]["architecture"]
     logger.info(
         "Loading model: %s (backend=%s, arch=%s)",
-        model_path, detection_backend, architecture,
+        model_path,
+        detection_backend,
+        architecture,
     )
     model = load_model(
-        model_path, backend=detection_backend, architecture=architecture,
+        model_path,
+        backend=detection_backend,
+        architecture=architecture,
     )
 
     # --- Build SGBM ---
@@ -481,7 +493,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # the downscaled resolution; compute_disparity rescales values back up.
     sgbm_num_disp = (
         max(16, (num_disp_resolved // sgbm_downscale // 16) * 16)
-        if sgbm_downscale > 1 else num_disp_resolved
+        if sgbm_downscale > 1
+        else num_disp_resolved
     )
     sgbm = create_sgbm(
         num_disparities=sgbm_num_disp,
@@ -489,7 +502,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
     logger.info(
         "SGBM: downscale=%d, num_disparities=%d (effective at downscaled res)",
-        sgbm_downscale, sgbm_num_disp,
+        sgbm_downscale,
+        sgbm_num_disp,
     )
 
     # --- Build tracker + counter ---
@@ -500,18 +514,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     counter_cfg = config.get("counter", {})
     tracker_cfg = counter_cfg.get("tracker", {})
     tracker = EuclideanTracker(
-        max_disappeared=track_cfg.get(
-            "max_disappeared", hw_track["max_disappeared"]),
-        max_distance=track_cfg.get(
-            "max_distance", hw_track["max_distance"]),
-        max_depth_delta=tracker_cfg.get(
-            "depth_gate_m", hw_sm["depth_gate_m"]) * 1000.0,
-        confirm_frames=tracker_cfg.get(
-            "confirm_frames", hw_sm["confirm_frames"]),
+        max_disappeared=track_cfg.get("max_disappeared", hw_track["max_disappeared"]),
+        max_distance=track_cfg.get("max_distance", hw_track["max_distance"]),
+        max_depth_delta=tracker_cfg.get("depth_gate_m", hw_sm["depth_gate_m"]) * 1000.0,
+        confirm_frames=tracker_cfg.get("confirm_frames", hw_sm["confirm_frames"]),
         pending_max_frames=tracker_cfg.get(
-            "pending_max_frames", hw_sm["pending_max_frames"]),
-        reid_gate_px=tracker_cfg.get(
-            "reid_gate_px", hw_sm["reid_gate_px"]),
+            "pending_max_frames", hw_sm["pending_max_frames"]
+        ),
+        reid_gate_px=tracker_cfg.get("reid_gate_px", hw_sm["reid_gate_px"]),
     )
     line_y = vision_cfg.get("counting_line_y", 0.5)
     # Counter built lazily once frame height is known (needed for legacy line_y relative values)
@@ -525,8 +535,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # colapse. Para mounts retail típicos (>2.4m) "auto" siempre
     # resuelve al anthropometric default.
     def _resolve_height_bound_mm(
-        value, anthropometric_default_m: float,
-        mount_m: float, geometric_clearance_m: float,
+        value,
+        anthropometric_default_m: float,
+        mount_m: float,
+        geometric_clearance_m: float,
     ) -> float:
         if isinstance(value, str) and value.strip().lower() == "auto":
             if mount_m <= 0:
@@ -540,24 +552,28 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     hw_head_depth = hw.get("head_depth", {}) or {}
     head_depth_max_mm = _resolve_height_bound_mm(
         hw_head_depth.get("max_head_height_m", "auto"),
-        anthropometric_default_m=1.80, mount_m=mount_m_init,
+        anthropometric_default_m=1.80,
+        mount_m=mount_m_init,
         geometric_clearance_m=0.30,
     )
     head_depth_min_mm = _resolve_height_bound_mm(
         hw_head_depth.get("min_head_above_floor_m", 0.50),
-        anthropometric_default_m=0.50, mount_m=mount_m_init,
+        anthropometric_default_m=0.50,
+        mount_m=mount_m_init,
         geometric_clearance_m=0.0,
     )
 
     hw_height = hw.get("height", {}) or {}
     height_sanity_min_mm = _resolve_height_bound_mm(
         hw_height.get("sanity_min_m", 0.80),
-        anthropometric_default_m=0.80, mount_m=mount_m_init,
+        anthropometric_default_m=0.80,
+        mount_m=mount_m_init,
         geometric_clearance_m=0.0,
     )
     height_sanity_max_mm = _resolve_height_bound_mm(
         hw_height.get("sanity_max_m", "auto"),
-        anthropometric_default_m=2.10, mount_m=mount_m_init,
+        anthropometric_default_m=2.10,
+        mount_m=mount_m_init,
         geometric_clearance_m=0.20,
     )
 
@@ -565,8 +581,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         "Height bounds (mount=%.2fm): "
         "head_depth=[%.2f, %.2f]m, sanity=[%.2f, %.2f]m",
         mount_m_init,
-        head_depth_min_mm / 1000.0, head_depth_max_mm / 1000.0,
-        height_sanity_min_mm / 1000.0, height_sanity_max_mm / 1000.0,
+        head_depth_min_mm / 1000.0,
+        head_depth_max_mm / 1000.0,
+        height_sanity_min_mm / 1000.0,
+        height_sanity_max_mm / 1000.0,
     )
 
     # --- Best-frame selector (default OFF — privacy-safe baseline) ---
@@ -599,7 +617,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     # --- Build MQTT ---
     mqtt_client, buffer = build_mqtt(
-        config, no_mqtt=getattr(args, "no_mqtt", False),
+        config,
+        no_mqtt=getattr(args, "no_mqtt", False),
     )
 
     # --- Shadow delta wiring -------------------------------------------------
@@ -761,27 +780,33 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "Tracker params updated; new values apply to future tracks"
                     )
                 if any(
-                    k in ("vision.num_disparities", "vision.block_size",
-                          "vision.mounting_height_m")
+                    k
+                    in (
+                        "vision.num_disparities",
+                        "vision.block_size",
+                        "vision.mounting_height_m",
+                    )
                     for k in applied_keys
                 ):
                     vision_live = config.get("vision") or {}
                     nd_cfg = vision_live.get(
-                        "num_disparities", hw_sgbm["num_disparities"])
+                        "num_disparities", hw_sgbm["num_disparities"]
+                    )
                     if isinstance(nd_cfg, str) and nd_cfg.lower() == "auto":
                         nd_resolved = _auto_num_disparities(
-                            vision_live, logger,
+                            vision_live,
+                            logger,
                         )
                     else:
                         nd_resolved = int(nd_cfg)
                     sgbm_num_disp = (
                         max(16, (nd_resolved // sgbm_downscale // 16) * 16)
-                        if sgbm_downscale > 1 else nd_resolved
+                        if sgbm_downscale > 1
+                        else nd_resolved
                     )
                     sgbm = create_sgbm(
                         num_disparities=sgbm_num_disp,
-                        block_size=vision_live.get(
-                            "block_size", hw_sgbm["block_size"]),
+                        block_size=vision_live.get("block_size", hw_sgbm["block_size"]),
                     )
                     logger.info("SGBM rebuilt after shadow delta")
                 if any(k == "telemetry.interval_seconds" for k in applied_keys):
@@ -799,7 +824,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # --- Check operating hours every 60 seconds ---
             # --ignore-schedule bypasses the gate entirely — useful for PoC
             # runs and debug sessions where the operating_hours config
-                # would otherwise pause the pipeline.
+            # would otherwise pause the pipeline.
             ignore_schedule = getattr(args, "ignore_schedule", False)
             now = time.time()
             if now - last_hours_check >= 60.0:
@@ -815,8 +840,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         config, day_name, dt.hour, dt.minute
                     )
                     if not within_hours:
-                        logger.debug("Outside operating hours (%s %02d:%02d) — paused",
-                                     day_name, dt.hour, dt.minute)
+                        logger.debug(
+                            "Outside operating hours (%s %02d:%02d) — paused",
+                            day_name,
+                            dt.hour,
+                            dt.minute,
+                        )
                 last_hours_check = now
 
             # --- Check if counting is enabled (cloud toggle) ---
@@ -871,9 +900,36 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             t_rectify_end = time.perf_counter()
 
             # --- Initialize counter with actual frame height ---
+            # Footpoint projection: when calibration is loaded we pull the
+            # principal point from P1 (rectified left projection matrix)
+            # and combine with vision.mounting_height_m so the counter
+            # uses parallax-corrected feet pixels for line crossings
+            # instead of the bbox centroid (the parallax error at frame
+            # borders is ~1 m at a 3 m mount). Without calibration or
+            # mount config, the counter falls back to the centroid path.
             if counter is None:
-                counter = build_counter(config, frame_height=rect_l.shape[0])
-                logger.info("Counter initialized: %s", type(counter).__name__)
+                if calibration is not None:
+                    p1 = calibration["P1"]
+                    principal_pt: tuple[float, float] | None = (
+                        float(p1[0, 2]),
+                        float(p1[1, 2]),
+                    )
+                else:
+                    principal_pt = None
+                mount_mm_for_counter = (
+                    float(vision_cfg.get("mounting_height_m", 0.0) or 0.0) * 1000.0
+                ) or None
+                counter = build_counter(
+                    config,
+                    frame_height=rect_l.shape[0],
+                    mounting_height_mm=mount_mm_for_counter,
+                    principal_point=principal_pt,
+                )
+                logger.info(
+                    "Counter initialized: %s (footpoint_projection=%s)",
+                    type(counter).__name__,
+                    bool(principal_pt is not None and mount_mm_for_counter),
+                )
 
             # --- Set focal length + baseline from calibration ---
             if focal_length_px is None and calibration is not None:
@@ -881,7 +937,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 # Use actual baseline from calibration (T vector magnitude)
                 T = calibration["T"]
                 baseline_mm = float(np.linalg.norm(T))
-                logger.info("Focal length: %.1f px, Baseline: %.1f mm", focal_length_px, baseline_mm)
+                logger.info(
+                    "Focal length: %.1f px, Baseline: %.1f mm",
+                    focal_length_px,
+                    baseline_mm,
+                )
 
             # --- Detection FIRST (depth on demand below) ---
             # Reordering: detect → compute depth only if there are detections.
@@ -889,21 +949,47 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # detection-empty frames (the majority of frames in real deploys)
             # frees that budget for higher overall FPS without losing depth
             # info where it actually matters (on detected people).
+            # Two-stage matching threshold (ByteTrack-style). When
+            # ``low_confidence_threshold`` is set in config, run the
+            # detector at the lower floor so we get all detections
+            # >= low; main.py then splits high vs low by per-detection
+            # confidence and pipes the low bucket into the tracker as
+            # match-only candidates that never spawn new tracks. When
+            # null/missing the detector runs at the regular high
+            # threshold and behaviour is identical to single-stage.
+            high_conf_thr = float(
+                detect_cfg.get(
+                    "confidence_threshold",
+                    hw["detection"]["confidence_threshold"],
+                )
+            )
+            low_conf_thr_raw = detect_cfg.get(
+                "low_confidence_threshold",
+                hw["detection"].get("low_confidence_threshold"),
+            )
+            two_stage_active = (
+                low_conf_thr_raw is not None
+                and float(low_conf_thr_raw) > 0.0
+                and float(low_conf_thr_raw) < high_conf_thr
+            )
+            detect_floor = (
+                float(low_conf_thr_raw) if two_stage_active else high_conf_thr
+            )
             try:
-                detections = detect_persons(
+                all_detections = detect_persons(
                     rect_l,
                     model,
-                    confidence_threshold=detect_cfg.get(
-                        "confidence_threshold",
-                        hw["detection"]["confidence_threshold"],
-                    ),
+                    confidence_threshold=detect_floor,
                     nms_threshold=detect_cfg.get(
-                        "nms_threshold", hw["detection"]["nms_threshold"],
+                        "nms_threshold",
+                        hw["detection"]["nms_threshold"],
                     ),
-                    cluster_distance_px=float(detect_cfg.get(
-                        "cluster_distance_px",
-                        hw["detection"]["cluster_distance_px"],
-                    )),
+                    cluster_distance_px=float(
+                        detect_cfg.get(
+                            "cluster_distance_px",
+                            hw["detection"]["cluster_distance_px"],
+                        )
+                    ),
                 )
                 health_signals.detect_ok = True
             except Exception:
@@ -911,6 +997,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 health_signals.detect_ok = False
                 time.sleep(0.1)
                 continue
+            if two_stage_active:
+                detections = [
+                    d for d in all_detections if d.confidence >= high_conf_thr
+                ]
+                low_conf_detections = [
+                    d for d in all_detections if d.confidence < high_conf_thr
+                ]
+            else:
+                detections = all_detections
+                low_conf_detections = []
             t_detect_end = time.perf_counter()
 
             # --- Depth map (only when there are detections to query) ---
@@ -924,23 +1020,23 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # viewer reuses last_depth_panel from the previous frame.
             viewer_depth_due = (
                 viewer is not None
-                and (t_iter_start - last_viewer_depth_t)
-                    >= VIEWER_DEPTH_INTERVAL_S
+                and (t_iter_start - last_viewer_depth_t) >= VIEWER_DEPTH_INTERVAL_S
             )
             if (
                 calibration is not None
                 and focal_length_px is not None
-                and (detections or viewer_depth_due)
+                and (detections or low_conf_detections or viewer_depth_due)
             ):
                 # CLAHE off — the IMX708 indoor histogram is well-behaved
                 # for SGBM matching and the ~10ms CLAHE cost isn't worth it.
                 disparity = compute_disparity(
-                    rect_l, rect_r, sgbm=sgbm,
-                    downscale=sgbm_downscale, use_clahe=False,
+                    rect_l,
+                    rect_r,
+                    sgbm=sgbm,
+                    downscale=sgbm_downscale,
+                    use_clahe=False,
                 )
-                depth_map = disparity_to_depth(
-                    disparity, focal_length_px, baseline_mm
-                )
+                depth_map = disparity_to_depth(disparity, focal_length_px, baseline_mm)
                 if viewer_depth_due:
                     last_viewer_depth_t = t_iter_start
             else:
@@ -957,68 +1053,108 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             )
             adult_min_mm = float(hc_cfg.get("adult_min_m", 1.55)) * 1000.0
 
-            positions: list[np.ndarray] = []
-            metas: list[dict] = []
-            for det in detections:
-                cx, cy = det.centroid
-                # Tracker z = median of the bbox central crop. That's the
-                # body's "centre of mass" depth (torso for stock YOLO,
-                # head for RAPiD) — what we want for re-id gating across
-                # frames. Head depth needs a separate, head-specific
-                # estimate because in cenital geometry with the YOLO-COCO
-                # bbox the centroid is on the torso, not the head.
-                if depth_map is not None:
-                    z = depth_at_bbox(depth_map, det.bbox)
-                    head_depth_mm = (
-                        head_depth_in_bbox(
-                            depth_map, det.bbox, mount_height_mm,
-                            max_head_height_mm=head_depth_max_mm,
-                            min_head_above_floor_mm=head_depth_min_mm,
+            def _build_positions_metas(
+                dets: list,
+            ) -> tuple[list[np.ndarray], list[dict]]:
+                """Build tracker positions + per-detection metas for a list
+                of Detection objects. Shared between the high-conf and
+                low-conf buckets so depth/height semantics stay identical
+                across both branches of two-stage matching.
+                """
+                pos: list[np.ndarray] = []
+                m: list[dict] = []
+                for det in dets:
+                    cx, cy = det.centroid
+                    # Tracker z = median of the bbox central crop. That's
+                    # the body's "centre of mass" depth (torso for stock
+                    # YOLO, head for RAPiD) — what we want for re-id
+                    # gating across frames. Head depth needs a separate,
+                    # head-specific estimate because in cenital geometry
+                    # with the YOLO-COCO bbox the centroid is on the
+                    # torso, not the head.
+                    if depth_map is not None:
+                        z = depth_at_bbox(depth_map, det.bbox)
+                        head_depth_mm = (
+                            head_depth_in_bbox(
+                                depth_map,
+                                det.bbox,
+                                mount_height_mm,
+                                max_head_height_mm=head_depth_max_mm,
+                                min_head_above_floor_mm=head_depth_min_mm,
+                            )
+                            if hc_enabled and mount_height_mm > 0
+                            else None
                         )
-                        if hc_enabled and mount_height_mm > 0 else None
-                    )
-                else:
-                    z = 0.0
-                    head_depth_mm = None
-                positions.append(np.array([cx, cy, z]))
+                    else:
+                        z = 0.0
+                        head_depth_mm = None
+                    pos.append(np.array([cx, cy, z]))
 
-                if head_depth_mm is not None:
-                    head_mm = head_height_above_floor(
-                        head_depth_mm, mount_height_mm,
-                    )
-                    height_class = classify_height(head_mm, adult_min_mm)
-                else:
-                    head_mm = None
-                    height_class = "unknown"
+                    if head_depth_mm is not None:
+                        head_mm = head_height_above_floor(
+                            head_depth_mm,
+                            mount_height_mm,
+                        )
+                        height_class = classify_height(head_mm, adult_min_mm)
+                    else:
+                        head_mm = None
+                        height_class = "unknown"
 
-                # Sanity gate: heights fuera del rango anthropometric son
-                # físicamente imposibles (overhead structure dominando el
-                # bbox, SGBM speckle cerca-cámara, calibration drift). El
-                # evento de conteo igual se emite porque hay detección
-                # real cruzando la línea, pero los campos de altura caen
-                # a None / "unknown" para que el dashboard no surface el
-                # valor falso. head_depth_mm también se limpia: si el
-                # head pick fue absurdo, su depth no es confiable como
-                # near_depth_mm para el tracker — better usar el z
-                # (median bbox central) como fallback estable.
-                if head_mm is not None and (
-                    head_mm < height_sanity_min_mm
-                    or head_mm > height_sanity_max_mm
-                ):
-                    head_mm = None
-                    head_depth_mm = None
-                    height_class = "unknown"
-                metas.append({
-                    "confidence": float(det.confidence),
-                    "near_depth_mm": (
-                        head_depth_mm if head_depth_mm is not None else z
-                    ),
-                    "head_height_mm": head_mm,
-                    "height_class": height_class,
-                })
+                    # Sanity gate: heights fuera del rango anthropometric
+                    # son físicamente imposibles (overhead structure
+                    # dominando el bbox, SGBM speckle cerca-cámara,
+                    # calibration drift). El evento de conteo igual se
+                    # emite porque hay detección real cruzando la línea,
+                    # pero los campos de altura caen a None / "unknown"
+                    # para que el dashboard no surface el valor falso.
+                    # head_depth_mm también se limpia: si el head pick
+                    # fue absurdo, su depth no es confiable como
+                    # near_depth_mm para el tracker — better usar el z
+                    # (median bbox central) como fallback estable.
+                    if head_mm is not None and (
+                        head_mm < height_sanity_min_mm or head_mm > height_sanity_max_mm
+                    ):
+                        head_mm = None
+                        head_depth_mm = None
+                        height_class = "unknown"
+                    m.append(
+                        {
+                            "confidence": float(det.confidence),
+                            "near_depth_mm": (
+                                head_depth_mm if head_depth_mm is not None else z
+                            ),
+                            "head_height_mm": head_mm,
+                            "height_class": height_class,
+                            # bbox piped through so the counter can take
+                            # the bbox-top as the "head pixel" for the
+                            # footpoint projection. Tuple kept as ints
+                            # to mirror Detection.bbox; counter reads it
+                            # through float casts so types are robust.
+                            "bbox": tuple(int(v) for v in det.bbox),
+                        }
+                    )
+                return pos, m
+
+            positions, metas = _build_positions_metas(detections)
 
             # --- Tracking ---
-            tracks = tracker.update(positions, detection_metas=metas)
+            # Two-stage matching: high-conf can spawn + match, low-conf
+            # only re-associates leftover tracks. When two_stage_active
+            # is False, low_conf_detections is always [] and the kwargs
+            # are no-ops — the tracker degenerates to the previous
+            # single-bucket call signature.
+            if two_stage_active and low_conf_detections:
+                low_positions, low_metas = _build_positions_metas(
+                    low_conf_detections,
+                )
+                tracks = tracker.update(
+                    positions,
+                    detection_metas=metas,
+                    candidate_positions=low_positions,
+                    candidate_metadata=low_metas,
+                )
+            else:
+                tracks = tracker.update(positions, detection_metas=metas)
 
             # --- Best-frame buffering (only when feature is enabled) ---
             # For every CONFIRMED / PENDING track currently alive, find the
@@ -1039,9 +1175,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         continue
                     if not trk.positions:
                         continue
-                    tx, ty = float(trk.positions[-1][0]), float(
-                        trk.positions[-1][1]
-                    )
+                    tx, ty = float(trk.positions[-1][0]), float(trk.positions[-1][1])
                     best_idx = -1
                     best_dist = 60.0  # gate; same scale as tracker.max_distance
                     for di, det in enumerate(detections):
@@ -1068,8 +1202,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
             # --- Profile log ---
             # When --profile is set, log a per-stage breakdown every PROFILE_EVERY_N
-                # frames. Helps identify the actual bottleneck (capture / rectify /
-                # depth / detect / track) instead of guessing from total FPS.
+            # frames. Helps identify the actual bottleneck (capture / rectify /
+            # depth / detect / track) instead of guessing from total FPS.
             if profile_enabled:
                 profile_frame_idx += 1
                 if profile_frame_idx % profile_every_n == 0:
@@ -1083,8 +1217,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     logger.info(
                         "PROFILE frame=%d cap=%.0fms rect=%.0fms detect=%.0fms "
                         "depth=%.0fms (det=%s) track=%.0fms TOTAL=%.0fms (%.1f FPS)",
-                        profile_frame_idx, cap_ms, rect_ms, detect_ms,
-                        depth_ms, has_dets, track_ms, total_ms,
+                        profile_frame_idx,
+                        cap_ms,
+                        rect_ms,
+                        detect_ms,
+                        depth_ms,
+                        has_dets,
+                        track_ms,
+                        total_ms,
                         1000.0 / total_ms if total_ms > 0 else 0.0,
                     )
 
@@ -1099,7 +1239,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 best_frame_path: str | None = None
                 if best_frame_mgr is not None:
                     best_frame_path = best_frame_mgr.commit(
-                        event.track_id, event.timestamp,
+                        event.track_id,
+                        event.timestamp,
                     )
 
                 payload = {
@@ -1114,16 +1255,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     "scaled_out": round(counter.total_out * scaling),
                     "height_class": event.height_class,
                     "height_m": (
-                        round(event.height_m, 2)
-                        if event.height_m is not None else None
+                        round(event.height_m, 2) if event.height_m is not None else None
                     ),
                     "head_depth_m": (
                         round(event.head_depth_m, 2)
-                        if event.head_depth_m is not None else None
+                        if event.head_depth_m is not None
+                        else None
                     ),
                     "confidence": (
                         round(event.confidence, 3)
-                        if event.confidence is not None else None
+                        if event.confidence is not None
+                        else None
                     ),
                 }
                 if best_frame_path is not None:
@@ -1161,30 +1303,37 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     elif last_depth_panel is None:
                         last_depth_panel = depth_to_colormap(None)
                     left_annot = annotate_left(
-                        rect_l, detections, tracks, counter,
+                        rect_l,
+                        detections,
+                        tracks,
+                        counter,
                         fps=last_fps_estimate,
                     )
                     composite = compose_3panel(
-                        left_annot, rect_r, last_depth_panel,
+                        left_annot,
+                        rect_r,
+                        last_depth_panel,
                     )
                     confirmed_or_pending = sum(
-                        1 for t in tracks.values()
+                        1
+                        for t in tracks.values()
                         if getattr(t, "state", None) in ("confirmed", "pending")
                     )
-                    viewer.push(composite, {
-                        "total_in": counter.total_in,
-                        "total_out": counter.total_out,
-                        "fps": last_fps_estimate,
-                        "tracks": confirmed_or_pending,
-                        "dets": len(detections),
-                    })
+                    viewer.push(
+                        composite,
+                        {
+                            "total_in": counter.total_in,
+                            "total_out": counter.total_out,
+                            "fps": last_fps_estimate,
+                            "tracks": confirmed_or_pending,
+                            "dets": len(detections),
+                        },
+                    )
                 except Exception:
                     logger.exception("Web viewer push failed")
 
             # --- Observability: record per-frame latency + detection count ---
-            frame_latencies_ms.append(
-                (time.perf_counter() - t_iter_start) * 1000.0
-            )
+            frame_latencies_ms.append((time.perf_counter() - t_iter_start) * 1000.0)
             detection_counts.append(len(detections))
 
             # --- Telemetry ---
@@ -1266,40 +1415,42 @@ def main() -> None:
         "--no-mqtt",
         action="store_true",
         help="Skip MQTT entirely (useful before AWS infra is provisioned). "
-             "All publishes are logged to stdout instead of transmitted. "
-             "The pipeline runs end-to-end so detect / track / count events "
-             "are visible in logs.",
+        "All publishes are logged to stdout instead of transmitted. "
+        "The pipeline runs end-to-end so detect / track / count events "
+        "are visible in logs.",
     )
     parser.add_argument(
         "--ignore-schedule",
         action="store_true",
         help="Bypass the operating_hours gate. The pipeline counts always, "
-             "regardless of weekday/time of day. Useful for PoC runs and "
-             "debug sessions outside the configured store hours.",
+        "regardless of weekday/time of day. Useful for PoC runs and "
+        "debug sessions outside the configured store hours.",
     )
     parser.add_argument(
         "--profile",
         action="store_true",
         help="Log per-stage timing (capture / rectify / depth / detect / "
-             "track) every N frames so the actual bottleneck is visible "
-             "instead of just total FPS. Use with --profile-every-n to tune "
-             "the log frequency.",
+        "track) every N frames so the actual bottleneck is visible "
+        "instead of just total FPS. Use with --profile-every-n to tune "
+        "the log frequency.",
     )
     parser.add_argument(
         "--profile-every-n",
-        type=int, default=30,
+        type=int,
+        default=30,
         help="When --profile is set, emit a PROFILE log every N frames "
-             "(default 30 — about every 6 seconds at 5 FPS).",
+        "(default 30 — about every 6 seconds at 5 FPS).",
     )
     parser.add_argument(
         "--web-viewer-port",
-        type=int, default=80,
+        type=int,
+        default=80,
         help="HTTP port for the live debug viewer. Streams a 3-panel "
-             "composite (left annotated | right raw | depth colormap) "
-             "as MJPEG. Open the device IP in a browser to watch live. "
-             "Default 80 (needs CAP_NET_BIND_SERVICE under systemd; the "
-             "service unit grants it). Pass 0 to disable. Bind failures "
-             "are logged but don't kill the pipeline.",
+        "composite (left annotated | right raw | depth colormap) "
+        "as MJPEG. Open the device IP in a browser to watch live. "
+        "Default 80 (needs CAP_NET_BIND_SERVICE under systemd; the "
+        "service unit grants it). Pass 0 to disable. Bind failures "
+        "are logged but don't kill the pipeline.",
     )
     args = parser.parse_args()
 
