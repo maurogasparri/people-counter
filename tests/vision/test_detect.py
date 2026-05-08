@@ -202,6 +202,31 @@ class TestDetection:
         assert d["confidence"] == 0.85
         assert d["centroid"] == [60.0, 120.0]
 
+    def test_rotated_default_none(self):
+        """Axis-aligned detectors (yolov8) leave ``rotated`` unset; the
+        field must default to None and stay out of ``to_dict`` so
+        downstream consumers don't see a noisy null key."""
+        det = Detection(
+            bbox=(10, 20, 110, 220),
+            confidence=0.85,
+            centroid=(60.0, 120.0),
+        )
+        assert det.rotated is None
+        assert "rotated" not in det.to_dict()
+
+    def test_rotated_serialised_when_set(self):
+        """Architectures that emit a rotated rectangle (RAPiD) populate
+        the field; ``to_dict`` includes it so the JSON event preserves
+        the body footprint for downstream consumers."""
+        det = Detection(
+            bbox=(10, 20, 110, 220),
+            confidence=0.85,
+            centroid=(60.0, 120.0),
+            rotated=(60.0, 120.0, 80.0, 200.0, 30.0),
+        )
+        d = det.to_dict()
+        assert d["rotated"] == [60.0, 120.0, 80.0, 200.0, 30.0]
+
 
 class TestPostprocessRapid:
     """RAPiD raw 3-scale output (sigmoid + anchor decode + axis-aligned NMS)."""
@@ -331,6 +356,72 @@ class TestPostprocessRapid:
             scales, 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
         )
         assert len(dets) == 1
+
+    def test_rotated_field_populated(self):
+        """The decoder must preserve the rotated rectangle (cx, cy, w,
+        h, angle_deg) before collapsing to the axis-aligned envelope.
+        Downstream consumers (head_depth_in_bbox polygon mask) need
+        the body-aligned shape; without it the axis-aligned envelope
+        sweeps in floor + adjacent structure at non-trivial angles.
+        """
+        # Cell at M-scale grid (32, 32), anchor 0, ta=0 → angle = 0°.
+        # Decoded center = (520, 520); anchor size = (45.07, 101.47).
+        scales = self._empty_scales()
+        self._set_cell(scales[1], 32, 32, anchor_idx=0, tc=4.0)
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
+        )
+        assert len(dets) == 1
+        rotated = dets[0].rotated
+        assert rotated is not None
+        rcx, rcy, rw, rh, rang = rotated
+        assert abs(rcx - 520) < 2
+        assert abs(rcy - 520) < 2
+        ax, ay = RAPID_ANCHORS[16][0]
+        assert abs(rw - ax) < 2
+        assert abs(rh - ay) < 2
+        assert abs(rang) < 1e-3  # ta=0 → sigmoid(0)=0.5 → angle=0
+
+    def test_rotated_field_letterbox_undone(self):
+        """Letterbox unscales centre + size on the rotated record the
+        same way it does on the axis-aligned bbox. Angle is invariant
+        under uniform scale + translation, so it stays untouched.
+        """
+        scales = self._empty_scales()
+        self._set_cell(scales[1], 32, 32, anchor_idx=0, tc=4.0)
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 0.5, 0, 64, (2048, 1152),
+        )
+        assert len(dets) == 1
+        rotated = dets[0].rotated
+        assert rotated is not None
+        rcx, rcy, rw, rh, rang = rotated
+        # cx = (520 - 0)/0.5 = 1040; cy = (520 - 64)/0.5 = 912.
+        assert abs(rcx - 1040) < 4
+        assert abs(rcy - 912) < 4
+        # Anchor (45.07, 101.47) at scale=0.5 → (90.14, 202.94).
+        ax, ay = RAPID_ANCHORS[16][0]
+        assert abs(rw - ax / 0.5) < 4
+        assert abs(rh - ay / 0.5) < 4
+        # Angle untouched by letterbox.
+        assert abs(rang) < 1e-3
+
+    def test_rotated_angle_preserved(self):
+        """A non-zero angle logit decodes through the same sigmoid +
+        range as the rest of the head; the rotated record must reflect
+        the actual orientation, not 0.
+        """
+        scales = self._empty_scales()
+        # ta = 0.5 → sigmoid(0.5) ≈ 0.622 → angle = (0.622 - 0.5) * 360
+        # ≈ 44° (we just check it's clearly non-zero).
+        self._set_cell(scales[1], 32, 32, anchor_idx=0, ta=0.5, tc=4.0)
+        dets = postprocess_rapid(
+            scales, 0.3, 0.45, 1.0, 0, 0, (1024, 1024),
+        )
+        assert len(dets) == 1
+        assert dets[0].rotated is not None
+        _, _, _, _, rang = dets[0].rotated
+        assert abs(rang) > 30.0
 
 
 class TestPostprocessHailoNmsInputSize:

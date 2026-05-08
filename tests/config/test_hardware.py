@@ -161,11 +161,27 @@ class TestShippedHardware:
         assert tuple(cfg["sensor"]["default_res"]) == (2304, 1296)
         assert cfg["lens"]["type"] == "m12_120deg"
 
-    def test_shipped_low_confidence_threshold_default_off(self):
-        """Two-stage matching feature ships disabled (null) so the
-        out-of-box behaviour is identical to the single-stage tracker."""
+    def test_shipped_low_confidence_threshold_active(self):
+        """Two-stage matching ships activated at the FFC reference value
+        (0.10). Strict < confidence_threshold so the validator accepts it."""
         cfg = load_hardware_config()
-        assert cfg["detection"].get("low_confidence_threshold") is None
+        low = cfg["detection"].get("low_confidence_threshold")
+        high = cfg["detection"]["confidence_threshold"]
+        assert low is not None, "low_confidence_threshold must ship activated"
+        assert 0.0 < low < high, (
+            f"low_confidence_threshold {low} must be in (0, {high})"
+        )
+
+    def test_shipped_new_track_threshold_active(self):
+        """Spawn floor ships activated above confidence_threshold so weak
+        detections re-associate but never spawn ghost tracks."""
+        cfg = load_hardware_config()
+        nt = cfg["detection"].get("new_track_threshold")
+        high = cfg["detection"]["confidence_threshold"]
+        assert nt is not None, "new_track_threshold must ship activated"
+        assert nt >= high, (
+            f"new_track_threshold {nt} must be >= confidence_threshold {high}"
+        )
 
     def test_shipped_best_frame_default_off(self):
         """Hardware shipped to the fleet must have best_frame OFF —
@@ -249,6 +265,89 @@ class TestLowConfidenceThreshold:
         p = _write_yaml(tmp_path, cfg)
         loaded = load_hardware_config(p)
         assert loaded["detection"]["low_confidence_threshold"] is None
+
+
+class TestNewTrackThreshold:
+    """Optional spawn floor: feature off when null, validates >= conf when set."""
+
+    def test_explicit_null_is_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["new_track_threshold"] = None
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["detection"]["new_track_threshold"] is None
+
+    def test_missing_is_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"].pop("new_track_threshold", None)
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["detection"].get("new_track_threshold") is None
+
+    def test_valid_above_high_threshold_accepted(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["confidence_threshold"] = 0.30
+        cfg["detection"]["new_track_threshold"] = 0.50
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["detection"]["new_track_threshold"] == 0.50
+
+    def test_zero_or_negative_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["new_track_threshold"] = 0.0
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="must be in"):
+            load_hardware_config(p)
+
+    def test_above_one_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["new_track_threshold"] = 1.5
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="must be in"):
+            load_hardware_config(p)
+
+    def test_non_numeric_rejected(self, tmp_path):
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["new_track_threshold"] = "high"
+        p = _write_yaml(tmp_path, cfg)
+        with pytest.raises(ValueError, match="must be null or a number"):
+            load_hardware_config(p)
+
+    def test_below_high_threshold_disables_with_warning(self, tmp_path, caplog):
+        """If new_track < confidence_threshold, the validator coerces to
+        None (feature off) and logs a warning — never silently lowers
+        the spawn floor below confidence_threshold."""
+        import logging
+
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["confidence_threshold"] = 0.30
+        cfg["detection"]["new_track_threshold"] = 0.20
+        p = _write_yaml(tmp_path, cfg)
+        with caplog.at_level(logging.WARNING):
+            loaded = load_hardware_config(p)
+        assert loaded["detection"]["new_track_threshold"] is None
+        assert any(
+            "new_track_threshold" in rec.message and "disabling" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_equal_to_high_threshold_accepted(self, tmp_path):
+        """When new_track_threshold == confidence_threshold, spawn floor
+        is unchanged (no-op feature). Accepted, not coerced."""
+        cfg = dict(VALID_HW)
+        cfg["detection"] = dict(VALID_HW["detection"])
+        cfg["detection"]["confidence_threshold"] = 0.30
+        cfg["detection"]["new_track_threshold"] = 0.30
+        p = _write_yaml(tmp_path, cfg)
+        loaded = load_hardware_config(p)
+        assert loaded["detection"]["new_track_threshold"] == 0.30
 
 
 class TestBestFrameValidation:

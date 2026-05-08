@@ -137,11 +137,13 @@ def compute_disparity(
 
     if downscale > 1:
         gray_l = cv2.resize(
-            gray_l, (gray_l.shape[1] // downscale, gray_l.shape[0] // downscale),
+            gray_l,
+            (gray_l.shape[1] // downscale, gray_l.shape[0] // downscale),
             interpolation=cv2.INTER_AREA,
         )
         gray_r = cv2.resize(
-            gray_r, (gray_r.shape[1] // downscale, gray_r.shape[0] // downscale),
+            gray_r,
+            (gray_r.shape[1] // downscale, gray_r.shape[0] // downscale),
             interpolation=cv2.INTER_AREA,
         )
 
@@ -152,7 +154,11 @@ def compute_disparity(
 
     if sgbm is None:
         # Scale numDisparities down for reduced resolution
-        nd = max(16, (num_disparities // downscale // 16) * 16) if downscale > 1 else num_disparities
+        nd = (
+            max(16, (num_disparities // downscale // 16) * 16)
+            if downscale > 1
+            else num_disparities
+        )
         sgbm = create_sgbm(num_disparities=nd, block_size=block_size)
 
     raw_disp_l = sgbm.compute(gray_l, gray_r)
@@ -180,10 +186,13 @@ def compute_disparity(
         orig_h, orig_w = left_rect.shape[:2]
         valid_mask = disparity > 0
         disparity = cv2.resize(
-            disparity, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR,
+            disparity,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_LINEAR,
         )
         upscaled_mask = cv2.resize(
-            valid_mask.astype(np.uint8), (orig_w, orig_h),
+            valid_mask.astype(np.uint8),
+            (orig_w, orig_h),
             interpolation=cv2.INTER_NEAREST,
         ).astype(bool)
         disparity[upscaled_mask] *= downscale
@@ -268,33 +277,72 @@ def head_depth_in_bbox(
     depth_map: np.ndarray,
     bbox: tuple[int, int, int, int],
     mounting_height_mm: float,
+    fx_px: float,
+    cx_px: float,
+    cy_px: float,
+    *,
+    rotated_bbox: Optional[tuple[float, float, float, float, float]] = None,
     slice_thickness_mm: float = 100.0,
     min_head_area_px: int = 40,
     max_head_height_mm: float = 1800.0,
     min_head_above_floor_mm: float = 500.0,
+    column_radius_mm: float = 250.0,
 ) -> Optional[float]:
-    """Find head depth inside a bbox using histogram + connected components.
+    """Find head depth inside a bbox using histogram + connected components,
+    pre-filtered by a vertical column anchored on the body's 3-D centroid.
+
+    The 2-D bbox is the only anchor the detector hands us, but in cenital
+    geometry the bbox often clips overhead structure (cables, cornices,
+    shelf edges) that sits at a different metric (X, Y) than the body
+    underneath. When the body partially occludes that structure the gate
+    works fine; when the body shifts (sitting, crouching) and the
+    structure becomes visible, the histogram-walk-from-nearest happily
+    picks the structure as "head" because it really is closer to the
+    camera than the actual head.
+
+    The fix is to anchor on a small estimate of the body's metric
+    centroid (X_center, Y_center) and reject pixels whose back-projected
+    metric (X, Y) falls outside a vertical column of radius
+    ``column_radius_mm`` around it. Real heads always sit inside that
+    column (the head is part of the body that produced the bbox).
+    Overhead structure offset in metric X or Y is excluded.
 
     For zenith-mount stereo with a YOLO-COCO person bbox the centroid
     sits on the torso, not the head, so neither the central-crop median
     (measures the torso surface) nor a low percentile of the bbox depth
     (single-pixel speckle wins) gives a reliable head-height reading.
-
-    The canonical fix is mode-based, not min-based: walk the depth
-    distribution from camera-nearest outward, and return the median of
-    the largest connected pixel cluster in the first 10 cm slice that
-    has enough area to be a real head. The torso, being further from
-    the camera, is automatically rejected because we stop at the first
-    closer cluster that passes the area gate. Single-pixel speckle is
-    rejected because it never accumulates the area to win.
+    After the spatial column filter we run the canonical histogram
+    walk + connected-components pick: walk the depth distribution from
+    camera-nearest outward, return the median of the largest connected
+    pixel cluster in the first 10 cm slice that has enough area to be
+    a real head.
 
     Reference: Del Pizzo et al., "Counting people by RGB or depth
-    overhead cameras", Pattern Recognition Letters 2016.
+    overhead cameras", Pattern Recognition Letters 2016 (histogram +
+    components). Spatial column gate is our extension — needed because
+    overhead structure produces depth slices that pass the anthropometric
+    gate but are nowhere near the body in the world frame.
 
     Args:
         depth_map: Depth map in mm from disparity_to_depth(). 0 = invalid.
         bbox: (x1, y1, x2, y2) bounding box in pixel coordinates.
         mounting_height_mm: Camera-to-floor distance.
+        fx_px: Rectified focal length in px (P1[0, 0]). Used to back-
+            project pixels to metric X, Y. We use the same fx for X and
+            Y because the rectified model is square-pixel and only the
+            horizontal scale enters depth-to-world conversion.
+        cx_px: Rectified principal point x in px (P1[0, 2]).
+        cy_px: Rectified principal point y in px (P1[1, 2]).
+        rotated_bbox: Optional rotated rectangle ``(cx, cy, w, h, angle_deg)``
+            in image-pixel coordinates. When provided, depth sampling is
+            restricted to pixels inside this polygon — strictly tighter
+            than the axis-aligned ``bbox``, which the rotated rectangle's
+            envelope inflates by up to 2× area at 45° rotation. Crucial
+            for cenital geometry where RAPiD emits a body-aligned rotated
+            rectangle but ``bbox`` overshoots into floor + neighbouring
+            structure that pass the anthropometric depth gate. Pass
+            ``None`` (default) for axis-aligned detectors (yolov8) where
+            ``bbox`` is already the tight envelope.
         slice_thickness_mm: Histogram bin width. 10 cm is wider than
             SGBM's depth quantization at the operational range, so a
             real head fills at least one bin solidly.
@@ -307,12 +355,21 @@ def head_depth_in_bbox(
         min_head_above_floor_mm: Anthropometric floor (ignore depths
             corresponding to a head essentially on the ground — that's
             the floor itself, not a person).
+        column_radius_mm: Radius (mm) of the vertical column around the
+            body's 3-D centroid that pixels must fall inside to be
+            considered as candidate head material. Default 250 mm: a
+            human head sits well inside a 50 cm-wide column centred on
+            the torso, while overhead structure offset by >25 cm in
+            metric X or Y is rejected. Set very large to disable
+            (effectively reverting to the pre-spatial-filter behaviour).
 
     Returns:
         Estimated head depth in mm, or None if no plausible head cluster
         is found. Use ``head_height_above_floor()`` to convert to height.
     """
     if depth_map.size == 0:
+        return None
+    if fx_px <= 0.0:
         return None
     h, w = depth_map.shape[:2]
     x1 = max(0, int(bbox[0]))
@@ -334,10 +391,96 @@ def head_depth_in_bbox(
     if int(valid.sum()) < min_head_area_px:
         return None
 
-    # Despeckle: median blur over the gated ROI. Use NaN for invalids so
-    # the blur doesn't smear depth across holes. Fall back to plain median
-    # if medianBlur isn't applicable to the dtype/shape (paranoia).
-    roi_f = np.where(valid, roi.astype(np.float32), np.nan)
+    # ---- Rotated-rectangle mask (RAPiD-style detectors) ----
+    # The axis-aligned ``bbox`` is the tight envelope of a rotated
+    # rectangle for architectures like RAPiD. At non-trivial angles the
+    # envelope sweeps in floor + neighbouring structure; in cenital
+    # geometry that structure can sit at depths inside the anthropometric
+    # gate (a desk edge, a chair back, a tall cabinet at the bbox
+    # margin) and the histogram-walk-from-nearest then picks it as the
+    # "head". Filtering ``valid`` against the rotated polygon hands the
+    # function a body-shaped ROI even when the axis-aligned bbox is
+    # 2× the area of the actual body.
+    if rotated_bbox is not None:
+        rcx, rcy, rw, rh, rang_deg = rotated_bbox
+        rang = float(np.deg2rad(rang_deg))
+        cos_a, sin_a = float(np.cos(rang)), float(np.sin(rang))
+        # 4 corners of the rotated rectangle in original-image coords.
+        dx = np.array(
+            [-rw / 2.0, rw / 2.0, rw / 2.0, -rw / 2.0], dtype=np.float32
+        )
+        dy = np.array(
+            [-rh / 2.0, -rh / 2.0, rh / 2.0, rh / 2.0], dtype=np.float32
+        )
+        corners_x = rcx + dx * cos_a - dy * sin_a
+        corners_y = rcy + dx * sin_a + dy * cos_a
+        # Translate to ROI-local coords (origin at bbox top-left). Round
+        # to int once — fillPoly takes int32.
+        poly = np.empty((4, 2), dtype=np.int32)
+        poly[:, 0] = np.round(corners_x - x1).astype(np.int32)
+        poly[:, 1] = np.round(corners_y - y1).astype(np.int32)
+        poly_mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(poly_mask, [poly], 1)
+        valid = valid & poly_mask.astype(bool)
+        if int(valid.sum()) < min_head_area_px:
+            return None
+
+    # ---- 3-D back-projection of every gated pixel in the ROI ----
+    # Build pixel-centre (u, v) grids covering the bbox in full-frame
+    # coordinates so cx/cy reference the same origin as P1. Z is the
+    # gated depth; X, Y come from the standard pinhole back-projection
+    # X = (u - cx) * Z / fx,  Y = (v - cy) * Z / fx
+    # (same fx for both axes — rectified pixels are square).
+    us = np.arange(x1, x2, dtype=np.float32) - float(cx_px)
+    vs = np.arange(y1, y2, dtype=np.float32) - float(cy_px)
+    u_grid, v_grid = np.meshgrid(us, vs)
+    z_full = roi.astype(np.float32)
+    inv_fx = np.float32(1.0 / fx_px)
+    x_full = u_grid * z_full * inv_fx
+    y_full = v_grid * z_full * inv_fx
+
+    # ---- 3-D centroid of the body inside the bbox ----
+    # Median over the gated central crop is robust to the overhead
+    # structure that motivates the column filter — the structure
+    # typically only kisses the bbox at the top/edges, while the
+    # body fills the central crop. Using the centre means we anchor
+    # on the body even when the structure dominates the gated area
+    # count along the histogram nearest slice.
+    bw, bh = x2 - x1, y2 - y1
+    cw = max(1, bw // 2)
+    ch = max(1, bh // 2)
+    cx_off = (bw - cw) // 2
+    cy_off = (bh - ch) // 2
+    central_valid = valid[cy_off : cy_off + ch, cx_off : cx_off + cw]
+    if int(central_valid.sum()) >= 4:
+        x_center = float(
+            np.median(x_full[cy_off : cy_off + ch, cx_off : cx_off + cw][central_valid])
+        )
+        y_center = float(
+            np.median(y_full[cy_off : cy_off + ch, cx_off : cx_off + cw][central_valid])
+        )
+    else:
+        # Central crop has too few valid pixels — fall back to the full
+        # gated set so the function still returns something for thin
+        # bboxes or holes-y depth maps.
+        x_center = float(np.median(x_full[valid]))
+        y_center = float(np.median(y_full[valid]))
+
+    # ---- Spatial column filter ----
+    # Keep only gated pixels whose (X, Y) is within column_radius_mm of
+    # the body centroid. Squared-distance comparison avoids the sqrt.
+    dx = x_full - x_center
+    dy = y_full - y_center
+    column_mask = (dx * dx + dy * dy) <= (column_radius_mm * column_radius_mm)
+    valid_col = valid & column_mask
+    if int(valid_col.sum()) < min_head_area_px:
+        return None
+
+    # Despeckle: median blur over the column-gated ROI. Use NaN for
+    # invalids so the blur doesn't smear depth across holes. Fall back
+    # to plain median if medianBlur isn't applicable to the dtype/shape
+    # (paranoia).
+    roi_f = np.where(valid_col, roi.astype(np.float32), np.nan)
     try:
         smooth = cv2.medianBlur(roi_f, 3)
     except cv2.error:

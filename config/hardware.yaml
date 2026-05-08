@@ -104,22 +104,40 @@ detection:
                                   # Tuneado para RAPiD MWHB1024 — corta FPs
                                   # del modelo (alucinaciones en piso vacío).
                                   # El baseline YOLOv8n stock usaba 0.15.
-  low_confidence_threshold: null  # Two-stage matching (estilo ByteTrack).
-                                  # Cuando se setea (ej. 0.10), las
-                                  # detecciones en [low, confidence_threshold)
-                                  # entran al tracker SOLO para re-asociar
-                                  # tracks existentes que el high-conf no
-                                  # matcheó este frame. Nunca crean tracks
-                                  # nuevos. Si no matchean, se descartan
-                                  # silenciosamente. Sirve para no perder ID
-                                  # cuando una persona caminando tiene un
-                                  # frame de motion blur que baja la conf
-                                  # bajo confidence_threshold y reaparece a
-                                  # alta conf unos frames después. null
-                                  # (default) deja el feature off — el
-                                  # comportamiento out-of-box es idéntico al
-                                  # single-stage anterior. Debe ser estricto
-                                  # < confidence_threshold.
+  low_confidence_threshold: 0.10  # Two-stage matching (estilo ByteTrack)
+                                  # — feature activo. Detecciones en
+                                  # [low, confidence_threshold) entran al
+                                  # tracker SOLO para re-asociar tracks
+                                  # existentes que el high-conf no matcheó
+                                  # este frame. Nunca crean tracks nuevos.
+                                  # Si no matchean, se descartan silenciosamente.
+                                  # Evita perder ID cuando una persona
+                                  # caminando tiene un frame de motion blur
+                                  # que baja la conf bajo confidence_threshold
+                                  # y reaparece a alta conf unos frames después.
+                                  # 0.10 es el valor del incumbent FFC RK3588
+                                  # (ByteTrackTrackLowThresh). Debe ser
+                                  # estricto < confidence_threshold. Setear
+                                  # null para volver al comportamiento
+                                  # single-stage anterior. Tuning fleet-uniform:
+                                  # cambios viven acá en hardware.yaml + commit
+                                  # + deploy. NO en config.yaml per-device.
+  new_track_threshold: 0.50       # Spawn floor — feature activo. Detecciones
+                                  # en [confidence_threshold, new_track_threshold)
+                                  # pueden re-asociar tracks existentes pero
+                                  # NO spawn nuevos. Combina con
+                                  # low_confidence_threshold para banda triple:
+                                  # <low descartado, [low, new_track) match-only,
+                                  # >=new_track spawn. Pattern del incumbent
+                                  # FFC RK3588: ByteTrackNewTrackThresh
+                                  # separado de MatchThresh — evita IDs
+                                  # fantasma cuando el detector titubea sobre
+                                  # clutter al cruzar el umbral mínimo. 0.50
+                                  # es el valor de referencia. Setear null
+                                  # para que spawn floor caiga al
+                                  # confidence_threshold (comportamiento
+                                  # single-threshold). Tuning fleet-uniform:
+                                  # cambios en hardware.yaml + commit + deploy.
   nms_threshold: 0.45             # IoU threshold for non-maximum suppression.
   cluster_distance_px: 200        # Post-NMS centroid clustering: detections
                                   # whose centroids fall within this many
@@ -157,6 +175,21 @@ head_depth:
                                   # cabeza humana plausible está al
                                   # menos 50cm del piso (excluye niños
                                   # gateando + objetos al ras).
+  column_radius_m: 0.25           # Radio (m) de la columna vertical
+                                  # 3D centrada en el centroide del
+                                  # cuerpo. Pixels cuyo (X, Y) métrico
+                                  # back-projecta fuera de esta columna
+                                  # se descartan antes del histograma —
+                                  # rechaza estructura overhead (cables,
+                                  # cornisas, bordes de mueble) que cae
+                                  # dentro del bbox 2D pero está
+                                  # físicamente offset en X o Y respecto
+                                  # del cuerpo. 25cm cubre cabezas reales
+                                  # con holgura (cráneo + variación de
+                                  # postura) y deja el filtro estricto
+                                  # contra estructura desplazada >25cm.
+                                  # Subir a >1m efectivamente desactiva
+                                  # el filtro espacial.
 
 # --- Height sanity filter (defensa post-tracker, fleet-uniform) ---
 # Después de que head_depth_in_bbox + classifier corren, el evento de

@@ -47,13 +47,23 @@ class Detection:
     bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2) in original image coords
     confidence: float
     centroid: tuple[float, float]  # (cx, cy) center of bbox
+    # Tight rotated rectangle from architectures that emit one (RAPiD).
+    # ``(cx, cy, w, h, angle_deg)`` in original-image coordinates — same
+    # frame as ``bbox``. ``None`` for axis-aligned detectors (yolov8).
+    # Consumers that care about the actual body footprint (head depth,
+    # masks) should prefer this when present; ``bbox`` is the tight
+    # axis-aligned envelope and overshoots when angle is non-trivial.
+    rotated: tuple[float, float, float, float, float] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d: dict = {
             "bbox": list(self.bbox),
             "confidence": self.confidence,
             "centroid": list(self.centroid),
         }
+        if self.rotated is not None:
+            d["rotated"] = list(self.rotated)
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +582,7 @@ def postprocess_rapid(
 
     all_boxes: list[np.ndarray] = []  # axis-aligned [x1, y1, x2, y2]
     all_scores: list[np.ndarray] = []
+    all_rotated: list[np.ndarray] = []  # [cx, cy, w, h, angle_deg]
 
     for arr, stride in zip(raw_output, RAPID_STRIDES):
         grid = _rapid_to_grid(arr)
@@ -632,16 +643,30 @@ def postprocess_rapid(
 
         all_boxes.append(np.stack([x1, y1, x2, y2], axis=1))
         all_scores.append(conf_f)
+        # Preserve the rotated rectangle (cx, cy, w, h, angle_deg) before
+        # the axis-aligned collapse — downstream consumers (head_depth_in_bbox)
+        # use it as a polygon mask to reject background pixels that the
+        # axis-aligned envelope sweeps in when the rotation is non-trivial.
+        all_rotated.append(
+            np.stack([bx_f, by_f, bw_f, bh_f, ang_f], axis=1).astype(np.float32)
+        )
 
     if not all_boxes:
         return []
 
     boxes = np.concatenate(all_boxes, axis=0).astype(np.float32)
     scores = np.concatenate(all_scores, axis=0).astype(np.float32)
+    rotated = np.concatenate(all_rotated, axis=0).astype(np.float32)
 
     # Undo letterbox to get back to original-image coords.
     boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / scale
     boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / scale
+    # Same for the rotated centre + size. Angle is invariant under
+    # uniform scale + translation, so it doesn't get touched.
+    rotated[:, 0] = (rotated[:, 0] - pad_x) / scale
+    rotated[:, 1] = (rotated[:, 1] - pad_y) / scale
+    rotated[:, 2] = rotated[:, 2] / scale
+    rotated[:, 3] = rotated[:, 3] / scale
 
     orig_w, orig_h = original_size
     boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, orig_w)
@@ -659,11 +684,19 @@ def postprocess_rapid(
     detections: list[Detection] = []
     for i in np.asarray(indices).flatten():
         bx1, by1, bx2, by2 = boxes[i]
+        rcx, rcy, rw, rh, rang = rotated[i]
         detections.append(
             Detection(
                 bbox=(int(bx1), int(by1), int(bx2), int(by2)),
                 confidence=float(scores[i]),
                 centroid=((bx1 + bx2) / 2.0, (by1 + by2) / 2.0),
+                rotated=(
+                    float(rcx),
+                    float(rcy),
+                    float(rw),
+                    float(rh),
+                    float(rang),
+                ),
             )
         )
     return detections

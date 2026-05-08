@@ -309,29 +309,37 @@ class TestHeadDepthInBbox:
     the torso, not the head."""
 
     MOUNT_MM = 2560.0  # mounting height used in tests below
+    # Plausible rectified intrinsics for runtime resolution 1152×648.
+    # fx ≈ 464 px (P1[0,0] from a real fisheye stereoRectify with the
+    # bracket's 14 cm baseline + Arducam IMX708 K rescaled), principal
+    # point at the image centre. Tests here use bboxes far smaller than
+    # 1152×648, but the per-pixel back-projection only cares about
+    # (u-cx, v-cy, Z) and Z is what the synthetic depth maps drive.
+    FX_PX = 464.0
+    CX_PX = 576.0
+    CY_PX = 324.0
+
+    def _call(self, depth, bbox, mount=None, **kwargs):
+        """Helper: invoke head_depth_in_bbox with the standard intrinsics
+        unless a test overrides them via kwargs."""
+        return head_depth_in_bbox(
+            depth,
+            bbox,
+            self.MOUNT_MM if mount is None else mount,
+            fx_px=kwargs.pop("fx_px", self.FX_PX),
+            cx_px=kwargs.pop("cx_px", self.CX_PX),
+            cy_px=kwargs.pop("cy_px", self.CY_PX),
+            **kwargs,
+        )
 
     def test_returns_none_on_empty_depth_map(self):
         depth = np.zeros((0, 0), dtype=np.float32)
-        assert (
-            head_depth_in_bbox(
-                depth,
-                (0, 0, 10, 10),
-                self.MOUNT_MM,
-            )
-            is None
-        )
+        assert self._call(depth, (0, 0, 10, 10)) is None
 
     def test_returns_none_when_bbox_outside_frame(self):
         depth = np.full((100, 100), 1500.0, dtype=np.float32)
         # Negative-area bbox (clipped to nothing).
-        assert (
-            head_depth_in_bbox(
-                depth,
-                (50, 50, 40, 40),
-                self.MOUNT_MM,
-            )
-            is None
-        )
+        assert self._call(depth, (50, 50, 40, 40)) is None
 
     def test_returns_none_when_only_speckle_present(self):
         """Below-floor speckle alone (no real head cluster) → None.
@@ -341,17 +349,40 @@ class TestHeadDepthInBbox:
         pixels above the gate (whole bbox is speckle).
         """
         depth = np.full((50, 50), 200.0, dtype=np.float32)
-        result = head_depth_in_bbox(depth, (0, 0, 50, 50), self.MOUNT_MM)
+        result = self._call(depth, (0, 0, 50, 50))
         assert result is None
+
+    def _full_frame_depth(self, fill: float = 0.0) -> np.ndarray:
+        """Allocate a depth map at runtime resolution (1152×648) so any
+        bbox referenced through (CX_PX, CY_PX) lands inside the array.
+        Synthetic scenes paint the body inside this canvas."""
+        return np.full((648, 1152), fill, dtype=np.float32)
+
+    def _centred_bbox(self, half: int = 50) -> tuple[int, int, int, int]:
+        """Bbox centred on the principal point (so back-projected (X, Y)
+        at the body centroid lies on the optical axis)."""
+        return (
+            int(self.CX_PX - half),
+            int(self.CY_PX - half),
+            int(self.CX_PX + half),
+            int(self.CY_PX + half),
+        )
 
     def test_finds_sitting_user_head_not_torso(self):
         """Sitting user: head at ~1.10 m floor (depth 1450 mm), torso at
         ~0.80 m floor (depth 1760 mm). Function must return ~1450.
+
+        The head is centred under the body in 3-D so it survives the
+        column filter; the torso (further from camera, but in the same
+        column) gets rejected by the histogram-walk-from-nearest.
         """
-        depth = np.full((100, 100), 1760.0, dtype=np.float32)
+        depth = self._full_frame_depth(1760.0)
         # Head blob 7×7 = 49 px, comfortably above the 40-px area gate.
-        depth[20:27, 40:47] = 1450.0
-        result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
+        # Position centred on the principal point so the body centroid
+        # sits at metric (X, Y) ≈ (0, 0) and the column captures it.
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        depth[cy - 3 : cy + 4, cx - 3 : cx + 4] = 1450.0
+        result = self._call(depth, self._centred_bbox())
         assert result is not None
         assert abs(result - 1450.0) < 60.0  # within one slice (100mm)
 
@@ -359,9 +390,10 @@ class TestHeadDepthInBbox:
         """Standing user 1.68 m tall: head at depth ~880 mm. Torso at
         depth ~1160 mm. Returns ~880.
         """
-        depth = np.full((100, 100), 1160.0, dtype=np.float32)
-        depth[10:18, 35:45] = 880.0  # head, ~80 px
-        result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
+        depth = self._full_frame_depth(1160.0)
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        depth[cy - 4 : cy + 4, cx - 5 : cx + 5] = 880.0  # head, 80 px, centred
+        result = self._call(depth, self._centred_bbox())
         assert result is not None
         assert abs(result - 880.0) < 60.0
 
@@ -372,9 +404,10 @@ class TestHeadDepthInBbox:
         depth corresponds to a 2.26m-tall head, exceeds the cap, and
         falls outside the gate.
         """
-        depth = np.full((100, 100), 1500.0, dtype=np.float32)  # plausible head
-        depth[10:25, 10:25] = 300.0  # impossible (head 2.26m), excluded
-        result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
+        depth = self._full_frame_depth(1500.0)  # plausible head plane
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        depth[cy - 7 : cy + 8, cx - 7 : cx + 8] = 300.0  # impossible cluster
+        result = self._call(depth, self._centred_bbox())
         # The 300mm cluster is gated out, so we get the 1500mm plane.
         assert result is not None
         assert abs(result - 1500.0) < 100.0
@@ -384,9 +417,10 @@ class TestHeadDepthInBbox:
         even though it sits closer to the camera than the real head —
         below the min_head_area_px (40) gate, it's noise.
         """
-        depth = np.full((100, 100), 1500.0, dtype=np.float32)  # head plane
-        depth[5:8, 5:8] = 1100.0  # 9 px speckle, closer (within gate)
-        result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
+        depth = self._full_frame_depth(1500.0)  # head plane
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        depth[cy - 1 : cy + 2, cx - 1 : cx + 2] = 1100.0  # 9 px speckle
+        result = self._call(depth, self._centred_bbox())
         assert result is not None
         # Should land on the 1500 mm head plane, not the 1100 speckle.
         assert result > 1300
@@ -396,10 +430,10 @@ class TestHeadDepthInBbox:
         is the closest plausible cluster. We pick head, not torso —
         that's the whole point of the algorithm.
         """
-        depth = np.full((100, 100), 1700.0, dtype=np.float32)  # torso
-        # Head cluster 7×7 = 49 px — closer, comfortably above area gate.
-        depth[20:27, 43:50] = 1200.0
-        result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
+        depth = self._full_frame_depth(1700.0)  # torso
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        depth[cy - 3 : cy + 4, cx - 3 : cx + 4] = 1200.0  # head, 49 px, centred
+        result = self._call(depth, self._centred_bbox())
         assert result is not None
         assert abs(result - 1200.0) < 100.0
 
@@ -407,26 +441,234 @@ class TestHeadDepthInBbox:
         """Zero pixels (SGBM invalid) must not be counted toward the
         head-area gate or pollute the median.
         """
-        depth = np.zeros((100, 100), dtype=np.float32)  # all invalid
-        depth[40:60, 40:60] = 1500.0  # one valid plane
-        result = head_depth_in_bbox(depth, (0, 0, 100, 100), self.MOUNT_MM)
+        depth = self._full_frame_depth(0.0)  # all invalid
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        depth[cy - 10 : cy + 10, cx - 10 : cx + 10] = 1500.0  # one valid plane
+        result = self._call(depth, self._centred_bbox())
         assert result is not None
         assert abs(result - 1500.0) < 100.0
 
     def test_returns_none_with_no_valid_pixels(self):
         depth = np.zeros((100, 100), dtype=np.float32)
-        assert (
-            head_depth_in_bbox(
-                depth,
-                (0, 0, 100, 100),
-                self.MOUNT_MM,
-            )
-            is None
-        )
+        assert self._call(depth, (0, 0, 100, 100)) is None
 
     def test_mount_height_zero_returns_none(self):
         # Pathological config: mount=0 collapses the gate and there's
         # no plausible region. Must not crash.
         depth = np.full((50, 50), 1500.0, dtype=np.float32)
-        result = head_depth_in_bbox(depth, (0, 0, 50, 50), 0.0)
+        result = self._call(depth, (0, 0, 50, 50), mount=0.0)
+        assert result is None
+
+    # ------------------------------------------------------------------
+    # 3-D column filter (Fix B): overhead structure offset in metric
+    # X or Y from the body must be excluded; structure aligned with
+    # the body must still be picked; radius must be configurable.
+    # ------------------------------------------------------------------
+
+    def _make_offset_overhead_scene(
+        self,
+    ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+        """Body centred at the principal point at depth 1700 mm, plus a
+        spurious overhead-structure cluster at 800 mm depth offset well
+        beyond 250 mm in metric X from the body centroid.
+
+        Bbox is symmetric around the body so the bbox-central crop sees
+        only body, anchoring the centroid on (X, Y) ≈ (0, 0). The
+        overhead cluster lives in the bbox edge region and gets back-
+        projected to a metric X of ~700 mm — far outside the 250 mm
+        column radius. Without the spatial filter the histogram walk
+        would lock onto the 800 mm bin and return 800 mm.
+        """
+        depth = np.full((648, 1152), 0.0, dtype=np.float32)
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        # Body torso/head plane centred on the principal point.
+        depth[cy - 80 : cy + 80, cx - 80 : cx + 80] = 1700.0
+        # Overhead structure cluster at 800 mm depth. Place it 410 px to
+        # the right of the optical axis: ΔX = 410 * 800 / 464 ≈ 707 mm.
+        # That's well outside both the 250 mm column and the bbox
+        # central crop (so the body-centroid estimator is not biased
+        # by it).
+        u0 = cx + 410
+        depth[cy - 25 : cy + 25, u0 : u0 + 60] = 800.0
+        # Bbox is symmetric around the body principal point in U
+        # (so cx_off centres the central crop on the body) and stretches
+        # right to enclose the overhead cluster.
+        bbox = (cx - 250, cy - 90, cx + 500, cy + 90)
+        return depth, bbox
+
+    def test_overhead_structure_offset_in_xy_excluded(self):
+        """The motivating bug: an overhead cluster at 800 mm offset
+        >250 mm in metric X from the body must be excluded by the
+        column filter, so the picked head depth is 1700 mm (body),
+        not 800 mm (structure).
+        """
+        depth, bbox = self._make_offset_overhead_scene()
+        result = self._call(depth, bbox)
+        assert result is not None
+        assert abs(result - 1700.0) < 100.0, (
+            f"got {result}, expected ~1700 (body picked, overhead "
+            "structure rejected by 3-D column filter)"
+        )
+
+    def test_overhead_structure_aligned_in_xy_picked(self):
+        """Sanity: when an overhead cluster is aligned in metric (X, Y)
+        with the body it sits *inside* the column and the function
+        picks it (it is genuinely part of the body — e.g. a head
+        sitting above the torso). Confirms the column filter doesn't
+        over-reject and create false negatives.
+        """
+        depth = np.full((648, 1152), 0.0, dtype=np.float32)
+        # Body / torso plane at depth 1700 mm.
+        depth[
+            int(self.CY_PX) - 80 : int(self.CY_PX) + 80,
+            int(self.CX_PX) - 80 : int(self.CX_PX) + 80,
+        ] = 1700.0
+        # Closer cluster at depth 1100 mm, centred on the body in (X, Y).
+        # ΔX ≈ 0 so it stays inside the column.
+        depth[
+            int(self.CY_PX) - 20 : int(self.CY_PX) + 20,
+            int(self.CX_PX) - 20 : int(self.CX_PX) + 20,
+        ] = 1100.0
+        bbox = (
+            int(self.CX_PX) - 90,
+            int(self.CY_PX) - 90,
+            int(self.CX_PX) + 90,
+            int(self.CY_PX) + 90,
+        )
+        result = self._call(depth, bbox)
+        assert result is not None
+        assert abs(result - 1100.0) < 100.0, (
+            f"got {result}, expected ~1100 (closer cluster aligned in "
+            "X-Y is genuine head material — column filter must keep it)"
+        )
+
+    def test_column_radius_configurable(self):
+        """The column radius is a knob: enlarging it must let the
+        offset overhead cluster back in (proving the filter is what
+        was excluding it in test_overhead_structure_offset_in_xy_excluded
+        rather than something else in the pipeline).
+        """
+        depth, bbox = self._make_offset_overhead_scene()
+        # Default radius (250 mm) → offset structure rejected, body wins.
+        default = self._call(depth, bbox)
+        assert default is not None
+        assert abs(default - 1700.0) < 100.0
+        # Enlarge radius to 5 m → structure is now inside the column
+        # and the histogram walk picks it (closer to camera).
+        wide = self._call(depth, bbox, column_radius_mm=5000.0)
+        assert wide is not None
+        assert abs(wide - 800.0) < 100.0, (
+            f"got {wide}, expected ~800 with wide radius (overhead "
+            "structure now inside the column and picked as nearest)"
+        )
+
+    # ------------------------------------------------------------------
+    # Rotated-rectangle polygon mask: when the detector emits a rotated
+    # bbox (RAPiD), the axis-aligned envelope sweeps in floor + adjacent
+    # structure that sit close to the camera and pass the column filter
+    # because they back-project to a metric (X, Y) inside the column.
+    # The polygon mask hands the function the actual body footprint.
+    # ------------------------------------------------------------------
+
+    def _make_tilted_body_with_corner_structure_scene(
+        self,
+    ) -> tuple[np.ndarray, tuple[int, int, int, int],
+               tuple[float, float, float, float, float]]:
+        """Body rectangle 60×200 px tilted 45° centred on the principal
+        point. The axis-aligned envelope reaches into a near-camera
+        structure cluster (depth 800 mm) at the envelope's top-right
+        corner — outside the rotated body polygon, inside the envelope.
+        The structure's metric X is well inside the 250 mm column so
+        the spatial filter alone does not reject it. Returns
+        ``(depth_map, axis_aligned_bbox, rotated_bbox)``.
+        """
+        import cv2 as _cv2  # local alias to keep test imports tidy
+
+        depth = np.zeros((648, 1152), dtype=np.float32)
+        cy, cx = float(self.CY_PX), float(self.CX_PX)
+        angle_deg = 45.0
+        w, h = 60.0, 200.0
+        rang = np.deg2rad(angle_deg)
+        cos_a, sin_a = np.cos(rang), np.sin(rang)
+        dx = np.array([-w / 2, w / 2, w / 2, -w / 2], dtype=np.float32)
+        dy = np.array([-h / 2, -h / 2, h / 2, h / 2], dtype=np.float32)
+        rx = dx * cos_a - dy * sin_a
+        ry = dx * sin_a + dy * cos_a
+        body_poly = np.stack(
+            [cx + rx, cy + ry], axis=1
+        ).round().astype(np.int32)
+        body_mask = np.zeros((648, 1152), dtype=np.uint8)
+        _cv2.fillPoly(body_mask, [body_poly], 1)
+        depth[body_mask.astype(bool)] = 1700.0  # body plane
+
+        # Near-camera structure cluster at the envelope's TOP-LEFT
+        # quadrant: pixels (486..516, 234..264). The rotated body
+        # diagonal runs from upper-right (625, 232) to lower-left
+        # (484, 374), so the top-left envelope corner is the OPPOSITE
+        # diagonal — comfortably outside the body polygon, but inside
+        # the axis-aligned envelope and inside the column (back-projects
+        # to ~183 mm metric radius < 250 mm).
+        depth[234:264, 486:516] = 800.0
+
+        bbox_xs = cx + rx
+        bbox_ys = cy + ry
+        bbox = (
+            int(np.floor(bbox_xs.min())),
+            int(np.floor(bbox_ys.min())),
+            int(np.ceil(bbox_xs.max())),
+            int(np.ceil(bbox_ys.max())),
+        )
+        rotated = (cx, cy, w, h, angle_deg)
+        return depth, bbox, rotated
+
+    def test_rotated_polygon_mask_excludes_corner_structure(self):
+        """The motivating bug from the screenshot: RAPiD's tilted body
+        bbox collapsed to its axis-aligned envelope swept in a near-
+        camera cluster at the envelope corner (a tall cabinet next to
+        the sitting user). Without the polygon mask the histogram
+        walk picks that cluster as 'head'; with it the cluster is
+        excluded and the actual body depth wins.
+        """
+        depth, bbox, rotated = (
+            self._make_tilted_body_with_corner_structure_scene()
+        )
+        # Baseline (axis-aligned only): structure dominates as nearest.
+        naive = self._call(depth, bbox)
+        assert naive is not None
+        assert abs(naive - 800.0) < 100.0, (
+            f"baseline got {naive}, expected ~800 (axis-aligned envelope "
+            "sweeps in the near-camera corner cluster without the polygon "
+            "mask — that's the bug we're fixing)"
+        )
+        # Polygon mask applied: structure outside the rotated body is
+        # rejected before the histogram walk; body wins.
+        masked = self._call(depth, bbox, rotated_bbox=rotated)
+        assert masked is not None
+        assert abs(masked - 1700.0) < 100.0, (
+            f"got {masked}, expected ~1700 (rotated polygon mask excludes "
+            "the corner cluster outside the body footprint)"
+        )
+
+    def test_rotated_polygon_mask_none_matches_default(self):
+        """Passing ``rotated_bbox=None`` explicitly must behave identically
+        to omitting the kwarg (the architecture-agnostic fallback).
+        """
+        depth, bbox, _ = self._make_tilted_body_with_corner_structure_scene()
+        a = self._call(depth, bbox)
+        b = self._call(depth, bbox, rotated_bbox=None)
+        assert a == b
+
+    def test_rotated_polygon_mask_zero_size_returns_none(self):
+        """Degenerate rotated rectangle (width or height 0) leaves zero
+        valid pixels after masking — function must return None instead
+        of crashing on the empty histogram.
+        """
+        depth = self._full_frame_depth(1500.0)
+        cy, cx = int(self.CY_PX), int(self.CX_PX)
+        depth[cy - 10 : cy + 10, cx - 10 : cx + 10] = 1500.0
+        result = self._call(
+            depth,
+            self._centred_bbox(),
+            rotated_bbox=(float(cx), float(cy), 0.0, 0.0, 0.0),
+        )
         assert result is None

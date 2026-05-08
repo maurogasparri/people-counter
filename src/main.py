@@ -562,6 +562,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         mount_m=mount_m_init,
         geometric_clearance_m=0.0,
     )
+    # Column radius (mm) for the spatial 3-D filter inside head_depth_in_bbox.
+    # Plain float-in-metres knob — no auto, no mount-dependence: the radius is
+    # an anthropometric fact about how wide a column the human body fits in.
+    head_depth_column_radius_mm = (
+        float(hw_head_depth.get("column_radius_m", 0.25)) * 1000.0
+    )
 
     hw_height = hw.get("height", {}) or {}
     height_sanity_min_mm = _resolve_height_bound_mm(
@@ -662,6 +668,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # Until then, fall back to the bracket design constant from hardware.yaml.
     focal_length_px = None
     baseline_mm = float(hw["bracket"]["baseline_mm"])
+    # Rectified intrinsics (left camera) needed for 3-D back-projection in
+    # head_depth_in_bbox. Populated alongside focal_length_px once the
+    # calibration is loaded; until then ``None`` disables the 3-D column
+    # filter and head_depth_in_bbox is a no-op (returns None) for height.
+    cx_rect_px: float | None = None
+    cy_rect_px: float | None = None
 
     # --- Telemetry timer ---
     telem_interval = telem_cfg.get("interval_seconds", 300)
@@ -937,10 +949,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 # Use actual baseline from calibration (T vector magnitude)
                 T = calibration["T"]
                 baseline_mm = float(np.linalg.norm(T))
+                # Rectified principal point (left camera). load_calibration
+                # populates these alongside fx_rect; we mirror the safe
+                # fallback (P1 columns 0,2 / 1,2) for older .npz files
+                # generated before that change.
+                cx_rect_px = float(calibration.get("cx_rect", calibration["P1"][0, 2]))
+                cy_rect_px = float(calibration.get("cy_rect", calibration["P1"][1, 2]))
                 logger.info(
-                    "Focal length: %.1f px, Baseline: %.1f mm",
+                    "Focal length: %.1f px, Baseline: %.1f mm, "
+                    "Principal point: (%.1f, %.1f)",
                     focal_length_px,
                     baseline_mm,
+                    cx_rect_px,
+                    cy_rect_px,
                 )
 
             # --- Detection FIRST (depth on demand below) ---
@@ -957,6 +978,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # match-only candidates that never spawn new tracks. When
             # null/missing the detector runs at the regular high
             # threshold and behaviour is identical to single-stage.
+            #
+            # ``new_track_threshold`` (optional, >= confidence_threshold)
+            # raises the spawn floor independently. Detections in
+            # [confidence_threshold, new_track_threshold) become
+            # match-only — same band as low-conf candidates but on the
+            # other side of confidence_threshold. Pattern del incumbent
+            # FFC: ByteTrackNewTrackThresh separado de MatchThresh
+            # evita IDs fantasma cuando el detector titubea sobre clutter.
             high_conf_thr = float(
                 detect_cfg.get(
                     "confidence_threshold",
@@ -967,11 +996,27 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 "low_confidence_threshold",
                 hw["detection"].get("low_confidence_threshold"),
             )
+            new_track_thr_raw = detect_cfg.get(
+                "new_track_threshold",
+                hw["detection"].get("new_track_threshold"),
+            )
             two_stage_active = (
                 low_conf_thr_raw is not None
                 and float(low_conf_thr_raw) > 0.0
                 and float(low_conf_thr_raw) < high_conf_thr
             )
+            # Spawn floor: detections >= spawn_thr are eligible to create
+            # new tracks. Defaults to confidence_threshold when
+            # new_track_threshold is null/missing (legacy behaviour).
+            spawn_thr = (
+                max(high_conf_thr, float(new_track_thr_raw))
+                if new_track_thr_raw is not None
+                else high_conf_thr
+            )
+            # Detect floor: lowest conf at which the detector emits a
+            # bbox. Below this, pixels are dropped before reaching the
+            # tracker. Equals low_conf_thr when two-stage is active,
+            # otherwise the regular high-conf threshold.
             detect_floor = (
                 float(low_conf_thr_raw) if two_stage_active else high_conf_thr
             )
@@ -997,12 +1042,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 health_signals.detect_ok = False
                 time.sleep(0.1)
                 continue
-            if two_stage_active:
+            # Split detections into spawn-eligible vs match-only buckets.
+            # Spawn-eligible: conf >= spawn_thr (max of high_conf_thr and
+            # new_track_threshold). Match-only: conf < spawn_thr but >=
+            # detect_floor (anything below detect_floor was already cut by
+            # the detector). When neither low_confidence_threshold nor
+            # new_track_threshold is set, spawn_thr == detect_floor and
+            # the match-only bucket is empty (legacy single-stage flow).
+            if spawn_thr > detect_floor:
                 detections = [
-                    d for d in all_detections if d.confidence >= high_conf_thr
+                    d for d in all_detections if d.confidence >= spawn_thr
                 ]
                 low_conf_detections = [
-                    d for d in all_detections if d.confidence < high_conf_thr
+                    d for d in all_detections if d.confidence < spawn_thr
                 ]
             else:
                 detections = all_detections
@@ -1065,6 +1117,22 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 m: list[dict] = []
                 for det in dets:
                     cx, cy = det.centroid
+                    # TEMP DEBUG (height-bug triage): dump RAPiD's rotated
+                    # rectangle so we can confirm whether the polygon mask
+                    # is actually filtering anything. Remove once the
+                    # diagnosis is closed. Inline format because the
+                    # project's logger drops `extra` fields.
+                    _rot = det.rotated
+                    logger.info(
+                        "rapid_dump bbox=%s rotated=%s conf=%.3f",
+                        tuple(int(v) for v in det.bbox),
+                        (
+                            tuple(round(float(v), 2) for v in _rot)
+                            if _rot is not None
+                            else None
+                        ),
+                        float(det.confidence),
+                    )
                     # Tracker z = median of the bbox central crop. That's
                     # the body's "centre of mass" depth (torso for stock
                     # YOLO, head for RAPiD) — what we want for re-id
@@ -1074,15 +1142,41 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     # torso, not the head.
                     if depth_map is not None:
                         z = depth_at_bbox(depth_map, det.bbox)
+                        # 3-D column filter requires rectified intrinsics
+                        # from the calibration. If they aren't loaded yet
+                        # (no calibration, or pre-bootstrap iteration) we
+                        # skip head_depth — height for that frame falls
+                        # back to "unknown" rather than returning a value
+                        # we can't trust geometrically.
                         head_depth_mm = (
                             head_depth_in_bbox(
                                 depth_map,
                                 det.bbox,
                                 mount_height_mm,
+                                fx_px=float(focal_length_px),
+                                cx_px=float(cx_rect_px),
+                                cy_px=float(cy_rect_px),
+                                # RAPiD emits a body-aligned rotated
+                                # rectangle that we collapse to the
+                                # axis-aligned ``bbox`` for tracker / NMS
+                                # consumers; here we want the tight
+                                # polygon back so the depth sampler ignores
+                                # floor + neighbouring structure that the
+                                # axis-aligned envelope sweeps in. yolov8
+                                # leaves ``rotated`` as None and the
+                                # function falls back to bbox-only.
+                                rotated_bbox=det.rotated,
                                 max_head_height_mm=head_depth_max_mm,
                                 min_head_above_floor_mm=head_depth_min_mm,
+                                column_radius_mm=head_depth_column_radius_mm,
                             )
-                            if hc_enabled and mount_height_mm > 0
+                            if (
+                                hc_enabled
+                                and mount_height_mm > 0
+                                and focal_length_px is not None
+                                and cx_rect_px is not None
+                                and cy_rect_px is not None
+                            )
                             else None
                         )
                     else:

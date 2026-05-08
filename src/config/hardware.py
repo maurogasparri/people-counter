@@ -261,6 +261,36 @@ def _validate(data: dict[str, Any]) -> None:
             )
             detection["low_confidence_threshold"] = None
 
+    # Optional new-track spawn threshold. Must be:
+    #   - missing or null  → spawn floor falls back to confidence_threshold
+    #   - >= confidence_threshold → detections in [confidence, new_track)
+    #     can match existing tracks but never spawn new ones
+    # Values < confidence_threshold are silently coerced to "off" + warned
+    # so a misconfiguration never silently *lowers* the spawn floor.
+    new_track = detection.get("new_track_threshold")
+    if new_track is not None:
+        if not isinstance(new_track, (int, float)) or isinstance(new_track, bool):
+            raise ValueError(
+                "hardware.yaml: detection.new_track_threshold "
+                "must be null or a number"
+            )
+        nt_f = float(new_track)
+        if nt_f <= 0.0 or nt_f > 1.0:
+            raise ValueError(
+                "hardware.yaml: detection.new_track_threshold "
+                "must be in (0, 1] (or null to disable)"
+            )
+        high_f = float(detection["confidence_threshold"])
+        if nt_f < high_f:
+            logger.warning(
+                "detection.new_track_threshold (%.3f) < "
+                "confidence_threshold (%.3f) — disabling spawn gate "
+                "(treated as null)",
+                nt_f,
+                high_f,
+            )
+            detection["new_track_threshold"] = None
+
 
 def reset_cache() -> None:
     """Drop the cached hardware config. Used by tests."""

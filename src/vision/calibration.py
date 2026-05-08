@@ -59,9 +59,7 @@ def create_charuco_board(
     produces matching producer + detector behaviour.
     """
     aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
-    board = cv2.aruco.CharucoBoard(
-        board_size, square_length, marker_length, aruco_dict
-    )
+    board = cv2.aruco.CharucoBoard(board_size, square_length, marker_length, aruco_dict)
     board.setLegacyPattern(legacy_pattern)
     return board
 
@@ -122,8 +120,8 @@ def detect_charuco_corners(
     else:
         detector = cv2.aruco.CharucoDetector(board)
 
-    charuco_corners, charuco_ids, marker_corners, marker_ids = (
-        detector.detectBoard(gray)
+    charuco_corners, charuco_ids, marker_corners, marker_ids = detector.detectBoard(
+        gray
     )
 
     if charuco_ids is None or len(charuco_ids) < min_corners:
@@ -212,8 +210,10 @@ def _reshape_for_fisheye(
 
 
 def _derive_stereo_rt_from_per_pose(
-    rvecs_l: list[np.ndarray], tvecs_l: list[np.ndarray],
-    rvecs_r: list[np.ndarray], tvecs_r: list[np.ndarray],
+    rvecs_l: list[np.ndarray],
+    tvecs_l: list[np.ndarray],
+    rvecs_r: list[np.ndarray],
+    tvecs_r: list[np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Average the per-pose relative transform (left→right) across all poses.
 
@@ -255,10 +255,14 @@ def _compute_stereo_rms(
     obj_list: list[np.ndarray],
     corners_l: list[np.ndarray],
     corners_r: list[np.ndarray],
-    K_l: np.ndarray, D_l: np.ndarray,
-    K_r: np.ndarray, D_r: np.ndarray,
-    rvecs_l: list[np.ndarray], tvecs_l: list[np.ndarray],
-    R_stereo: np.ndarray, T_stereo: np.ndarray,
+    K_l: np.ndarray,
+    D_l: np.ndarray,
+    K_r: np.ndarray,
+    D_r: np.ndarray,
+    rvecs_l: list[np.ndarray],
+    tvecs_l: list[np.ndarray],
+    R_stereo: np.ndarray,
+    T_stereo: np.ndarray,
 ) -> float:
     """Reprojection RMS of the fixed-intrinsics / averaged-extrinsics stereo fit.
 
@@ -270,17 +274,26 @@ def _compute_stereo_rms(
     """
     errs: list[float] = []
     for obj_pts, pts_l, pts_r, rv_l, tv_l in zip(
-        obj_list, corners_l, corners_r, rvecs_l, tvecs_l,
+        obj_list,
+        corners_l,
+        corners_r,
+        rvecs_l,
+        tvecs_l,
     ):
         rv_l_arr = np.asarray(rv_l, dtype=np.float64).reshape(3, 1)
         tv_l_arr = np.asarray(tv_l, dtype=np.float64).reshape(3, 1)
         R_l, _ = cv2.Rodrigues(rv_l_arr)
 
         proj_l, _ = cv2.fisheye.projectPoints(
-            obj_pts, rv_l_arr, tv_l_arr, K_l, D_l,
+            obj_pts,
+            rv_l_arr,
+            tv_l_arr,
+            K_l,
+            D_l,
         )
         err_l = np.linalg.norm(
-            proj_l.reshape(-1, 2) - pts_l.reshape(-1, 2), axis=1,
+            proj_l.reshape(-1, 2) - pts_l.reshape(-1, 2),
+            axis=1,
         )
 
         # Right extrinsics: chain left with the stereo transform.
@@ -288,10 +301,15 @@ def _compute_stereo_rms(
         t_r = R_stereo @ tv_l_arr + T_stereo
         rv_r_arr, _ = cv2.Rodrigues(R_r)
         proj_r, _ = cv2.fisheye.projectPoints(
-            obj_pts, rv_r_arr, t_r, K_r, D_r,
+            obj_pts,
+            rv_r_arr,
+            t_r,
+            K_r,
+            D_r,
         )
         err_r = np.linalg.norm(
-            proj_r.reshape(-1, 2) - pts_r.reshape(-1, 2), axis=1,
+            proj_r.reshape(-1, 2) - pts_r.reshape(-1, 2),
+            axis=1,
         )
 
         errs.extend(err_l.tolist())
@@ -300,7 +318,7 @@ def _compute_stereo_rms(
     if not errs:
         return float("nan")
     errs_arr = np.asarray(errs, dtype=np.float64)
-    return float(np.sqrt((errs_arr ** 2).mean()))
+    return float(np.sqrt((errs_arr**2).mean()))
 
 
 def calibrate_stereo(
@@ -314,10 +332,15 @@ def calibrate_stereo(
 ) -> dict[str, np.ndarray]:
     """Stereo calibration using the fisheye (Kannala-Brandt) model."""
     board = create_charuco_board(
-        board_size, square_length, marker_length, dict_id, legacy_pattern,
+        board_size,
+        square_length,
+        marker_length,
+        dict_id,
+        legacy_pattern,
     )
     all_obj, all_corners_l, all_corners_r, image_size = _detect_all_pairs(
-        image_pairs, board,
+        image_pairs,
+        board,
     )
 
     valid_pairs = len(all_obj)
@@ -327,9 +350,7 @@ def calibrate_stereo(
     )
 
     if valid_pairs < min_pairs:
-        raise ValueError(
-            f"Need at least {min_pairs} valid pairs, got {valid_pairs}."
-        )
+        raise ValueError(f"Need at least {min_pairs} valid pairs, got {valid_pairs}.")
 
     obj_f, corners_l_f = _reshape_for_fisheye(all_obj, all_corners_l)
     _, corners_r_f = _reshape_for_fisheye(all_obj, all_corners_r)
@@ -337,10 +358,7 @@ def calibrate_stereo(
     # CHECK_COND raises if a pose is too degenerate. We omit it — with real lab
     # captures the 20 canonical poses are well-distributed, and keeping it off
     # avoids cryptic failures on rare borderline cases.
-    calib_flags = (
-        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
-        | cv2.fisheye.CALIB_FIX_SKEW
-    )
+    calib_flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC | cv2.fisheye.CALIB_FIX_SKEW
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
     # Pre-allocate K/D with the shapes the fisheye binding expects, but do NOT
@@ -353,8 +371,13 @@ def calibrate_stereo(
     D_r = np.zeros((4, 1), dtype=np.float64)
 
     rms_l, K_l, D_l, rvecs_l, tvecs_l = cv2.fisheye.calibrate(
-        obj_f, corners_l_f, image_size, K_l, D_l,
-        flags=calib_flags, criteria=criteria,
+        obj_f,
+        corners_l_f,
+        image_size,
+        K_l,
+        D_l,
+        flags=calib_flags,
+        criteria=criteria,
     )
     logger.info(
         "camera_calibrated",
@@ -362,8 +385,13 @@ def calibrate_stereo(
     )
 
     rms_r, K_r, D_r, rvecs_r, tvecs_r = cv2.fisheye.calibrate(
-        obj_f, corners_r_f, image_size, K_r, D_r,
-        flags=calib_flags, criteria=criteria,
+        obj_f,
+        corners_r_f,
+        image_size,
+        K_r,
+        D_r,
+        flags=calib_flags,
+        criteria=criteria,
     )
     logger.info(
         "camera_calibrated",
@@ -383,8 +411,17 @@ def calibrate_stereo(
     # fraction of a pixel RMS for a rigid bracket.
     R, T = _derive_stereo_rt_from_per_pose(rvecs_l, tvecs_l, rvecs_r, tvecs_r)
     rms_stereo = _compute_stereo_rms(
-        obj_f, corners_l_f, corners_r_f, K_l, D_l, K_r, D_r,
-        rvecs_l, tvecs_l, R, T,
+        obj_f,
+        corners_l_f,
+        corners_r_f,
+        K_l,
+        D_l,
+        K_r,
+        D_r,
+        rvecs_l,
+        tvecs_l,
+        R,
+        T,
     )
     logger.info(
         "stereo_calibrated",
@@ -392,16 +429,32 @@ def calibrate_stereo(
     )
 
     R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
-        K_l, D_l, K_r, D_r, image_size, R, T,
+        K_l,
+        D_l,
+        K_r,
+        D_r,
+        image_size,
+        R,
+        T,
         flags=cv2.CALIB_ZERO_DISPARITY,
         newImageSize=image_size,
         balance=FISHEYE_RECTIFY_BALANCE,
     )
     map_l_x, map_l_y = cv2.fisheye.initUndistortRectifyMap(
-        K_l, D_l, R1, P1, image_size, cv2.CV_32FC1,
+        K_l,
+        D_l,
+        R1,
+        P1,
+        image_size,
+        cv2.CV_32FC1,
     )
     map_r_x, map_r_y = cv2.fisheye.initUndistortRectifyMap(
-        K_r, D_r, R2, P2, image_size, cv2.CV_32FC1,
+        K_r,
+        D_r,
+        R2,
+        P2,
+        image_size,
+        cv2.CV_32FC1,
     )
 
     logger.info(
@@ -413,15 +466,26 @@ def calibrate_stereo(
         },
     )
 
-    return {
-        "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
-        "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
-        "R": R, "T": T,
-        "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
-        "map_l_x": map_l_x, "map_l_y": map_l_y,
-        "map_r_x": map_r_x, "map_r_y": map_r_y,
+    result: dict[str, np.ndarray] = {
+        "camera_matrix_l": K_l,
+        "dist_coeffs_l": D_l,
+        "camera_matrix_r": K_r,
+        "dist_coeffs_r": D_r,
+        "R": R,
+        "T": T,
+        "R1": R1,
+        "R2": R2,
+        "P1": P1,
+        "P2": P2,
+        "Q": Q,
+        "map_l_x": map_l_x,
+        "map_l_y": map_l_y,
+        "map_r_x": map_r_x,
+        "map_r_y": map_r_y,
         "image_size": np.array(list(image_size)),
     }
+    _ensure_rectified_intrinsics(result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +494,8 @@ def calibrate_stereo(
 
 
 def lens_alignment_metrics(
-    R: np.ndarray, T: np.ndarray,
+    R: np.ndarray,
+    T: np.ndarray,
 ) -> dict[str, float]:
     """Decompose stereo extrinsics into operator-friendly alignment metrics.
 
@@ -492,11 +557,15 @@ def rectify_pair(
     calibration: dict[str, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
     rect_l = cv2.remap(
-        img_l, calibration["map_l_x"], calibration["map_l_y"],
+        img_l,
+        calibration["map_l_x"],
+        calibration["map_l_y"],
         cv2.INTER_LINEAR,
     )
     rect_r = cv2.remap(
-        img_r, calibration["map_r_x"], calibration["map_r_y"],
+        img_r,
+        calibration["map_r_x"],
+        calibration["map_r_y"],
         cv2.INTER_LINEAR,
     )
     return rect_l, rect_r
@@ -507,11 +576,47 @@ def rectify_pair(
 # ---------------------------------------------------------------------------
 
 
+def _ensure_rectified_intrinsics(data: dict[str, np.ndarray]) -> None:
+    """Inject scalar rectified intrinsics derived from the projection P1.
+
+    After ``cv2.fisheye.stereoRectify`` the left rectified frame has a
+    pinhole projection of the form
+
+        P1 = [[fx, 0,  cx, 0],
+              [0,  fy, cy, 0],
+              [0,  0,  1,  0]]
+
+    These three scalars are needed any time the runtime code wants to
+    back-project a (u, v, Z) pixel to a metric (X, Y, Z) point in the
+    left-camera frame — pretty much the entire 3-D logic that consumes
+    a depth map (``head_depth_in_bbox`` column filter, future world-space
+    helpers). They are a function of P1 alone, so we derive them once
+    here instead of asking every caller to reach into the matrix.
+
+    The .npz on disk only stores P1 (and P2). Older calibrations missing
+    P1 are left untouched — callers must still tolerate the absence.
+    """
+    p1 = data.get("P1")
+    if p1 is None:
+        return
+    p1_arr = np.asarray(p1, dtype=np.float64)
+    if p1_arr.shape != (3, 4) and p1_arr.shape != (3, 3):
+        return
+    data["fx_rect"] = np.float64(p1_arr[0, 0])
+    data["fy_rect"] = np.float64(p1_arr[1, 1])
+    data["cx_rect"] = np.float64(p1_arr[0, 2])
+    data["cy_rect"] = np.float64(p1_arr[1, 2])
+
+
 def load_calibration(path: str) -> dict[str, np.ndarray]:
     cal_path = Path(path)
     if not cal_path.exists():
         raise FileNotFoundError(f"Calibration file not found: {path}")
     data = dict(np.load(cal_path))
+    # Derive scalar rectified intrinsics (fx, fy, cx, cy) from P1 so the
+    # runtime pipeline doesn't have to crack open the projection matrix
+    # at every depth-to-world conversion.
+    _ensure_rectified_intrinsics(data)
     # Convert the float32 rectify maps into fixed-point INT16 + UINT16 form
     # (cv2 CV_16SC2 / CV_16UC1) once at load time. cv2.remap with these maps
     # is ~2x faster than with float32 maps because the lookup is integer +
@@ -521,10 +626,14 @@ def load_calibration(path: str) -> dict[str, np.ndarray]:
     if "map_l_x" in data and "map_l_y" in data:
         try:
             data["map_l_x"], data["map_l_y"] = cv2.convertMaps(
-                data["map_l_x"], data["map_l_y"], cv2.CV_16SC2,
+                data["map_l_x"],
+                data["map_l_y"],
+                cv2.CV_16SC2,
             )
             data["map_r_x"], data["map_r_y"] = cv2.convertMaps(
-                data["map_r_x"], data["map_r_y"], cv2.CV_16SC2,
+                data["map_r_x"],
+                data["map_r_y"],
+                cv2.CV_16SC2,
             )
             logger.info(
                 "rectify_maps_optimized",
@@ -557,6 +666,7 @@ class PoseTarget:
     Translation is in millimeters in camera frame (+X right, +Y down, +Z forward).
     Rotations are in degrees applied as rotZ(roll) * rotY(yaw) * rotX(pitch).
     """
+
     id: str
     label: str
     tvec_mm: tuple[float, float, float]
@@ -569,9 +679,27 @@ class PoseTarget:
         rx = math.radians(self.pitch_deg)
         ry = math.radians(self.yaw_deg)
         rz = math.radians(self.roll_deg)
-        Rx = np.array([[1, 0, 0], [0, math.cos(rx), -math.sin(rx)], [0, math.sin(rx), math.cos(rx)]])
-        Ry = np.array([[math.cos(ry), 0, math.sin(ry)], [0, 1, 0], [-math.sin(ry), 0, math.cos(ry)]])
-        Rz = np.array([[math.cos(rz), -math.sin(rz), 0], [math.sin(rz), math.cos(rz), 0], [0, 0, 1]])
+        Rx = np.array(
+            [
+                [1, 0, 0],
+                [0, math.cos(rx), -math.sin(rx)],
+                [0, math.sin(rx), math.cos(rx)],
+            ]
+        )
+        Ry = np.array(
+            [
+                [math.cos(ry), 0, math.sin(ry)],
+                [0, 1, 0],
+                [-math.sin(ry), 0, math.cos(ry)],
+            ]
+        )
+        Rz = np.array(
+            [
+                [math.cos(rz), -math.sin(rz), 0],
+                [math.sin(rz), math.cos(rz), 0],
+                [0, 0, 1],
+            ]
+        )
         R = Rz @ Ry @ Rx
         rvec, _ = cv2.Rodrigues(R)
         return rvec.flatten()
@@ -608,8 +736,10 @@ def default_pose_sequence(
         # Project a pixel offset from image center back to world mm at depth z.
         half_w_px = NOMINAL_FULL_RES[0] / 2
         half_h_px = NOMINAL_FULL_RES[1] / 2
-        return (frac_x * half_w_px * z / NOMINAL_FOCAL_PX,
-                frac_y * half_h_px * z / NOMINAL_FOCAL_PX)
+        return (
+            frac_x * half_w_px * z / NOMINAL_FOCAL_PX,
+            frac_y * half_h_px * z / NOMINAL_FOCAL_PX,
+        )
 
     poses: list[PoseTarget] = []
 
@@ -617,44 +747,86 @@ def default_pose_sequence(
     poses.append(PoseTarget("A1", "Center near, frontal", (0, 0, near)))
     poses.append(PoseTarget("A2", "Center near, pitch up", (0, 0, near), pitch_deg=-20))
     poses.append(PoseTarget("A3", "Center near, yaw left", (0, 0, near), yaw_deg=-20))
-    poses.append(PoseTarget("A4", "Center near, pitch/yaw mix", (0, 0, near), pitch_deg=15, yaw_deg=15))
+    poses.append(
+        PoseTarget(
+            "A4", "Center near, pitch/yaw mix", (0, 0, near), pitch_deg=15, yaw_deg=15
+        )
+    )
 
     # Group B — Corners at mid, edge constraints
     dx, dy = off(-0.55, -0.45, mid)
     poses.append(PoseTarget("B1", "Top-left mid, yaw left", (dx, dy, mid), yaw_deg=-15))
     dx, dy = off(0.55, -0.45, mid)
-    poses.append(PoseTarget("B2", "Top-right mid, yaw right", (dx, dy, mid), yaw_deg=15))
+    poses.append(
+        PoseTarget("B2", "Top-right mid, yaw right", (dx, dy, mid), yaw_deg=15)
+    )
     dx, dy = off(-0.55, 0.45, mid)
-    poses.append(PoseTarget("B3", "Bottom-left mid, pitch up", (dx, dy, mid), pitch_deg=15))
+    poses.append(
+        PoseTarget("B3", "Bottom-left mid, pitch up", (dx, dy, mid), pitch_deg=15)
+    )
     dx, dy = off(0.55, 0.45, mid)
-    poses.append(PoseTarget("B4", "Bottom-right mid, pitch down", (dx, dy, mid), pitch_deg=-15))
+    poses.append(
+        PoseTarget("B4", "Bottom-right mid, pitch down", (dx, dy, mid), pitch_deg=-15)
+    )
 
     # Group C — Mid distance, roll + pitch diversity
     poses.append(PoseTarget("C1", "Center mid, roll +20", (0, 0, mid), roll_deg=20))
     poses.append(PoseTarget("C2", "Center mid, roll -20", (0, 0, mid), roll_deg=-20))
     dx, dy = off(0.0, -0.4, mid)
-    poses.append(PoseTarget("C3", "Top-center mid, pitch up", (dx, dy, mid), pitch_deg=-20))
+    poses.append(
+        PoseTarget("C3", "Top-center mid, pitch up", (dx, dy, mid), pitch_deg=-20)
+    )
     dx, dy = off(0.0, 0.4, mid)
-    poses.append(PoseTarget("C4", "Bottom-center mid, pitch down", (dx, dy, mid), pitch_deg=20))
+    poses.append(
+        PoseTarget("C4", "Bottom-center mid, pitch down", (dx, dy, mid), pitch_deg=20)
+    )
 
     # Group D — Far distance, coverage
     poses.append(PoseTarget("D1", "Center far, frontal", (0, 0, far)))
     dx, dy = off(-0.45, -0.35, far)
-    poses.append(PoseTarget("D2", "Top-left far, diag tilt", (dx, dy, far), yaw_deg=-10, pitch_deg=-10))
+    poses.append(
+        PoseTarget(
+            "D2", "Top-left far, diag tilt", (dx, dy, far), yaw_deg=-10, pitch_deg=-10
+        )
+    )
     dx, dy = off(0.45, -0.35, far)
-    poses.append(PoseTarget("D3", "Top-right far, diag tilt", (dx, dy, far), yaw_deg=10, pitch_deg=-10))
+    poses.append(
+        PoseTarget(
+            "D3", "Top-right far, diag tilt", (dx, dy, far), yaw_deg=10, pitch_deg=-10
+        )
+    )
     dx, dy = off(-0.45, 0.35, far)
-    poses.append(PoseTarget("D4", "Bottom-left far, diag tilt", (dx, dy, far), yaw_deg=-10, pitch_deg=10))
+    poses.append(
+        PoseTarget(
+            "D4", "Bottom-left far, diag tilt", (dx, dy, far), yaw_deg=-10, pitch_deg=10
+        )
+    )
     dx, dy = off(0.45, 0.35, far)
-    poses.append(PoseTarget("D5", "Bottom-right far, diag tilt", (dx, dy, far), yaw_deg=10, pitch_deg=10))
+    poses.append(
+        PoseTarget(
+            "D5", "Bottom-right far, diag tilt", (dx, dy, far), yaw_deg=10, pitch_deg=10
+        )
+    )
 
     # Group E — Extreme tilts at near
     dx, dy = off(-0.5, 0, near)
-    poses.append(PoseTarget("E1", "Left-mid near, strong yaw", (dx, dy, near), yaw_deg=-25))
+    poses.append(
+        PoseTarget("E1", "Left-mid near, strong yaw", (dx, dy, near), yaw_deg=-25)
+    )
     dx, dy = off(0.5, 0, near)
-    poses.append(PoseTarget("E2", "Right-mid near, strong yaw", (dx, dy, near), yaw_deg=25))
-    poses.append(PoseTarget("E3", "Center mid, combined 3-axis",
-                            (0, 0, mid), pitch_deg=-12, yaw_deg=-12, roll_deg=15))
+    poses.append(
+        PoseTarget("E2", "Right-mid near, strong yaw", (dx, dy, near), yaw_deg=25)
+    )
+    poses.append(
+        PoseTarget(
+            "E3",
+            "Center mid, combined 3-axis",
+            (0, 0, mid),
+            pitch_deg=-12,
+            yaw_deg=-12,
+            roll_deg=15,
+        )
+    )
 
     return poses
 
@@ -700,9 +872,10 @@ def project_pose(
         cx_preview = preview_w / 2
         cy_preview = preview_h / 2
 
-    K = np.array([[f_preview_x, 0, cx_preview],
-                  [0, f_preview_y, cy_preview],
-                  [0, 0, 1]], dtype=np.float64)
+    K = np.array(
+        [[f_preview_x, 0, cx_preview], [0, f_preview_y, cy_preview], [0, 0, 1]],
+        dtype=np.float64,
+    )
     dist = np.zeros(5)
 
     # Board points expressed in a frame centered on the board's center
@@ -710,12 +883,15 @@ def project_pose(
     half_w = board_w_mm / 2
     half_h = board_h_mm / 2
 
-    outer_3d = np.array([
-        [-half_w, -half_h, 0],
-        [half_w, -half_h, 0],
-        [half_w, half_h, 0],
-        [-half_w, half_h, 0],
-    ], dtype=np.float32)
+    outer_3d = np.array(
+        [
+            [-half_w, -half_h, 0],
+            [half_w, -half_h, 0],
+            [half_w, half_h, 0],
+            [-half_w, half_h, 0],
+        ],
+        dtype=np.float32,
+    )
 
     inner_pts = []
     for r in range(1, rows):
@@ -731,7 +907,11 @@ def project_pose(
     outer_2d, _ = cv2.projectPoints(outer_3d, rvec, tvec, K, dist)
     inner_2d, _ = cv2.projectPoints(inner_3d, rvec, tvec, K, dist)
     center_2d, _ = cv2.projectPoints(
-        np.array([[0, 0, 0]], dtype=np.float32), rvec, tvec, K, dist,
+        np.array([[0, 0, 0]], dtype=np.float32),
+        rvec,
+        tvec,
+        K,
+        dist,
     )
 
     return {
@@ -741,7 +921,9 @@ def project_pose(
     }
 
 
-def _min_area_rect(points: np.ndarray) -> tuple[tuple[float, float], tuple[float, float], float]:
+def _min_area_rect(
+    points: np.ndarray,
+) -> tuple[tuple[float, float], tuple[float, float], float]:
     """Wrapper over cv2.minAreaRect returning (center, size, angle)."""
     pts = points.astype(np.float32).reshape(-1, 1, 2)
     return cv2.minAreaRect(pts)
@@ -838,7 +1020,8 @@ def compute_alignment_by_corners(
         "matched": n,
         "mean_error_px": float("inf"),
         "max_error_px": float("inf"),
-        "offset_x": 0.0, "offset_y": 0.0,
+        "offset_x": 0.0,
+        "offset_y": 0.0,
         "centroid_offset_px": float("inf"),
     }
     if n < 4:
@@ -871,7 +1054,8 @@ def is_aligned_by_corners(
 
 
 def alignment_hint_by_corners(
-    err: dict[str, float], mm_per_px: float | None = None,
+    err: dict[str, float],
+    mm_per_px: float | None = None,
 ) -> str:
     """Human-readable direction for the operator. Uses centroid offset as the
     dominant error vector; surfaces residual-after-translation when that's small.
@@ -881,6 +1065,7 @@ def alignment_hint_by_corners(
     ratio is `target_distance_mm / focal_length_px` evaluated at the pose's
     expected depth.
     """
+
     def _fmt_offset(px: float) -> str:
         if mm_per_px is None:
             return f"{px:.0f}px"
@@ -906,12 +1091,15 @@ def alignment_hint_by_corners(
     return " · ".join(parts)
 
 
-def count_common_corners(ids_l: Optional[np.ndarray], ids_r: Optional[np.ndarray]) -> int:
+def count_common_corners(
+    ids_l: Optional[np.ndarray], ids_r: Optional[np.ndarray]
+) -> int:
     """Count ChArUco IDs present in both left and right detections."""
     if ids_l is None or ids_r is None:
         return 0
-    return int(np.intersect1d(np.asarray(ids_l).flatten(),
-                              np.asarray(ids_r).flatten()).size)
+    return int(
+        np.intersect1d(np.asarray(ids_l).flatten(), np.asarray(ids_r).flatten()).size
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1055,15 +1243,11 @@ def is_calibration_ready_for_early_stop(
     operator-friendly string explaining what's still missing.
     """
     if captured_count < min_poses:
-        return False, (
-            f"faltan capturas ({captured_count}/{min_poses} mínimo)"
-        )
+        return False, (f"faltan capturas ({captured_count}/{min_poses} mínimo)")
 
     critical = coverage.get("critical") or []
     if critical:
-        return False, "cobertura incompleta: " + "; ".join(
-            str(c) for c in critical
-        )
+        return False, "cobertura incompleta: " + "; ".join(str(c) for c in critical)
 
     by_band = coverage.get("by_distance") or {}
     for band in ("near", "mid", "far"):
@@ -1077,8 +1261,7 @@ def is_calibration_ready_for_early_stop(
     for group in ("A", "B", "C", "D"):
         if int(by_group.get(group, 0)) < min_per_group:
             return False, (
-                f"grupo {group} sin capturas suficientes "
-                f"(mínimo {min_per_group})"
+                f"grupo {group} sin capturas suficientes " f"(mínimo {min_per_group})"
             )
 
     if per_pair_rms_px != per_pair_rms_px:  # NaN
@@ -1137,7 +1320,11 @@ def fit_single_camera_intrinsics(
 
     try:
         _rms, K, _dist, _rvecs, _tvecs = cv2.calibrateCamera(
-            all_obj, all_corners, image_size, None, None,
+            all_obj,
+            all_corners,
+            image_size,
+            None,
+            None,
             flags=cv2.CALIB_RATIONAL_MODEL,
         )
     except cv2.error:
@@ -1167,7 +1354,9 @@ def _fisheye_reprojection_rms(
         # Normalise observations: fisheye.undistortPoints returns (N,1,2) in
         # normalised image coords (what a pinhole camera with K=I would see).
         undistorted = cv2.fisheye.undistortPoints(
-            img_pts.reshape(-1, 1, 2).astype(np.float64), K, D,
+            img_pts.reshape(-1, 1, 2).astype(np.float64),
+            K,
+            D,
         )
         ok, rvec, tvec = cv2.solvePnP(
             obj_pts.astype(np.float64),
@@ -1180,12 +1369,16 @@ def _fisheye_reprojection_rms(
             return float("nan")
         proj, _ = cv2.fisheye.projectPoints(
             obj_pts.reshape(-1, 1, 3).astype(np.float64),
-            rvec, tvec, K, D,
+            rvec,
+            tvec,
+            K,
+            D,
         )
         err = np.linalg.norm(
-            proj.reshape(-1, 2) - img_pts.reshape(-1, 2), axis=1,
+            proj.reshape(-1, 2) - img_pts.reshape(-1, 2),
+            axis=1,
         )
-        return float(np.sqrt((err ** 2).mean()))
+        return float(np.sqrt((err**2).mean()))
     except cv2.error:
         return float("nan")
 
@@ -1212,18 +1405,28 @@ def compute_per_pair_residuals(
         corners_l, ids_l = detect_charuco_corners(img_l, board, lenient=True)
         corners_r, ids_r = detect_charuco_corners(img_r, board, lenient=True)
         if corners_l is None or corners_r is None or ids_l is None or ids_r is None:
-            results.append({
-                "pair_idx": idx, "rms_l": float("nan"), "rms_r": float("nan"),
-                "rms": float("nan"), "n_corners": 0,
-            })
+            results.append(
+                {
+                    "pair_idx": idx,
+                    "rms_l": float("nan"),
+                    "rms_r": float("nan"),
+                    "rms": float("nan"),
+                    "n_corners": 0,
+                }
+            )
             continue
 
         common_ids = np.intersect1d(ids_l.flatten(), ids_r.flatten())
         if len(common_ids) < 6:
-            results.append({
-                "pair_idx": idx, "rms_l": float("nan"), "rms_r": float("nan"),
-                "rms": float("nan"), "n_corners": int(len(common_ids)),
-            })
+            results.append(
+                {
+                    "pair_idx": idx,
+                    "rms_l": float("nan"),
+                    "rms_r": float("nan"),
+                    "rms": float("nan"),
+                    "n_corners": int(len(common_ids)),
+                }
+            )
             continue
 
         mask_l = np.isin(ids_l.flatten(), common_ids)
@@ -1243,12 +1446,15 @@ def compute_per_pair_residuals(
         if vals:
             combined = sum(vals) / len(vals)
 
-        results.append({
-            "pair_idx": idx,
-            "rms_l": rms_l, "rms_r": rms_r,
-            "rms": combined,
-            "n_corners": int(len(common_ids)),
-        })
+        results.append(
+            {
+                "pair_idx": idx,
+                "rms_l": rms_l,
+                "rms_r": rms_r,
+                "rms": combined,
+                "n_corners": int(len(common_ids)),
+            }
+        )
     return results
 
 
@@ -1327,11 +1533,7 @@ class StabilityTracker:
             ids_arr = None
         # Legacy fallback: when no IDs are supplied we can't intersect, so we
         # keep the old "restart on count change" semantics.
-        if (
-            self._buffer
-            and ids_arr is None
-            and self._buffer[-1][0].shape != pts.shape
-        ):
+        if self._buffer and ids_arr is None and self._buffer[-1][0].shape != pts.shape:
             self._buffer.clear()
         self._buffer.append((pts, ids_arr))
         if len(self._buffer) > self.window:
@@ -1347,16 +1549,20 @@ class StabilityTracker:
             return float("inf")
         worst = 0.0
         for (prev_pts, prev_ids), (curr_pts, curr_ids) in zip(
-            self._buffer[:-1], self._buffer[1:],
+            self._buffer[:-1],
+            self._buffer[1:],
         ):
             if prev_ids is not None and curr_ids is not None:
                 common, prev_idx, curr_idx = np.intersect1d(
-                    prev_ids, curr_ids, return_indices=True,
+                    prev_ids,
+                    curr_ids,
+                    return_indices=True,
                 )
                 if common.size == 0:
                     return float("inf")
                 disp = np.linalg.norm(
-                    curr_pts[curr_idx] - prev_pts[prev_idx], axis=1,
+                    curr_pts[curr_idx] - prev_pts[prev_idx],
+                    axis=1,
                 ).max()
             else:
                 if prev_pts.shape != curr_pts.shape:
@@ -1377,7 +1583,9 @@ class StabilityTracker:
 
 
 QUALITY_MIN_CORNERS = 15
-QUALITY_MIN_BLUR = 10.0  # Laplacian variance on grayscale (full-res 4608x2592 captures).
+QUALITY_MIN_BLUR = (
+    10.0  # Laplacian variance on grayscale (full-res 4608x2592 captures).
+)
 # At 12MP each pixel is finer so per-pixel gradients are smaller; 10 is the
 # empirical floor for a well-focused frame. Corner-local sharpness (separate
 # check below) handles the "looks sharp globally but corners soft" case.
@@ -1463,13 +1671,19 @@ def assess_frame_quality(
     if not checks["corners"]:
         reasons.append(f"Pocas esquinas ({n_corners}<{QUALITY_MIN_CORNERS})")
     if not checks["blur_l"]:
-        reasons.append(f"Imagen izquierda borrosa ({blur_l:.0f}<{QUALITY_MIN_BLUR:.0f})")
+        reasons.append(
+            f"Imagen izquierda borrosa ({blur_l:.0f}<{QUALITY_MIN_BLUR:.0f})"
+        )
     if not checks["blur_r"]:
         reasons.append(f"Imagen derecha borrosa ({blur_r:.0f}<{QUALITY_MIN_BLUR:.0f})")
     if not checks["corner_sharp_l"]:
-        reasons.append(f"Esquinas izquierda blandas ({corner_sharp_l:.0f}<{QUALITY_MIN_CORNER_SHARPNESS:.0f})")
+        reasons.append(
+            f"Esquinas izquierda blandas ({corner_sharp_l:.0f}<{QUALITY_MIN_CORNER_SHARPNESS:.0f})"
+        )
     if not checks["corner_sharp_r"]:
-        reasons.append(f"Esquinas derecha blandas ({corner_sharp_r:.0f}<{QUALITY_MIN_CORNER_SHARPNESS:.0f})")
+        reasons.append(
+            f"Esquinas derecha blandas ({corner_sharp_r:.0f}<{QUALITY_MIN_CORNER_SHARPNESS:.0f})"
+        )
     if not checks["saturation_l"]:
         reasons.append(f"Brillo/reflejo en izquierda ({sat_l:.1f}%)")
     if not checks["saturation_r"]:
@@ -1484,10 +1698,14 @@ def assess_frame_quality(
 
     return {
         "checks": checks,
-        "blur_l": blur_l, "blur_r": blur_r,
-        "corner_sharp_l": corner_sharp_l, "corner_sharp_r": corner_sharp_r,
-        "sat_l": sat_l, "sat_r": sat_r,
-        "exp_l": exp_l, "exp_r": exp_r,
+        "blur_l": blur_l,
+        "blur_r": blur_r,
+        "corner_sharp_l": corner_sharp_l,
+        "corner_sharp_r": corner_sharp_r,
+        "sat_l": sat_l,
+        "sat_r": sat_r,
+        "exp_l": exp_l,
+        "exp_r": exp_r,
         "lr_bright_diff": lr_bright_diff,
         "n_corners": n_corners,
         "all_pass": all(checks.values()),
