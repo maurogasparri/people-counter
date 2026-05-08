@@ -1,45 +1,47 @@
-"""3D tracker for person trajectories.
+"""Tracker 3D para trayectorias de personas.
 
-Implements Hungarian-based association with a short-term state machine:
+Implementa asociación Hungarian-based con una state machine de corto plazo:
 
-    CANDIDATE  -> CONFIRMED  (after N consecutive hits)
-    CONFIRMED  -> PENDING    (on a missed frame; predicted with Kalman)
-    PENDING    -> CONFIRMED  (re-match within re-id gate)
-    PENDING    -> LOST       (after pending_max_frames consecutive misses)
+    CANDIDATE  -> CONFIRMED  (luego de N hits consecutivos)
+    CONFIRMED  -> PENDING    (ante un frame perdido; predicho con Kalman)
+    PENDING    -> CONFIRMED  (re-match dentro del re-id gate)
+    PENDING    -> LOST       (luego de pending_max_frames misses consecutivos)
 
-The tracker exposes all tracks in any state; the counter layer filters to
-CONFIRMED/PENDING when making counting decisions. Track IDs are preserved
-across PENDING -> CONFIRMED recoveries so the counter's per-track state
-(entry side, crossed line) survives short occlusions.
+El tracker expone todos los tracks en cualquier estado; la capa counter
+filtra a CONFIRMED/PENDING cuando toma decisiones de conteo. Los track IDs
+se preservan a través de recoveries PENDING -> CONFIRMED, así el estado
+per-track del counter (lado de entrada, línea cruzada) sobrevive oclusiones
+cortas.
 
-Positions are [cx, cy, z] with cx/cy in pixels and z in mm. Matching cost is
-2D pixel distance; depth is used as a secondary gate (|dz| > max_depth_delta
-rejects the match) because pixels and millimetres are not directly
-comparable.
+Las posiciones son [cx, cy, z] con cx/cy en pixels y z en mm. El costo de
+matching es la distancia 2D en pixels; la profundidad se usa como gate
+secundario (|dz| > max_depth_delta rechaza el match) porque pixels y
+milímetros no son directamente comparables.
 
-Motion model
-------------
-Each track owns a small constant-velocity Kalman filter (see
-``src.tracking.kalman.TrackKalman``) with state ``[cx, cy, vx, vy]``.
-Lifecycle per frame:
+Modelo de movimiento
+--------------------
+Cada track posee un pequeño filtro Kalman de velocidad constante (ver
+``src.tracking.kalman.TrackKalman``) con estado ``[cx, cy, vx, vy]``.
+Lifecycle por frame:
 
-1. At the start of ``update()``, every track's filter advances one step
-   via ``predict()``. This sets ``Track.predicted_position`` (and the
-   matching reference for PENDING tracks) to the model's expectation for
-   this frame, and grows the position covariance — natural behaviour for
-   a track that's been unmatched for several frames.
-2. Hungarian association runs against ``predicted_position`` for PENDING
-   tracks and ``last_position`` for everyone else (the same ref the
-   pre-Kalman tracker used; preserves the tight gate semantics for
-   adjacent tracks).
-3. Matched tracks call ``kalman.update(measurement)`` to fold in the new
-   detection. Unmatched tracks keep the post-predict state — across
-   several misses this extrapolates farther while widening uncertainty.
+1. Al inicio de ``update()``, el filtro de cada track avanza un paso vía
+   ``predict()``. Esto setea ``Track.predicted_position`` (y la referencia
+   de matching para tracks PENDING) a la expectativa del modelo para este
+   frame, y crece la covarianza de posición — comportamiento natural para
+   un track que estuvo varios frames sin match.
+2. La asociación Hungarian corre contra ``predicted_position`` para tracks
+   PENDING y ``last_position`` para los demás (la misma ref que usaba el
+   tracker pre-Kalman; preserva la semántica del gate ajustado para tracks
+   adyacentes).
+3. Los tracks matcheados llaman ``kalman.update(measurement)`` para
+   incorporar la nueva detección. Los no matcheados mantienen el estado
+   post-predict — a lo largo de varios misses esto extrapola más lejos
+   mientras ensancha la incertidumbre.
 
-Note: depth is NOT in the Kalman state. The depth gate runs on raw
-detection vs. last observed depth; depth fluctuations frame-to-frame
-are dominated by SGBM noise rather than smooth motion, so a 4D filter
-on (x, y, vx, vy) is the right scope.
+Nota: la profundidad NO está en el estado de Kalman. El gate de profundidad
+corre sobre detección raw vs. última profundidad observada; las fluctuaciones
+de profundidad frame-a-frame están dominadas por ruido SGBM antes que por
+movimiento suave, así que un filtro 4D sobre (x, y, vx, vy) es el scope correcto.
 """
 
 import logging
@@ -54,14 +56,15 @@ from src.tracking.kalman import TrackKalman
 
 logger = logging.getLogger(__name__)
 
-# Track states
+# Estados del track
 CANDIDATE = "candidate"
 CONFIRMED = "confirmed"
 PENDING = "pending"
 LOST = "lost"
 
-# Kalman defaults — overridable via EuclideanTracker constructor (which is
-# in turn fed by hardware.yaml's tracking.state_machine.kalman block).
+# Defaults del Kalman — overrideables vía constructor de EuclideanTracker
+# (que a su vez se alimenta de ``tracking.state_machine.kalman`` en el config
+# mergeado).
 DEFAULT_PROCESS_NOISE = 1.0
 DEFAULT_MEASUREMENT_NOISE = 5.0
 DEFAULT_INITIAL_VELOCITY_UNCERTAINTY = 100.0
@@ -69,12 +72,13 @@ DEFAULT_INITIAL_VELOCITY_UNCERTAINTY = 100.0
 
 @dataclass
 class Track:
-    """A tracked person with position history, state and motion filter.
+    """Persona trackeada con historial de posiciones, estado y filtro de movimiento.
 
-    ``positions`` keeps the raw observed centroids for compat with
-    downstream consumers (counter, viewer) that read ``positions[-1]``.
-    The Kalman filter is the source of truth for ``predicted_position``;
-    raw history is preserved so trajectory diagnostics still work.
+    ``positions`` mantiene los centroides observados raw por compatibilidad
+    con consumers downstream (counter, viewer) que leen ``positions[-1]``.
+    El filtro Kalman es la fuente de verdad para ``predicted_position``;
+    la historia raw se preserva así los diagnósticos de trayectoria siguen
+    funcionando.
     """
 
     track_id: int
@@ -82,35 +86,37 @@ class Track:
     disappeared: int = 0
     state: str = CANDIDATE
     hits: int = 1
-    # Motion filter — set by the tracker at registration. ``Optional`` only
-    # because dataclass init order otherwise requires an awkward default.
+    # Motion filter — lo setea el tracker al registrar. ``Optional`` solo
+    # porque el orden de init del dataclass requiere de otro modo un
+    # default incómodo.
     kalman: Optional[TrackKalman] = None
-    # Counter-layer bookkeeping (set by the counter, not the tracker).
-    # Stored on the track so state survives PENDING re-identification.
+    # Bookkeeping de la capa counter (lo setea el counter, no el tracker).
+    # Guardado en el track así el estado sobrevive la re-identificación PENDING.
     meta: dict[str, Any] = field(default_factory=dict)
 
     @property
     def last_position(self) -> np.ndarray:
-        """Most recent observed centroid [cx, cy, z]. Compat for counter."""
+        """Centroide observado más reciente [cx, cy, z]. Compat para counter."""
         return self.positions[-1]
 
     @property
     def predicted_position(self) -> np.ndarray:
-        """Kalman-predicted NEXT-frame position as [cx, cy, z].
+        """Posición predicha por Kalman para el PRÓXIMO frame como [cx, cy, z].
 
-        Non-destructive: uses ``kalman.peek_next()`` so the filter state
-        is unchanged. The caller gets the model's expectation for one
-        step beyond the current state (i.e., where this track is most
-        likely to be observed at the next ``tracker.update()``).
+        No destructiva: usa ``kalman.peek_next()`` así el estado del
+        filtro queda intacto. El caller obtiene la expectativa del
+        modelo para un paso más allá del estado actual (es decir, dónde
+        es más probable observar este track en el próximo
+        ``tracker.update()``).
 
-        The Kalman filter only models 2D pixel motion; the returned z
-        carries forward the most recent observed depth (depth lacks a
-        smooth motion model — see module docstring).
+        El filtro Kalman solo modela movimiento 2D en pixels; el z
+        devuelto carry-forwardea la profundidad observada más reciente
+        (depth no tiene modelo de movimiento suave — ver docstring de módulo).
         """
         if self.kalman is None:
-            # Fallback — only happens if a Track is built without a filter,
-            # which the tracker itself never does. Kept defensive so old
-            # tests / external constructors don't crash.
+            # Fallback — solo pasa si un Track se construye sin filtro,
+            # lo cual el propio tracker nunca hace. Defensive así
+            # tests viejos / constructores externos no crashean.
             if len(self.positions) < 2:
                 return self.positions[-1].copy()
             velocity = self.positions[-1] - self.positions[-2]
@@ -121,13 +127,13 @@ class Track:
 
 
 class EuclideanTracker:
-    """Hungarian 2D pixel matching + depth gating, with a small state machine.
+    """Matching Hungarian 2D en pixels + depth gating, con state machine corta.
 
-    Backward-compatible: the constructor still accepts ``max_disappeared``
-    and ``max_distance``; new optional kwargs enable the state machine and
-    re-identification behaviour. ``update(detections)`` still returns a
-    ``dict[int, Track]`` of the currently-alive tracks (any state except
-    LOST; LOST tracks are removed).
+    Backward-compatible: el constructor sigue aceptando ``max_disappeared``
+    y ``max_distance``; los kwargs opcionales nuevos habilitan la state
+    machine y el comportamiento de re-identification. ``update(detections)``
+    sigue devolviendo un ``dict[int, Track]`` con los tracks vivos
+    actualmente (cualquier estado salvo LOST; los LOST se removieron).
     """
 
     def __init__(
@@ -159,11 +165,11 @@ class EuclideanTracker:
         return dict(self._tracks)
 
     def count_by_state(self) -> dict[str, int]:
-        """Return a count of currently-alive tracks grouped by state.
+        """Devuelve un count de los tracks vivos agrupados por estado.
 
-        Keys: ``candidate``, ``confirmed``, ``pending``, ``lost``. LOST
-        tracks are purged at the end of ``update()`` so the count is
-        normally zero except when called mid-update.
+        Keys: ``candidate``, ``confirmed``, ``pending``, ``lost``. Los
+        tracks LOST se purgan al final de ``update()`` así que el count
+        normalmente es cero salvo que se llame mid-update.
         """
         counts = {CANDIDATE: 0, CONFIRMED: 0, PENDING: 0, LOST: 0}
         for track in self._tracks.values():
@@ -178,30 +184,33 @@ class EuclideanTracker:
         candidate_positions: Optional[list[np.ndarray]] = None,
         candidate_metadata: Optional[list[dict]] = None,
     ) -> dict[int, Track]:
-        """Update tracks from the current frame's detections.
+        """Actualiza tracks a partir de las detecciones del frame actual.
 
         Args:
-            detections: list of (x, y, z) positions in pixel / mm coords.
-                These are the *high-confidence* detections — they can both
-                update existing tracks AND spawn new ones.
-            detection_metas: optional parallel list of metadata dicts per
-                detection. When a detection is matched (or registers a new
-                track), its metadata is appended to ``track.meta["detection_history"]``
-                (capped at ``DETECTION_HISTORY_MAX`` samples). Downstream
-                consumers read that history for per-track aggregate labels
-                (e.g. adult/child classification).
-            candidate_positions: optional list of *low-confidence*
-                detections. Used only for re-association of existing tracks
-                that did not match a high-confidence detection in pass 1
-                (ByteTrack-style two-stage matching). Low-confidence
-                detections that do NOT match any unmatched track are
-                silently discarded — they never spawn new tracks. Default
-                ``None`` disables this behaviour entirely (the tracker
-                degenerates to its previous single-bucket behaviour).
-            candidate_metadata: optional parallel metadata list for
-                ``candidate_positions``. Same semantics as
-                ``detection_metas`` but applied only when a candidate
-                actually re-associates with an existing track.
+            detections: lista de posiciones (x, y, z) en coords pixel / mm.
+                Estas son las detecciones *high-confidence* — pueden
+                tanto actualizar tracks existentes COMO spawnear nuevos.
+            detection_metas: lista paralela opcional de dicts de metadata
+                per detección. Cuando una detección se matchea (o
+                registra un track nuevo), su metadata se appendea a
+                ``track.meta["detection_history"]`` (capped a
+                ``DETECTION_HISTORY_MAX`` samples). Consumers downstream
+                leen esa historia para labels agregados per-track
+                (ej. clasificación adult/child).
+            candidate_positions: lista opcional de detecciones
+                *low-confidence*. Solo se usa para re-asociar tracks
+                existentes que no matchearon una detección
+                high-confidence en el pass 1 (matching ByteTrack-style
+                de dos etapas). Las detecciones low-confidence que NO
+                matchean ningún track unmatched se descartan
+                silenciosamente — nunca spawnean tracks nuevos. El
+                default ``None`` desactiva este comportamiento por
+                completo (el tracker degenera al comportamiento previo
+                single-bucket).
+            candidate_metadata: lista paralela opcional de metadata
+                para ``candidate_positions``. Misma semántica que
+                ``detection_metas`` pero solo se aplica cuando un
+                candidato efectivamente re-asocia con un track existente.
         """
         det_arr = (
             np.asarray(detections, dtype=float)
@@ -237,29 +246,32 @@ class EuclideanTracker:
         def _cand_meta_for(idx: int) -> Optional[dict]:
             return candidate_metadata[idx] if candidate_metadata is not None else None
 
-        # Advance every track's Kalman filter one frame BEFORE association.
-        # Matched tracks will then call kalman.update(z) to absorb the
-        # measurement; unmatched tracks keep the post-predict state, which
-        # is the correct extrapolation for the missing frame.
+        # Avanza el filtro Kalman de cada track un frame ANTES de la
+        # asociación. Los tracks matcheados después llaman
+        # kalman.update(z) para absorber la medición; los unmatched
+        # mantienen el estado post-predict, que es la extrapolación
+        # correcta para el frame faltante.
         for track in self._tracks.values():
             if track.kalman is not None:
                 track.kalman.predict()
 
         if len(self._tracks) == 0:
-            # No tracks alive: low-conf detections cannot re-associate
-            # against anything (and never spawn). Only high-conf spawns.
+            # Sin tracks vivos: las detecciones low-conf no pueden
+            # re-asociar contra nada (y nunca spawnean). Solo
+            # high-conf spawnean.
             for i, det in enumerate(det_arr):
                 tid = self._register(det)
                 self._append_detection_meta(self._tracks[tid], _meta_for(i))
             return self.tracks
 
         track_ids = list(self._tracks.keys())
-        # For matching, PENDING tracks use the Kalman-propagated current
-        # position (which is the prediction for THIS frame, since predict
-        # was just called above); CONFIRMED/CANDIDATE use the last observed
-        # centroid. Same gating policy as pre-Kalman — only PENDING gets
-        # the propagated reference, so adjacent CONFIRMED tracks can't
-        # drift toward each other across a single frame.
+        # Para el matching, los tracks PENDING usan la posición actual
+        # propagada por Kalman (que es la predicción para ESTE frame,
+        # ya que predict se acaba de llamar arriba); CONFIRMED/CANDIDATE
+        # usan el último centroide observado. Misma política de gating
+        # que pre-Kalman — solo PENDING obtiene la referencia propagada,
+        # así tracks CONFIRMED adyacentes no pueden driftear unos hacia
+        # otros a lo largo de un único frame.
         track_refs = np.array(
             [
                 (
@@ -276,17 +288,18 @@ class EuclideanTracker:
             track_refs, det_arr, track_ids
         )
 
-        # Apply matches
+        # Aplicar matches
         for t_idx, d_idx in matches:
             tid = track_ids[t_idx]
             self._record_hit(self._tracks[tid], det_arr[d_idx])
             self._append_detection_meta(self._tracks[tid], _meta_for(d_idx))
 
-        # ByteTrack-style pass 3: try to re-associate the still-unmatched
-        # tracks against the low-confidence (candidate) detections with the
-        # wide reid gate. Candidate detections that don't bind to any track
-        # here are dropped — they never spawn new tracks. Skipped entirely
-        # when no candidates were supplied (feature off).
+        # Pass 3 ByteTrack-style: intentar re-asociar los tracks aún
+        # unmatched contra las detecciones low-confidence (candidatos)
+        # con el reid gate ancho. Las detecciones candidatas que no
+        # binden a ningún track acá se dropean — nunca spawnean tracks
+        # nuevos. Se saltea entero cuando no se pasaron candidatos
+        # (feature off).
         if len(cand_arr) > 0 and unmatched_t:
             unmatched_track_refs = track_refs[unmatched_t]
             unmatched_track_ids = [track_ids[i] for i in unmatched_t]
@@ -306,25 +319,26 @@ class EuclideanTracker:
                 still_unmatched_t_local.discard(local_t_idx)
             unmatched_t = [unmatched_t[i] for i in sorted(still_unmatched_t_local)]
 
-        # Mark unmatched tracks as missed
+        # Marcar tracks unmatched como missed
         for t_idx in unmatched_t:
             tid = track_ids[t_idx]
             self._record_miss(self._tracks[tid])
 
-        # Register new tracks for unmatched HIGH-confidence detections only.
-        # Low-confidence (candidate) detections are intentionally dropped.
+        # Registrar tracks nuevos solo para detecciones HIGH-confidence
+        # unmatched. Las detecciones low-confidence (candidatas) se
+        # dropean intencionalmente.
         for d_idx in unmatched_d:
             tid = self._register(det_arr[d_idx])
             self._append_detection_meta(self._tracks[tid], _meta_for(d_idx))
 
-        # Purge LOST
+        # Purgar LOST
         to_remove = [tid for tid, t in self._tracks.items() if t.state == LOST]
         for tid in to_remove:
             del self._tracks[tid]
 
         return self.tracks
 
-    DETECTION_HISTORY_MAX = 60  # ~4s at 15 FPS — enough for stable majority vote
+    DETECTION_HISTORY_MAX = 60  # ~4s a 15 FPS — alcanza para mayoría estable
 
     def _append_detection_meta(self, track: Track, meta: Optional[dict]) -> None:
         if meta is None:
@@ -341,19 +355,20 @@ class EuclideanTracker:
         det_arr: np.ndarray,
         track_ids: list[int],
     ) -> tuple[list[tuple[int, int]], list[int], list[int]]:
-        """Hungarian match with gating, two-pass.
+        """Match Hungarian con gating, dos passes.
 
-        Pass 1 uses the state-aware gate (``reid_gate_px`` for PENDING,
-        ``max_distance`` otherwise). Pass 2 reruns Hungarian on whatever
-        is still unmatched with the wider ``reid_gate_px`` for everyone
-        — so a CONFIRMED that's about to go PENDING gets one shot at
-        re-matching the orphan detection before that detection is
-        registered as a brand-new track. Without pass 2, bbox jitter or
-        a single dropped detection produces phantom track pairs (the
-        original CONFIRMED transitions to PENDING while a fresh ID is
-        created from the same physical person).
+        El pass 1 usa el gate state-aware (``reid_gate_px`` para
+        PENDING, ``max_distance`` para el resto). El pass 2 vuelve a
+        correr Hungarian sobre lo que quedó unmatched con el
+        ``reid_gate_px`` más ancho para todos — así un CONFIRMED que
+        está a punto de pasar a PENDING tiene una oportunidad de
+        re-matchear la detección huérfana antes de que esa detección se
+        registre como track nuevo. Sin el pass 2, jitter de bbox o una
+        única detección dropeada produce pares de tracks fantasma (el
+        CONFIRMED original transiciona a PENDING mientras se crea un ID
+        nuevo desde la misma persona física).
 
-        Returns ``(matches, unmatched_t, unmatched_d)``.
+        Devuelve ``(matches, unmatched_t, unmatched_d)``.
         """
         n_t, n_d = len(track_refs), len(det_arr)
         if n_t == 0 or n_d == 0:
@@ -370,9 +385,9 @@ class EuclideanTracker:
         else:
             depth_delta = np.zeros_like(dist_2d)
 
-        # Pass 1: per-track gate. PENDING gets the wider re-id gate to
-        # finish recovering; everyone else gets the tight gate to keep
-        # adjacent tracks from swapping.
+        # Pass 1: gate per-track. PENDING obtiene el re-id gate más
+        # ancho para terminar de recuperarse; el resto obtiene el gate
+        # ajustado para evitar que tracks adyacentes se swapeen.
         gate_pass1 = np.array(
             [
                 (
@@ -394,11 +409,12 @@ class EuclideanTracker:
         unmatched_t = [i for i in range(n_t) if i not in matched_t]
         unmatched_d = [j for j in range(n_d) if j not in matched_d]
 
-        # Pass 2: relax gate to reid_gate_px for the leftovers. This is
-        # the safety net that prevents duplicate-track creation when a
-        # CONFIRMED's bbox jittered slightly past max_distance — the
-        # depth gate is unchanged, so two distinct people at different
-        # depths still can't swap IDs here.
+        # Pass 2: relajar el gate a reid_gate_px para los leftovers.
+        # Esta es la safety net que previene la creación de tracks
+        # duplicados cuando el bbox de un CONFIRMED jittereó apenas más
+        # allá de max_distance — el depth gate no cambia, así que dos
+        # personas distintas a profundidades distintas tampoco pueden
+        # swapear IDs acá.
         if unmatched_t and unmatched_d:
             sub_dist = dist_2d[np.ix_(unmatched_t, unmatched_d)]
             sub_depth = depth_delta[np.ix_(unmatched_t, unmatched_d)]
@@ -429,18 +445,19 @@ class EuclideanTracker:
         det_arr: np.ndarray,
         track_ids: list[int],
     ) -> tuple[list[tuple[int, int]], list[int], list[int]]:
-        """Hungarian re-association of leftover tracks vs low-conf detections.
+        """Re-asociación Hungarian de tracks leftover vs detecciones low-conf.
 
-        Always uses the wide ``reid_gate_px`` for every track (ByteTrack
-        intuition: the leftover tracks are the ones the high-confidence
-        detector failed to match this frame, so we accept any low-conf
-        detection that lands within the re-id radius). The depth gate
-        still applies as the secondary safety net so two physically
-        distinct people at very different depths cannot swap IDs even
-        when one is missing this frame.
+        Siempre usa el ``reid_gate_px`` ancho para cada track (intuición
+        ByteTrack: los tracks leftover son los que el detector
+        high-confidence falló en matchear este frame, así que aceptamos
+        cualquier detección low-conf que caiga dentro del radio de
+        re-id). El depth gate sigue aplicando como safety net
+        secundaria, así dos personas físicamente distintas a
+        profundidades muy distintas no pueden swapear IDs incluso
+        cuando una falta este frame.
 
-        Returns ``(matches, unmatched_t, unmatched_d)`` with indices
-        local to the inputs.
+        Devuelve ``(matches, unmatched_t, unmatched_d)`` con índices
+        locales a los inputs.
         """
         n_t, n_d = len(track_refs), len(det_arr)
         if n_t == 0 or n_d == 0:
@@ -465,8 +482,9 @@ class EuclideanTracker:
         )
         unmatched_t = [i for i in range(n_t) if i not in matched_t]
         unmatched_d = [j for j in range(n_d) if j not in matched_d]
-        # track_ids accepted for symmetry with _associate but unused —
-        # no per-track behaviour switch (gate is uniformly wide here).
+        # track_ids aceptado por simetría con _associate pero sin uso —
+        # no hay switch de comportamiento per-track (el gate es
+        # uniformemente ancho acá).
         del track_ids
         return matches, unmatched_t, unmatched_d
 
@@ -476,11 +494,11 @@ class EuclideanTracker:
         depth_delta: np.ndarray,
         gate_per_track: np.ndarray,
     ) -> tuple[list[tuple[int, int]], set[int], set[int]]:
-        """Run Hungarian on a cost matrix with distance + depth gating.
+        """Corre Hungarian sobre una matriz de costos con gating de distancia + depth.
 
-        ``gate_per_track`` is broadcast against ``dist_2d``; depths over
-        ``max_depth_delta`` are always rejected regardless of the gate.
-        Returns ``(matches, matched_track_indices, matched_det_indices)``.
+        ``gate_per_track`` se broadcastea contra ``dist_2d``; las depths
+        sobre ``max_depth_delta`` siempre se rechazan independientemente
+        del gate. Devuelve ``(matches, matched_track_indices, matched_det_indices)``.
         """
         INF = 1e9
         cost = dist_2d.copy()
@@ -501,18 +519,19 @@ class EuclideanTracker:
         return matches, matched_t, matched_d
 
     def _pending_match_ref(self, track: Track) -> np.ndarray:
-        """Match reference for a PENDING track in the current frame.
+        """Referencia de match para un track PENDING en el frame actual.
 
-        Inside ``update()`` we already advanced every track's filter, so
-        ``kalman.position`` is the model's expectation for THIS frame
-        (the `predicted_position` property would peek ONE more step
-        ahead, which would be wrong for current-frame matching).
+        Dentro de ``update()`` ya avanzamos el filtro de cada track,
+        así que ``kalman.position`` es la expectativa del modelo para
+        ESTE frame (la property `predicted_position` peekearía UN paso
+        más adelante, lo que sería incorrecto para matching del frame
+        actual).
         """
         if track.kalman is not None:
             xy = track.kalman.position
             z = track.positions[-1][2] if len(track.positions[-1]) > 2 else 0.0
             return np.array([xy[0], xy[1], z], dtype=float)
-        # Defensive fallback (Tracks created without a filter).
+        # Fallback defensivo (Tracks creados sin filtro).
         if len(track.positions) < 2:
             return track.positions[-1].copy()
         velocity = track.positions[-1] - track.positions[-2]
@@ -550,15 +569,15 @@ class EuclideanTracker:
         if track.state == CANDIDATE and track.hits >= self.confirm_frames:
             track.state = CONFIRMED
         elif track.state == PENDING:
-            # Recovered; preserve ID and counter meta.
+            # Recuperado; preservar ID y meta del counter.
             track.state = CONFIRMED
 
     def _record_miss(self, track: Track) -> None:
         track.disappeared += 1
         if track.state == CANDIDATE:
-            # Unconfirmed misses are cheap: drop after max_disappeared, but
-            # also drop immediately on the first miss if confirm_frames
-            # requires consecutive hits.
+            # Misses no confirmados son baratos: dropear después de
+            # max_disappeared, pero también dropear inmediatamente al
+            # primer miss si confirm_frames requiere hits consecutivos.
             if track.disappeared > self.max_disappeared:
                 track.state = LOST
             return
@@ -570,6 +589,6 @@ class EuclideanTracker:
             track.state = LOST
             return
 
-        # Also enforce the legacy max_disappeared cap as an upper bound.
+        # Aplicar también el cap legacy max_disappeared como upper bound.
         if track.disappeared > self.max_disappeared:
             track.state = LOST

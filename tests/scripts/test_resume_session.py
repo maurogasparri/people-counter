@@ -1,4 +1,4 @@
-"""Tests for the --resume session.json sidecar in scripts/calibrate.py."""
+"""Tests para el sidecar --resume session.json en scripts/calibrate.py."""
 
 import argparse
 import importlib.util

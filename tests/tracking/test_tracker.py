@@ -1,4 +1,4 @@
-"""Tests for 3D Euclidean tracker (Hungarian + state machine)."""
+"""Tests para el tracker Euclidiano 3D (Hungarian + state machine)."""
 import numpy as np
 
 from src.tracking.tracker import (

@@ -275,9 +275,9 @@ def _capture_site(
 
     sbs = bool(site.get("sbs", False))
     rect_maps: Optional[dict[str, tuple[Any, Any]]] = None
-    # Calibration is loaded lazily on the first successful frame because
-    # we need the half-frame size to compute the scale factor; SBS streams
-    # are always horizontally split so half_size = (W//2, H).
+    # La calibración se carga lazy en el primer frame exitoso porque
+    # necesitamos el half-frame size para computar el scale factor; los
+    # streams SBS están siempre split horizontal, así half_size = (W//2, H).
     calib_path = site.get("calibration")
     calib_pending = bool(calib_path) and sbs
 

@@ -1,4 +1,4 @@
-"""Tests for scripts/training/bench_detector.py."""
+"""Tests para scripts/training/bench_detector.py."""
 from __future__ import annotations
 
 import importlib.util

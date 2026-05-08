@@ -1,6 +1,6 @@
-"""Tests for the two-stage (ByteTrack-style) matching path.
+"""Tests para el path de matching two-stage (estilo ByteTrack).
 
-When ``candidate_positions`` is supplied to ``EuclideanTracker.update``,
+Cuando se le pasa ``candidate_positions`` a ``EuclideanTracker.update``,
 those low-confidence detections may re-associate with existing tracks
 that did not match a high-confidence detection in the main pass, but
 they NEVER spawn new tracks. When the kwargs are omitted, the tracker

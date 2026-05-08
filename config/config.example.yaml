@@ -1,58 +1,162 @@
 # =============================================================================
-# People Counter — Per-Device Configuration
+# People Counter — Configuración de Dispositivo
 # =============================================================================
 #
-# Configuration strategy:
+# Archivo único de configuración per-device. Vive en /etc/people-counter/config.yaml
+# en cada dispositivo. Este archivo (config.example.yaml) shippea en el repo como
+# referencia canónica + fuente de defaults — `load_config()` lo lee como baseline
+# y mergea el YAML per-device encima, así cualquier key ausente de
+# /etc/people-counter/config.yaml cae al valor de acá.
 #
-# HARDWARE (config/hardware.yaml — committed) — Fleet invariants. Bracket
-#   geometry, sensor defaults, runtime resolution + fps, calibration file
-#   path, SGBM/detection/tracking tuning, MQTT contract, buffer/log paths.
-#   Set once in lab; never touched per-site.
+# Secciones en orden de relevancia para el operador:
 #
-# THIS FILE (/etc/people-counter/config.yaml — per-device) — Per-site
-#   identity, geometry that changes with the physical layout (mounting
-#   height, ROI/lines for the local door, classifier thresholds), MQTT
-#   credentials, operational policies. Rarely edited after install except
-#   via the cloud shadow.
+#   device           — identidad (seteada durante provisioning)
+#   vision           — mounting height + capture/runtime + SGBM + calibración
+#   detection        — modelo + thresholds (editar solo con modelo nuevo)
+#   counter          — ROI + lines (geometría per-site) + height classifier
+#   wifi_ble         — toggles de probing + bandas de RSSI
+#   mqtt             — endpoint AWS IoT + certs per-device
+#   logging          — nivel (paths fleet-wide)
+#   telemetry        — intervalo de reporting
+#   status_led       — enable del LED
+#   cloud_defaults   — knobs runtime pusheables por shadow de AWS
 #
-# CLOUD (AWS IoT Device Shadow) — Business-driven values inside the
-#   `cloud_defaults` block, pushed remotely without SSH. Whitelisted runtime-
-#   safe keys also apply live (see RUNTIME_SAFE_KEYS in src/config/loader.py).
+# Avanzado (rara vez tocado — tuning de algoritmo):
 #
-# Any key that appears here AND in hardware.yaml: this file wins. The
-# fallback to hardware.yaml only kicks in when the key is missing here, so
-# keep this file lean — only override fleet defaults when the site truly
-# requires it.
+#   bracket          — baseline físico + asignaciones CSI (LAB)
+#   sensor           — invariantes del IMX708 (LAB)
+#   lens             — HFOV fisheye (LAB)
+#   head_depth       — gate antropométrico de pick de cabeza
+#   height           — filtro sanity sobre las alturas reportadas
+#   tracking         — tracker Euclidiano + state machine + Kalman
+#   buffer           — outbox sqlite local
+#   best_frame       — data active-learning con awareness de GDPR (default OFF)
+#
+# Validación: `src/config/loader.py:load_config()` lee este archivo como defaults,
+# mergea el YAML per-device y valida tipos/rangos. Las keys requeridas faltantes
+# (device.id, device.store_id, mqtt.endpoint) raisean. Errores de tipo/rango
+# raisean con la key ofensora en el mensaje.
 # =============================================================================
 
-# --- Device identity (set once during provisioning) ---
+
+# =============================================================================
+# IDENTIDAD DEL DEVICE (per-device, seteada durante provisioning)
+# =============================================================================
 device:
-  id: "store-001-cam-01"          # Unique device ID (matches IoT Core thing name)
-  store_id: "store-001"           # Site/store identifier
-  store_name: "Store Name"        # Human-readable (display only)
+  id: "store-001-cam-01"            # Device ID único (matchea con el thing name en IoT Core).
+  store_id: "store-001"             # Identificador del local — se usa en topics MQTT.
+  store_name: "Store Name"          # Human-readable, solo display.
+  firmware_version: "unknown"       # Auto-populado por el deploy; dejar default.
 
-# --- Per-site geometry ---
-# Camera resolution, fps, calibration_file path, SGBM tuning all live in
-# hardware.yaml.vision_runtime — those are fleet-wide. The only per-site
-# override here is the camera mounting height (varies with the local
-# ceiling height).
+
+# =============================================================================
+# VISION — captura, rectificación, profundidad
+# =============================================================================
 vision:
-  mounting_height_m: 3.0          # Distance from floor to camera mount, in
-                                  # metres. Drives auto num_disparities and
-                                  # the head-height classifier. Must be
-                                  # accurate to ±5cm or depth-derived heights
-                                  # drift.
+  # --- Geometría per-sitio ---
+  mounting_height_m: 3.0            # Distancia del piso al mount de la cámara,
+                                    # en metros. Maneja el num_disparities auto
+                                    # y el classifier de head-height. Tiene que
+                                    # ser preciso a ±5cm o las alturas
+                                    # depth-derived driftean. Retail típico:
+                                    # 2.5-4.0m.
 
-# --- Counter (ROI + N directional lines) — site geometry ---
+  # --- Captura runtime ---
+  resolution: [1152, 648]           # Resolución runtime. Cuartear de
+                                    # 2304×1296 (modo canónico de calibración);
+                                    # binned full-FOV. El .npz de calibración
+                                    # tiene que ser reescalado para matchear via
+                                    # scripts/rescale_calibration.py.
+  fps: 30                           # Frame rate de captura a la resolución runtime.
+  calibration_file: /etc/people-counter/calibration.npz
+                                    # Path al .npz de calibración estéreo.
+                                    # Mismo path en cada install; el contenido
+                                    # es per-device.
+
+  # --- Semi-Global Block Matching ---
+  sgbm:
+    num_disparities: auto           # "auto" deriva de mounting_height_m +
+                                    # resolución runtime. Int múltiplo de 16
+                                    # para override (raro, solo diagnóstico).
+    block_size: 9                   # Impar, 5..15.
+    downscale: 4                    # 1=full, 2=half, 4=quarter, 8=eighth.
+                                    # 4 se eligió por sobre 8 después de tests
+                                    # de piloto que mostraron que downscale=8
+                                    # producía suficiente speckle SGBM dentro
+                                    # del bbox de head-region como para sesgar
+                                    # la mediana de depth hacia arriba cuando
+                                    # una persona estaba parada quieta — se
+                                    # manifestaba como lecturas infladas de
+                                    # head-height (ej. 1.94 m para un usuario
+                                    # sentado). Dividir el downscale a la mitad
+                                    # duplica la resolución del grid de
+                                    # disparity y remueve mayormente ese ruido.
+                                    # El costo de SGBM es ~4× el de downscale=8
+                                    # pero igual cabe en el budget runtime
+                                    # de la Pi 5.
+
+
+# =============================================================================
+# DETECTION — modelo + thresholds (model-specific, fleet-uniform tras lab tune)
+# =============================================================================
+detection:
+  architecture: rapid               # Selector de postprocessor: "yolov8" (raw
+                                    # o NMS built-in de Hailo) o "rapid"
+                                    # (head rotated-bbox, anchors decodeados
+                                    # en CPU). Producción usa "rapid" pareado
+                                    # con rapid_mwhb1024.hef.
+  model_path: /usr/src/people-counter/models/rapid_mwhb1024.hef
+                                    # HEF compilado para Hailo-8L. Mismo path
+                                    # en cada device.
+  confidence_threshold: 0.30        # Piso del score de detección de person/head.
+                                    # Tuneado para RAPiD MWHB1024 — corta FPs
+                                    # del modelo (alucinaciones en piso vacío).
+  low_confidence_threshold: 0.10    # Two-stage matching (estilo ByteTrack).
+                                    # Detecciones en [low, confidence) entran
+                                    # al tracker SOLO para re-asociar tracks
+                                    # existentes que high-conf no matcheó.
+                                    # Nunca crean tracks nuevos. Si no
+                                    # matchean, se descartan silenciosamente.
+                                    # Evita perder ID cuando una persona en
+                                    # movimiento tiene un frame de motion blur
+                                    # bajo el threshold y reaparece a alta
+                                    # conf unos frames después. Debe ser
+                                    # estricto < confidence_threshold. null
+                                    # para volver al comportamiento single-stage.
+  new_track_threshold: 0.50         # Spawn floor. Detecciones en
+                                    # [confidence, new_track) pueden re-asociar
+                                    # tracks existentes pero NO spawn nuevos.
+                                    # Combina con low_confidence_threshold para
+                                    # banda triple: <low descartado,
+                                    # [low, new_track) match-only, >=new_track
+                                    # spawn. Evita IDs fantasma cuando el
+                                    # detector titubea sobre clutter al cruzar
+                                    # el umbral mínimo. null para que spawn
+                                    # caiga al confidence_threshold.
+  nms_threshold: 0.45               # Threshold de IoU para non-maximum suppression.
+  cluster_distance_px: 200          # Clustering por centroide post-NMS:
+                                    # detecciones cuyos centroides caen dentro
+                                    # de esta cantidad de pixels se mergean,
+                                    # manteniendo la de mayor confidence.
+                                    # Agarra el multi-firing en geometría
+                                    # cenital donde head + torso + miembros
+                                    # de la misma persona producen cajas
+                                    # distintas que NMS no colapsa porque sus
+                                    # IoUs pairwise son <0.45. 0 desactiva.
+
+
+# =============================================================================
+# COUNTER — ROI + N líneas direccionales (geometría per-site)
+# =============================================================================
 #
-# Lifecycle: a track that enters the ROI, crosses one of the configured
-# lines in a labelled direction, and exits the ROI emits an event with that
-# label. Crossings in unlabelled directions are silently ignored — that's
-# how a one-way gate is modelled (one door is IN-only, the other OUT-only,
-# or both ways on the same line).
+# Lifecycle: un track que entra al ROI, cruza una de las líneas
+# configuradas en una dirección con label, y sale del ROI emite un evento
+# con ese label. Los cruces en direcciones sin label se ignoran
+# silenciosamente — así se modela un gate one-way (una puerta es IN-only,
+# la otra OUT-only, o ambas direcciones en la misma línea).
 #
-# Examples:
-#   * One door, both directions count (typical retail entrance):
+# Ejemplos:
+#   * Una puerta, ambas direcciones cuentan (entrada de retail típica):
 #       counter:
 #         roi: { x_min: 100, x_max: 540, y_min: 180, y_max: 300 }
 #         lines:
@@ -62,20 +166,21 @@ vision:
 #               top_to_bottom: ingress
 #               bottom_to_top: egress
 #
-#   * Two physically separate doors (one IN, one OUT):
+#   * Dos puertas físicamente separadas (una IN, otra OUT):
 #       counter:
 #         roi: { x_min: 100, x_max: 540, y_min: 100, y_max: 400 }
 #         lines:
-#           - from: [120, 250]    # left half — IN gate
+#           - from: [120, 250]      # mitad izquierda — gate IN
 #             to:   [320, 250]
 #             labels: { top_to_bottom: ingress }
-#           - from: [340, 250]    # right half — OUT gate
+#           - from: [340, 250]      # mitad derecha — gate OUT
 #             to:   [540, 250]
 #             labels: { bottom_to_top: egress }
 #
-# Lines must be axis-aligned (horizontal: same y, vertical: same x). Valid
-# direction keys: horizontal lines use top_to_bottom / bottom_to_top;
-# vertical lines use left_to_right / right_to_left.
+# Las líneas tienen que ser axis-aligned (horizontal: mismo y, vertical:
+# mismo x). Keys de dirección válidas: las líneas horizontales usan
+# top_to_bottom / bottom_to_top; las verticales usan left_to_right /
+# right_to_left.
 counter:
   roi:
     x_min: 100
@@ -88,54 +193,94 @@ counter:
       labels:
         top_to_bottom: ingress
         bottom_to_top: egress
-  # Adult/child classifier based on head height above floor (uses stereo
-  # depth + mounting_height_m). adult_min_m may need per-site tuning
-  # depending on local demographics.
+
+  # Classifier adulto/niño — basado en altura de cabeza sobre el piso (usa
+  # depth estéreo + mounting_height_m). adult_min_m puede necesitar tuning
+  # per-site según la demografía local.
   height_classifier:
     enabled: true
-    adult_min_m: 1.55             # Head height (m) ≥ this => adult, else child.
-                                  # 1.55m sits near the P25 of adult women in
-                                  # Argentina, so few adults misclassify.
+    adult_min_m: 1.55               # Altura de cabeza (m) >= esto => adulto,
+                                    # si no, niño. 1.55m cae cerca del P25
+                                    # de mujeres adultas en Argentina; pocos
+                                    # adultos se misclasifican.
 
-# --- WiFi/BLE — site privacy + sensitivity ---
-# Protocol constants (interface, intervals, cross-protocol windows) live in
-# hardware.yaml.wifi_ble. The toggles + RSSI thresholds stay here because
-# privacy/legal toggles and RSSI noise floor are site-dependent.
+  # Proyección parallax de foot-point. Cuando true, el counter proyecta el
+  # head pixel del bbox al foot-point via altura 3D antes de evaluar la
+  # línea virtual + ROI. Corrige el parallax fisheye en geometrías donde
+  # la puerta cae al borde del FOV (~1m de error a mount 3m). Default
+  # false: requiere depth válido (calibración pasada por diagnose_depth.py)
+  # — con depth incorrecto el head_height_mm queda mal y la proyección
+  # comprime la trayectoria del foot-point dentro del ROI hasta que los
+  # exits no disparan. Activar per-device después de validar que la
+  # calibración estéreo da error <5% al centro a 2m.
+  foot_projection_enabled: false
+
+  # Debounce de cruce de línea — distancia mínima en pixels que el track
+  # debe haberse movido entre frames consecutivos para considerar un flip
+  # de lado como cruce real. 0 deshabilita el feature (default — preserva
+  # comportamiento legacy). Valores típicos para 30 fps a 1m/s ≈ 10
+  # px/frame: 2.0–3.0 filtra jitter del tracker cerca de la línea sin
+  # rechazar movimiento normal. Activar per-site solo si se observa
+  # doble-conteo por jitter en el piloto.
+  min_crossing_movement_px: 0.0
+
+
+# =============================================================================
+# WIFI/BLE — captura + dedup
+# =============================================================================
 wifi_ble:
-  enabled: true                   # Master switch (overridable from cloud)
-  ble_enabled: true               # BLE advertising capture
-  rssi_passerby_threshold: -75    # Present in the zone
-  rssi_shopper_threshold: -55     # Very close / entered
+  enabled: true                     # Master switch (overrideable desde cloud).
+  ble_enabled: true                 # Captura de advertising BLE.
+  rssi_passerby_threshold: -75      # Presente en la zona.
+  rssi_shopper_threshold: -55       # Muy cerca / entró.
 
-# --- MQTT — endpoint + per-device certs ---
-# Port (8883) and topic templates live in hardware.yaml.mqtt (fleet-wide
-# protocol contract). Certs are per-device, set during provisioning.
+  # Constantes de protocolo — contrato cross-device fleet-wide de dedup.
+  # No cambiar sin coordinar a lo largo de la flota (dividiría los buckets
+  # de dedup).
+  wifi_interface: wlan0             # CYW43455 onboard, modo monitor.
+  probe_interval_seconds: 900       # Ventana de agregación de 15 min.
+  cross_protocol_window_seconds: 2  # Ventana de dedup WiFi+BLE same-device.
+  cross_protocol_rssi_delta: 5      # |Delta RSSI| max para match cross-protocol.
+
+
+# =============================================================================
+# MQTT — AWS IoT Core (certs per-device + endpoint, shape de topic fleet-wide)
+# =============================================================================
 mqtt:
   endpoint: "xxxxx.iot.us-east-1.amazonaws.com"
   cert_path: "/etc/people-counter/certs/device.pem.crt"
   key_path: "/etc/people-counter/certs/device.pem.key"
   ca_path: "/etc/people-counter/certs/AmazonRootCA1.pem"
+  port: 8883                        # Puerto TLS de AWS IoT Core.
+  topics:
+    counting:  "store/{store_id}/counting"
+    wifi_ble:  "store/{store_id}/wifi_ble"
+    telemetry: "store/{store_id}/telemetry"
+    shadow:    "$aws/things/{device_id}/shadow"
 
-# --- Logging level (operator-tunable for debug) ---
-# Format/file convention live in hardware.yaml.logging.
+
+# =============================================================================
+# LOGGING + TELEMETRY + STATUS LED
+# =============================================================================
 logging:
-  level: "INFO"
+  level: "INFO"                     # DEBUG / INFO / WARNING / ERROR.
+  format: json                      # json | plain.
+  file: /var/log/people-counter/app.log
 
-# --- Telemetry interval (cloud-overridable) ---
 telemetry:
-  interval_seconds: 300
+  interval_seconds: 300             # Cadencia de reporting de telemetría.
 
-# --- Status LED (per-site aesthetics) ---
 status_led:
-  enabled: true
+  enabled: true                     # LED RGB de status por GPIO.
+
 
 # =============================================================================
-# CLOUD-PUSHED CONFIG (AWS IoT Device Shadow)
+# CONFIG PUSHEABLE DESDE CLOUD (AWS IoT Device Shadow)
 # =============================================================================
-# Defaults below are applied at boot if the cloud shadow is unavailable.
-# The shadow takes precedence at runtime when it is reachable.
+# Los defaults de abajo se aplican al boot si el shadow del cloud no está
+# disponible. El shadow tiene precedencia en runtime cuando se puede alcanzar.
 #
-# To push a change:
+# Para pushear un cambio:
 #   aws iot-data update-thing-shadow --thing-name <device_id> \
 #     --payload '{"state":{"desired":{"operating_hours":{"monday":"10:00-22:00"}}}}'
 # =============================================================================
@@ -149,11 +294,192 @@ cloud_defaults:
     saturday: "10:00-22:00"
     sunday: "10:00-21:00"
 
-  # fail_open: log WARNING, keep counting (default — no data loss on typo)
-  # fail_closed: log CRITICAL, pause counting until valid schedule is pushed
+  # fail_open: loguea WARNING, sigue contando (default — sin pérdida de datos
+  # ante un typo).
+  # fail_closed: loguea CRITICAL, pausa el conteo hasta que se pushee un
+  # schedule válido.
   on_invalid_schedule: "fail_open"
 
   footfall_scaling_factor: 1.0
   counting_enabled: true
   wifi_ble_enabled: true
   telemetry_interval_seconds: 300
+
+
+# =============================================================================
+# AVANZADO — tuning de algoritmo. Tocar solo si sabés lo que estás haciendo.
+# =============================================================================
+
+
+# --- Constantes de hardware (FÍSICO — seteado en lab, jamás per-site) -------
+# Cada device construido según spec tiene los mismos valores acá. Si te
+# encontrás queriendo cambiar algo, tenés un defecto de hardware, un build
+# no-estándar, o un malentendido — investigá antes de editar.
+bracket:
+  baseline_mm: 140                  # Distancia mecánica entre los centros de
+                                    # los lentes L↔R. Determinada por el corte
+                                    # del bracket en fab. El baseline del
+                                    # .npz de calibración tiene que matchear
+                                    # esto dentro de ±5mm — la divergencia
+                                    # indica calibración degenerada o
+                                    # bracket dañado.
+  camera_left_csi: 0                # Índice del CSI bus para el lens IZQUIERDO
+                                    # (mirando desde la cámara hacia la escena).
+  camera_right_csi: 1               # Índice del CSI bus para el lens DERECHO.
+
+sensor:
+  model: imx708
+  full_res: [4608, 2592]            # Resolución full nativa.
+  default_res: [2304, 1296]         # 2x2 binned, full FOV — modo canónico
+                                    # para foco y calibración. Detección de
+                                    # ChArUco ~4× más rápida que full-res
+                                    # 4608×2592 (≥8 FPS vs <2 FPS en Pi 5),
+                                    # el binning 2x2 mejora SNR, el par
+                                    # rectificado más SGBM igual cabe en el
+                                    # budget runtime a esta resolución.
+  default_fps: 15                   # Max FPS estable a default_res con dos
+                                    # instancias picamera2. Lo usa la tool
+                                    # de calibración. El pipeline runtime usa
+                                    # vision.fps de arriba (típicamente más
+                                    # rápido porque la res runtime es un
+                                    # downscale).
+  nominal_focal_full_px: 2050       # Focal pinhole-equivalente a full_res,
+                                    # región central. Se usa como K inicial
+                                    # para el bootstrap de calibración y para
+                                    # estimación de distancia en focus_assist.
+
+lens:
+  type: m12_120deg                  # Arducam B0310 (M12 mount, 120° HFOV /
+                                    # 152° diag, fisheye Kannala-Brandt).
+  hfov_deg: 120
+
+
+# --- Head-depth pick gate (anthropometric, mount-aware) ---------------------
+# Bounds en altura-sobre-piso que `head_depth_in_bbox` usa para decidir qué
+# rango de profundidades dentro del bbox podría ser una cabeza humana. Cualquier
+# knob acepta "auto" o un valor literal en metros:
+#   auto → se calcula como min(anthropometric_default, mount - clearance)
+#   <float> → valor literal en m (override manual)
+# Para mounts de retail típicos (2.5-4m) el anthropometric gana y los valores
+# resueltos son los defaults; el cap geométrico solo entra para mounts inusuales
+# (muy bajos) donde el default haría que el gate colapse.
+head_depth:
+  max_head_height_m: auto           # auto = min(1.80, mount - 0.30).
+                                    # P95 masculino global ~1.83m. Cap
+                                    # geométrico deja 30cm de near-range para
+                                    # SGBM. Override manual: float.
+  min_head_above_floor_m: 0.50      # Floor del head — anthropometric puro,
+                                    # no depende de mount. Cabeza humana
+                                    # plausible está al menos 50cm del piso
+                                    # (excluye niños gateando + objetos al ras).
+  column_radius_m: 0.25             # Radio (m) de la columna vertical 3D
+                                    # centrada en el centroide del cuerpo.
+                                    # Pixels cuyo (X, Y) métrico back-projecta
+                                    # fuera de esta columna se descartan antes
+                                    # del histograma — rechaza estructura
+                                    # overhead (cables, cornisas, bordes de
+                                    # mueble) que cae dentro del bbox 2D pero
+                                    # está físicamente offset en X o Y respecto
+                                    # del cuerpo. 25cm cubre cabezas reales
+                                    # con holgura. Subir a >1m efectivamente
+                                    # desactiva el filtro espacial.
+
+
+# --- Height sanity filter (defensa post-tracker) ----------------------------
+# Después de que head_depth_in_bbox + classifier corren, el evento de conteo
+# igual se emite si una persona cruzó la línea — pero si la altura calculada
+# es físicamente imposible (overhead structure que pasó el primer gate,
+# calibration drift, edge cases), height_m se limpia a None y height_class
+# cae a "unknown" para que los dashboards no surface valores falsamente
+# confiados. Distinto del adult_min_m del classifier: ese decide adult/child
+# dentro del rango plausible; este descarta solo lo imposible.
+height:
+  sanity_min_m: 0.80                # Lower bound. Por debajo: piso, niño muy
+                                    # chico con bbox fallado, ruido.
+                                    # Anthropometric, no depende de mount.
+  sanity_max_m: auto                # auto = min(2.10, mount - 0.20). Override
+                                    # manual: float. P99 global ~1.92m, 2.10
+                                    # deja headroom; cap geométrico solo activo
+                                    # en mounts muy bajos.
+
+
+# --- Tracker + state machine (tuning de algo, fleet-uniform tras piloto) ----
+tracking:
+  max_disappeared: 30               # Frames que un track puede miss antes de drop.
+  max_distance: 50                  # Distancia max en px para asociación
+                                    # frame-a-frame. Escalar linealmente con
+                                    # la resolución runtime si la cambiás.
+  state_machine:
+    confirm_frames: 1               # Hits para promover CANDIDATE -> CONFIRMED.
+                                    # Tuneado agresivo (1) para el detector
+                                    # actual que tiene detecciones gappy;
+                                    # con un detector fine-tuneado esto sube
+                                    # de vuelta a 3 para menos churn de
+                                    # false-positives.
+    pending_max_frames: 20          # Misses antes de PENDING -> LOST.
+    reid_gate_px: 300               # Gate de distancia para re-id. Ancho
+                                    # porque el tracker es single-camera y
+                                    # el detector ocasionalmente dropea el
+                                    # track por varios frames entre
+                                    # re-detecciones.
+    depth_gate_m: 0.5               # Gate de |Δz| para re-id cross frames.
+    kalman:                         # Filtro Kalman de velocidad constante
+                                    # sobre el estado [cx, cy, vx, vy] de
+                                    # cada track. Reemplaza la extrapolación
+                                    # lineal vieja `last + (last-prev)`, que
+                                    # perdía tracks cuando el detector
+                                    # dropeaba 2-5 frames a baja FPS.
+      process_noise: 1.0            # Diagonal de Q — incertidumbre del
+                                    # modelo (px²/frame²). Más alto = dejar
+                                    # que la velocidad flexione más entre
+                                    # frames; más bajo = confiar más fuerte
+                                    # en movimiento de línea recta.
+      measurement_noise: 5.0        # Diagonal de R — ruido de posición
+                                    # del detector (px). ~5 px es típico
+                                    # para YOLO/RAPiD con bboxes bien
+                                    # confirmados.
+      initial_velocity_uncertainty: 100.0
+                                    # Diagonal de P para vx/vy al init del
+                                    # track. Alta porque todavía no
+                                    # observamos dirección — colapsa con la
+                                    # primera medición.
+
+
+# --- Convención de persistencia local ---------------------------------------
+buffer:
+  db_path: /var/lib/people-counter/buffer.db
+  max_age_hours: 72
+
+
+# --- Selector best-frame (data active-learning, default-OFF con awareness GDPR/LPDP) -
+# Cuando se habilita, por cada count event guarda 1 JPG representativo del
+# track al cruzar la línea. El JPG vive solo on-device (jamás transmitido,
+# jamás publicado por MQTT — solo el path va en el evento como metadata),
+# retención enforceada por systemd timer + scripts/purge_best_frames.py,
+# propósito acotado a debugging + active learning durante piloto. Default
+# OFF para que zero-storage / zero-PII sea el comportamiento out-of-the-box;
+# activar requiere DPIA + cartelería + política de privacidad acompañando.
+# Ver docs/privacy.md para el procedimiento legal.
+best_frame:
+  enabled: false                    # Toggle a true SOLO con DPIA + cartelería
+                                    # + política de privacidad activa.
+  output_dir: /var/lib/people-counter/best_frames
+  retention_days: 7                 # Purgado por scripts/purge_best_frames.py
+                                    # vía systemd timer (people-counter-purge-
+                                    # best-frames.timer, diario a las 03:30).
+  buffer_size: 20                   # Max frames buffereados por track activo.
+                                    # Rotativo: cuando se llena descarta el
+                                    # más viejo. Cap en memoria — no buffer
+                                    # en disco intermedio.
+  jpeg_quality: 85                  # cv2.IMWRITE_JPEG_QUALITY. 85 es el
+                                    # sweet spot calidad/tamaño para training.
+  scoring:                          # Pesos del score; suman ~1.0 idealmente.
+    confidence_weight: 0.4          # Confianza del detector — más alta es
+                                    # mejor candidato.
+    bbox_area_weight: 0.2           # Área del bbox normalizada al frame.
+                                    # Más grande = persona más cerca = más
+                                    # detalle aprovechable.
+    centrality_weight: 0.2          # Cercanía al centro del frame. Menos
+                                    # distorsión fisheye en el centro.
+    sharpness_weight: 0.2           # Varianza Laplaciana del crop del bbox.
+                                    # Más alta = menos motion blur.

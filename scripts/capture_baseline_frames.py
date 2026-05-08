@@ -37,7 +37,6 @@ import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.config.hardware import load_hardware_config
 from src.config.loader import load_config
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import StereoCapture
@@ -72,7 +71,6 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
 
     config = load_config(args.config)
-    hw = load_hardware_config()
     vision_cfg = config["vision"]
 
     cal_file = vision_cfg.get("calibration_file")
@@ -86,12 +84,10 @@ def main() -> int:
     calibration = load_calibration(cal_file)
 
     cap = StereoCapture(
-        cam_left_id=hw["bracket"]["camera_left_csi"],
-        cam_right_id=hw["bracket"]["camera_right_csi"],
-        resolution=tuple(
-            vision_cfg.get("resolution", hw["sensor"]["default_res"]),
-        ),
-        fps=vision_cfg.get("fps", hw["sensor"]["default_fps"]),
+        cam_left_id=config["bracket"]["camera_left_csi"],
+        cam_right_id=config["bracket"]["camera_right_csi"],
+        resolution=tuple(vision_cfg["resolution"]),
+        fps=int(vision_cfg["fps"]),
     )
     cap.open()
     logger.info(

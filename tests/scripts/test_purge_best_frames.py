@@ -1,6 +1,6 @@
-"""Tests for scripts/purge_best_frames.py.
+"""Tests para scripts/purge_best_frames.py.
 
-Verifies retention enforcement: files older than --retention-days are
+Verifica el enforcement de retención: los archivos más viejos que --retention-days son
 removed, fresh files are kept, and dry-run produces no side effects.
 """
 

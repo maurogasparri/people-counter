@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Interactive ROI + counting-line picker for People Counter devices.
+"""Picker interactivo de ROI + counting-line para los devices del People Counter.
 
-Captures one frame (live from CSI cameras or a static image) and serves a
-small HTTP UI. The operator click-drags to define the rectangular ROI and
-then clicks inside to place the virtual counting line (snapped to the
-configured orientation). On save, the server writes a YAML snippet that
-slots directly under ``counter:`` in the device config.
+Captura un frame (en vivo desde las cámaras CSI o desde una imagen estática) y
+sirve una UI HTTP chica. El operador hace click-drag para definir el ROI
+rectangular y después hace click adentro para poner la línea virtual de
+conteo (snapeada a la orientación configurada). Al save, el server escribe un
+snippet YAML que entra directo bajo ``counter:`` en el config del dispositivo.
 
-Typical usage on device:
+Uso típico en el dispositivo:
     PYTHONPATH=. python3 scripts/roi_picker.py
-    # Open http://people-counter.local:8080
+    # Abrir http://people-counter.local:8080
 
-Dev/test on a laptop (no picamera2):
+Dev/test en laptop (sin picamera2):
     python scripts/roi_picker.py --image sample.jpg --output ./out.yaml
 
-The YAML snippet produced matches ``counter.roi`` / ``counter.line`` in
+El snippet YAML producido matchea ``counter.roi`` / ``counter.line`` en
 ``config/config.example.yaml``.
 """
 

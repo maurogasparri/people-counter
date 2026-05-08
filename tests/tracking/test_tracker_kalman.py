@@ -1,6 +1,6 @@
-"""Tests for the Kalman motion model integrated into the tracker.
+"""Tests para el modelo de movimiento Kalman integrado al tracker.
 
-These cover the new behaviour added when ``Track.predicted_position``
+Cubren el comportamiento nuevo agregado cuando ``Track.predicted_position``
 became Kalman-driven:
 
 * Constant-velocity sequence: the filter converges and predicts ahead

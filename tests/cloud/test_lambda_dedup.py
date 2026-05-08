@@ -1,6 +1,6 @@
-"""Tests for Lambda dedup L3 (inter-camera deduplication).
+"""Tests para el Lambda de dedup L3 (deduplicación inter-cámara).
 
-Uses a mock DynamoDB table to test the dedup logic without AWS.
+Usa una tabla DynamoDB mockeada para testear la lógica de dedup sin AWS.
 """
 
 from unittest.mock import MagicMock, patch

@@ -1,4 +1,4 @@
-"""Tests for world-space helpers (head-height classification)."""
+"""Tests para helpers de world-space (clasificación de altura de cabeza)."""
 
 import numpy as np
 import pytest

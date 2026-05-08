@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Depth pipeline diagnostic and calibration validation tool.
+"""Tool de diagnóstico del pipeline de depth y validación de calibración.
 
-Measures depth at known distance across 5 zones (center + 4 corners) to
-validate calibration quality for the IMX708 120° HFOV stereo pair.
+Mide la profundidad a una distancia conocida en 5 zonas (centro + 4 esquinas)
+para validar la calidad de la calibración del par estéreo IMX708 120° HFOV.
 
-For 120° wide-angle lenses, the periphery is where distortion is hardest
-to model — if calibration is poor, edge zones diverge from center much
-more than the radial distance alone would predict. This script makes that
-divergence explicit.
+Para lentes wide-angle de 120°, la periferia es donde la distorsión es más
+difícil de modelar — si la calibración es pobre, las zonas de borde divergen
+del centro mucho más que lo que la distancia radial sola predeciría. Este
+script hace explícita esa divergencia.
 
-Usage:
-    # Place a flat object (wall, board) parallel to the cameras at a
-    # known distance, run once per distance:
+Uso:
+    # Poner un objeto plano (pared, board) paralelo a las cámaras a una
+    # distancia conocida, correr una vez por distancia:
     PYTHONPATH=. python3 scripts/diagnose_depth.py --distance 1000
     PYTHONPATH=. python3 scripts/diagnose_depth.py --distance 2000
     PYTHONPATH=. python3 scripts/diagnose_depth.py --distance 3000
 
-Validation thresholds (PASS/FAIL):
-    - Center error: <5% at 2m, <10% at 3m
-    - Edge/center error ratio: <2.0 (edges no worse than 2× center)
+Thresholds de validación (PASS/FAIL):
+    - Error de centro: <5% a 2m, <10% a 3m
+    - Ratio de error borde/centro: <2.0 (los bordes no peor que 2× el centro)
 """
 
 import argparse
@@ -28,13 +28,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.config.hardware import load_hardware_config
+from src.config.loader import load_defaults
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import StereoCapture
 from src.vision.depth import compute_disparity, create_sgbm, disparity_to_depth
 
 
-# Validation thresholds
+# Thresholds de validación
 PASS_ERROR_PCT_AT_2M = 5.0
 PASS_ERROR_PCT_AT_3M = 10.0
 PASS_EDGE_CENTER_RATIO = 2.0
@@ -42,9 +42,10 @@ PASS_EDGE_CENTER_RATIO = 2.0
 
 def analyze_zone(disparity: np.ndarray, fx: float, baseline_mm: float,
                  cy: int, cx: int, half: int) -> tuple[int, float, float, float]:
-    """Compute depth statistics inside a square ROI centered at (cy, cx).
+    """Computa estadísticas de profundidad dentro de un ROI cuadrado
+    centrado en (cy, cx).
 
-    Returns (valid_count, median_depth_mm, std_depth_mm, fill_pct).
+    Devuelve (valid_count, median_depth_mm, std_depth_mm, fill_pct).
     """
     h, w = disparity.shape
     y1, y2 = max(0, cy - half), min(h, cy + half)
@@ -64,83 +65,90 @@ def analyze_zone(disparity: np.ndarray, fx: float, baseline_mm: float,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Depth diagnostic + calibration validation")
+    parser = argparse.ArgumentParser(description="Diagnóstico de depth + validación de calibración")
     parser.add_argument("--distance", type=float, required=True,
-                        help="Actual distance to flat target in mm")
+                        help="Distancia real al target plano en mm")
     parser.add_argument("--calibration", default="/etc/people-counter/calibration.npz")
-    parser.add_argument("--wls", action="store_true", help="Enable WLS filter (off by default)")
+    parser.add_argument("--wls", action="store_true", help="Habilita filtro WLS (off por default)")
     parser.add_argument("--green", action="store_true",
-                        help="Use green channel only (for NoIR cameras)")
-    parser.add_argument("--no-clahe", action="store_true", help="Disable CLAHE")
+                        help="Usa solo channel verde (para cámaras NoIR)")
+    parser.add_argument("--no-clahe", action="store_true", help="Desactiva CLAHE")
     parser.add_argument("--downscale", type=int, default=1, choices=[1, 2, 4],
-                        help="Downscale factor for SGBM matching (1=full, 2=half, 4=quarter)")
+                        help="Factor de downscale para matching SGBM (1=full, 2=half, 4=quarter)")
     parser.add_argument("--zone-fraction", type=float, default=0.15,
-                        help="Zone size as fraction of min(H,W). Default 0.15 = ~15%% per side")
+                        help="Tamaño de zona como fracción de min(H,W). Default 0.15 = ~15%% por lado")
     parser.add_argument("--edge-margin", type=float, default=0.10,
-                        help="Edge zone offset from corner, fraction of min(H,W). Default 0.10")
+                        help="Offset de zona borde desde la esquina, fracción de min(H,W). Default 0.10")
     parser.add_argument("--delay", type=int, default=0,
-                        help="Countdown in seconds before capture")
+                        help="Cuenta regresiva en segundos antes de capturar")
     parser.add_argument("--meter", choices=("matrix", "centre", "spot"),
                         default="matrix",
-                        help="AE metering mode. Use 'centre'/'spot' when bright "
-                             "zones in the periphery (windows, lights) drag "
-                             "exposure down on the centre.")
+                        help="Modo de metering AE. Usar 'centre'/'spot' cuando "
+                             "zonas brillantes en la periferia (ventanas, luces) "
+                             "tiren la exposición hacia abajo sobre el centro.")
     parser.add_argument("--lock-ae", action="store_true",
-                        help="Lock AE/AWB after a 1s settle. Useful for variable "
-                             "light (natural daylight). Default off — AE adjusts "
-                             "to current scene, single-frame capture is unaffected "
-                             "by drift.")
+                        help="Lockea AE/AWB tras un settle de 1s. Útil para luz "
+                             "variable (luz natural). Default off — AE ajusta a "
+                             "la escena actual, la captura single-frame no se "
+                             "afecta por drift.")
     parser.add_argument("--json", dest="json_path",
-                        help="Write the per-zone results + verdict to this JSON "
-                             "path. Lets the wizard / CI tooling parse the score "
-                             "without scraping stdout. Schema: "
+                        help="Escribe los resultados per-zona + veredicto a este "
+                             "path JSON. Permite que el wizard / tooling de CI "
+                             "parsee el score sin scrappear stdout. Schema: "
                              "{distance_mm, zones: {<name>: {depth_mm, std_mm, "
                              "err_pct, fill_pct}}, center_threshold_pct, "
                              "edge_ratio, verdict: 'PASS'|'FAIL', "
                              "checks: [{name, detail, ok}]}.")
     parser.add_argument("--output-dir", default="/tmp",
-                        help="Directory for the visualization images "
+                        help="Directorio para las imágenes de visualización "
                              "(diagnose_rect_l.jpg, diagnose_rect_r.jpg, "
                              "diagnose_depth.jpg). Default /tmp.")
     parser.add_argument("--quiet", action="store_true",
-                        help="Suppress stdout output (still writes JSON + "
-                             "images). Headless mode for orchestration.")
+                        help="Suprime el output a stdout (igual escribe JSON + "
+                             "imágenes). Modo headless para orquestación.")
     args = parser.parse_args()
 
     def _emit(*a, **kw) -> None:
         if not args.quiet:
             print(*a, **kw)
 
-    # Hardware constants: camera CSI assignments from hardware.yaml.
-    hw = load_hardware_config()
-    cam_left = hw["bracket"]["camera_left_csi"]
-    cam_right = hw["bracket"]["camera_right_csi"]
+    # Asignaciones de CSI de cámara + invariantes de sensor vienen de
+    # los defaults bundled en config.example.yaml — misma fuente que
+    # lee el pipeline runtime.
+    defaults = load_defaults()
+    cam_left = defaults["bracket"]["camera_left_csi"]
+    cam_right = defaults["bracket"]["camera_right_csi"]
 
     cal = load_calibration(args.calibration)
 
-    # Capture resolution must match the calibration's resolution, not
-    # sensor.default_res nor vision_runtime.resolution. Two valid flows
-    # exist on the same device:
-    #   - Wizard fresh output → .npz at --resolution (2304×1296 default).
-    #   - Deployed runtime    → rescaled .npz at vision_runtime.resolution
-    #                            (1152×648 typical) via rescale_calibration.py.
-    # The .npz carries ``image_size`` (the resolution at which the rectify
-    # maps were built); we use it as ground truth so diagnose works against
-    # either flow. Capture at any other size and cv2.remap silently clips
-    # the frame to the maps, which previously produced rectified pairs
-    # that only covered the top-left quadrant of the actual capture and
-    # invalidated the depth diagnosis entirely.
+    # La resolución de captura tiene que matchear la resolución de
+    # la calibración, no sensor.default_res ni
+    # vision_runtime.resolution. Dos flujos válidos existen en el
+    # mismo device:
+    #   - Output fresco del wizard → .npz a --resolution (2304×1296 default).
+    #   - Runtime deployado        → .npz reescalado a
+    #                                 vision_runtime.resolution
+    #                                 (1152×648 típico) via
+    #                                 rescale_calibration.py.
+    # El .npz carga ``image_size`` (la resolución a la que se
+    # armaron los rectify maps); lo usamos como ground truth así
+    # diagnose funciona contra cualquier flujo. Capturar a otro
+    # tamaño y cv2.remap silenciosamente clipea el frame a los
+    # mapas, lo cual previamente producía pares rectificados que
+    # solo cubrían el cuadrante top-left de la captura real e
+    # invalidaba el diagnóstico de depth completo.
     if "image_size" in cal:
         cal_w, cal_h = (int(v) for v in cal["image_size"])
         resolution = (cal_w, cal_h)
     else:
-        # Fallback for older .npz that didn't store image_size: use the
-        # rectify map shape directly. cv2.convertMaps may have changed
-        # the dtype but the spatial dims are preserved.
+        # Fallback para .npz más viejos que no guardaban image_size:
+        # usar la shape del rectify map directamente. cv2.convertMaps
+        # puede haber cambiado el dtype pero las dims espaciales se
+        # preservan.
         map_h, map_w = cal["map_l_x"].shape[:2]
         resolution = (map_w, map_h)
 
-    # --- Print calibration parameters ---
+    # --- Imprimir parámetros de calibración ---
     _emit("=" * 70)
     _emit("PARÁMETROS DE CALIBRACIÓN")
     _emit("=" * 70)
@@ -156,7 +164,7 @@ def main() -> None:
     if abs(baseline_T - baseline_P2) > 5:
         print(f"  ATENCIÓN: discrepancia de baseline (>5mm)")
 
-    # --- Capture ---
+    # --- Captura ---
     _emit(f"\n{'=' * 70}")
     _emit("CAPTURANDO...")
     _emit("=" * 70)
@@ -179,17 +187,19 @@ def main() -> None:
     cap.close()
     _emit(f"Capturado: {left.shape}, rectificando...")
 
-    # Sanity check: the rectification maps are sized to the calibration
-    # resolution. cv2.remap produces an output sized to the maps. Feeding
-    # a capture at a different resolution silently clips content (only
-    # the top-left quadrant of a 2× capture survives) — exactly the
-    # symptom the original tool exhibited before the resolution fix above.
+    # Sanity check: los rectify maps están dimensionados a la
+    # resolución de la calibración. cv2.remap produce un output del
+    # tamaño de los mapas. Alimentar una captura a otra resolución
+    # clipea el contenido silenciosamente (solo el cuadrante top-left
+    # de una captura 2× sobrevive) — exactamente el síntoma que la
+    # tool original exhibía antes del fix de resolución arriba.
     map_h, map_w = cal["map_l_x"].shape[:2]
     if (left.shape[1], left.shape[0]) != (map_w, map_h):
         print(
             f"  ATENCIÓN: capture {left.shape[1]}×{left.shape[0]} != "
             f"calibration maps {map_w}×{map_h} — rectificación recortará "
-            "contenido. Verificá vision_runtime.resolution en hardware.yaml."
+            "contenido. Verificá vision.resolution en /etc/people-counter/"
+            "config.yaml o en config/config.example.yaml."
         )
 
     rect_l, rect_r = rectify_pair(left, right, cal)
@@ -209,7 +219,7 @@ def main() -> None:
     half = int(short * args.zone_fraction / 2)
     margin = int(short * args.edge_margin)
 
-    # 5 zones: center + 4 corners (offset from image edge by `margin`)
+    # 5 zonas: centro + 4 esquinas (offset del borde de imagen por `margin`)
     zones = {
         "center":       (h // 2, w // 2),
         "top-left":     (margin + half, margin + half),
@@ -218,7 +228,7 @@ def main() -> None:
         "bottom-right": (h - margin - half, w - margin - half),
     }
 
-    # --- Per-zone analysis ---
+    # --- Análisis per-zona ---
     _emit(f"\n{'=' * 70}")
     _emit(f"PROFUNDIDAD POR ZONA  (distancia real: {args.distance:.0f} mm = {args.distance/1000:.2f} m)")
     _emit(f"Tamaño de zona: {2*half}×{2*half} px  ({args.zone_fraction*100:.0f}% del lado del frame)")
@@ -237,7 +247,7 @@ def main() -> None:
         results[name] = (median, std, err_pct, fill)
         print(f"{name:<14s} {n:>7d} {fill:>6.1f}% {median:>10.0f} {std:>8.0f}  {err_pct:>+7.1f}%")
 
-    # --- Consistency analysis ---
+    # --- Análisis de consistencia ---
     _emit(f"\n{'=' * 70}")
     _emit("CONSISTENCIA CENTRO vs BORDES")
     _emit("=" * 70)
@@ -265,14 +275,14 @@ def main() -> None:
     _emit("VEREDICTO DE VALIDACIÓN")
     _emit("=" * 70)
 
-    # Threshold scales linearly between 2m and 3m
+    # El threshold escala linealmente entre 2m y 3m
     d_m = args.distance / 1000
     if d_m <= 2.0:
         center_threshold = PASS_ERROR_PCT_AT_2M
     elif d_m >= 3.0:
         center_threshold = PASS_ERROR_PCT_AT_3M
     else:
-        # interpolate
+        # interpolar
         t = (d_m - 2.0) / 1.0
         center_threshold = PASS_ERROR_PCT_AT_2M + t * (PASS_ERROR_PCT_AT_3M - PASS_ERROR_PCT_AT_2M)
 
@@ -280,9 +290,10 @@ def main() -> None:
     if center is not None:
         ok = abs(center[2]) <= center_threshold
         checks.append(("Error centro", f"{abs(center[2]):.2f}% ≤ {center_threshold:.1f}%", ok))
-    # Edge/center ratio is shown as INFO only — it assumes a flat target
-    # scene which most real environments don't have. Multi-depth scenes
-    # inflate edge errors without that being a calibration problem.
+    # El ratio borde/centro se muestra solo como INFO — asume una
+    # escena de target plano que la mayoría de ambientes reales no
+    # tienen. Escenas multi-depth inflan los errores de borde sin
+    # que eso sea un problema de calibración.
     if not np.isnan(edge_ratio):
         info_ok = edge_ratio <= PASS_EDGE_CENTER_RATIO
         flag = "OK" if info_ok else "INFO"
@@ -297,7 +308,7 @@ def main() -> None:
     overall = all(ok for _, _, ok in checks) if checks else False
     _emit(f"\nVEREDICTO: {'PASS — calibración correcta para depth' if overall else 'FAIL — recalibrar (más capturas, mejor foco, verificar rigidez)'}")
 
-    # --- Optional JSON output (for orchestration / wizard integration) ---
+    # --- Output JSON opcional (para orquestación / integración con wizard) ---
     if args.json_path:
         zones_json: dict[str, object] = {}
         for name, vals in results.items():
@@ -331,7 +342,7 @@ def main() -> None:
         )
         _emit(f"\nJSON guardado: {json_out}")
 
-    # --- Save annotated visualization ---
+    # --- Guardar visualización anotada ---
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out_dir / "diagnose_rect_l.jpg"), rect_l)

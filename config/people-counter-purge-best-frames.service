@@ -1,7 +1,8 @@
 [Unit]
-Description=People Counter — purge best-frame JPGs past retention
-# Runs even when the main people-counter.service is stopped: retention is
-# a legal guarantee that must hold regardless of pipeline state.
+Description=People Counter — purga de JPGs best-frame pasados de retención
+# Corre incluso cuando el people-counter.service principal está detenido: la
+# retención es una garantía legal que debe sostenerse sin importar el estado
+# del pipeline.
 
 [Service]
 Type=oneshot
@@ -9,19 +10,22 @@ User=pi
 Group=pi
 WorkingDirectory=/usr/src/people-counter
 Environment="PYTHONPATH=/usr/src/people-counter"
-# Retention days are sourced from hardware.yaml's best_frame.retention_days.
-# Default 7 — change here AND in hardware.yaml if you adjust it.
+# Los días de retención mirrorean best_frame.retention_days del config
+# mergeado (default 7, seteado en config/config.example.yaml). El pipeline
+# lee el YAML; este unit hardcodea el mismo número así las purgas se
+# mantienen enforced aún cuando el servicio principal está detenido.
+# Mantener ambos en sync si cambia.
 ExecStart=/usr/bin/python3 /usr/src/people-counter/scripts/purge_best_frames.py \
     --output-dir /var/lib/people-counter/best_frames \
     --retention-days 7
 
-# Hardening: this unit only needs to read+unlink under the JPG dir.
+# Hardening: este unit solo necesita read+unlink bajo el dir de JPGs.
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/people-counter/best_frames
 PrivateTmp=true
 
-# Log to journal.
+# Loguear al journal.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=people-counter-purge-best-frames

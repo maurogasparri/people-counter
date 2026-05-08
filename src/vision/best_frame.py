@@ -1,27 +1,28 @@
-"""Best-frame selector for tracked persons.
+"""Best-frame selector para personas trackeadas.
 
-When the optional ``best_frame`` feature is enabled in ``hardware.yaml``,
-the pipeline buffers a small rolling window of frames per active track
-and picks one representative JPG when the track produces a count event
-at the gate line. The chosen frame is written to local disk only —
-**never** transmitted over MQTT, and **never** uploaded to the cloud —
-and only its on-device path is attached to the count event metadata.
+Cuando el feature opcional ``best_frame`` está enabled en el config mergeado
+(``best_frame.enabled: true``), el pipeline buffea una ventana rolling chica
+de frames por track activo y elige un JPG representativo cuando el track
+produce un evento de conteo en la línea del gate. El frame elegido se escribe
+solo a disco local — **nunca** se transmite por MQTT, y **nunca** se sube
+al cloud — y solo el path on-device se adjunta a la metadata del evento de
+conteo.
 
-The privacy story is enforced as a stack of independent guarantees:
+El stack de privacidad se hace cumplir como capas independientes de garantías:
 
-  1. Default OFF in ``hardware.yaml`` (zero storage, zero PII).
-  2. Local-only writes (no MQTT publish of the image bytes — see
-     ``src/main.py`` for the publish path).
-  3. Short retention enforced by ``scripts/purge_best_frames.py`` +
-     systemd timer.
-  4. Optional anonymisation (``scripts/export_anonymized.py``) when the
-     operator wants to ship samples for external labelling.
-  5. Operator paperwork (DPIA, signage, privacy policy) gates flipping
-     the toggle on — see ``docs/privacy.md``.
+  1. Default OFF en ``config/config.example.yaml`` (zero storage, zero PII).
+  2. Escrituras solo locales (sin publish MQTT de los bytes de imagen — ver
+     ``src/main.py`` para el path de publish).
+  3. Retención corta enforced por ``scripts/purge_best_frames.py`` + timer
+     de systemd.
+  4. Anonimización opcional (``scripts/export_anonymized.py``) cuando el
+     operador quiere shippear samples para labeling externo.
+  5. Paperwork del operador (DPIA, signage, privacy policy) gatea poner
+     el toggle en on — ver ``docs/privacy.md``.
 
-This module owns layers (1)–(2): the scoring math and the per-track
-buffer plumbing. The other layers live in scripts + docs because they
-need to keep working even when the pipeline is offline.
+Este módulo posee las capas (1)–(2): la matemática de scoring y el plumbing
+del buffer per-track. Las otras capas viven en scripts + docs porque tienen
+que seguir funcionando aún cuando el pipeline esté offline.
 """
 
 from __future__ import annotations
@@ -41,18 +42,18 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Public dataclasses
+# Dataclasses públicos
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class BufferedFrame:
-    """One frame snapshot kept for a single live track.
+    """Un snapshot de frame guardado para un solo track vivo.
 
-    Holds the raw image bytes plus the per-frame scoring components so
-    the picker can rank candidates without re-running detection. Image
-    is stored as a numpy array; the buffer caps total entries (see
-    ``buffer_size``) so RAM stays bounded.
+    Contiene los bytes de imagen raw más los componentes de scoring per-frame
+    así el picker puede rankear candidatos sin re-correr detección. La imagen
+    se guarda como numpy array; el buffer capea las entries totales (ver
+    ``buffer_size``) así la RAM se mantiene acotada.
     """
 
     frame_image: np.ndarray
@@ -72,8 +73,8 @@ def _bbox_area_norm(
     bbox: tuple[int, int, int, int],
     frame_shape: tuple[int, int],
 ) -> float:
-    """Normalised bbox area in [0, 1]: area / frame_area. Saturates at 1.0
-    so a degenerate bbox larger than the frame doesn't blow up the score.
+    """Área del bbox normalizada en [0, 1]: area / frame_area. Satura en 1.0
+    así un bbox degenerado más grande que el frame no rompe el score.
     """
     x1, y1, x2, y2 = bbox
     w = max(0, int(x2) - int(x1))
@@ -139,9 +140,9 @@ def _bbox_sharpness(
     else:
         gray = crop
     var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    # Empirical reference: a well-focused IMX708 crop at 1152x648 lands in
-    # the 200-500 range. Cap at 1.0 so high-detail crops can't dominate the
-    # weighted sum.
+    # Referencia empírica: un crop bien enfocado IMX708 a 1152x648 cae
+    # en el rango 200-500. Capear a 1.0 así crops de alto detalle no
+    # pueden dominar la suma ponderada.
     REF = 500.0
     return float(min(1.0, var / REF))
 
@@ -153,15 +154,15 @@ def score_frame(
     frame_shape: tuple[int, int],
     weights: dict[str, float],
 ) -> tuple[float, dict[str, float]]:
-    """Compute the weighted score of a single (image, detection) pair.
+    """Computa el score ponderado de un par (image, detection).
 
-    Returns ``(score, components)`` where ``components`` carries each
-    metric in [0, 1] for diagnostics. The total is ``sum(w_i * c_i)``;
-    callers are responsible for choosing weights that sum to ~1 (see the
-    validator in ``src/config/hardware.py``).
+    Devuelve ``(score, components)`` donde ``components`` lleva cada
+    métrica en [0, 1] para diagnóstico. El total es ``sum(w_i * c_i)``;
+    los callers son responsables de elegir weights que sumen ~1 (ver
+    el validator en ``src/config/loader.py``).
 
-    All four components saturate in [0, 1], so the maximum total under
-    the documented default weights is 1.0.
+    Los cuatro componentes saturan en [0, 1], así que el total máximo
+    bajo los weights default documentados es 1.0.
     """
     conf = float(max(0.0, min(1.0, confidence)))
     area = _bbox_area_norm(bbox, frame_shape)
@@ -184,11 +185,12 @@ def score_frame(
 
 
 def pick_best(buffer: list[BufferedFrame]) -> Optional[BufferedFrame]:
-    """Return the single best-scoring frame from the buffer (or ``None``).
+    """Devuelve el único frame con el score más alto del buffer (o ``None``).
 
-    Ties broken by ``timestamp`` (newer wins) so when the score saturates
-    on a stationary subject the operator-facing JPG matches roughly the
-    moment the count fires, not an arbitrary earlier sample.
+    Empates resueltos por ``timestamp`` (gana más nuevo) así cuando el
+    score satura sobre un sujeto estacionario el JPG operator-facing
+    matchea aproximadamente al momento en que dispara el conteo, no a
+    un sample arbitrario anterior.
     """
     if not buffer:
         return None
@@ -196,15 +198,16 @@ def pick_best(buffer: list[BufferedFrame]) -> Optional[BufferedFrame]:
 
 
 # ---------------------------------------------------------------------------
-# Per-track buffer manager
+# Manager de buffer per-track
 # ---------------------------------------------------------------------------
 
 
 def _safe_makedirs(path: Path) -> bool:
-    """``mkdir -p`` wrapper that swallows OSError and returns success.
+    """Wrapper ``mkdir -p`` que se traga OSError y devuelve éxito.
 
-    The pipeline must never crash because the JPG dir wasn't writable —
-    we log and skip the save. Returns ``True`` on success.
+    El pipeline nunca debe crashear porque el dir de JPGs no era
+    writable — logueamos y saltamos el save. Devuelve ``True`` ante
+    éxito.
     """
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -216,38 +219,40 @@ def _safe_makedirs(path: Path) -> bool:
 
 @dataclass
 class _TrackBuffer:
-    """Internal container — rolling list capped at ``max_size``."""
+    """Container interno — lista rolling capeada a ``max_size``."""
 
     max_size: int
     frames: list[BufferedFrame] = field(default_factory=list)
 
     def push(self, bf: BufferedFrame) -> None:
         self.frames.append(bf)
-        # Drop the *oldest* element when over capacity. Keeping a strict
-        # FIFO instead of "drop the lowest score" guarantees that a track
-        # standing in the gate for many seconds still gets a recent
-        # candidate even if an earlier high-score frame would otherwise
-        # pin the buffer.
+        # Dropear el elemento *más viejo* cuando se pasa de capacidad.
+        # Mantener un FIFO estricto en vez de "dropear el de menor
+        # score" garantiza que un track parado en el gate por muchos
+        # segundos igual reciba un candidato reciente, incluso si un
+        # frame anterior de alto score si no pinearía el buffer.
         if len(self.frames) > self.max_size:
             del self.frames[0 : len(self.frames) - self.max_size]
 
 
 class BestFrameManager:
-    """Per-track rolling buffer + JPG writer.
+    """Buffer rolling per-track + writer de JPG.
 
     Lifecycle:
 
-      - ``observe(track_id, frame, detection)`` is called every pipeline
-        frame for every active track. Cheap: just scores + buffers.
-      - ``commit(track_id, event_timestamp)`` is called when a track
-        emits a count event. Picks the best frame, writes it, returns
-        the path. Returns ``None`` on any error so the publish path
-        doesn't break.
-      - ``forget(track_id)`` discards the buffer when a track ends
-        without a count event (saves RAM in long sessions).
+      - ``observe(track_id, frame, detection)`` se llama cada frame
+        del pipeline para cada track activo. Barato: solo scores +
+        buffers.
+      - ``commit(track_id, event_timestamp)`` se llama cuando un
+        track emite un count event. Elige el mejor frame, lo
+        escribe, devuelve el path. Devuelve ``None`` ante cualquier
+        error así el path de publish no se rompe.
+      - ``forget(track_id)`` descarta el buffer cuando un track
+        termina sin count event (ahorra RAM en sesiones largas).
 
-    Filename layout: ``<output_dir>/<YYYY-MM-DD>/<track_id>_<ts>.jpg``
-    with ``ts`` formatted as ``%Y%m%dT%H%M%S_%f`` for sortability.
+    Layout de filename:
+    ``<output_dir>/<YYYY-MM-DD>/<track_id>_<ts>.jpg`` con ``ts``
+    formateado como ``%Y%m%dT%H%M%S_%f`` para que sea sortable.
     """
 
     def __init__(
@@ -272,7 +277,7 @@ class BestFrameManager:
             }
         )
         self._buffers: dict[int, _TrackBuffer] = {}
-        # Injectable for tests; defaults to time.time.
+        # Injectable para tests; default a time.time.
         self._clock = clock or time.time
 
     @property
@@ -291,11 +296,11 @@ class BestFrameManager:
         bbox: tuple[int, int, int, int],
         confidence: float,
     ) -> None:
-        """Score the current frame and push it to the track's buffer.
+        """Scorea el frame actual y lo pushea al buffer del track.
 
-        Copies the frame so subsequent in-place mutations by the
-        pipeline (annotations, colour conversions) don't poison the
-        buffered candidate.
+        Copia el frame así mutaciones in-place subsiguientes del
+        pipeline (anotaciones, conversiones de color) no envenenan
+        el candidato buffereado.
         """
         if frame is None or frame.size == 0:
             return
@@ -334,11 +339,11 @@ class BestFrameManager:
         track_id: int,
         event_timestamp: float,
     ) -> Optional[str]:
-        """Pick best, write JPG, drop buffer. Returns the path or None.
+        """Elige el mejor, escribe el JPG, dropea el buffer. Devuelve el path o None.
 
-        Errors (no buffer / write failure) all collapse to ``None`` and
-        a warning log so the publish path can include / exclude the
-        ``best_frame_path`` field cleanly.
+        Los errores (no buffer / write failure) colapsan a ``None``
+        y un log de warning así el path de publish puede incluir /
+        excluir el field ``best_frame_path`` limpiamente.
         """
         buf = self._buffers.pop(track_id, None)
         if buf is None or not buf.frames:
@@ -356,16 +361,17 @@ class BestFrameManager:
             return None
 
     def forget(self, track_id: int) -> None:
-        """Drop the buffer for a track that ended without an event."""
+        """Dropea el buffer para un track que terminó sin evento."""
         self._buffers.pop(track_id, None)
 
     def gc(self, alive_track_ids: set[int]) -> int:
-        """Drop buffers for tracks no longer in the live tracker dict.
+        """Dropea buffers de tracks que ya no están en el dict live del tracker.
 
-        The pipeline doesn't always call ``forget`` (e.g. PENDING tracks
-        timing out get garbage-collected by the tracker, not signalled
-        explicitly here). Periodic gc bounds RAM in long-running sessions.
-        Returns the number of buffers dropped.
+        El pipeline no siempre llama a ``forget`` (ej. los tracks
+        PENDING que timeoutean se garbage-collectean por el tracker,
+        no se señalizan explícitamente acá). Un gc periódico bounda
+        la RAM en sesiones largas. Devuelve la cantidad de buffers
+        dropeados.
         """
         stale = [tid for tid in self._buffers if tid not in alive_track_ids]
         for tid in stale:
@@ -379,16 +385,17 @@ class BestFrameManager:
         event_timestamp: float,
         bf: BufferedFrame,
     ) -> Optional[str]:
-        # Date directory is in *local* time so operators can ls a day's
-        # worth of frames quickly. The retention purge uses mtime which
-        # is also local-tz friendly.
+        # El dir por fecha está en hora *local* así los operadores
+        # pueden listar los frames de un día rápido. La purga de
+        # retención usa mtime que también es local-tz friendly.
         dt = datetime.fromtimestamp(event_timestamp)
         day_dir = self._output_dir / dt.strftime("%Y-%m-%d")
         if not _safe_makedirs(day_dir):
             return None
-        # Microsecond timestamp for collision-free filenames even when
-        # multiple events fire on the same track in a single frame
-        # (extremely rare, but cheap to defend against).
+        # Timestamp con microsegundos para filenames libres de
+        # colisión incluso cuando múltiples eventos disparan sobre
+        # el mismo track en un único frame (extremadamente raro,
+        # pero barato de defender).
         ts_str = datetime.fromtimestamp(
             event_timestamp,
             tz=timezone.utc,

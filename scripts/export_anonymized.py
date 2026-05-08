@@ -1,18 +1,18 @@
-"""Anonymise best-frame JPGs before exporting them off-device.
+"""Anonimiza JPGs best-frame antes de exportarlos fuera del dispositivo.
 
-When samples need to leave the device — e.g. shipped to an external
-labelling provider for active-learning loops — they must be anonymised
-first. This script implements two modes:
+Cuando samples necesitan salir del dispositivo — ej: shippeados a un proveedor
+externo de labeling para loops de active-learning — primero tienen que ser
+anonimizados. Este script implementa dos modos:
 
-  - **Targeted blur (preferred)**: read the bbox from a sidecar JSON
-    (``<jpg>.json`` with ``{"bbox": [x1, y1, x2, y2], ...}``) and blur
-    only that area. The rest of the frame keeps the scene context that
-    makes the label useful.
-  - **Aggressive fallback**: if no sidecar exists, blur the entire
-    frame and overlay Canny edges so the labeller can still see
-    silhouettes / pose without identifying anyone.
+  - **Blur targeted (preferido)**: lee el bbox de un JSON sidecar
+    (``<jpg>.json`` con ``{"bbox": [x1, y1, x2, y2], ...}``) y blurrea solo
+    esa área. El resto del frame mantiene el contexto de escena que hace al
+    label útil.
+  - **Fallback agresivo**: si no existe el sidecar, blurrea todo el frame
+    y overlay los edges de Canny así el labeller igual puede ver siluetas /
+    poses sin identificar a nadie.
 
-Usage:
+Uso:
 
     python scripts/export_anonymized.py \
         --input-dir /var/lib/people-counter/best_frames \
@@ -22,7 +22,7 @@ Usage:
         [--quality 90] \
         [--dry-run]
 
-The output directory is created if missing. The relative tree under the
+El directorio de output se crea si falta. El árbol relativo bajo el
 input directory is preserved.
 
 Failure modes:
@@ -75,8 +75,8 @@ def blur_bbox(
     y1 = max(0, min(h, int(y1)))
     y2 = max(0, min(h, int(y2)))
     if x2 <= x1 or y2 <= y1:
-        # Bbox degenerated to nothing — fall back to full-frame blur to
-        # err on the safe side (we expected a bbox and got none).
+        # Bbox degenerado a nada — caer a blur full-frame para errar
+        # del lado seguro (esperábamos un bbox y no llegó ninguno).
         return blur_full_with_edges(image, kernel=kernel)
     out = image.copy()
     k = _ensure_odd(kernel)
@@ -129,8 +129,8 @@ def load_sidecar(jpg_path: Path) -> Optional[dict[str, Any]]:
     """
     sidecar = jpg_path.with_suffix(jpg_path.suffix + ".json")
     if not sidecar.exists():
-        # Also accept ``<stem>.json`` (no double-suffix). Less verbose
-        # filenames are common in some labelling pipelines.
+        # También aceptar ``<stem>.json`` (sin double-suffix). Filenames
+        # menos verbosos son comunes en algunos pipelines de labelling.
         alt = jpg_path.with_suffix(".json")
         if alt.exists():
             sidecar = alt

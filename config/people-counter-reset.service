@@ -1,14 +1,16 @@
 [Unit]
-Description=People Counter daily reset (dedup counters + counting totals)
+Description=Reset diario del People Counter (dedup counters + totales de conteo)
 
 [Service]
 Type=oneshot
-# Runs as root so that systemctl restart (for the main service) works without
-# polkit/sudoers wiring. The DedupEngine.reset_daily only issues DELETEs on an
-# existing sqlite file — no ownership change on /var/lib/people-counter/dedup.db.
+# Corre como root así systemctl restart (del servicio principal) funciona sin
+# wiring de polkit/sudoers. DedupEngine.reset_daily solo hace DELETEs sobre un
+# archivo sqlite existente — sin cambio de ownership en
+# /var/lib/people-counter/dedup.db.
 WorkingDirectory=/usr/src/people-counter
 Environment="PYTHONPATH=/usr/src/people-counter"
-# '-' prefix: dedup reset failure does not block the service restart below,
-# which also resets in-memory counters (LineCounter.total_in/total_out).
+# Prefijo '-': la falla del reset de dedup no bloquea el restart del servicio
+# de abajo, que también resetea los counters en memoria (LineCounter.total_in/
+# total_out).
 ExecStart=-/usr/bin/python3 -c "from src.wifi_ble.dedup import DedupEngine; d = DedupEngine('/var/lib/people-counter/dedup.db'); d.reset_daily(); print('Dedup reset done')"
 ExecStart=/bin/systemctl restart people-counter.service

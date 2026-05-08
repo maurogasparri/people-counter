@@ -1,4 +1,4 @@
-"""Tests for the HTML calibration report generator."""
+"""Tests para el generador del reporte HTML de calibración."""
 
 import datetime
 import tempfile

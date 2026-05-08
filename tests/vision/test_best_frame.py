@@ -1,6 +1,6 @@
-"""Tests for src/vision/best_frame.py.
+"""Tests para src/vision/best_frame.py.
 
-Covers:
+Cubre:
   - score_frame component math (confidence / area / centrality / sharpness).
   - pick_best on empty / single-element / multi-element buffers.
   - BufferedFrame container behaviour.

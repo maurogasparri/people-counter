@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Rescale a stereo calibration .npz to a different image resolution.
+"""Rescalea un .npz de calibración estéreo a una resolución de imagen distinta.
 
-The fisheye Kannala-Brandt model separates intrinsics into:
-- focal length + principal point (in pixels)  → scale linearly with resolution
-- angular distortion coefficients k1..k4      → invariant to resolution
-- extrinsics R, T (3D bracket geometry)        → invariant to resolution
+El modelo fisheye Kannala-Brandt separa los intrínsecos en:
+- focal length + principal point (en pixels)  → escalan linealmente con la resolución
+- coeficientes de distorsión angular k1..k4   → invariantes a la resolución
+- extrínsecos R, T (geometría 3D del bracket) → invariantes a la resolución
 
-So a calibration captured at one resolution can be analytically transformed
-to any other resolution of the same sensor's full FOV — no re-capture, no
-new lab session. Useful when you've calibrated at a high resolution
-(2304x1296) and want to deploy at a lower one (1152x648 or 640x480) for
-runtime FPS.
+Así una calibración capturada a una resolución puede transformarse
+analíticamente a cualquier otra resolución del mismo FOV completo del sensor —
+sin re-captura, sin nueva sesión de lab. Útil cuando calibraste a alta
+resolución (2304x1296) y querés desplegar a una más baja (1152x648 o 640x480)
+para FPS de runtime.
 
 Caveats:
-- Only valid for the SAME sensor mode / FOV. Going from binned 2304x1296
-  to a partial-FOV crop mode (1536x864 IMX708) is NOT a valid rescale —
-  the FOV changes and intrinsics differ.
-- Picamera2 with the lower resolution should use the ISP downsize on
-  hardware. If it's doing software downsize, you don't gain runtime FPS.
+- Solo válido para el MISMO modo / FOV del sensor. Pasar de 2304x1296 binned
+  a un modo crop partial-FOV (1536x864 IMX708) NO es un rescale válido —
+  el FOV cambia y los intrínsecos difieren.
+- Picamera2 con la resolución más baja debería usar el downsize del ISP en
+  hardware. Si está haciendo downsize por software, no ganás FPS de runtime.
 
-Usage:
+Uso:
     PYTHONPATH=. python3 scripts/rescale_calibration.py \\
         calibration.npz --output calibration_1152x648.npz \\
         --width 1152 --height 648
@@ -79,11 +79,11 @@ def rescale_calibration(
     K_r[1, 1] *= sy
     K_r[1, 2] *= sy
 
-    # Kannala-Brandt distortion (k1..k4) is angle-based — invariant.
+    # Distorsión Kannala-Brandt (k1..k4) es angle-based — invariante.
     D_l = cal["dist_coeffs_l"].astype(np.float64)
     D_r = cal["dist_coeffs_r"].astype(np.float64)
 
-    # Extrinsics are pure 3D geometry (mm, rotation matrix) — invariant.
+    # Extrínsecos son pura geometría 3D (mm, rotation matrix) — invariantes.
     R = cal["R"].astype(np.float64)
     T = cal["T"].astype(np.float64)
 

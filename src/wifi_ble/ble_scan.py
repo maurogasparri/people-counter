@@ -1,9 +1,9 @@
-"""BLE passive advertising capture using bleak.
+"""Captura pasiva de advertising BLE usando bleak.
 
-Listens for BLE advertising packets using the BlueZ D-Bus API via bleak.
-Captures device MAC and RSSI for deduplication and traffic counting.
+Escucha paquetes de advertising BLE vía la API D-Bus de BlueZ a través de bleak.
+Captura MAC del dispositivo y RSSI para dedup y conteo de tráfico.
 
-Requires: bleak (pip install bleak), BlueZ 5.x (pre-installed on RPi OS).
+Requiere: bleak (pip install bleak), BlueZ 5.x (preinstalado en RPi OS).
 """
 
 import asyncio
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BLEAdvertisement:
-    """A captured BLE advertising packet."""
+    """Paquete de advertising BLE capturado."""
 
     mac: str
     rssi: float
@@ -27,14 +27,14 @@ class BLEAdvertisement:
 
 
 class BLEScanner:
-    """Passive BLE advertising scanner using bleak.
+    """Scanner pasivo de advertising BLE usando bleak.
 
     Lifecycle:
-        1. start() — begins async scanning in a background thread
-        2. stop() — stops scanning
+        1. start() — arranca el scanning async en un thread background
+        2. stop() — detiene el scanning
 
-    Each captured advertisement is passed to the on_advert callback,
-    which should feed it into the DedupEngine via hash_mac + process_detection.
+    Cada advertisement capturado se pasa al callback on_advert, que debería
+    alimentarlo al DedupEngine vía hash_mac + process_detection.
     """
 
     def __init__(
@@ -42,11 +42,11 @@ class BLEScanner:
         on_advert: Optional[Callable[[BLEAdvertisement], None]] = None,
         scan_duration_seconds: float = 0,
     ) -> None:
-        """Initialize BLE scanner.
+        """Inicializa el scanner BLE.
 
         Args:
-            on_advert: Callback for each detected advertisement.
-            scan_duration_seconds: How long to scan. 0 = scan until stop() is called.
+            on_advert: Callback para cada advertisement detectado.
+            scan_duration_seconds: Cuánto escanear. 0 = escanea hasta que se llame stop().
         """
         self.on_advert = on_advert
         self.scan_duration = scan_duration_seconds
@@ -59,7 +59,7 @@ class BLEScanner:
         return self._advert_count
 
     def start(self) -> None:
-        """Start asynchronous BLE scanning."""
+        """Arranca el scanning BLE asíncrono."""
         if self._scan_thread is not None:
             logger.warning("ble_scan_already_running")
             return
@@ -74,7 +74,7 @@ class BLEScanner:
         logger.info("ble_scan_started")
 
     def stop(self) -> None:
-        """Stop BLE scanning."""
+        """Detiene el scanning BLE."""
         self._stop_event.set()
         if self._scan_thread is not None:
             self._scan_thread.join(timeout=10.0)
@@ -85,7 +85,7 @@ class BLEScanner:
         )
 
     def _scan_thread_main(self) -> None:
-        """Run the async scan loop in a dedicated thread."""
+        """Corre el loop async de escaneo en un thread dedicado."""
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(self._scan_async())
@@ -95,7 +95,7 @@ class BLEScanner:
             loop.close()
 
     async def _scan_async(self) -> None:
-        """Async BLE scanning using bleak."""
+        """Scanning BLE async usando bleak."""
         try:
             from bleak import BleakScanner
         except ImportError:

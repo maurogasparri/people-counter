@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""CLI tool for stereo camera calibration using ChArUco patterns.
+"""Tool CLI para calibración de cámaras estéreo usando patrones ChArUco.
 
-Usage:
-    # Step 1: Capture image pairs (interactive, with HTTP preview)
+Uso:
+    # Paso 1: Capturar pares de imágenes (interactivo, con preview HTTP)
     python scripts/calibrate.py capture --count 30
 
-    # Step 2: Run calibration from captured pairs
+    # Paso 2: Correr calibración a partir de los pares capturados
     python scripts/calibrate.py calibrate --input-dir ./calibration/captures --output calibration.npz
 
-    # Step 3: Verify calibration (draw epipolar lines on rectified pair)
+    # Paso 3: Verificar la calibración (dibuja líneas epipolares sobre el par rectificado)
     python scripts/calibrate.py verify --calibration calibration.npz --input-dir ./calibration/captures
 """
 
@@ -27,7 +27,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-# Add project root to path for imports
+# Agregar la raíz del proyecto al path para los imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import src.vision.calibration as _calib_mod
@@ -73,7 +73,7 @@ logger = logging.getLogger("calibrate")
 
 
 def _resolve_aruco_dict(name: str) -> int:
-    """Resolve a user-provided ArUco dict name to the cv2 constant."""
+    """Resuelve un nombre de dict ArUco provisto por el usuario a la constante cv2."""
     dict_attr = name if name.startswith("DICT_") else f"DICT_{name}"
     if not hasattr(cv2.aruco, dict_attr):
         raise SystemExit(f"ArUco dict desconocido: {name}")
@@ -94,14 +94,15 @@ def _captured_have_distance_diversity(
     mid_mm: float,
     far_mm: float,
 ) -> bool:
-    """True iff captures span all 3 distance bands (near/mid/far).
+    """True sii las capturas cubren las 3 bandas de distancia (near/mid/far).
 
-    Bootstrap fits intrinsics from the captures so far. Done with only
-    near-band captures it converges to a focal that fits those depths but
-    extrapolates poorly — and that wrong focal then drives the ghost
-    rendering for far poses, telling the operator to put the board at a
-    distance that doesn't match the floor mark. Defer the bootstrap until
-    we have evidence from each band.
+    El bootstrap fittea los intrínsecos a partir de las capturas hasta
+    el momento. Si se hace solo con capturas de la banda near, converge
+    a un focal que fittea esas profundidades pero extrapola mal — y ese
+    focal incorrecto después maneja el render del ghost para poses far,
+    diciéndole al operador que ponga el board a una distancia que no
+    coincide con la marca en el piso. Diferir el bootstrap hasta tener
+    evidencia de cada banda.
     """
     if not captured_pairs:
         return False
@@ -110,7 +111,7 @@ def _captured_have_distance_diversity(
     far_lo = (mid_mm + far_mm) / 2
     has_near = has_mid = has_far = False
     for entry in captured_pairs:
-        # captured_pairs items are (left_path, right_path, pose_id) tuples
+        # los items de captured_pairs son tuplas (left_path, right_path, pose_id)
         pose_id = entry[2] if len(entry) >= 3 else None
         z = pose_distance.get(pose_id)
         if z is None:
@@ -125,11 +126,13 @@ def _captured_have_distance_diversity(
 
 
 def _apply_low_light_overrides() -> None:
-    """Relax frame-quality gates for PoC runs in low-light / small-room scenes.
+    """Afloja los gates de calidad de frame para corridas PoC en escenas
+    de luz baja / cuartos chicos.
 
-    Mutates the constants that ``assess_frame_quality`` reads. NOT for
-    production calibration — pairs accepted under these thresholds will have
-    poor SNR and the resulting .npz won't survive ground-truth verification.
+    Muta las constantes que lee ``assess_frame_quality``. NO usar para
+    calibración productiva — los pares aceptados bajo estos thresholds
+    tendrán SNR pobre y el .npz resultante no va a sobrevivir la
+    verificación ground-truth.
     """
     _calib_mod.QUALITY_MIN_CORNERS = 8
     _calib_mod.QUALITY_MIN_BLUR = 3.0
@@ -144,7 +147,7 @@ def _apply_low_light_overrides() -> None:
 
 
 def _resolve_tolerance(args: argparse.Namespace) -> tuple[float, float]:
-    """Return (loose_px, tight_px). Per-flag overrides beat the preset."""
+    """Devuelve (loose_px, tight_px). Los overrides por flag ganan al preset."""
     preset = getattr(args, "tolerance", "normal")
     base_loose, base_tight = _TOLERANCE_PRESETS.get(
         preset, _TOLERANCE_PRESETS["normal"],
@@ -157,12 +160,13 @@ def _resolve_tolerance(args: argparse.Namespace) -> tuple[float, float]:
 
 
 def _ask_operator_ui(prompt_type: str, message: str, options: dict = None) -> str:
-    """Render an interactive prompt in the browser and block until /wizard-input
-    receives the operator's answer. Returns the raw string the operator sent.
+    """Renderiza un prompt interactivo en el browser y bloquea hasta
+    que /wizard-input recibe la respuesta del operador. Devuelve el
+    string raw que el operador envió.
 
-    prompt_type drives what controls the JS renders:
-      * "diversity" → two buttons: Continuar / Cancelar
-      * "ground_truth" → input-text + Validar / Saltear buttons
+    prompt_type maneja qué controles renderiza el JS:
+      * "diversity" → dos botones: Continuar / Cancelar
+      * "ground_truth" → input-text + botones Validar / Saltear
     """
     global _post_capture_html, _post_capture_active, _wizard_input_value
     _post_capture_active = True
@@ -201,9 +205,10 @@ def _set_post_capture_phase(
     phase: str, message: str, progress_pct: int | None = None,
     verdict: str | None = None, report_available: bool = False,
 ) -> None:
-    """Push a progress message to the browser panel while the wizard runs
-    through post-capture phases. Embedded data-phase attribute lets the JS
-    detect completion and auto-open the report.
+    """Pushea un mensaje de progreso al panel del browser mientras el
+    wizard corre las fases post-captura. El atributo embedded
+    data-phase permite que el JS detecte completion y auto-abra el
+    reporte.
     """
     global _post_capture_html, _post_capture_active
     _post_capture_active = True
@@ -253,7 +258,7 @@ def _set_post_capture_phase(
         _post_capture_html = html
 
 # ---------------------------------------------------------------------------
-# HTTP preview for capture
+# Preview HTTP para la captura
 # ---------------------------------------------------------------------------
 
 _latest_jpeg: bytes = b""
@@ -321,7 +326,7 @@ def _update_preview(jpeg_bytes: bytes) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Coverage tracking
+# Tracking de cobertura
 # ---------------------------------------------------------------------------
 
 
@@ -340,7 +345,7 @@ GRID_CIRCULAR = np.array([
 def _compute_coverage_center(
     corners: np.ndarray, w: int, h: int, grid_mask: np.ndarray,
 ) -> tuple[int, int]:
-    """Get grid cell (row, col) for the center of detected corners."""
+    """Obtiene la celda del grid (row, col) para el centro de los corners detectados."""
     cx = np.mean(corners[:, 0, 0])
     cy = np.mean(corners[:, 0, 1])
     grid_rows, grid_cols = grid_mask.shape
@@ -355,7 +360,7 @@ def _draw_coverage(
     frame: np.ndarray, coverage: np.ndarray, grid_mask: np.ndarray,
     cell_target: np.ndarray | None = None,
 ) -> None:
-    """Draw coverage grid overlay on frame."""
+    """Dibuja el overlay del grid de cobertura sobre el frame."""
     h, w = frame.shape[:2]
     grid_rows, grid_cols = coverage.shape
     cell_h = h // grid_rows
@@ -366,7 +371,7 @@ def _draw_coverage(
             x1, y1 = c * cell_w, r * cell_h
             x2, y2 = x1 + cell_w, y1 + cell_h
             if grid_mask[r, c] == 0:
-                # Inactive cell — dim overlay
+                # Celda inactiva — overlay tenue
                 overlay = frame[y1:y2, x1:x2].copy()
                 dark = np.full_like(overlay, (0, 0, 0))
                 cv2.addWeighted(dark, 0.5, overlay, 0.5, 0, frame[y1:y2, x1:x2])
@@ -385,39 +390,41 @@ def _draw_coverage(
 
 
 # ---------------------------------------------------------------------------
-# Commands
+# Comandos
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# Guided capture: ghost-based aiming with auto-capture
+# Captura guiada: aiming basado en ghost con auto-captura
 # ---------------------------------------------------------------------------
 
-GUIDED_PREVIEW = (1296, 486)  # combined preview: 2x (648, 486)
-GUIDED_HALF = (648, 486)  # each camera's preview half
+GUIDED_PREVIEW = (1296, 486)  # preview combinado: 2x (648, 486)
+GUIDED_HALF = (648, 486)  # cada mitad del preview de una cámara
 STABILITY_HOLD_SEC = 1.5
 SKIP_POSE_TIMEOUT_SEC = 180.0
 
-# Bootstrap: first N captures use loose tolerance + nominal intrinsics; after
-# that we fit per-sensor intrinsics from the captured left frames and use them
-# for ghost projection with tight tolerance.
+# Bootstrap: las primeras N capturas usan tolerance loose + intrínsecos
+# nominales; después de eso fitteamos intrínsecos per-sensor a partir de
+# los left frames capturados y los usamos para proyectar el ghost con
+# tolerance tight.
 BOOTSTRAP_COUNT = 6
-LR_SYNC_MAX_DELTA_NS = 250_000_000  # 250 ms. Software sync via two picamera2
-# instances drifts further than the original 80ms target on real hardware
-# (60-120 ms typical, occasional 200ms spikes when CPU is busy). Hardware-
-# triggered sync would be needed for tight bounds. Board is static during
-# a calibration capture so the temporal delta doesn't affect the result —
-# a generous ceiling here just keeps captures from being wrongly rejected.
+LR_SYNC_MAX_DELTA_NS = 250_000_000  # 250 ms. El sync por software vía dos
+# instancias de picamera2 driftea más allá del target original de 80ms en
+# hardware real (60-120 ms típico, picos ocasionales de 200ms cuando la
+# CPU está ocupada). Habría que tener sync por hardware para bounds más
+# tight. El board está estático durante la captura de calibración así que
+# el delta temporal no afecta el resultado — un techo generoso acá solo
+# evita que las capturas sean rechazadas por error.
 LR_MIN_COMMON_CORNERS = 15
 
-# Ambient drift: compare median brightness every ~30 frames against baseline.
+# Drift de ambiente: compara la median brightness cada ~30 frames contra el baseline.
 DRIFT_BASELINE_FRAMES = 10
 DRIFT_CHECK_EVERY_FRAMES = 30
 DRIFT_WARN_PCT = 25.0
 
 
 class _GuidedState:
-    """Shared mutable state between capture loop and HTTP handler."""
+    """Estado mutable compartido entre el loop de captura y el HTTP handler."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -426,10 +433,11 @@ class _GuidedState:
         self.captured_pairs: list[tuple[Path, Path, str]] = []  # (l, r, pose_id)
         self.rms_text: str = "—"
         self.rms_color: str = "#888"
-        # Set by the background RMS worker when full coverage + RMS gate
-        # both pass — surfaced as a hint in the status panel telling the
-        # operator they can finalize early. Doesn't block; the existing
-        # Finalizar button is what they click.
+        # Lo settea el worker de RMS en background cuando full coverage
+        # + el gate de RMS pasan los dos — se surface como un hint en el
+        # panel de status diciéndole al operador que puede finalizar
+        # temprano. No bloquea; el botón existente Finalizar es lo que
+        # apreta.
         self.early_stop_ready: bool = False
         self.early_stop_msg: str = ""
         self.undo_requested = False
@@ -438,52 +446,57 @@ class _GuidedState:
         self.status_html: str = ""
         self.banner_text: str = ""
         self.banner_color: str = "#444"
-        self.hold_progress: float = 0.0  # 0..1 during stability countdown
+        self.hold_progress: float = 0.0  # 0..1 durante el countdown de estabilidad
         self.bootstrap_done = False
         self.fitted_K: Optional[np.ndarray] = None
         self.drift_warning: Optional[str] = None
-        # A short event key that the audio layer in the browser will speak
-        # when it changes. Updated each tick — browser throttles actual speech.
+        # Una key de evento corta que la capa de audio del browser va a
+        # hablar cuando cambie. Se actualiza cada tick — el browser
+        # throttlea el speech en sí.
         self.audio_event: str = ""
         self.audio_event_seq: int = 0
-        # Last hint we actually spoke (digit-stripped key). Separate from
-        # banner_text so we don't "remember" saying hints that were
-        # suppressed during the pose-announcement lockout.
+        # Último hint que realmente hablamos (key sin dígitos). Separada
+        # de banner_text así no "recordamos" haber dicho hints que
+        # quedaron suprimidos durante el lockout de la pose-announcement.
         self.last_spoken_key: str = ""
-        # Full text of the last spoken hint. Used to override the live
-        # banner so what the operator reads matches what they just heard
-        # (otherwise 1-cm fluctuations between emit and display sneak in).
+        # Texto completo del último hint hablado. Se usa para sobreescribir
+        # el banner en vivo así lo que lee el operador coincide con lo
+        # que recién escuchó (si no, fluctuaciones de 1cm entre emit y
+        # display se cuelan).
         self.locked_alignment_text: str = ""
 
 
 _guided_state: Optional[_GuidedState] = None
 
-# Set to True when the operator clicks "Comenzar" in the browser. Blocks
-# the main capture loop until that happens so (a) the operator has a
-# chance to position themselves and (b) the click unlocks the browser
-# audio context for TTS / beeps.
+# Se setea True cuando el operador apreta "Comenzar" en el browser.
+# Bloquea el loop principal de captura hasta que eso pase para que (a)
+# el operador tenga oportunidad de posicionarse y (b) el click unlockee
+# el audio context del browser para TTS / beeps.
 _capture_started = False
 _capture_started_lock = threading.Lock()
 
-# After guided capture finishes, the same HTTP server stays alive and shows
-# wizard-phase progress / finalised screen. Updated from the main wizard
-# thread as phases complete.
+# Después de que termina la captura guiada, el mismo HTTP server queda
+# vivo y muestra progreso de las fases del wizard / pantalla finalizada.
+# Lo actualiza el thread principal del wizard a medida que las fases
+# completan.
 _post_capture_html: str = ""
 _post_capture_lock = threading.Lock()
 _post_capture_active = False
 _report_path_for_http: Optional[Path] = None
 _guided_server: Optional[ThreadingHTTPServer] = None
 
-# Operator input shuttle: the wizard can block on _ask_operator_ui() which
-# renders a prompt in the browser and waits for /wizard-input POST.
+# Shuttle de input del operador: el wizard puede bloquear en
+# _ask_operator_ui() que renderiza un prompt en el browser y espera el
+# POST a /wizard-input.
 _wizard_input_event = threading.Event()
 _wizard_input_value: str = ""
 
-# True while the browser is narrating a pose announcement. Set by the
-# _pose_announce emission path; cleared by /announce-done which the JS
-# hits on SpeechSynthesisUtterance.onend (or immediately if audio is off).
-# Captures and other audio emissions gate on this so the three-piece
-# "number / label / distance" block is never interrupted.
+# True mientras el browser está narrando una pose announcement. Lo
+# setea el path de emisión _pose_announce; lo limpia /announce-done que
+# pega el JS en SpeechSynthesisUtterance.onend (o inmediatamente si el
+# audio está apagado). Las capturas y otras emisiones de audio gatean
+# en esto así el bloque tres-piezas "número / label / distancia" nunca
+# se interrumpe.
 _announce_pending = False
 
 
@@ -661,10 +674,10 @@ def _guided_html() -> str:
   </div>
 <script>
 function post(p){fetch(p,{method:'POST'})}
-// Set after the operator submits a prompt response. While true, the
-// /status poll is NOT allowed to re-inject the prompt controls — we
-// already replaced them with a spinner and any phase change will
-// clear the flag.
+// Se setea después de que el operador envía la respuesta al prompt.
+// Mientras esté true, el poll de /status NO puede re-inyectar los
+// controles del prompt — ya los reemplazamos con un spinner y
+// cualquier cambio de fase va a limpiar el flag.
 let promptSubmitted = false;
 function showSpinner(msg){
   const status = document.getElementById('status');
@@ -693,17 +706,18 @@ function submitGt(){
   fetch('/wizard-input', {method:'POST', body: val, headers: {'Content-Type':'text/plain'}});
 }
 function flushSpeech(){
-  // Clear any queued-up pose announcements so they don't trail into the
-  // next phase (e.g. "pose 9" still pending when capture is already done).
+  // Limpia cualquier pose announcement encolado así no se cuela en la
+  // próxima fase (ej. "pose 9" todavía pending cuando la captura ya terminó).
   if (window.speechSynthesis) {
     try { window.speechSynthesis.cancel(); } catch(e){}
   }
-  // Also tell the backend the announce is "done" — if we cancelled mid-
-  // utterance, its onend won't fire and the server would stay locked.
+  // También avisa al backend que el announce está "done" — si lo
+  // cancelamos a mitad del utterance, su onend no se dispara y el
+  // server se queda lockeado.
   try { fetch('/announce-done', {method:'POST'}); } catch(e){}
 }
 function startCapture(){
-  // User gesture — unlock the AudioContext for beeps + TTS.
+  // Gesto del usuario — unlockea el AudioContext para beeps + TTS.
   ensureAudioCtx();
   if (audioOn && window.speechSynthesis) {
     try {
@@ -716,12 +730,12 @@ function startCapture(){
   if (overlay) overlay.style.display = 'none';
   fetch('/start',{method:'POST'});
 }
-// Default ON; operator can turn it off and we remember that preference.
+// Default ON; el operador lo puede apagar y recordamos esa preferencia.
 let audioOn = localStorage.getItem('guided.audio') !== '0';
 let lastSpokenSeq = -1;
 let lastSpokenAt = 0;
-// Beep state machine: track previous hold-progress bucket + last capture count
-let lastBeepBucket = -1;  // 0..3 = tick buckets at 0/33/66% of hold
+// State machine de beep: trackea el bucket previo de hold-progress + el last capture count
+let lastBeepBucket = -1;  // 0..3 = buckets de tick en 0/33/66% del hold
 let lastCapturedN = 0;
 let audioCtx = null;
 function ensureAudioCtx(){
@@ -754,15 +768,17 @@ function toggleAudio(){
   updateAudioBtn();
   if (audioOn) { ensureAudioCtx(); speak('Audio activado'); beep(800, 80); }
   else {
-    // Cancel in-flight speech + queue so the OFF is immediate. Also unblocks
-    // the backend if a pose announce is in progress — flushSpeech POSTs
-    // /announce-done since onend won't fire after cancel().
+    // Cancela el speech in-flight + la queue así el OFF es inmediato.
+    // También desbloquea el backend si hay un pose announce en curso —
+    // flushSpeech postea /announce-done dado que onend no va a
+    // disparar después del cancel().
     flushSpeech();
   }
 }
 function speak(text){
-  // Queue utterances instead of cancelling — operator hears one then the
-  // next. Our 3s dedup on identical hints keeps the queue short.
+  // Encola los utterances en lugar de cancelar — el operador escucha
+  // uno y después el siguiente. Nuestro dedup de 3s sobre hints
+  // idénticos mantiene la queue corta.
   if (!audioOn || !window.speechSynthesis) return;
   try {
     const u = new SpeechSynthesisUtterance(text);
@@ -779,14 +795,15 @@ async function refresh(){
   try {
     const r = await fetch('/status');
     const html = await r.text();
-    // Post-capture modes (processing / finalised) identified via data-phase.
+    // Modos post-captura (processing / finalised) identificados vía data-phase.
     const phaseMatch = html.match(/data-phase="([^"]+)"/);
     if (phaseMatch) {
       postCaptureMode = true;
       const thisPhase = phaseMatch[1];
       const thisPromptType = (html.match(/data-prompt-type="([^"]+)"/) || [,''])[1];
-      // Re-render only when the phase OR prompt type changes. Otherwise
-      // we'd wipe the ground-truth <input> every poll and steal focus.
+      // Re-renderizar solo cuando la fase O el tipo de prompt cambian.
+      // Si no, borraríamos el <input> ground-truth en cada poll y le
+      // robaríamos el focus.
       const shouldRender = (
         thisPhase !== lastRenderedPhase ||
         thisPromptType !== lastRenderedPromptType
@@ -795,25 +812,26 @@ async function refresh(){
         document.getElementById('status').innerHTML = html;
         lastRenderedPhase = thisPhase;
         lastRenderedPromptType = thisPromptType;
-        // Phase actually changed — clear any pending prompt state so
-        // subsequent prompts can render cleanly.
+        // La fase realmente cambió — limpiar cualquier estado de prompt
+        // pending así los prompts siguientes pueden renderizarse limpios.
         promptSubmitted = false;
-        // Entering any post-capture phase drops queued pose announcements.
+        // Entrar a cualquier fase post-captura tira los pose announcements encolados.
         flushSpeech();
       }
-      // Hide the live stream once capture is done.
+      // Ocultar el stream en vivo una vez que la captura terminó.
       const stage = document.getElementById('stage');
       if (stage) stage.style.display = 'none';
-      // Hide the action row (undo/skip/finish), replace banner with dynamic.
+      // Ocultar la fila de acciones (undo/skip/finish), reemplazar banner con dinámico.
       const btns = document.querySelectorAll('#panel .row button');
       btns.forEach(b => b.style.display = 'none');
       const banner = document.getElementById('banner');
       if (banner) banner.style.display = 'none';
       const bar = document.getElementById('progress-bar');
       if (bar) bar.style.display = 'none';
-      // Interactive prompt from the wizard: show controls that POST back
-      // to /wizard-input. Only inject on first sight AND while the operator
-      // hasn't submitted yet — after submitting we keep the spinner.
+      // Prompt interactivo del wizard: muestra los controles que postean
+      // de vuelta a /wizard-input. Solo inyectar al primer sight Y
+      // mientras el operador no haya enviado todavía — después del
+      // submit dejamos el spinner.
       if (phaseMatch[1] === 'prompt'
           && !document.getElementById('prompt-ctrls')
           && !promptSubmitted) {
@@ -844,8 +862,8 @@ async function refresh(){
         } else if (type === 'ground_truth') {
           const input = document.createElement('input');
           input.id = 'gt-dist';
-          // type=text + inputmode=numeric avoids the native spinner UI
-          // while still bringing up the numeric keyboard on phones.
+          // type=text + inputmode=numeric evita la UI de spinner nativa
+          // mientras igual levanta el teclado numérico en celulares.
           input.type = 'text';
           input.inputMode = 'numeric';
           input.pattern = '[0-9]*';
@@ -868,7 +886,7 @@ async function refresh(){
       }
       if (phaseMatch[1] === 'complete' && !finalizedSeen) {
         finalizedSeen = true;
-        // Only auto-open the report when one actually exists (success path).
+        // Solo auto-abrir el reporte cuando realmente existe (path de éxito).
         const hasReport = /data-has-report="1"/.test(html);
         if (hasReport) {
           const w = window.open('/report', '_blank');
@@ -885,9 +903,9 @@ async function refresh(){
       return;
     }
     document.getElementById('status').innerHTML = html;
-    // Detect pose change and flush the speech queue so the new pose
-    // announcement starts cleanly — without any residue from the
-    // previous pose's leftover utterances draining first.
+    // Detectar cambio de pose y flushear la queue de speech así la
+    // nueva pose announcement arranca limpia — sin residuo de los
+    // utterances sobrantes de la pose previa drenando primero.
     const poseIdxMatch = html.match(/data-pose-idx="([^"]+)"/);
     if (poseIdxMatch) {
       const idx = poseIdxMatch[1];
@@ -906,16 +924,18 @@ async function refresh(){
       const audioText = m[5];
       const capturedN = parseInt(m[6], 10) || 0;
       const now = Date.now();
-      // TTS: speak every new seq. The backend already dedupes by semantic
-      // key (digits stripped), so a seq change means a genuinely new hint
-      // worth speaking. We rely on the queue instead of a time-based
-      // throttle — so nothing gets silently dropped during fast captures.
+      // TTS: hablar cada nuevo seq. El backend ya dedupea por key
+      // semántica (sin dígitos), así que un cambio de seq significa
+      // un hint genuinamente nuevo que vale la pena decir. Confiamos
+      // en la queue en lugar de un throttle por tiempo — así nada se
+      // dropea silencioso durante capturas rápidas.
       if (seq !== lastSpokenSeq) {
         lastSpokenSeq = seq;
         lastSpokenAt = now;
-        // Pose announcements get special handling: they're the "atomic
-        // block" (number/label/distance) and the backend waits on the
-        // onend signal before unlocking capture or other hints.
+        // Las pose announcements tienen handling especial: son el
+        // "bloque atómico" (número/label/distancia) y el backend
+        // espera la señal onend antes de unlockear capturas u otros
+        // hints.
         const isPoseAnnounce = audioText && audioText.startsWith('Pose ');
         if (audioOn && audioText) {
           if (isPoseAnnounce && window.speechSynthesis) {
@@ -932,12 +952,13 @@ async function refresh(){
             speak(audioText);
           }
         } else if (isPoseAnnounce) {
-          // Audio off — unblock the backend right away so the operator
-          // isn't stuck in a lockout they can't hear.
+          // Audio off — desbloqueamos el backend ya mismo así el
+          // operador no se queda atrapado en un lockout que no
+          // puede escuchar.
           fetch('/announce-done', {method:'POST'});
         }
       }
-      // Beep: tick at 0/33/66% of hold-progress (buckets 0/1/2). Reset on progress=0.
+      // Beep: tick en 0/33/66% del hold-progress (buckets 0/1/2). Reset en progress=0.
       if (audioOn) {
         if (progress <= 0.01) {
           lastBeepBucket = -1;
@@ -945,15 +966,15 @@ async function refresh(){
           const bucket = Math.floor(progress * 3);  // 0,1,2
           if (bucket !== lastBeepBucket && bucket < 3) {
             lastBeepBucket = bucket;
-            beep(1000, 70, 0.12);  // short high tick
+            beep(1000, 70, 0.12);  // tick alto y corto
           }
         }
-        // Capture confirmation: capturedN jumped
+        // Confirmación de captura: capturedN saltó
         if (capturedN > lastCapturedN) {
           lastCapturedN = capturedN;
-          beep(660, 220, 0.18);  // long warm confirmation
+          beep(660, 220, 0.18);  // confirmación cálida y larga
         } else if (capturedN < lastCapturedN) {
-          // UNDO happened
+          // Pasó un UNDO
           lastCapturedN = capturedN;
           beep(330, 250, 0.15);
         }
@@ -970,38 +991,43 @@ setInterval(refresh, 150);
 
 def _draw_ghost(vis: np.ndarray, outer_corners: np.ndarray,
                 color: tuple[int, int, int], thickness: int = 2) -> None:
-    """Draw a ghost quadrilateral on a preview frame."""
+    """Dibuja un cuadrilátero ghost sobre un frame de preview."""
     pts = outer_corners.reshape(-1, 1, 2).astype(np.int32)
     overlay = vis.copy()
     cv2.fillPoly(overlay, [pts], color)
     cv2.addWeighted(overlay, 0.18, vis, 0.82, 0, vis)
     cv2.polylines(vis, [pts], isClosed=True, color=color, thickness=thickness, lineType=cv2.LINE_AA)
-    # Corner markers
+    # Markers de esquina
     for p in pts.reshape(-1, 2):
         cv2.circle(vis, tuple(p), 6, color, -1, lineType=cv2.LINE_AA)
 
 
 def _draw_direction_arrow(vis: np.ndarray, err: dict[str, float],
                           ghost_center: np.ndarray) -> None:
-    """Draw an arrow from ghost center indicating where to move the board."""
-    # compute_alignment_by_corners returns centroid_offset_px; the legacy
-    # compute_alignment_error returns center_px. Accept either.
+    """Dibuja una flecha desde el centro del ghost indicando hacia
+    dónde mover el board."""
+    # compute_alignment_by_corners devuelve centroid_offset_px; el
+    # legacy compute_alignment_error devuelve center_px. Aceptar
+    # cualquiera.
     offset = err.get("centroid_offset_px", err.get("center_px", 0.0))
     if offset <= ALIGN_CENTER_TOL_PX:
         return
-    # Arrow points FROM where the board IS to where it SHOULD BE (ghost center).
-    # offset_x is (det - ghost), so flip sign for direction hint
+    # La flecha apunta DESDE donde ESTÁ el board hacia donde DEBERÍA
+    # estar (centro del ghost). offset_x es (det - ghost), así que
+    # flipeamos el signo para el hint de dirección
     dx, dy = -err["offset_x"], -err["offset_y"]
     length = math.hypot(dx, dy)
     if length < 1:
         return
-    # Clamp magnitude so arrow stays on screen
+    # Clampear magnitud así la flecha queda dentro de la pantalla
     max_len = 80
     scale = min(1.0, max_len / length)
     dx *= scale; dy *= scale
     gx, gy = int(ghost_center[0]), int(ghost_center[1])
-    # Draw from ghost center OUTWARD in the direction the board should move
-    # (but the board is currently OFFSET the opposite way, so arrow shows move-direction)
+    # Dibujar desde el centro del ghost HACIA AFUERA en la dirección
+    # en la que el board debería moverse (pero el board está
+    # actualmente OFFSET hacia el lado opuesto, así que la flecha
+    # muestra la move-direction)
     tip_x = int(gx - dx)
     tip_y = int(gy - dy)
     cv2.arrowedLine(vis, (gx, gy), (tip_x, tip_y), (50, 220, 255), 4,
@@ -1024,13 +1050,15 @@ def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_le
                            near_mm: float = DEFAULT_DIST_NEAR_MM,
                            mid_mm: float = DEFAULT_DIST_MID_MM,
                            far_mm: float = DEFAULT_DIST_FAR_MM) -> None:
-    """Every 3 new captures past the 8th, attempt an incremental calibration.
+    """Cada 3 capturas nuevas pasada la 8va, intenta una calibración incremental.
 
-    Beyond the live RMS hint, also evaluates ``is_calibration_ready_for_early_stop``
-    and flips ``state.early_stop_ready`` when the calibration would already
-    pass lab-grade gates — letting the operator finalise without exhausting
-    all 20 canonical poses on a smooth session. Decision is informational;
-    the existing Finalizar button is what the operator clicks.
+    Más allá del hint de RMS en vivo, también evalúa
+    ``is_calibration_ready_for_early_stop`` y flipea
+    ``state.early_stop_ready`` cuando la calibración ya pasaría los
+    gates lab-grade — permite al operador finalizar sin agotar las
+    20 poses canónicas en una sesión smooth. La decisión es
+    informativa; el botón Finalizar existente es lo que el operador
+    clickea.
     """
     last_attempt_count = 0
     while not stop_evt.is_set():
@@ -1057,9 +1085,9 @@ def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_le
                 state.rms_text = f"RMS≈{rms_l:.2f}px ({n} pares)"
                 state.rms_color = _rms_color_for(rms_l)
 
-            # Early-stop readiness — only if enabled and we have the pose
-            # list to compare against (the worker is created with all_poses
-            # passed in by the wizard).
+            # Readiness de early-stop — solo si está habilitado y
+            # tenemos la lista de poses contra la cual comparar (el
+            # worker se crea con all_poses pasadas por el wizard).
             if early_stop_enabled and all_poses is not None:
                 from src.vision.calibration import (
                     analyze_pose_coverage,
@@ -1082,20 +1110,21 @@ def _background_rms_worker(state: _GuidedState, board, board_size, sq_len, mk_le
                         if ready else ""
                     )
         except Exception as e:
-            logger.debug("Incremental calibration skipped: %s", e)
+            logger.debug("Calibración incremental salteada: %s", e)
 
 
 def _residual_estimate(pairs, board, result) -> float:
-    """Quick residual estimate for a calibration — reuse left camera RMS.
+    """Estimación rápida de residual para una calibración — reusa el RMS de la cámara izquierda.
 
-    Projects each pair's observed corners through the fitted fisheye model and
-    returns the mean per-pair RMS. Cheaper than re-running fisheye.calibrate and
-    robust to the few degenerate poses that occasionally appear mid-capture.
+    Proyecta los corners observados de cada par a través del modelo
+    fisheye fitteado y devuelve el RMS promedio per-pair. Más barato
+    que re-correr fisheye.calibrate y robusto a las pocas poses
+    degeneradas que aparecen ocasionalmente a mitad de captura.
     """
     from src.vision.calibration import compute_per_pair_residuals
     per_pair = compute_per_pair_residuals(pairs, board, result)
     rms_vals = [p["rms_l"] for p in per_pair
-                if p["rms_l"] == p["rms_l"]]  # NaN filter
+                if p["rms_l"] == p["rms_l"]]  # filtro de NaN
     if not rms_vals:
         return 99.0
     return float(sum(rms_vals) / len(rms_vals))
@@ -1117,9 +1146,10 @@ def _session_params(args: argparse.Namespace) -> dict:
         "dist_near_mm": getattr(args, "dist_near_mm", DEFAULT_DIST_NEAR_MM),
         "dist_mid_mm": getattr(args, "dist_mid_mm", DEFAULT_DIST_MID_MM),
         "dist_far_mm": getattr(args, "dist_far_mm", DEFAULT_DIST_FAR_MM),
-        # Resolution must match across resume — calibration needs all frames
-        # at the same size or the math breaks. Mixing different resolutions
-        # silently corrupts intrinsics (different K per pose), so we pin it.
+        # La resolución tiene que matchear cross-resume — la calibración
+        # necesita todos los frames del mismo size o la matemática se
+        # rompe. Mezclar resoluciones distintas corrompe los intrínsecos
+        # silencioso (K distinto por pose), así que la pineamos.
         "resolution": list(getattr(args, "resolution", [2304, 1296])),
     }
 
@@ -1128,7 +1158,7 @@ def _save_session(
     output_dir: Path, state: "_GuidedState",
     poses: list, args: argparse.Namespace,
 ) -> None:
-    """Write sidecar session.json atomically after each state change."""
+    """Escribe el sidecar session.json atómicamente después de cada cambio de estado."""
     data = {
         "version": SESSION_VERSION,
         "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
@@ -1150,9 +1180,10 @@ def _save_session(
 
 
 def _load_session(output_dir: Path, args: argparse.Namespace) -> Optional[dict]:
-    """Load session.json and validate params match current args.
+    """Carga session.json y valida que los params matcheen los args actuales.
 
-    Returns the parsed dict, or None if file is missing/invalid/incompatible.
+    Devuelve el dict parseado, o None si el archivo está ausente / es
+    inválido / es incompatible.
     """
     path = _session_path(output_dir)
     if not path.exists():
@@ -1180,12 +1211,13 @@ def _load_session(output_dir: Path, args: argparse.Namespace) -> Optional[dict]:
 
 
 def _run_guided_capture(args: argparse.Namespace) -> None:
-    """Guided capture loop: ghost + corner-ID matching + auto-capture with
-    stability, L/R sync gate, quality gate, bootstrap intrinsics handoff,
-    ambient drift warnings, and optional web-UI audio.
+    """Loop de captura guiada: ghost + matching por corner-ID + auto-captura
+    con estabilidad, gate de L/R sync, gate de calidad, handoff de bootstrap
+    intrínsecos, warnings de drift de ambiente y audio opcional vía web-UI.
 
-    Supports --resume: restores captured_pairs + pose_status from session.json,
-    re-fits bootstrap K from existing captures if count >= BOOTSTRAP_COUNT.
+    Soporta --resume: restaura captured_pairs + pose_status desde
+    session.json, re-fittea el K de bootstrap a partir de las capturas
+    existentes si count >= BOOTSTRAP_COUNT.
     """
     global _shutting_down, _guided_state, _latest_jpeg
 
@@ -1221,9 +1253,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     state.pose_status = ["pending"] * len(poses)
     _guided_state = state
 
-    # Resume handling. Without --resume we wipe any previous session in the
-    # output dir so the operator doesn't have to clean up manually between
-    # runs. With --resume we validate the sidecar and continue from it.
+    # Handling de resume. Sin --resume borramos cualquier sesión previa
+    # en el output dir así el operador no tiene que limpiar a mano entre
+    # corridas. Con --resume validamos el sidecar y seguimos desde ahí.
     resume_flag = getattr(args, "resume", False)
     existing_session = _load_session(output_dir, args)
     if existing_session is not None and not resume_flag:
@@ -1251,7 +1283,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     count = 0
     if resume_flag and existing_session is not None:
         pose_idx_by_id = {p.id: i for i, p in enumerate(poses)}
-        # Restore captures
+        # Restaurar capturas
         for cap_rec in existing_session.get("captures", []):
             pid = cap_rec.get("pose_id")
             if pid not in pose_idx_by_id:
@@ -1263,20 +1295,20 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 continue
             state.captured_pairs.append((lp, rp, pid))
             state.pose_status[pose_idx_by_id[pid]] = "captured"
-        # Restore skipped
+        # Restaurar las skipped
         for pid, status in existing_session.get("pose_status", {}).items():
             if status == "skipped" and pid in pose_idx_by_id:
                 if state.pose_status[pose_idx_by_id[pid]] == "pending":
                     state.pose_status[pose_idx_by_id[pid]] = "skipped"
         count = len(state.captured_pairs)
-        # Advance pose pointer to first pending
+        # Avanzar el pose pointer a la primera pending
         for i, status in enumerate(state.pose_status):
             if status == "pending":
                 state.current_pose_idx = i
                 break
         else:
             logger.info("Sesión ya completa (%d capturas). Nada que resumir.", count)
-        # Re-fit bootstrap K if enough captures AND distance diversity
+        # Re-fitear el K de bootstrap si hay suficientes capturas Y diversity de distancia
         if count >= BOOTSTRAP_COUNT:
             diverse = _captured_have_distance_diversity(
                 state.captured_pairs, poses,
@@ -1325,8 +1357,8 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 count, BOOTSTRAP_COUNT,
             )
 
-    # SO_REUSEADDR so a Ctrl-C'd previous instance doesn't leave the port
-    # in TIME_WAIT for the next run.
+    # SO_REUSEADDR así una instancia previa Ctrl-C'eada no deja el
+    # puerto en TIME_WAIT para la próxima corrida.
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("0.0.0.0", args.port), _GuidedHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1354,8 +1386,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     logger.info("Seguí la silueta fantasma, mantené quieto %.1fs para capturar.", STABILITY_HOLD_SEC)
     logger.info("Esperando que el operador haga click en Comenzar...")
 
-    # Block until the operator clicks "Comenzar" in the browser. This gives
-    # them time to position the board + activates the browser audio context.
+    # Bloquear hasta que el operador apreta "Comenzar" en el browser.
+    # Eso le da tiempo para posicionar el board + activa el audio
+    # context del browser.
     try:
         while not _capture_started:
             if state.finish_requested:
@@ -1385,18 +1418,19 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     pose_started_at = time.time()
     count = 0
 
-    # Ambient drift baseline (from first N frames)
+    # Baseline de drift de ambiente (a partir de los primeros N frames)
     drift_baseline: Optional[float] = None
     drift_samples: list[float] = []
     frame_counter = 0
-    # Sensor temperature drift tracking
+    # Tracking de drift de temperatura del sensor
     temp_baseline: Optional[float] = None
     temp_samples: list[float] = []
     last_temp: Optional[float] = None
-    # Asymmetric-detection streak (for the "one camera silently failing" hint).
-    # If one camera keeps detecting the board but the other doesn't, we want
-    # to surface that in the UI — operator was getting "captura rechazada"
-    # without knowing which camera was failing.
+    # Streak de detección asimétrica (para el hint "una cámara
+    # silenciosamente fallando"). Si una cámara sigue detectando el
+    # board pero la otra no, queremos mostrar eso en la UI — el
+    # operador recibía "captura rechazada" sin saber qué cámara
+    # estaba fallando.
     only_l_detect_streak = 0
     only_r_detect_streak = 0
     ASYMMETRIC_DETECT_WARN_FRAMES = 20
@@ -1406,35 +1440,37 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         state.audio_event_seq += 1
 
     def _pose_announce(idx: int) -> str:
-        """Spoken prompt for a pose: label + target distance in cm."""
+        """Prompt hablado de una pose: label + distancia target en cm."""
         p = poses[idx]
         z_cm = p.tvec_mm[2] / 10.0
         return f"Pose {idx + 1}. {p.label}. A {z_cm:.0f} centímetros de la cámara"
 
     def _emit_pose_announce(idx: int) -> None:
-        """Emit the pose announcement and lock out everything else until the
-        browser signals the utterance finished (POST /announce-done)."""
+        """Emite el anuncio de pose y lockea todo lo demás hasta que el
+        browser señalice que el utterance terminó (POST /announce-done)."""
         global _announce_pending
         _announce_pending = True
         _emit_audio(_pose_announce(idx))
 
-    # Announce the first pending pose (= poses[0] on fresh start, or the
-    # next pending after resume restore). Skip if there's nothing to
-    # capture — happens with --resume on a session that's already complete:
-    # the wizard goes straight to processing, and an immediately-cut TTS
-    # "Pose 1, ..." mid-utterance is jarring.
+    # Anunciar la primera pose pending (= poses[0] al arrancar fresco,
+    # o la próxima pending después del restore con resume). Saltear
+    # si no hay nada que capturar — pasa con --resume en una sesión
+    # que ya está completa: el wizard va directo a processing, y un
+    # TTS "Pose 1, ..." cortado a la mitad del utterance es chocante.
     has_pending = any(s == "pending" for s in state.pose_status)
     if has_pending:
         _emit_pose_announce(state.current_pose_idx)
 
-    # Persist initial/resumed state so a crash before any new capture still
-    # leaves a valid session.json on disk.
+    # Persistir el estado initial/resumed así un crash antes de
+    # cualquier captura nueva igual deja un session.json válido en
+    # disco.
     _save_session(output_dir, state, poses, args)
 
-    # Debounce the L/R desync warning: sync delta varies frame-to-frame and
-    # spikes briefly after events like skip/undo (main thread busy => buffers
-    # drift). We only show the warning when we see >= this many consecutive
-    # bad frames, hiding single-frame noise spikes.
+    # Debounce del warning de L/R desync: el sync delta varía
+    # frame-a-frame y spikea brevemente después de eventos como
+    # skip/undo (main thread ocupado => los buffers driftean). Solo
+    # mostramos el warning cuando vemos >= esta cantidad de frames
+    # malos consecutivos, escondiendo spikes de ruido single-frame.
     SYNC_WARN_CONSECUTIVE_FRAMES = 4
     sync_bad_streak = 0
 
@@ -1442,13 +1478,14 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
     try:
         while count < len(poses):
-            # Detect any pose change and reset "what we last spoke" so the
-            # first movement hint for the new pose always plays, even if
-            # the previous pose's last hint was the same phrase.
+            # Detectar cualquier cambio de pose y resetear "qué dijimos
+            # por última vez" así el primer hint de movimiento de la
+            # nueva pose siempre suena, aunque el último hint de la
+            # pose anterior fuera la misma frase.
             if state.current_pose_idx != prev_pose_idx:
                 state.last_spoken_key = ""
                 state.locked_alignment_text = ""
-                sync_bad_streak = 0  # clean slate so skip doesn't replay the warning
+                sync_bad_streak = 0  # slate limpia así skip no replayea el warning
                 prev_pose_idx = state.current_pose_idx
 
             pose = poses[state.current_pose_idx]
@@ -1458,7 +1495,8 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     break
                 continue
 
-            # Capture with timestamps + sensor temperature for drift tracking
+            # Capturar con timestamps + temperatura del sensor para
+            # tracking de drift
             try:
                 frame_l, frame_r, ts_l, ts_r, temp_l, temp_r = cap.read_with_metadata()
                 lr_sync_ok = abs(ts_l - ts_r) <= LR_SYNC_MAX_DELTA_NS
@@ -1475,10 +1513,11 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 sync_bad_streak = 0
             else:
                 sync_bad_streak += 1
-            # Suppress the warning for 2s after each pose transition — the
-            # picamera2 pipeline routinely spikes right after skip/capture
-            # while the main thread was busy, and that drift settles within
-            # a second or two without operator action.
+            # Suprimir el warning por 2s después de cada transición
+            # de pose — el pipeline de picamera2 rutinariamente
+            # spikea justo después de skip/capture mientras el main
+            # thread estaba ocupado, y ese drift se asienta en un
+            # segundo o dos sin acción del operador.
             pose_settling = (time.time() - pose_started_at) < 2.0
             sync_warn_active = (
                 sync_bad_streak >= SYNC_WARN_CONSECUTIVE_FRAMES
@@ -1487,13 +1526,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
             frame_counter += 1
 
-            # Temperature baseline lock (first N valid samples)
+            # Lock del baseline de temperatura (primeros N samples válidos)
             if last_temp is not None:
                 if temp_baseline is None:
                     temp_samples.append(last_temp)
                     if len(temp_samples) >= DRIFT_BASELINE_FRAMES:
                         temp_baseline = float(np.median(temp_samples))
-                        logger.info("Sensor temperature baseline: %.1f°C", temp_baseline)
+                        logger.info("Baseline de temperatura del sensor: %.1f°C", temp_baseline)
                 elif frame_counter % DRIFT_CHECK_EVERY_FRAMES == 0:
                     delta_c = last_temp - temp_baseline
                     if abs(delta_c) > 10.0:
@@ -1503,7 +1542,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                             f"— los intrínsecos pueden derivar"
                         )
 
-            # Ambient drift tracking
+            # Tracking de drift de ambiente
             gray_small = cv2.cvtColor(
                 cv2.resize(frame_l, (320, 240)), cv2.COLOR_BGR2GRAY,
             )
@@ -1512,7 +1551,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 drift_samples.append(brightness)
                 if len(drift_samples) >= DRIFT_BASELINE_FRAMES:
                     drift_baseline = float(np.median(drift_samples))
-                    logger.info("Drift baseline locked at median brightness %.1f", drift_baseline)
+                    logger.info("Baseline de drift lockeado en median brightness %.1f", drift_baseline)
             elif frame_counter % DRIFT_CHECK_EVERY_FRAMES == 0:
                 drift_pct = abs(brightness - drift_baseline) / max(drift_baseline, 1) * 100
                 if drift_pct > DRIFT_WARN_PCT:
@@ -1524,14 +1563,16 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 else:
                     state.drift_warning = None
 
-            # ChArUco detection on full-res. lenient=True so 33mm markers at
-            # the 3m far poses (~22 px wide → 0.5% of 4608) still get picked up
-            # — strict default rejects markers under 3% of the image dimension.
-            # min_corners=4 matches the alignment-gate threshold below; with the
-            # default of 8, partial detections at the fisheye edges (corner
-            # poses) bounce between "8 corners" and "7 corners" frame to frame
-            # and the wizard flips between Alineado and "board no visible",
-            # never holding stable long enough to capture.
+            # Detección de ChArUco en full-res. lenient=True para que los
+            # markers de 33mm en las poses far de 3m (~22 px de ancho →
+            # 0.5% de 4608) igual sean detectados — el default strict
+            # rechaza markers bajo el 3% de la dimensión de la imagen.
+            # min_corners=4 matchea el threshold del alignment-gate de
+            # abajo; con el default de 8, las detecciones parciales en
+            # los bordes fisheye (poses de esquina) rebotan entre "8
+            # esquinas" y "7 esquinas" frame a frame y el wizard flipea
+            # entre Alineado y "board no visible", sin holdear estable
+            # el tiempo suficiente para capturar.
             corners_l, ids_l = detect_charuco_corners(
                 frame_l, board, lenient=True, min_corners=4,
             )
@@ -1539,10 +1580,11 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 frame_r, board, lenient=True, min_corners=4,
             )
 
-            # Track asymmetric detection — one camera consistently failing
-            # while the other detects fine is a silent killer (operator sees
-            # "captura rechazada" but doesn't know which camera is the cause).
-            # We surface it explicitly via a panel alert.
+            # Trackear detección asimétrica — una cámara fallando
+            # consistentemente mientras la otra detecta bien es un
+            # silent killer (el operador ve "captura rechazada" pero
+            # no sabe qué cámara es la causa). Lo exponemos
+            # explícitamente vía una alerta en el panel.
             l_detected = corners_l is not None and ids_l is not None and len(ids_l) >= 4
             r_detected = corners_r is not None and ids_r is not None and len(ids_r) >= 4
             if l_detected and not r_detected:
@@ -1560,13 +1602,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             scale_x = GUIDED_HALF[0] / frame_l.shape[1]
             scale_y = GUIDED_HALF[1] / frame_l.shape[0]
 
-            # Project ghost — uses fitted_K after bootstrap
+            # Proyectar ghost — usa fitted_K después del bootstrap
             ghost = project_pose(
                 pose, board_size, args.square_length, GUIDED_HALF,
                 fitted_K=state.fitted_K,
             )
 
-            # Corner-ID matching vs left camera detection
+            # Matching por corner-ID contra la detección de la cámara izquierda
             scaled_corners_l: Optional[np.ndarray] = None
             err: Optional[dict] = None
             aligned = False
@@ -1592,9 +1634,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                         min_matched=ALIGN_MATCHED_MIN_LOOSE,
                     )
 
-            # Stability — pass IDs so the tracker tolerates detection
-            # count fluctuations (23↔35 corners with marginal lighting)
-            # without resetting the buffer.
+            # Estabilidad — pasamos los IDs así el tracker tolera
+            # fluctuaciones del count de detección (23↔35 esquinas con
+            # iluminación marginal) sin resetear el buffer.
             stability.push(
                 scaled_corners_l if aligned else None,
                 ids=ids_l if aligned else None,
@@ -1602,21 +1644,23 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             stable = stability.is_stable() if aligned else False
 
             now = time.time()
-            # Gate everything on the precise "announcement finished"
-            # signal from the browser (POST /announce-done on
-            # SpeechSynthesisUtterance.onend). This way the three-piece
-            # "number / label / distance" block is guaranteed to play
-            # end-to-end regardless of voice speed — captures and other
-            # audio hints stay blocked until the operator has actually
-            # heard the whole thing. Only manual Skip can interrupt.
+            # Gatear todo contra la señal precisa "announcement
+            # finished" del browser (POST /announce-done en
+            # SpeechSynthesisUtterance.onend). De esta forma el bloque
+            # tres-piezas "número / label / distancia" tiene garantizado
+            # reproducirse end-to-end sin importar la velocidad de la
+            # voz — las capturas y otros audio hints quedan bloqueados
+            # hasta que el operador realmente lo haya escuchado entero.
+            # Solo el Skip manual puede interrumpir.
             announce_settling = _announce_pending
             announce_audio_lockout = _announce_pending
             if aligned and stable and not announce_settling:
                 if hold_started_at is None:
                     hold_started_at = now
-                    # Only voice "Mantené quieto" once the pose name has
-                    # finished playing. Capture can still run during that
-                    # window — it just won't announce.
+                    # Solo decir "Mantené quieto" una vez que el nombre
+                    # de la pose terminó de sonar. La captura igual
+                    # puede correr durante esa ventana — solo no se
+                    # anuncia.
                     if not announce_audio_lockout:
                         _emit_audio("Mantené quieto")
                 hold_progress = min(1.0, (now - hold_started_at) / STABILITY_HOLD_SEC)
@@ -1631,7 +1675,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
             warnings = live_lighting_warnings(frame_l, frame_r)
 
-            # Handle user actions
+            # Manejo de acciones del usuario
             with state.lock:
                 if state.finish_requested:
                     state.finish_requested = False
@@ -1655,7 +1699,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                         stability.reset()
                         logger.info("UNDO — removida captura de pose %s", pid)
                         _emit_audio("Deshecha última captura")
-                        # If we dropped below bootstrap, reset fitted_K too
+                        # Si quedamos abajo del bootstrap, resetear también fitted_K
                         if count < BOOTSTRAP_COUNT:
                             state.bootstrap_done = False
                             state.fitted_K = None
@@ -1668,15 +1712,15 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     pose_started_at = time.time()
                     hold_started_at = None
                     stability.reset()
-                    # Announce the NEW pose so the operator knows where to
-                    # move next. Skip itself isn't announced (they clicked
-                    # the button, they know).
+                    # Anunciar la NUEVA pose así el operador sabe a
+                    # dónde moverse después. El Skip en sí no se anuncia
+                    # (clickearon el botón, ya saben).
                     if any(s == "pending" for s in state.pose_status):
                         _emit_pose_announce(state.current_pose_idx)
                     _save_session(output_dir, state, poses, args)
                     continue
 
-            # Auto-skip timeout (configurable via --pose-timeout-sec)
+            # Timeout de auto-skip (configurable vía --pose-timeout-sec)
             pose_timeout = getattr(args, "pose_timeout_sec", SKIP_POSE_TIMEOUT_SEC)
             if now - pose_started_at > pose_timeout:
                 state.pose_status[state.current_pose_idx] = "skipped"
@@ -1691,12 +1735,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     _emit_pose_announce(state.current_pose_idx)
                 continue
 
-            # L preview: NO charuco overlay — the per-corner dots + IDs filled
-            # the ghost area and made it hard to see the actual board edges
-            # against the ghost outline. Show only a corner count badge so
-            # the operator still knows detection is working. R keeps the full
-            # overlay as a diagnostic of the right camera (no ghost competes
-            # with it there).
+            # Preview L: SIN overlay charuco — los puntos per-corner
+            # + IDs llenaban el área del ghost y hacían difícil ver los
+            # bordes reales del board contra el outline del ghost.
+            # Mostramos solo un badge con el count de esquinas así el
+            # operador igual sabe que la detección funciona. R mantiene
+            # el overlay completo como diagnóstico de la cámara derecha
+            # (no hay ghost compitiendo ahí).
             n_l_detected = len(corners_l) if corners_l is not None else 0
             if corners_r is not None and ids_r is not None:
                 sc = corners_r.copy()
@@ -1714,11 +1759,11 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, badge_color, 2,
             )
 
-            # Direction arrow on LEFT
+            # Flecha de dirección sobre LEFT
             if err is not None and not aligned and err["matched"] >= 4:
                 _draw_direction_arrow(vis_l, err, ghost["center"])
 
-            # Hold progress bar on LEFT preview top
+            # Barra de progreso de hold arriba del preview LEFT
             if hold_progress > 0:
                 bar_w = int(GUIDED_HALF[0] * hold_progress)
                 cv2.rectangle(vis_l, (0, 0), (GUIDED_HALF[0], 8), (30, 30, 30), -1)
@@ -1729,7 +1774,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
             combined = np.hstack([vis_l, vis_r])
 
-            # Capture gate: quality + L/R sync + common corners
+            # Gate de captura: calidad + L/R sync + esquinas comunes
             if should_capture:
                 n_corners_l = len(corners_l) if corners_l is not None else 0
                 common_n = count_common_corners(ids_l, ids_r)
@@ -1751,9 +1796,11 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     )
 
                 if not reject_reasons:
-                    # Stable filename keyed by pose_id — makes --resume idempotent
-                    # and keeps existing left_NNN.png pattern so downstream tools
-                    # (calibrate subcommand glob) still work.
+                    # Filename estable keyeado por pose_id — hace que
+                    # --resume sea idempotente y mantiene el pattern
+                    # existente left_NNN.png así las tools downstream
+                    # (el glob del subcomando calibrate) siguen
+                    # funcionando.
                     ordinal = len(state.captured_pairs)
                     left_path = output_dir / f"left_{ordinal:03d}_{pose.id}.png"
                     right_path = output_dir / f"right_{ordinal:03d}_{pose.id}.png"
@@ -1771,14 +1818,16 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                         "[%d/%d] Pose %s capturada — %s (common=%d, sync=%.1fms)",
                         count, len(poses), pose.id, pose.label, common_n, lr_delta_ms,
                     )
-                    # Don't TTS "Capturada" — the capture beep already
-                    # confirms it and a spoken confirmation just delays the
-                    # next pose announcement from being heard.
+                    # No TTS de "Capturada" — el beep de captura ya
+                    # lo confirma y una confirmación hablada solo
+                    # demora que se escuche la próxima pose announce.
 
-                    # Bootstrap handoff: after N captures AND distance diversity
-                    # across all 3 bands, fit intrinsics. Without diversity, the
-                    # fitted focal can be wildly off and corrupt the ghost
-                    # rendering for poses outside the captured band.
+                    # Handoff de bootstrap: después de N capturas Y
+                    # diversity de distancia entre las 3 bandas,
+                    # fittear intrínsecos. Sin diversity, el focal
+                    # fitteado puede quedar muy mal y corromper el
+                    # render del ghost para poses fuera de la banda
+                    # capturada.
                     if not state.bootstrap_done and count >= BOOTSTRAP_COUNT:
                         diverse = _captured_have_distance_diversity(
                             state.captured_pairs, poses,
@@ -1794,7 +1843,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                                 count,
                             )
                         else:
-                            logger.info("Fitting bootstrap intrinsics from %d captures...", count)
+                            logger.info("Fitting bootstrap intrínsecos desde %d capturas...", count)
                             lefts = []
                             for lp, _rp, _pid in state.captured_pairs:
                                 img = cv2.imread(str(lp))
@@ -1805,15 +1854,15 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                                 state.fitted_K = fitted
                                 state.bootstrap_done = True
                                 logger.info(
-                                    "Bootstrap done: f_x=%.0f, f_y=%.0f, cx=%.0f, cy=%.0f — "
-                                    "switching to tight tolerance",
+                                    "Bootstrap completo: f_x=%.0f, f_y=%.0f, cx=%.0f, cy=%.0f — "
+                                    "cambiando a tolerancia estricta",
                                     fitted[0, 0], fitted[1, 1], fitted[0, 2], fitted[1, 2],
                                 )
                                 _emit_audio("Intrínsecos bootstrap ajustados, tolerancia ahora estricta")
                             else:
-                                logger.warning("Bootstrap fit failed; staying with nominal K")
+                                logger.warning("Bootstrap fit falló; seguimos con K nominal")
 
-                    # Advance to next pending pose
+                    # Avanzar a la próxima pose pending
                     nxt = state.current_pose_idx
                     for _ in range(len(poses)):
                         nxt = (nxt + 1) % len(poses)
@@ -1830,36 +1879,38 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     stability.reset()
                     hold_started_at = None
 
-            # Encode preview JPEG
+            # Encodear preview JPEG
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 72])
             with _jpeg_lock:
                 _latest_jpeg = jpeg.tobytes()
 
-            # Status composition
+            # Composición del status
             captured_n = sum(1 for s in state.pose_status if s == "captured")
             skipped_n = sum(1 for s in state.pose_status if s == "skipped")
 
             if aligned and stable:
                 banner = f"Capturando... {int(hold_progress * 100)}%"
                 banner_color = "#f1c40f"
-                audio_text = ""  # don't interrupt hold
+                audio_text = ""  # no interrumpir el hold
             elif aligned:
                 banner = "Alineado — mantené quieto"
                 banner_color = "#3498db"
                 audio_text = ""
             elif err is not None and err["matched"] >= 4:
-                # Convert pixel offsets to cm for the voice hint — much more
-                # intuitive for the operator than "movelo 47 píxeles".
+                # Convertir offsets de píxeles a cm para el hint de voz —
+                # mucho más intuitivo para el operador que "movelo 47 píxeles".
                 if state.fitted_K is not None:
                     f_px_for_hint = float(state.fitted_K[0, 0])
                 else:
                     f_px_for_hint = NOMINAL_FOCAL_PX
-                # err offsets are in PREVIEW pixel space (GUIDED_HALF, ~648
-                # wide after the scale_x multiplication earlier). The fitted_K
-                # / nominal f_px are at full-res 4608. Scale f down so the
-                # mm_per_px ratio is consistent with the offset units.
+                # Los offsets en err están en el píxel space del PREVIEW
+                # (GUIDED_HALF, ~648 de ancho después de la
+                # multiplicación scale_x de antes). El fitted_K / f_px
+                # nominal están a full-res 4608. Bajar f de escala así
+                # el ratio mm_per_px es consistente con las unidades
+                # del offset.
                 f_px_preview = f_px_for_hint * scale_x
-                # PoseTarget stores position as tvec_mm = (x, y, z); z is depth.
+                # PoseTarget guarda la position como tvec_mm = (x, y, z); z es depth.
                 mm_per_px_here = pose.tvec_mm[2] / f_px_preview
                 banner = alignment_hint_by_corners(err, mm_per_px=mm_per_px_here)
                 banner_color = "#e67e22"
@@ -1869,20 +1920,23 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 banner_color = "#e74c3c"
                 audio_text = ""
 
-            # Refresh audio event only when banner changes SEMANTICALLY —
-            # strip digits so "movelo izquierda 4cm" vs "movelo izquierda
-            # 3cm" count as the same hint and don't re-trigger TTS.
-            # Also skip during the post-pose-announcement grace window so
-            # the pose-name TTS isn't immediately overwritten by a movement
-            # hint (state.audio_event is a single slot — last write wins).
+            # Refrescar el audio event solo cuando el banner cambia
+            # SEMÁNTICAMENTE — strippear los dígitos así "movelo
+            # izquierda 4cm" vs "movelo izquierda 3cm" cuentan como el
+            # mismo hint y no re-triggerean TTS. También saltearlo
+            # durante la grace window post-pose-announcement así el
+            # TTS del nombre de pose no es inmediatamente sobrescrito
+            # por un movement hint (state.audio_event es un slot único
+            # — gana el último write).
             import re as _re
             def _key(s: str) -> str:
                 return _re.sub(r"[\d.,]+", "", s or "").strip()
-            # `last_spoken_key` tracks WHAT WAS SPOKEN, separate from the
-            # visible banner. If we suppressed an emit during the lockout
-            # we must not pretend we already said it — otherwise when the
-            # lockout ends and the hint is still current, _key comparison
-            # thinks we delivered it already and stays silent forever.
+            # `last_spoken_key` trackea LO QUE FUE HABLADO, separado del
+            # banner visible. Si suprimimos un emit durante el lockout
+            # no podemos pretender que ya lo dijimos — si no, cuando el
+            # lockout termine y el hint todavía esté vigente, la
+            # comparación con _key piensa que ya lo entregamos y queda
+            # en silencio para siempre.
             spoke_audio = False
             if (audio_text
                     and not announce_audio_lockout
@@ -1892,11 +1946,12 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 state.locked_alignment_text = audio_text
                 spoke_audio = True
 
-            # When the alignment hint has the same semantic key as what the
-            # operator just heard, keep the on-screen banner frozen on the
-            # exact text we said. Prevents 1-cm flicker between live
-            # measurement and stale audio (operator hears "15cm", sees
-            # "14cm" and thinks they don't match).
+            # Cuando el hint de alineación tiene la misma key semántica
+            # que lo que el operador acaba de escuchar, mantener el
+            # banner on-screen freezeado en el texto exacto que dijimos.
+            # Evita el flicker de 1cm entre la medición en vivo y el
+            # audio stale (el operador escucha "15cm", ve "14cm" y cree
+            # que no matchean).
             if (audio_text
                     and state.locked_alignment_text
                     and _key(audio_text) == state.last_spoken_key):
@@ -1916,7 +1971,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             if sync_warn_active:
                 sync_note = f" · <span class=\"warn\">L/R desync {lr_delta_ms:.1f}ms</span>"
 
-            # Escape audio text for the HTML data-* attribute
+            # Escapar el audio text para el atributo HTML data-*
             audio_escaped = (state.audio_event or "").replace('"', "&quot;")
             banner_escaped = banner.replace('"', "&quot;")
 
@@ -1939,7 +1994,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     'que el board entre en su FOV.</div>'
                 )
 
-            # Color L/R counts: highlight in amber when one is 0 and the other > 0
+            # Colorear los counts L/R: highlightear en ámbar cuando uno es 0 y el otro > 0
             def _detect_pill(label: str, n: int, asymmetric_zero: bool) -> str:
                 if asymmetric_zero:
                     color = "#e67e22"
@@ -1993,12 +2048,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
     except KeyboardInterrupt:
         print("\nInterrumpido por usuario.")
-        # On Ctrl+C we want a hard exit, not a return — the wizard caller
-        # would otherwise march on to the calibrate phase with whatever
-        # captures we have, and the HTTP server would stay alive holding
-        # the port until the eventual exit. (Normal completion keeps the
-        # server alive on purpose: the post-capture phases — processing,
-        # ground-truth, report — share this same HTTP server.)
+        # En Ctrl+C queremos un hard exit, no un return — si no, el
+        # caller del wizard avanzaría a la fase de calibración con las
+        # capturas que tengamos, y el HTTP server quedaría vivo
+        # holdeando el puerto hasta el eventual exit. (La completion
+        # normal mantiene el server vivo a propósito: las fases
+        # post-captura — processing, ground-truth, reporte —
+        # comparten el mismo HTTP server.)
         _shutting_down = True
         rms_stop.set()
         try:
@@ -2020,7 +2076,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
 
 def cmd_generate_board(args: argparse.Namespace) -> None:
-    """Generate a printable ChArUco board image."""
+    """Genera una imagen imprimible de un board ChArUco."""
     dict_id = _resolve_aruco_dict(args.aruco_dict)
     board = create_charuco_board(
         board_size=(args.columns, args.rows),
@@ -2031,11 +2087,11 @@ def cmd_generate_board(args: argparse.Namespace) -> None:
     )
     img = generate_board_image(board, (args.width, args.height))
     cv2.imwrite(args.output, img)
-    logger.info("Board saved to %s (%dx%d)", args.output, args.width, args.height)
+    logger.info("Board guardado en %s (%dx%d)", args.output, args.width, args.height)
 
 
 def cmd_capture(args: argparse.Namespace) -> None:
-    """Interactive capture with HTTP preview and coverage tracking."""
+    """Captura interactiva con preview HTTP y tracking de cobertura."""
     global _shutting_down
 
     if args.guided:
@@ -2064,13 +2120,13 @@ def cmd_capture(args: argparse.Namespace) -> None:
         legacy_pattern=getattr(args, "legacy_pattern", True),
     )
 
-    # Start HTTP preview
+    # Arrancar preview HTTP
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("0.0.0.0", args.port), _MJPEGHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    # Coverage grid
+    # Grid de cobertura
     if args.grid == "circular":
         grid_mask = GRID_CIRCULAR
     else:
@@ -2078,26 +2134,27 @@ def cmd_capture(args: argparse.Namespace) -> None:
     grid_rows, grid_cols = grid_mask.shape
     coverage = np.zeros((grid_rows, grid_cols), dtype=np.int32)
 
-    # Per-cell targets: for binary grids use --per-cell if set, else no per-cell limit.
+    # Targets per-cell: para grids binarios usar --per-cell si se
+    # setea, si no, sin límite per-cell.
     if args.per_cell > 0:
         cell_target = grid_mask * args.per_cell
     else:
-        cell_target = None  # no per-cell limit
+        cell_target = None  # sin límite per-cell
 
     count = 0
     last_capture_time = 0.0
     valid_cells = int(np.count_nonzero(grid_mask))
     total_target = int(cell_target.sum()) if cell_target is not None else args.count
 
-    # Distance recommendation
+    # Recomendación de distancia
     cols, rows = args.columns, args.rows
     board_w_mm = cols * args.square_length
     board_h_mm = rows * args.square_length
     board_diag = f"{board_w_mm:.0f}x{board_h_mm:.0f}mm"
     dist_range = (f"{args.dist_near_mm/1000:.1f}/{args.dist_mid_mm/1000:.1f}/"
-                  f"{args.dist_far_mm/1000:.1f}m (lab protocol spans fleet mount 3-4.5m)")
+                  f"{args.dist_far_mm/1000:.1f}m (protocolo universal — fleet mount 2.0-3.5m)")
 
-    # Manual trigger: Enter on stdin OR POST /capture via web UI
+    # Trigger manual: Enter en stdin O POST /capture via web UI
     global _trigger_armed, _manual_enabled
     _manual_enabled = args.manual
     if args.manual:
@@ -2111,19 +2168,19 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     break
         threading.Thread(target=_stdin_listener, daemon=True).start()
 
-    logger.info("Calibration capture — preview: http://people-counter.local:%d", args.port)
-    logger.info("Board: %s (%s). Recommended distance: %s", board_diag, f"{cols}x{rows}", dist_range)
-    logger.info("Grid: %s (%dx%d, %d active cells, %d total captures)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
-    logger.info("IMPORTANT: Tilt the board 20-30 deg in every capture. Never hold it flat/frontal.")
-    logger.info("Move the ChArUco to cover all grid cells. Vary angles (pitch/yaw/roll) in each cell.")
+    logger.info("Captura de calibración — preview: http://people-counter.local:%d", args.port)
+    logger.info("Board: %s (%s). Distancia recomendada: %s", board_diag, f"{cols}x{rows}", dist_range)
+    logger.info("Grid: %s (%dx%d, %d celdas activas, %d capturas totales)", args.grid, grid_rows, grid_cols, valid_cells, total_target)
+    logger.info("IMPORTANTE: Inclinar el board 20-30 grados en cada captura. Nunca sostenerlo plano/frontal.")
+    logger.info("Mover el ChArUco para cubrir todas las celdas del grid. Variar ángulos (pitch/yaw/roll) en cada celda.")
     if args.manual:
-        logger.info("MANUAL mode: press ENTER here OR click CAPTURE in the web UI to trigger.")
+        logger.info("Modo MANUAL: apretá ENTER acá O clickeá CAPTURE en la web UI para triggerear.")
     else:
-        logger.info("Auto-captures when board detected in both cameras. %.1fs cooldown between captures.", args.cooldown)
-    logger.info("Ctrl+C to stop.\n")
+        logger.info("Auto-captura cuando el board se detecta en ambas cámaras. %.1fs de cooldown entre capturas.", args.cooldown)
+    logger.info("Ctrl+C para parar.\n")
     try:
         while True:
-            # Stop condition
+            # Condición de stop
             if cell_target is not None:
                 if np.all(coverage[grid_mask > 0] >= cell_target[grid_mask > 0]):
                     break
@@ -2131,11 +2188,11 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 break
             frame_l, frame_r = cap.read()
 
-            # Detect corners (lenient: see wizard loop comment)
+            # Detectar corners (lenient: ver comentario del loop del wizard)
             corners_l, ids_l = detect_charuco_corners(frame_l, board, lenient=True)
             corners_r, ids_r = detect_charuco_corners(frame_r, board, lenient=True)
 
-            # Build preview (resize for HTTP)
+            # Armar preview (resize para HTTP)
             vis_l = cv2.resize(frame_l, (648, 486))
             vis_r = cv2.resize(frame_r, (648, 486))
             scale_x = 648 / frame_l.shape[1]
@@ -2145,7 +2202,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
             n_common = 0
 
             if corners_l is not None and ids_l is not None:
-                # Draw corners on left preview
+                # Dibujar corners sobre el preview izquierdo
                 scaled_corners_l = corners_l.copy()
                 scaled_corners_l[:, 0, 0] *= scale_x
                 scaled_corners_l[:, 0, 1] *= scale_y
@@ -2161,10 +2218,10 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 n_common = len(np.intersect1d(ids_l.flatten(), ids_r.flatten()))
                 detected = n_common >= 8
 
-            # Draw coverage grid on left preview
+            # Dibujar el grid de cobertura sobre el preview izquierdo
             _draw_coverage(vis_l, coverage, grid_mask, cell_target)
 
-            # Status text
+            # Texto de status
             color = (0, 255, 0) if detected else (0, 0, 255)
             status = f"Pair {count}/{total_target} | Common: {n_common}"
             cv2.putText(vis_l, status, (10, 25),
@@ -2184,23 +2241,23 @@ def cmd_capture(args: argparse.Namespace) -> None:
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 70])
             _update_preview(jpeg.tobytes())
 
-            # Trigger: manual (Enter pressed) or auto (detected + cooldown)
+            # Trigger: manual (Enter apretado) o auto (detectado + cooldown)
             now = time.time()
             if args.manual:
                 should_capture = detected and _trigger_armed
                 if _trigger_armed and not detected:
-                    logger.warning("Trigger ignored — board not detected in both cameras.")
+                    logger.warning("Trigger ignorado — board no detectado en ambas cámaras.")
                     _trigger_armed = False
             else:
                 should_capture = detected and (now - last_capture_time) >= args.cooldown
             if should_capture:
-                # Check if this cell is already full
+                # Chequear si esta celda ya está llena
                 row, col = _compute_coverage_center(
                     corners_l, frame_l.shape[1], frame_l.shape[0], grid_mask,
                 )
                 cell_max = cell_target[row, col] if cell_target is not None else 0
                 if cell_max > 0 and coverage[row, col] >= cell_max:
-                    # Cell full — skip but show feedback
+                    # Celda llena — saltear pero mostrar feedback
                     cv2.putText(vis_r, f"Cell ({row},{col}) full ({cell_max}/{cell_max})", (10, 85),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 else:
@@ -2215,7 +2272,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
                     _trigger_armed = False
                     cell_limit = cell_target[row, col] if cell_target is not None else "inf"
                     logger.info(
-                        "Pair %d/%d saved — %d common corners, coverage %d%%, cell (%d,%d): %d/%s",
+                        "Par %d/%d guardado — %d esquinas comunes, cobertura %d%%, celda (%d,%d): %d/%s",
                         count, total_target, n_common, coverage_pct,
                         row, col, coverage[row, col], cell_limit,
                     )
@@ -2232,22 +2289,22 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
     _shutting_down = True
     cap.close()
-    print(f"\n\nCaptured {count} pairs in {output_dir}")
-    print(f"Coverage: {int(np.count_nonzero(coverage * grid_mask))}/{valid_cells} cells")
-    print("\nCoverage grid:")
+    print(f"\n\nCapturados {count} pares en {output_dir}")
+    print(f"Cobertura: {int(np.count_nonzero(coverage * grid_mask))}/{valid_cells} celdas")
+    print("\nGrid de cobertura:")
     print(coverage)
     import os
     os._exit(0)
 
 
 def cmd_calibrate(args: argparse.Namespace) -> None:
-    """Run stereo calibration from captured image pairs."""
+    """Corre la calibración estéreo a partir de los pares de imágenes capturados."""
     input_dir = Path(args.input_dir)
 
-    # Find all left_*.png files and match with right_*.png
+    # Buscar todos los archivos left_*.png y matchearlos con right_*.png
     left_files = sorted(input_dir.glob("left_*.png"))
     if not left_files:
-        logger.error("No left_*.png files found in %s", input_dir)
+        logger.error("No se encontraron archivos left_*.png en %s", input_dir)
         sys.exit(1)
 
     pairs = []
@@ -2259,11 +2316,11 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             if img_l is not None and img_r is not None:
                 pairs.append((img_l, img_r))
             else:
-                logger.warning("Failed to read pair: %s", lf.stem)
+                logger.warning("Falló la lectura del par: %s", lf.stem)
         else:
-            logger.warning("Missing right image for %s", lf.name)
+            logger.warning("Falta la imagen right para %s", lf.name)
 
-    logger.info("Loaded %d image pairs from %s", len(pairs), input_dir)
+    logger.info("Cargados %d pares de imágenes desde %s", len(pairs), input_dir)
 
     dict_id = _resolve_aruco_dict(getattr(args, "aruco_dict", "DICT_4X4_100"))
     try:
@@ -2276,25 +2333,26 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             legacy_pattern=getattr(args, "legacy_pattern", True),
         )
     except ValueError as e:
-        logger.error("Calibration failed: %s", e)
+        logger.error("Calibración falló: %s", e)
         sys.exit(1)
 
     save_calibration(result, args.output)
-    logger.info("Calibration saved to %s", args.output)
+    logger.info("Calibración guardada en %s", args.output)
 
-    # Print summary
+    # Imprimir resumen
     fx = result["camera_matrix_l"][0, 0]
     fy = result["camera_matrix_l"][1, 1]
     tx = result["T"][0, 0]
-    logger.info("Left focal: fx=%.1f fy=%.1f px", fx, fy)
+    logger.info("Focal izquierdo: fx=%.1f fy=%.1f px", fx, fy)
     logger.info("Baseline (T_x): %.1f mm", abs(tx))
 
 
 def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
-    """Quick pre-flight before starting the wizard. Returns (ok_to_continue, messages).
+    """Pre-flight rápido antes de arrancar el wizard. Devuelve (ok_to_continue, messages).
 
-    Hard failures block (port busy, output dir unwritable). Soft failures warn
-    but don't abort (low disk space, calibration.npz already exists).
+    Los hard failures bloquean (port busy, output dir no escribible).
+    Los soft failures avisan pero no abortan (poco espacio en disco,
+    calibration.npz ya existe).
     """
     import shutil
     import socket
@@ -2327,7 +2385,7 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
     else:
         messages.append(f"✓ calibration output dir escribible: {calib_out.parent}")
 
-    # Backup existing calibration.npz if present
+    # Backup de la calibration.npz existente si está
     if calib_out.exists():
         ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup = calib_out.with_suffix(f".npz.bak.{ts}")
@@ -2338,7 +2396,7 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
         except Exception as e:
             messages.append(f"⚠ No pude hacer backup de {calib_out}: {e}")
 
-    # Disk space
+    # Espacio en disco
     try:
         free_mb = shutil.disk_usage(output_dir).free // (1024 * 1024)
         if free_mb < 500:
@@ -2348,11 +2406,12 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
     except Exception:
         pass
 
-    # Port — use SO_REUSEADDR so a port in TIME_WAIT (typical right after a
-    # Ctrl+C of a previous run) doesn't trigger a false "puerto ocupado". The
-    # actual HTTP server binds with allow_reuse_address=True too, so the
-    # preflight needs to match — otherwise the wizard refuses to start when
-    # in fact the bind would succeed.
+    # Puerto — usar SO_REUSEADDR así un puerto en TIME_WAIT (típico
+    # justo después de un Ctrl+C de una corrida previa) no triggerea
+    # un falso "puerto ocupado". El HTTP server real también bindea
+    # con allow_reuse_address=True, así que el preflight tiene que
+    # matchear — si no, el wizard se rehúsa a arrancar cuando en
+    # realidad el bind sería exitoso.
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(0.5)
@@ -2360,8 +2419,8 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
         sock.bind(("0.0.0.0", args.port))
         messages.append(f"✓ Puerto {args.port} libre")
     except OSError:
-        # Try to find which PID is holding the port so the operator gets
-        # an actionable error instead of "go look it up".
+        # Tratar de encontrar qué PID tiene el puerto así el operador
+        # obtiene un error accionable en lugar de "andá a buscarlo".
         culprit = _find_port_culprit(args.port)
         if culprit:
             pid, cmd = culprit
@@ -2382,15 +2441,16 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
 
 
 def _find_port_culprit(port: int) -> Optional[tuple[int, str]]:
-    """Best-effort lookup of the PID + command holding a TCP port.
+    """Best-effort lookup del PID + comando que tiene tomado un puerto TCP.
 
-    Returns (pid, command) on Linux; None on other platforms or if we can't
-    figure it out (e.g. process owned by another UID and we're not root).
+    Devuelve (pid, command) en Linux; None en otras plataformas o si
+    no podemos identificarlo (ej. el proceso es de otro UID y no
+    somos root).
     """
     import os as _os
     if not _os.path.exists("/proc"):
         return None
-    # Find the inode of the listening socket on this port
+    # Buscar el inode del listening socket en este puerto
     try:
         with open("/proc/net/tcp") as f:
             lines = f.readlines()
@@ -2412,7 +2472,7 @@ def _find_port_culprit(port: int) -> Optional[tuple[int, str]]:
         target_inodes.add(parts[9])
     if not target_inodes:
         return None
-    # Walk /proc/*/fd to find which PID holds that socket inode
+    # Recorrer /proc/*/fd para encontrar qué PID tiene ese inode de socket
     for pid_str in _os.listdir("/proc"):
         if not pid_str.isdigit():
             continue
@@ -2439,9 +2499,10 @@ def _find_port_culprit(port: int) -> Optional[tuple[int, str]]:
 def _run_ground_truth_phase(
     args: argparse.Namespace, calibration: dict,
 ) -> Optional[dict]:
-    """Ask the operator for a known distance, capture one frame, run SGBM +
-    5-zone depth analysis with the fresh calibration, return zones dict for
-    the HTML report. Skip cleanly on empty input or failure.
+    """Le pide al operador una distancia conocida, captura un frame,
+    corre análisis SGBM + depth de 5 zonas con la calibración
+    fresca, devuelve un dict de zones para el reporte HTML. Saltea
+    limpio ante input vacío o falla.
     """
     prompt_msg = (
         "Poné una superficie plana (pared, cartón) a 2 m de las cámaras.\n"
@@ -2483,7 +2544,7 @@ def _run_ground_truth_phase(
     )
     try:
         cap.open()
-        # Countdown
+        # Cuenta regresiva
         for i in range(3, 0, -1):
             print(f"  Capturando en {i}...", end="\r", flush=True)
             time.sleep(1)
@@ -2539,7 +2600,7 @@ def _run_ground_truth_phase(
     for name, (cy, cx) in zones_coords.items():
         zones[name] = _zone_stats(cy, cx)
 
-    # Thresholds: <5% @ 2m, <10% @ 3m, <2× edge/center ratio
+    # Thresholds: <5% @ 2m, <10% @ 3m, ratio borde/centro <2×
     d_m = distance_mm / 1000
     if d_m <= 2.0:
         center_threshold = 5.0
@@ -2553,12 +2614,13 @@ def _run_ground_truth_phase(
     edge_ratio = float("nan")
     center_err_abs = float("nan")
     overall_pass = False
-    # Verdict depends ONLY on the center zone — that's the only zone whose
-    # distance the operator measured (with tape/laser). Edge zones see
-    # whatever happens to be in the periphery (other objects, walls at
-    # different depths, the floor) and rarely match the target distance
-    # in real scenes. Edge/center ratio is still computed and shown in the
-    # report as informational, but it doesn't gate PASS.
+    # El verdict depende SOLO de la zona del centro — es la única zona
+    # cuya distancia el operador midió (con cinta/láser). Las zonas
+    # de borde ven lo que sea que esté en la periferia (otros objetos,
+    # paredes a distintas profundidades, el piso) y raramente
+    # matchean la distancia target en escenas reales. El ratio
+    # borde/centro igual se computa y se muestra en el reporte como
+    # informativo, pero no gate PASS.
     if center is not None:
         center_err_abs = abs(center[2])
         if edges:
@@ -2572,7 +2634,7 @@ def _run_ground_truth_phase(
     zones["_edge_ratio"] = edge_ratio
     zones["_center_threshold"] = center_threshold
 
-    # Depth heatmap for the report — scene image with disparity-colored overlay.
+    # Heatmap de profundidad para el reporte — imagen de escena con overlay coloreado por disparity.
     try:
         valid_mask = disparity > 0.1
         norm = np.zeros_like(disparity, dtype=np.uint8)
@@ -2585,11 +2647,11 @@ def _run_ground_truth_phase(
                 ).astype(np.uint8)
         heat = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
         heat[~valid_mask] = (40, 40, 40)
-        # Side by side: rectified L + heatmap
+        # Lado a lado: L rectificado + heatmap
         side = np.hstack([rect_l, heat])
-        # Mark each zone center with a box + label
+        # Marcar el centro de cada zona con una caja + label
         for name, (cy, cx) in zones_coords.items():
-            px_x = cx + rect_l.shape[1]  # shift into heatmap side
+            px_x = cx + rect_l.shape[1]  # shifteado al lado del heatmap
             cv2.rectangle(
                 side, (px_x - half, cy - half), (px_x + half, cy + half),
                 (255, 255, 255), 2,
@@ -2613,8 +2675,8 @@ def _run_ground_truth_phase(
 
 
 def cmd_wizard(args: argparse.Namespace) -> None:
-    """One-shot calibration wizard: preflight → guided capture → calibrate →
-    verify → ground-truth check → report."""
+    """Wizard de calibración one-shot: preflight → captura guiada → calibrar →
+    verificar → ground-truth check → reporte."""
     from src.vision.report import generate_html_report, save_report
 
     if getattr(args, "low_light", False):
@@ -2623,9 +2685,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Phase 0 — pre-flight
+    # Fase 0 — pre-flight
     logger.info("=" * 60)
-    logger.info("WIZARD PHASE 0/4 — Pre-flight checks")
+    logger.info("WIZARD FASE 0/4 — Pre-flight checks")
     logger.info("=" * 60)
     ok, messages = _wizard_preflight(args)
     for m in messages:
@@ -2634,7 +2696,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         logger.error("Pre-flight falló. Resolvé los items marcados con ❌ y reintentá.")
         sys.exit(1)
 
-    # Phase 1 — guided capture
+    # Fase 1 — captura guiada
     args.guided = True
     args.grid = "rectangular"
     args.manual = False
@@ -2642,7 +2704,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     args.cooldown = 1.5
     args.count = 20
     logger.info("=" * 60)
-    logger.info("WIZARD PHASE 1/4 — Captura guiada")
+    logger.info("WIZARD FASE 1/4 — Captura guiada")
     logger.info("=" * 60)
     _run_guided_capture(args)
     _set_post_capture_phase(
@@ -2652,8 +2714,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         progress_pct=10,
     )
 
-    # Collect captured pairs (those that survived UNDOs). Pose IDs are tracked
-    # in _guided_state.captured_pairs — fall back to ordinal if state missing.
+    # Juntar los pares capturados (los que sobrevivieron a los UNDOs).
+    # Los pose IDs se trackean en _guided_state.captured_pairs — caer
+    # al ordinal si falta el state.
     left_files = sorted(output_dir.glob("left_*.png"))
     pose_id_by_path: dict[str, str] = {}
     if _guided_state is not None:
@@ -2679,8 +2742,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         pairs.append((il, ir))
         pose_id = pose_id_by_path.get(str(lf), lf.stem.replace("left_", "pose-"))
         captured_pose_ids.append(pose_id)
-        # Re-detect with the SAME lenient mode the calibration step will use
-        # so this sanity count matches what calibrate_stereo will actually see.
+        # Re-detectar con el MISMO modo lenient que va a usar la
+        # fase de calibración así este sanity count matchea lo que
+        # calibrate_stereo realmente va a ver.
         corners_l, _ = detect_charuco_corners(il, board_tmp, lenient=True)
         corners_r, _ = detect_charuco_corners(ir, board_tmp, lenient=True)
         n_l = len(corners_l) if corners_l is not None else 0
@@ -2700,12 +2764,13 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         time.sleep(10)
         sys.exit(1)
 
-    # Pre-calibration sanity: count pairs where BOTH cameras produced a
-    # usable detection (≥ 8 common corners is what calibrate_stereo's
-    # _detect_all_pairs gates on). If too many pairs fail this re-detect,
-    # the live capture loop accepted frames that won't actually feed the
-    # calibration math — and we'd silently calibrate on a tiny subset,
-    # producing a degenerate fit.
+    # Sanity pre-calibración: contar pares donde AMBAS cámaras
+    # produjeron una detección utilizable (≥ 8 esquinas comunes es
+    # contra lo que gatea _detect_all_pairs de calibrate_stereo). Si
+    # demasiados pares fallan esta re-detección, el loop de captura
+    # en vivo aceptó frames que en realidad no van a alimentar la
+    # matemática de calibración — y calibraríamos silencioso sobre
+    # un subset chico, produciendo un fit degenerado.
     valid_both = 0
     invalid_lines: list[str] = []
     for lf, rf, pid, n_l, n_r in pair_meta:
@@ -2741,7 +2806,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         time.sleep(10)
         sys.exit(1)
 
-    # Diversity check — warn if the captured set is degenerate
+    # Check de diversity — avisar si el set capturado es degenerado
     coverage = analyze_pose_coverage(
         captured_pose_ids,
         all_poses=default_pose_sequence(
@@ -2755,10 +2820,11 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         "Cobertura: distancia %s · tilts %s",
         coverage["by_distance"], coverage["by_tilt_axis"],
     )
-    # Critical gaps are hard-blockers: missing entire pose groups or
-    # distance bands produces degenerate calibrations (low RMS but
-    # geometrically wrong). Operator can override with
-    # --force-degenerate-coverage when they know what they're doing.
+    # Los critical gaps son hard-blockers: la falta de grupos enteros
+    # de poses o bandas de distancia produce calibraciones
+    # degeneradas (RMS bajo pero geométricamente incorrectas). El
+    # operador puede overridear con --force-degenerate-coverage
+    # cuando sabe lo que está haciendo.
     critical_gaps = coverage.get("critical", [])
     force_flag = getattr(args, "force_degenerate_coverage", False)
     if critical_gaps and not force_flag:
@@ -2802,9 +2868,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
             time.sleep(10)
             sys.exit(0)
 
-    # Phase 2 — calibrate
+    # Fase 2 — calibrar
     logger.info("=" * 60)
-    logger.info("WIZARD PHASE 2/4 — Calibración estéreo con %d pares", len(pairs))
+    logger.info("WIZARD FASE 2/4 — Calibración estéreo con %d pares", len(pairs))
     logger.info("=" * 60)
     _set_post_capture_phase(
         "calibrating",
@@ -2843,9 +2909,9 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         legacy_pattern=getattr(args, "legacy_pattern", True),
     )
 
-    # Phase 3 — verify (epipolar) + per-pair residuals
+    # Fase 3 — verificar (epipolar) + residuales per-pair
     logger.info("=" * 60)
-    logger.info("WIZARD PHASE 3/4 — Verificación + residuales por par")
+    logger.info("WIZARD FASE 3/4 — Verificación + residuales por par")
     logger.info("=" * 60)
     _set_post_capture_phase(
         "verifying",
@@ -2881,12 +2947,12 @@ def cmd_wizard(args: argparse.Namespace) -> None:
                 median, n_outliers,
             )
     except Exception as e:
-        logger.warning("Per-pair residuals failed: %s", e)
+        logger.warning("Residuales per-pair fallaron: %s", e)
         per_pair = None
 
-    # Phase 4 — ground-truth depth check
+    # Fase 4 — ground-truth depth check
     logger.info("=" * 60)
-    logger.info("WIZARD PHASE 4/4 — Ground-truth depth check (opcional)")
+    logger.info("WIZARD FASE 4/4 — Ground-truth depth check (opcional)")
     _set_post_capture_phase(
         "ground_truth",
         "Fase opcional de validación con distancia conocida — mirá la "
@@ -2896,7 +2962,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     logger.info("=" * 60)
     diagnose_zones = _run_ground_truth_phase(args, result)
 
-    # Final report
+    # Reporte final
     ts = _dt.datetime.now()
     gt_image = None
     if diagnose_zones and diagnose_zones.get("_image_path"):
@@ -2915,10 +2981,11 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     report_name = f"calibration_report_{args.device_id}_{ts:%Y%m%d_%H%M%S}.html"
     report_path = save_report(html, calib_out.parent / report_name)
 
-    # Emit a sibling JSON with the same metrics in a parseable form. Lets
-    # QA / cross-fleet comparisons grep numeric scores without parsing the
-    # HTML. Shape mirrors diagnose_depth.py --json so the same downstream
-    # tooling consumes either output.
+    # Emitir un JSON sibling con las mismas métricas en una forma
+    # parseable. Permite que las comparaciones de QA / cross-fleet
+    # grepen scores numéricos sin parsear el HTML. La shape mirrorea
+    # diagnose_depth.py --json así el mismo tooling downstream
+    # consume cualquiera de los dos outputs.
     try:
         json_payload: dict[str, object] = {
             "device_id": args.device_id,
@@ -2974,7 +3041,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         )
         logger.info("  Reporte JSON: %s", json_path)
     except Exception:
-        logger.exception("calibration JSON sidecar failed (non-fatal)")
+        logger.exception("Falló el sidecar JSON de calibración (no fatal)")
 
     logger.info("=" * 60)
     logger.info("WIZARD COMPLETO")
@@ -2997,9 +3064,10 @@ def cmd_wizard(args: argparse.Namespace) -> None:
             baseline_mm, baseline_mm - 140.0,
         )
 
-    # Point the capture-UI /report endpoint at the saved report so the browser
-    # can auto-open it via the existing HTTP server. We also keep serving it
-    # via QR (different port) for distribution to a phone.
+    # Apuntar el endpoint /report del capture-UI al reporte guardado
+    # así el browser puede auto-abrirlo vía el HTTP server existente.
+    # También lo seguimos sirviendo vía QR (puerto distinto) para
+    # distribución a un teléfono.
     global _report_path_for_http
     _report_path_for_http = report_path
 
@@ -3024,22 +3092,23 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         report_available=True,
     )
 
-    # Grace period so the browser picks up the "complete" status and opens
-    # the report in a new tab before the daemon HTTP server dies with main.
+    # Grace period así el browser levanta el status "complete" y abre
+    # el reporte en una pestaña nueva antes de que el daemon del HTTP
+    # server muera con main.
     time.sleep(10)
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
-    """Verify calibration by showing rectified pairs with epipolar lines."""
+    """Verifica la calibración mostrando pares rectificados con líneas epipolares."""
     cal = load_calibration(args.calibration)
     input_dir = Path(args.input_dir)
 
     left_files = sorted(input_dir.glob("left_*.png"))
     if not left_files:
-        logger.error("No images found in %s", input_dir)
+        logger.error("No se encontraron imágenes en %s", input_dir)
         sys.exit(1)
 
-    # Use first pair for verification
+    # Usar el primer par para verificación
     lf = left_files[0]
     rf = lf.parent / lf.name.replace("left_", "right_")
     img_l = cv2.imread(str(lf))
@@ -3047,7 +3116,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
 
     rect_l, rect_r = rectify_pair(img_l, img_r, cal)
 
-    # Draw horizontal epipolar lines on the rectified pair
+    # Dibujar líneas epipolares horizontales sobre el par rectificado
     combined = np.hstack([rect_l, rect_r])
     h = combined.shape[0]
     for y in range(0, h, 30):
@@ -3056,17 +3125,18 @@ def cmd_verify(args: argparse.Namespace) -> None:
 
     output_path = str(Path(args.calibration).parent / "verify_epipolar.png")
     cv2.imwrite(output_path, combined)
-    logger.info("Verification image saved to %s", output_path)
+    logger.info("Imagen de verificación guardada en %s", output_path)
     logger.info(
-        "Check that corresponding features lie on the same horizontal line."
+        "Chequeá que los features correspondientes caigan sobre la misma línea horizontal."
     )
 
 
 def cmd_reset(args: argparse.Namespace) -> None:
-    """Wipe captures + session.json + calibration.npz so the next wizard
-    run starts from a clean slate. Useful when a session went sideways
-    (degenerate captures, mismatched resolution, corrupted state) and you
-    don't want to debug — you just want to start over.
+    """Borra captures + session.json + calibration.npz así la próxima
+    corrida del wizard arranca desde slate limpio. Útil cuando una
+    sesión salió mal (capturas degeneradas, resolución mismatcheada,
+    estado corrupto) y no querés debuggear — querés arrancar de
+    cero.
     """
     output_dir = Path(args.output_dir)
     calib_out = Path(args.output)
@@ -3113,111 +3183,113 @@ def cmd_reset(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Stereo calibration tool for People Counter"
+        description="Tool de calibración estéreo para People Counter"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- generate-board ---
-    p_board = sub.add_parser("generate-board", help="Generate printable ChArUco board")
+    p_board = sub.add_parser("generate-board", help="Genera el board ChArUco imprimible")
     p_board.add_argument("--output", default="calibration/charuco_board.png")
-    p_board.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Board columns (default {DEFAULT_BOARD_SIZE[0]})")
-    p_board.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Board rows (default {DEFAULT_BOARD_SIZE[1]})")
-    p_board.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Square side in mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_board.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Marker side in mm (default {DEFAULT_MARKER_LENGTH})")
+    p_board.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
+    p_board.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
+    p_board.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
+    p_board.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
     p_board.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
-                        help="ArUco dictionary name (e.g. DICT_4X4_100, DICT_5X5_100). Default DICT_4X4_100")
+                        help="Nombre del dict ArUco (ej. DICT_4X4_100, DICT_5X5_100). Default DICT_4X4_100")
     p_board.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
-    p_board.add_argument("--width", type=int, default=4961, help="Image width (px) — default A3 landscape @ 300 DPI")
-    p_board.add_argument("--height", type=int, default=3508, help="Image height (px) — default A3 landscape @ 300 DPI")
+                        help="Usar enumeración de markers ChArUco pre-4.6. Default True matchea calib.io.")
+    p_board.add_argument("--width", type=int, default=4961, help="Ancho de la imagen (px) — default A3 landscape @ 300 DPI")
+    p_board.add_argument("--height", type=int, default=3508, help="Alto de la imagen (px) — default A3 landscape @ 300 DPI")
     p_board.set_defaults(func=cmd_generate_board)
 
     # --- capture ---
-    p_cap = sub.add_parser("capture", help="Interactive capture with HTTP preview")
-    p_cap.add_argument("--left", type=int, default=0, help="Left camera index (lente izquierda mirando desde la cámara hacia la escena). Default 0 matches the fleet wiring.")
-    p_cap.add_argument("--right", type=int, default=1, help="Right camera index. Default 1.")
+    p_cap = sub.add_parser("capture", help="Captura interactiva con preview HTTP")
+    p_cap.add_argument("--left", type=int, default=0, help="Índice de la cámara izquierda (lente izquierda mirando desde la cámara hacia la escena). Default 0 matchea el wiring de la flota.")
+    p_cap.add_argument("--right", type=int, default=1, help="Índice de la cámara derecha. Default 1.")
     p_cap.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
-                        help="Capture resolution. Default 2304x1296 (IMX708 binned, "
-                             "full FOV, ~4x faster ChArUco detection than full-res). "
-                             "Runtime config must match this — see config.example.yaml.")
+                        help="Resolución de captura. Default 2304x1296 (IMX708 binned, "
+                             "FOV completo, detección de ChArUco ~4x más rápida que full-res). "
+                             "El config de runtime tiene que matchear esto — ver config.example.yaml.")
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")
-    p_cap.add_argument("--count", type=int, default=30, help="Minimum number of pairs")
+    p_cap.add_argument("--count", type=int, default=30, help="Número mínimo de pares")
     p_cap.add_argument("--per-cell", type=int, default=0,
-                        help="Max captures per grid cell (0=unlimited). Stops cell when reached.")
+                        help="Máximo de capturas por celda del grid (0=ilimitado). Para la celda al alcanzarlo.")
     p_cap.add_argument("--cooldown", type=float, default=1.5,
-                        help="Seconds to wait after each capture before next one")
+                        help="Segundos a esperar después de cada captura antes de la próxima")
     p_cap.add_argument("--pose-timeout-sec", type=float,
                         default=SKIP_POSE_TIMEOUT_SEC,
-                        help=f"Seconds before an uncaptured pose is auto-"
-                             f"skipped (default {SKIP_POSE_TIMEOUT_SEC:.0f}).")
-    p_cap.add_argument("--port", type=int, default=8080, help="HTTP preview port")
-    p_cap.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Board columns (default {DEFAULT_BOARD_SIZE[0]})")
-    p_cap.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Board rows (default {DEFAULT_BOARD_SIZE[1]})")
-    p_cap.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Square side in mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_cap.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Marker side in mm (default {DEFAULT_MARKER_LENGTH})")
+                        help=f"Segundos antes de que una pose no capturada sea "
+                             f"auto-skippeada (default {SKIP_POSE_TIMEOUT_SEC:.0f}).")
+    p_cap.add_argument("--port", type=int, default=8080, help="Puerto del preview HTTP")
+    p_cap.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
+    p_cap.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
+    p_cap.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
+    p_cap.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
     p_cap.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
-                        help="ArUco dictionary name. Default DICT_4X4_100 (the final board)")
+                        help="Nombre del dict ArUco. Default DICT_4X4_100 (el board final)")
     p_cap.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
+                        help="Usar enumeración de markers ChArUco pre-4.6. Default True matchea calib.io.")
     p_cap.add_argument("--grid", choices=["rectangular", "circular"], default="rectangular",
-                        help="Legacy coverage grid (ignored when --guided is on)")
+                        help="Grid legacy de cobertura (ignorado cuando --guided está activo)")
     p_cap.add_argument("--manual", action="store_true",
-                        help="Manual trigger: press Enter in terminal to capture (board must be detected). "
-                             "Use with a rigid support for the board to eliminate motion between L/R frames.")
+                        help="Trigger manual: apretar Enter en la terminal para capturar (el board tiene que estar detectado). "
+                             "Usar con un soporte rígido para el board para eliminar motion entre los frames L/R.")
     p_cap.add_argument("--guided", action="store_true",
-                        help="Guided capture: shows ghost silhouettes of target poses, "
-                             "auto-captures when aligned and stable. Recommended default.")
+                        help="Captura guiada: muestra siluetas ghost de las poses target, "
+                             "auto-captura cuando está alineado y estable. Default recomendado.")
     p_cap.add_argument("--dist-near-mm", type=float, default=DEFAULT_DIST_NEAR_MM,
-                        help=f"Near distance for pose sequence (default {DEFAULT_DIST_NEAR_MM:.0f}mm)")
+                        help=f"Distancia near para la secuencia de poses (default {DEFAULT_DIST_NEAR_MM:.0f}mm)")
     p_cap.add_argument("--dist-mid-mm", type=float, default=DEFAULT_DIST_MID_MM,
-                        help=f"Mid distance for pose sequence (default {DEFAULT_DIST_MID_MM:.0f}mm)")
+                        help=f"Distancia mid para la secuencia de poses (default {DEFAULT_DIST_MID_MM:.0f}mm)")
     p_cap.add_argument("--dist-far-mm", type=float, default=DEFAULT_DIST_FAR_MM,
-                        help=f"Far distance for pose sequence (default {DEFAULT_DIST_FAR_MM:.0f}mm)")
+                        help=f"Distancia far para la secuencia de poses (default {DEFAULT_DIST_FAR_MM:.0f}mm)")
     p_cap.add_argument("--resume", action="store_true",
-                        help="Continue a previous guided session from its session.json")
+                        help="Continuar una sesión guiada previa desde su session.json")
     p_cap.set_defaults(func=cmd_capture)
 
     # --- calibrate ---
-    p_cal = sub.add_parser("calibrate", help="Run stereo calibration")
-    p_cal.add_argument("--input-dir", required=True, help="Dir with left_/right_ images")
+    p_cal = sub.add_parser("calibrate", help="Corre la calibración estéreo")
+    p_cal.add_argument("--input-dir", required=True, help="Directorio con imágenes left_/right_")
     p_cal.add_argument("--output", default="calibration.npz")
-    p_cal.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Board columns (default {DEFAULT_BOARD_SIZE[0]})")
-    p_cal.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Board rows (default {DEFAULT_BOARD_SIZE[1]})")
-    p_cal.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Square side in mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_cal.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Marker side in mm (default {DEFAULT_MARKER_LENGTH})")
+    p_cal.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
+    p_cal.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
+    p_cal.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
+    p_cal.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
     p_cal.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
-                        help="ArUco dictionary name. Default DICT_4X4_100")
+                        help="Nombre del dict ArUco. Default DICT_4X4_100")
     p_cal.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
+                        help="Usar enumeración de markers ChArUco pre-4.6. Default True matchea calib.io.")
     p_cal.set_defaults(func=cmd_calibrate)
 
     # --- verify ---
-    p_ver = sub.add_parser("verify", help="Verify calibration visually")
-    p_ver.add_argument("--calibration", required=True, help="Path to calibration.npz")
-    p_ver.add_argument("--input-dir", required=True, help="Dir with image pairs")
+    p_ver = sub.add_parser("verify", help="Verifica la calibración visualmente")
+    p_ver.add_argument("--calibration", required=True, help="Path al calibration.npz")
+    p_ver.add_argument("--input-dir", required=True, help="Directorio con pares de imágenes")
     p_ver.set_defaults(func=cmd_verify)
 
-    # --- wizard (one-shot: guided capture + calibrate + verify + report) ---
+    # --- wizard (one-shot: captura guiada + calibrar + verificar + reporte) ---
     p_wiz = sub.add_parser("wizard",
-        help="One-shot guided calibration: capture -> calibrate -> verify -> report")
-    p_wiz.add_argument("--device-id", default="unknown", help="Device identifier for the report")
-    p_wiz.add_argument("--output", default="calibration.npz", help="Output calibration file")
-    p_wiz.add_argument("--output-dir", default="./calibration/captures", help="Dir for captured pairs")
+        help="Calibración guiada one-shot: captura -> calibrar -> verificar -> reporte")
+    p_wiz.add_argument("--device-id", default="unknown", help="Identificador de dispositivo para el reporte")
+    p_wiz.add_argument("--output", default="calibration.npz", help="Archivo de calibración de output")
+    p_wiz.add_argument("--output-dir", default="./calibration/captures", help="Directorio para los pares capturados")
     p_wiz.add_argument("--left", type=int, default=0)
     p_wiz.add_argument("--right", type=int, default=1)
     p_wiz.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
-                        help="Capture resolution. Default 2304x1296 (binned, "
-                             "full FOV) — the canonical mode for the fleet. "
-                             "Full-res 4608x2592 is available for special cases "
-                             "but makes per-frame detection ~4x slower (<2 FPS on "
-                             "Pi 5) and is more prone to marker dropping at the "
-                             "fisheye corners, which can produce a calibration "
-                             "with low RMS but a geometrically wrong fit. Runtime "
-                             "config must match this resolution.")
+                        help="Resolución de captura. Default 2304x1296 (binned, "
+                             "FOV completo) — el modo canónico para la flota. "
+                             "Full-res 4608x2592 está disponible para casos "
+                             "especiales pero hace que la detección per-frame "
+                             "sea ~4x más lenta (<2 FPS en Pi 5) y es más "
+                             "propenso a dropear markers en los corners "
+                             "fisheye, lo que puede producir una calibración "
+                             "con RMS bajo pero un fit geométricamente "
+                             "incorrecto. El config de runtime tiene que "
+                             "matchear esta resolución.")
     p_wiz.add_argument("--fps", type=int, default=5)
     p_wiz.add_argument("--port", type=int, default=8080)
     p_wiz.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0])
@@ -3225,95 +3297,105 @@ def main() -> None:
     p_wiz.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH)
     p_wiz.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH)
     p_wiz.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
-                        help="ArUco dictionary name. Default DICT_4X4_100 (the final board)")
+                        help="Nombre del dict ArUco. Default DICT_4X4_100 (el board final)")
     p_wiz.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="Use pre-4.6 ChArUco marker enumeration. Default True matches calib.io.")
+                        help="Usar enumeración de markers ChArUco pre-4.6. Default True matchea calib.io.")
     p_wiz.add_argument("--min-captures", type=int, default=15,
-                        help="Minimum pair count needed to run calibration. "
-                             "Default 15 (statistically robust). Lower for "
-                             "dry-runs / debugging only.")
+                        help="Cantidad mínima de pares necesaria para correr "
+                             "la calibración. Default 15 (estadísticamente "
+                             "robusto). Bajar solo para dry-runs / debugging.")
     p_wiz.add_argument("--pose-timeout-sec", type=float,
                         default=SKIP_POSE_TIMEOUT_SEC,
-                        help=f"Seconds before an uncaptured pose is auto-"
-                             f"skipped (default {SKIP_POSE_TIMEOUT_SEC:.0f}). "
-                             f"Bump to 180+ when the board is tripod-mounted "
-                             f"and needs time to reposition between poses.")
+                        help=f"Segundos antes de que una pose no capturada sea "
+                             f"auto-skippeada (default {SKIP_POSE_TIMEOUT_SEC:.0f}). "
+                             f"Subir a 180+ cuando el board está montado en "
+                             f"trípode y necesita tiempo para reposicionarse "
+                             f"entre poses.")
     p_wiz.add_argument("--tolerance", choices=["loose", "normal", "strict"],
                         default="normal",
-                        help="Capture strictness preset. "
-                             "loose = permissive (PoC / small board / tricky "
-                             "lighting, bootstrap 50px / tight 25px). "
-                             "normal = defaults tuned for the A3 final board "
-                             "(bootstrap 25px / tight 12px). "
+                        help="Preset de strictness de captura. "
+                             "loose = permisivo (PoC / board chico / "
+                             "iluminación complicada, bootstrap 50px / tight "
+                             "25px). normal = defaults tuneados para el A3 "
+                             "final (bootstrap 25px / tight 12px). "
                              "strict = production-grade (bootstrap 15px / "
-                             "tight 8px, minimises outliers).")
+                             "tight 8px, minimiza outliers).")
     p_wiz.add_argument("--align-tol-loose-px", type=float, default=None,
-                        help="Fine-grained override of the bootstrap alignment "
-                             "tolerance (takes precedence over --tolerance).")
+                        help="Override fine de la tolerance de alineación de "
+                             "bootstrap (tiene precedencia sobre --tolerance).")
     p_wiz.add_argument("--align-tol-tight-px", type=float, default=None,
-                        help="Fine-grained override of the post-bootstrap "
-                             "alignment tolerance.")
+                        help="Override fine de la tolerance de alineación "
+                             "post-bootstrap.")
     p_wiz.add_argument("--dist-near-mm", type=float, default=DEFAULT_DIST_NEAR_MM,
-                        help=f"Near distance for pose sequence (default {DEFAULT_DIST_NEAR_MM:.0f}mm)")
+                        help=f"Distancia near para la secuencia de poses (default {DEFAULT_DIST_NEAR_MM:.0f}mm)")
     p_wiz.add_argument("--dist-mid-mm", type=float, default=DEFAULT_DIST_MID_MM,
-                        help=f"Mid distance for pose sequence (default {DEFAULT_DIST_MID_MM:.0f}mm)")
+                        help=f"Distancia mid para la secuencia de poses (default {DEFAULT_DIST_MID_MM:.0f}mm)")
     p_wiz.add_argument("--dist-far-mm", type=float, default=DEFAULT_DIST_FAR_MM,
-                        help=f"Far distance for pose sequence (default {DEFAULT_DIST_FAR_MM:.0f}mm)")
+                        help=f"Distancia far para la secuencia de poses (default {DEFAULT_DIST_FAR_MM:.0f}mm)")
     # --- reset ---
     p_reset = sub.add_parser("reset",
-        help="Wipe captures + session.json + calibration.npz for a clean restart")
+        help="Borra captures + session.json + calibration.npz para un restart limpio")
     p_reset.add_argument("--output", default="calibration.npz",
-                         help="Calibration file to remove (default: calibration.npz)")
+                         help="Archivo de calibración a borrar (default: calibration.npz)")
     p_reset.add_argument("--output-dir", default="./calibration/captures",
-                         help="Captures dir to clean (default: ./calibration/captures)")
+                         help="Directorio de captures a limpiar (default: ./calibration/captures)")
     p_reset.add_argument("--yes", action="store_true",
-                         help="Confirm deletion (without this the command lists what would be removed)")
+                         help="Confirma el borrado (sin esto el comando lista lo que se borraría)")
     p_reset.set_defaults(func=cmd_reset)
 
     p_wiz.add_argument("--resume", action="store_true",
-                        help="Continue a previous wizard session — skips already-captured poses")
+                        help="Continúa una sesión previa del wizard — saltea las poses ya capturadas")
     p_wiz.add_argument("--force-degenerate-coverage", action="store_true",
-                        help="Bypass the critical-coverage block. By default the "
-                             "wizard refuses to calibrate when entire pose groups "
-                             "(A/B/C/D) or distance bands (near/mid/far) are "
-                             "missing, because that produces a low-RMS but "
-                             "geometrically wrong fit. Use this flag only if you "
-                             "understand the trade-off.")
+                        help="Bypassea el block de coverage crítico. Por "
+                             "default el wizard se rehúsa a calibrar cuando "
+                             "faltan grupos enteros de poses (A/B/C/D) o "
+                             "bandas de distancia (near/mid/far), porque eso "
+                             "produce un fit con RMS bajo pero geométricamente "
+                             "incorrecto. Usar este flag solo si entendés el "
+                             "trade-off.")
     p_wiz.add_argument("--no-early-stop", action="store_true",
-                        help="Disable the early-stop hint. By default, when "
-                             "the captures pass full coverage and RMS lands "
-                             "below the lab threshold, the wizard surfaces "
-                             "a green hint suggesting to finalise without "
-                             "exhausting all 20 poses. The hint is purely "
-                             "advisory; the existing Finalizar button is "
-                             "what actually ends the session. Pass this "
-                             "flag to suppress the hint entirely (full "
-                             "20-pose discipline).")
+                        help="Deshabilita el hint de early-stop. Por default, "
+                             "cuando las capturas pasan el coverage completo y "
+                             "el RMS cae bajo el threshold de lab, el wizard "
+                             "muestra un hint verde sugiriendo finalizar sin "
+                             "agotar las 20 poses. El hint es puramente "
+                             "advisory; el botón Finalizar existente es lo que "
+                             "realmente termina la sesión. Pasar este flag "
+                             "para suprimir el hint entero (disciplina completa "
+                             "de 20 poses).")
     p_wiz.add_argument("--min-detect-rate", type=float, default=0.7,
-                        help="Pre-calibration sanity threshold: if fewer than this "
-                             "fraction of captured pairs survive a strict "
-                             "re-detection pass, the wizard aborts before running "
+                        help="Threshold de sanity pre-calibración: si menos "
+                             "que esta fracción de los pares capturados "
+                             "sobrevive una pasada estricta de re-detección, "
+                             "el wizard aborta antes de correr "
                              "fisheye.calibrate. Default 0.7 (70%%).")
     p_wiz.add_argument("--low-light", action="store_true",
-                        help="PoC mode for low-light / small-room runs. Relaxes "
-                             "frame-quality gates (exposure, blur, corner sharpness, "
-                             "L/R brightness balance) so captures aren't rejected for "
-                             "scene conditions. The resulting calibration will NOT "
-                             "be valid for production depth — use only to validate "
-                             "the wizard end-to-end.")
+                        help="Modo PoC para corridas en luz baja / cuartos "
+                             "chicos. Afloja los gates de calidad de frame "
+                             "(exposición, blur, corner sharpness, balance de "
+                             "brightness L/R) así las capturas no son "
+                             "rechazadas por las condiciones de la escena. La "
+                             "calibración resultante NO va a ser válida para "
+                             "depth de producción — usar solo para validar el "
+                             "wizard end-to-end.")
     p_wiz.add_argument("--meter", choices=("matrix", "centre", "spot"), default="matrix",
-                        help="AE metering mode. 'matrix' (default) weights the whole "
-                             "frame. 'centre'/'spot' expose for the middle of the "
-                             "frame — use these in low light when bright peripheries "
-                             "(windows, walls) drag exposure down on the board.")
+                        help="Modo de AE metering. 'matrix' (default) "
+                             "pondera todo el frame. 'centre'/'spot' "
+                             "exponen para el centro del frame — usar estos "
+                             "en luz baja cuando hay periferias brillantes "
+                             "(ventanas, paredes) que arrastran la exposición "
+                             "abajo en el board.")
     p_wiz.add_argument("--lock-ae", action="store_true",
-                        help="Lock exposure/gain/white-balance after a 1s AE settle. "
-                             "Useful when the scene has variable light (natural "
-                             "daylight, doors/windows letting light fluctuate) — the "
-                             "lock prevents independent L/R AE drift mid-session. "
-                             "Default off: AE adjusts throughout, simpler and the "
-                             "ground-truth report image matches what the cameras see.")
+                        help="Lockea exposición/ganancia/white-balance "
+                             "después de un settle de AE de 1s. Útil cuando "
+                             "la escena tiene luz variable (luz natural, "
+                             "puertas/ventanas que dejan fluctuar la luz) — "
+                             "el lock evita que el AE driftee independiente "
+                             "entre L/R a mitad de sesión. Default off: el AE "
+                             "ajusta durante toda la sesión, más simple y la "
+                             "imagen del reporte ground-truth matchea lo que "
+                             "ven las cámaras.")
     p_wiz.set_defaults(func=cmd_wizard)
 
     args = parser.parse_args()

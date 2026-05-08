@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Walk through the 8 status LED states for bench validation.
+"""Recorre los 8 estados del status LED para validación de bench.
 
-Useful when testing the wiring on a breadboard before final assembly.
-Each static state is held for STATIC_S; blinking states run for BLINK_S
-so you see ~4 blink cycles (default period is 1 s).
+Útil para testear el wiring sobre un breadboard antes del armado final.
+Cada estado estático se sostiene por STATIC_S; los estados que parpadean
+corren por BLINK_S así se ven ~4 ciclos de blink (período default es 1 s).
 
-Usage:
+Uso:
     PYTHONPATH=. python3 scripts/test_led.py
 """
 from __future__ import annotations

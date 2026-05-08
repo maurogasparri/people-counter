@@ -1,4 +1,4 @@
-"""Tests for configuration loader with local/cloud merge."""
+"""Tests para el loader de configuración con defaults + merge del cloud."""
 
 import json
 
@@ -15,9 +15,31 @@ from src.config.loader import (
     is_wifi_ble_enabled,
     is_within_operating_hours,
     load_config,
+    load_defaults,
     merge_cloud_config,
     validate_operating_hours,
 )
+
+
+# Tests that exercise the validator on a per-device YAML *without* the
+# bundled defaults filling in missing keys pass an empty defaults file.
+# Tests that exercise the full load (defaults + per-device merge + validate)
+# rely on the shipped config.example.yaml — they only override per-device
+# bits that the test cares about.
+
+
+@pytest.fixture
+def empty_defaults(tmp_path):
+    """An empty YAML file used as `defaults_path` for validator unit tests.
+
+    Letting the bundled defaults fill in missing required keys would mask
+    validator behaviour ("device.id missing => raise"), so tests that want
+    to assert validation errors disable the defaults merge by passing this
+    empty file as `defaults_path`.
+    """
+    p = tmp_path / "empty_defaults.yaml"
+    p.write_text("", encoding="utf-8")
+    return p
 
 
 @pytest.fixture
@@ -54,9 +76,16 @@ def minimal_yaml(tmp_path):
             "rssi_shopper_threshold": -55,
         },
         "cloud_defaults": {
+            # Each day must be explicit so the deep-merge against the
+            # bundled defaults (which set every weekday) doesn't leak
+            # unexpected open-hours into tests that assume "closed".
             "operating_hours": {
                 "monday": "10:00-22:00",
                 "tuesday": "10:00-22:00",
+                "wednesday": None,
+                "thursday": None,
+                "friday": None,
+                "saturday": None,
                 "sunday": "11:00-20:00",
             },
             "footfall_scaling_factor": 1.0,
@@ -83,34 +112,30 @@ class TestLoadConfig:
         with pytest.raises(FileNotFoundError):
             load_config("/nonexistent/path.yaml")
 
-    def test_missing_device_id_raises(self, tmp_path):
-        bad = {"device": {"store_id": "s1"}, "vision": {}, "detection": {}, "mqtt": {}, "buffer": {}}
+    def test_missing_device_id_raises(self, tmp_path, empty_defaults):
+        bad = {"device": {"store_id": "s1"}}
         path = tmp_path / "bad.yaml"
         path.write_text(yaml.dump(bad))
         with pytest.raises(ValueError, match="device.id"):
-            load_config(str(path))
+            load_config(str(path), defaults_path=empty_defaults)
 
-    def test_missing_section_raises(self, tmp_path):
+    def test_missing_section_raises(self, tmp_path, empty_defaults):
         bad = {"device": {"id": "d1", "store_id": "s1"}}
         path = tmp_path / "bad.yaml"
         path.write_text(yaml.dump(bad))
-        with pytest.raises(ValueError, match="Missing required"):
-            load_config(str(path))
+        with pytest.raises(ValueError, match="missing section"):
+            load_config(str(path), defaults_path=empty_defaults)
 
-    def test_rssi_threshold_validation(self, tmp_path):
-        """Shopper threshold must be greater (less negative) than passerby."""
-        config = {
-            "device": {"id": "d1", "store_id": "s1"},
-            "vision": {},
-            "detection": {},
-            "mqtt": {},
-            "buffer": {},
-            "wifi_ble": {
-                "enabled": True,
-                "rssi_passerby_threshold": -55,
-                "rssi_shopper_threshold": -75,  # WRONG: shopper weaker than passerby
-            },
-        }
+    def test_rssi_threshold_validation(self, minimal_yaml, tmp_path):
+        """Shopper threshold must be greater (less negative) than passerby.
+
+        The minimal_yaml fixture sets the right values; we override with bad
+        ones via a sibling per-device YAML so the rest of the schema is
+        provided by the bundled defaults.
+        """
+        config = yaml.safe_load(open(minimal_yaml))
+        config["wifi_ble"]["rssi_passerby_threshold"] = -55
+        config["wifi_ble"]["rssi_shopper_threshold"] = -75
         path = tmp_path / "bad.yaml"
         path.write_text(yaml.dump(config))
         with pytest.raises(ValueError, match="rssi_shopper_threshold"):
@@ -324,18 +349,66 @@ class TestLoadConfigSoftScheduleValidation:
             for rec in caplog.records
         )
 
-    def test_missing_operating_hours_is_error(self, tmp_path):
+    def test_missing_operating_hours_is_error(self, tmp_path, empty_defaults):
+        # Use empty defaults so the bundled cloud_defaults.operating_hours
+        # doesn't fill in — we want to assert the validator's behaviour
+        # when operating_hours is *truly* missing from the merged config.
         config = {
             "device": {"id": "d1", "store_id": "s1"},
-            "vision": {},
-            "detection": {},
-            "mqtt": {},
-            "buffer": {},
+            "mqtt": {"endpoint": "x", "port": 8883, "topics": {
+                "counting": "c", "wifi_ble": "w", "telemetry": "t",
+                "shadow": "s",
+            }},
+            "bracket": {
+                "baseline_mm": 140,
+                "camera_left_csi": 0,
+                "camera_right_csi": 1,
+            },
+            "sensor": {
+                "model": "imx708",
+                "full_res": [4608, 2592],
+                "default_res": [2304, 1296],
+                "default_fps": 15,
+                "nominal_focal_full_px": 2050,
+            },
+            "lens": {"type": "m12_120deg", "hfov_deg": 120},
+            "vision": {
+                "resolution": [1152, 648],
+                "fps": 30,
+                "calibration_file": "x",
+                "sgbm": {"num_disparities": "auto", "block_size": 9, "downscale": 4},
+            },
+            "detection": {
+                "architecture": "rapid",
+                "model_path": "x",
+                "confidence_threshold": 0.3,
+                "nms_threshold": 0.45,
+                "cluster_distance_px": 200,
+            },
+            "tracking": {
+                "max_disappeared": 30,
+                "max_distance": 50,
+                "state_machine": {
+                    "confirm_frames": 1,
+                    "pending_max_frames": 20,
+                    "reid_gate_px": 300,
+                    "depth_gate_m": 0.5,
+                },
+            },
+            "counter": {"foot_projection_enabled": False},
+            "wifi_ble": {
+                "wifi_interface": "wlan0",
+                "probe_interval_seconds": 900,
+                "cross_protocol_window_seconds": 2,
+                "cross_protocol_rssi_delta": 5,
+            },
+            "buffer": {"db_path": "x", "max_age_hours": 72},
+            "logging": {"format": "json", "file": "x"},
             "cloud_defaults": {},
         }
         path = tmp_path / "cfg.yaml"
         path.write_text(yaml.dump(config))
-        cfg = load_config(str(path))
+        cfg = load_config(str(path), defaults_path=empty_defaults)
         assert has_schedule_error(cfg)
 
 
@@ -567,15 +640,15 @@ class TestBuildReportedState:
         from src.config.loader import build_reported_state
 
         # Only device section present — should not raise. ``calibration_file_path``
-        # falls back to the fleet default in hardware.yaml when the config
-        # has no vision.calibration_file (the runtime does the same fallback,
-        # so reported state matches what the device will actually use).
+        # falls back to the fleet default in ``config/config.example.yaml``
+        # when the config has no vision.calibration_file (the runtime does
+        # the same fallback, so reported state matches what the device
+        # will actually use).
         cfg = {"device": {"id": "x", "store_id": "y"}}
         reported = build_reported_state(cfg, calibration=None)
         assert reported["firmware_version"] == "unknown"
-        # Either None (no hardware fallback configured) or the hardware
-        # default path — both are valid; we just assert the runtime didn't
-        # crash.
+        # Either None (no fallback configured) or the canonical default
+        # path — both are valid; we just assert the runtime didn't crash.
         assert "calibration_file_path" in reported
         assert reported["effective_baseline_mm"] is None
         # None of the whitelisted keys should appear (they're absent from cfg)

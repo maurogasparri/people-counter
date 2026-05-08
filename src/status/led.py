@@ -1,16 +1,17 @@
-"""RGB status LED for field diagnosis.
+"""LED RGB de status para diagnóstico en sitio.
 
-8-state pattern (off / red / yellow / yellow blink / green blink / green /
-blue / blue blink) — retail staff can interpret device health from the
-LED color/blink without SSH access.
+Patrón de 8 estados (apagado / rojo / amarillo / amarillo parpadeante /
+verde parpadeante / verde / azul / azul parpadeante) — el operador del local
+puede interpretar la salud del dispositivo por color/parpadeo del LED sin
+acceso SSH.
 
-Hardware: 3mm common-cathode RGB on the GPIO header.
-    GPIO 17 (pin 11) -> R via 150 ohm
-    GPIO 18 (pin 12) -> G via 100 ohm
-    GPIO 27 (pin 13) -> B via 100 ohm
+Hardware: RGB de 3mm common-cathode sobre el header de GPIO.
+    GPIO 17 (pin 11) -> R vía 150 ohm
+    GPIO 18 (pin 12) -> G vía 100 ohm
+    GPIO 27 (pin 13) -> B vía 100 ohm
     pin 14 (GND)     -> common cathode
 
-State priority cascade (worst-first), used by ``decide_state`` in
+Cascada de prioridad de estados (worst-first), usada por ``decide_state`` en
 ``src/status/health.py``::
 
     BOOT_FAILURE > HARDWARE_FAULT > SOFTWARE_FAULT
@@ -27,19 +28,19 @@ logger = logging.getLogger(__name__)
 
 
 class LedState(Enum):
-    """Logical device state expressed by the LED."""
+    """Estado lógico del dispositivo expresado por el LED."""
 
     OFF = "off"
-    BOOT_FAILURE = "boot_failure"        # red solid
-    HARDWARE_FAULT = "hardware_fault"    # yellow solid
-    SOFTWARE_FAULT = "software_fault"    # yellow blink
-    NO_INTERNET = "no_internet"          # green blink
-    NO_CLOUD = "no_cloud"                # green solid
-    UNPROVISIONED = "unprovisioned"      # blue blink
-    OK = "ok"                            # blue solid
+    BOOT_FAILURE = "boot_failure"        # rojo fijo
+    HARDWARE_FAULT = "hardware_fault"    # amarillo fijo
+    SOFTWARE_FAULT = "software_fault"    # amarillo parpadeante
+    NO_INTERNET = "no_internet"          # verde parpadeante
+    NO_CLOUD = "no_cloud"                # verde fijo
+    UNPROVISIONED = "unprovisioned"      # azul parpadeante
+    OK = "ok"                            # azul fijo
 
 
-# (red_on, green_on, blue_on, blinking) per state.
+# (red_on, green_on, blue_on, blinking) por estado.
 _PATTERN: dict[LedState, tuple[bool, bool, bool, bool]] = {
     LedState.OFF:            (False, False, False, False),
     LedState.BOOT_FAILURE:   (True,  False, False, False),
@@ -53,7 +54,7 @@ _PATTERN: dict[LedState, tuple[bool, bool, bool, bool]] = {
 
 
 class _GpioBackend(Protocol):
-    """Minimum interface expected of a GPIO output. ``gpiozero.LED`` matches."""
+    """Interfaz mínima esperada de un output GPIO. ``gpiozero.LED`` matchea."""
 
     def on(self) -> None: ...
     def off(self) -> None: ...
@@ -63,37 +64,37 @@ class _GpioBackend(Protocol):
 def _open_default_backend(
     pin_red: int, pin_green: int, pin_blue: int,
 ) -> tuple[_GpioBackend, _GpioBackend, _GpioBackend] | None:
-    """Open ``gpiozero.LED`` handles, or return None if unavailable.
+    """Abre los handles ``gpiozero.LED``, o devuelve None si no está disponible.
 
-    Used as the default backend on the RPi. Tests inject their own backend
-    and never hit this path.
+    Se usa como backend default en la RPi. Los tests inyectan su propio backend
+    y nunca pegan en este path.
     """
     try:
         from gpiozero import LED
     except Exception as e:
-        logger.warning("gpiozero unavailable, status LED disabled: %s", e)
+        logger.warning("gpiozero no disponible, status LED deshabilitado: %s", e)
         return None
     try:
         return LED(pin_red), LED(pin_green), LED(pin_blue)
     except Exception:
-        logger.exception("Failed to open LED GPIO pins (R=%d G=%d B=%d)",
+        logger.exception("Falló abrir los pines GPIO del LED (R=%d G=%d B=%d)",
                          pin_red, pin_green, pin_blue)
         return None
 
 
 class StatusLED:
-    """RGB status LED driver with blink loop in a background thread.
+    """Driver del LED RGB de status con loop de blink en thread background.
 
-    Off-RPi and on init failure the LED degrades to a no-op and only logs
-    state transitions — main.py keeps running. Tests inject ``backend`` to
-    exercise transitions without touching real GPIO.
+    Fuera de la RPi y ante fallas de init el LED degrada a no-op y solo loggea
+    las transiciones de estado — main.py sigue corriendo. Los tests inyectan
+    ``backend`` para ejercitar transiciones sin tocar el GPIO real.
 
     Args:
-        pin_red: BCM pin number for the R anode (default GPIO 17).
-        pin_green: BCM pin number for the G anode (default GPIO 18).
-        pin_blue: BCM pin number for the B anode (default GPIO 27).
-        blink_period_s: Full on/off period for blinking states (default 1 s).
-        backend: Optional injected ``(red, green, blue)`` GPIO handles.
+        pin_red: Número de pin BCM para el ánodo R (default GPIO 17).
+        pin_green: Número de pin BCM para el ánodo G (default GPIO 18).
+        pin_blue: Número de pin BCM para el ánodo B (default GPIO 27).
+        blink_period_s: Período completo on/off para los estados que parpadean (default 1 s).
+        backend: Handles GPIO ``(red, green, blue)`` inyectados opcionalmente.
     """
 
     def __init__(
@@ -123,12 +124,12 @@ class StatusLED:
         self._thread.start()
         logger.info(
             "Status LED %s (pins R=%d G=%d B=%d)",
-            "active" if self._enabled else "disabled",
+            "activo" if self._enabled else "deshabilitado",
             pin_red, pin_green, pin_blue,
         )
 
     def set_state(self, state: LedState) -> None:
-        """Switch to ``state``. Idempotent: same state is a no-op."""
+        """Cambia a ``state``. Idempotente: el mismo estado es no-op."""
         with self._state_lock:
             if state is self._state:
                 return
@@ -141,7 +142,7 @@ class StatusLED:
             return self._state
 
     def close(self) -> None:
-        """Turn off and release GPIO. Safe to call repeatedly."""
+        """Apaga y libera los GPIO. Seguro llamarlo varias veces."""
         self._stop_event.set()
         self._tick_event.set()
         if self._thread.is_alive():
@@ -181,6 +182,6 @@ class StatusLED:
                 self._tick_event.wait(timeout=half)
             else:
                 self._set_outputs(r, g, b)
-                self._tick_event.wait()  # block until state change or stop
+                self._tick_event.wait()  # bloquea hasta cambio de estado o stop
             self._tick_event.clear()
             on_phase = not on_phase if blink else True

@@ -1,6 +1,6 @@
-"""Tests for stereo calibration module.
+"""Tests para el módulo de calibración estéreo.
 
-Uses synthetically rendered ChArUco board images to test the full
+Usa imágenes del board ChArUco renderizadas sintéticamente para testear el
 calibration pipeline without requiring physical cameras.
 """
 

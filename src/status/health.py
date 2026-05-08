@@ -1,19 +1,20 @@
-"""Health probes and aggregation logic for the status LED.
+"""Probes de health y lógica de agregación para el status LED.
 
-The probes are pure (no side effects beyond reads of /proc, /sys, sockets)
-and individually unit-testable. ``decide_state`` applies the priority
-cascade defined in ``led.py``.
+Los probes son puros (sin side effects más allá de lecturas a /proc, /sys,
+sockets) y unit-testables individualmente. ``decide_state`` aplica la cascada
+de prioridad definida en ``led.py``.
 
-Threshold rationale:
-    * CPU temp 80 C: RPi5 starts thermal throttling at this point, so the
-      pipeline is at risk of frame drops.
-    * Hailo temp 85 C: Hailo-8L stays well below this in normal operation;
-      crossing it indicates airflow blocked or fan failure.
-    * Disk free 10 %: SQLite buffer needs headroom to retain events across
-      a multi-day MQTT outage; below this we may lose data on next disconnect.
-    * Pipeline stall 5 s: at 15 FPS the loop iterates every ~67 ms, so 5 s
-      represents ~75 missed iterations - well past any plausible single-frame
-      hiccup.
+Justificación de thresholds:
+    * CPU temp 80 C: la RPi5 empieza a throttlear térmicamente acá, así que
+      el pipeline corre riesgo de drop de frames.
+    * Hailo temp 85 C: el Hailo-8L se mantiene bien debajo en operación normal;
+      cruzarlo indica airflow bloqueado o falla del fan.
+    * Disk free 10 %: el buffer SQLite necesita headroom para retener eventos
+      durante un outage MQTT multi-día; por debajo podemos perder data en el
+      próximo disconnect.
+    * Pipeline stall 5 s: a 15 FPS el loop itera cada ~67 ms, así que 5 s
+      representa ~75 iteraciones perdidas — muy por encima de cualquier
+      hiccup plausible de un solo frame.
 """
 from __future__ import annotations
 
@@ -40,10 +41,10 @@ _HAILO_TEMP_RE = re.compile(
 
 
 def check_cpu_temp_ok() -> bool:
-    """Return True when CPU is below the throttling threshold or unreadable.
+    """Devuelve True cuando la CPU está debajo del threshold de throttling o es ilegible.
 
-    Fail-open: an unreadable thermal zone (off-RPi tests, kernel changes)
-    must not light the fault LED.
+    Fail-open: una zona térmica ilegible (tests fuera de la RPi, cambios de
+    kernel) no debe prender el LED de falla.
     """
     try:
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
@@ -54,7 +55,7 @@ def check_cpu_temp_ok() -> bool:
 
 
 def check_hailo_temp_ok() -> bool:
-    """Probe Hailo die temperature via ``hailortcli``. Fail-open on error."""
+    """Probea la temperatura del die de Hailo vía ``hailortcli``. Fail-open en error."""
     try:
         result = subprocess.run(
             ["hailortcli", "fw-control", "identify"],
@@ -73,29 +74,29 @@ def check_hailo_temp_ok() -> bool:
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         match = _HAILO_TEMP_RE.search(output)
         if match is None:
-            return True  # no temp parsed - don't trip
+            return True  # no se parseó la temp — no disparar
         return float(match.group(1)) < HAILO_TEMP_CRITICAL_C
     except Exception:
-        logger.exception("Failed to parse hailortcli output")
+        logger.exception("Falló parsear output de hailortcli")
         return True
 
 
 def check_disk_ok() -> bool:
-    """Return True when free disk space is above ``DISK_FREE_MIN_PCT``."""
+    """Devuelve True cuando el espacio libre en disco está sobre ``DISK_FREE_MIN_PCT``."""
     try:
         usage = shutil.disk_usage("/")
         free_pct = usage.free / usage.total * 100.0
         return free_pct >= DISK_FREE_MIN_PCT
     except Exception:
-        logger.exception("Disk check failed")
+        logger.exception("Falló el check de disco")
         return True
 
 
 def check_calibration_loadable(path: str | None) -> bool:
-    """Return True if no calibration is configured or the file exists.
+    """Devuelve True si no hay calibración configurada o si el archivo existe.
 
-    A missing file is a hardware-class fault because the pipeline can't
-    rectify frames without it.
+    Un archivo faltante es una falla de clase hardware porque el pipeline
+    no puede rectificar frames sin él.
     """
     if not path:
         return True
@@ -105,11 +106,11 @@ def check_calibration_loadable(path: str | None) -> bool:
 def check_internet(
     host: str = "1.1.1.1", port: int = 53, timeout_s: float = 3.0,
 ) -> bool:
-    """TCP-connect probe for internet reachability.
+    """Probe TCP-connect para reachability de internet.
 
-    Cloudflare DNS on port 53 answers from anywhere and doesn't require
-    ICMP (often firewalled). The probe is blocking; callers should run it
-    on a thread with a slower cadence than the main loop.
+    Cloudflare DNS en el puerto 53 responde desde cualquier lado y no requiere
+    ICMP (a menudo firewalled). El probe es blocking; los callers deberían
+    correrlo en un thread con cadencia más lenta que la del main loop.
     """
     try:
         with socket.create_connection((host, port), timeout=timeout_s):
@@ -121,11 +122,11 @@ def check_internet(
 def check_cloud_endpoint(
     endpoint: str, port: int = 8883, timeout_s: float = 5.0,
 ) -> bool:
-    """TCP probe to the AWS IoT broker (no TLS validation).
+    """Probe TCP al broker de AWS IoT (sin validación TLS).
 
-    Used as a cold-start fallback before the MQTT client has a connected
-    flag. Once MQTT is up, ``MQTTClient.is_connected()`` is the source of
-    truth.
+    Se usa como fallback de cold-start antes de que el cliente MQTT tenga
+    el flag connected. Una vez que MQTT está arriba, ``MQTTClient.is_connected()``
+    es la fuente de verdad.
     """
     try:
         with socket.create_connection((endpoint, port), timeout=timeout_s):
@@ -143,10 +144,11 @@ def decide_state(
     cloud_connected: bool = True,
     provisioned: bool = True,
 ) -> LedState:
-    """Apply the priority cascade and return the worst applicable state.
+    """Aplica la cascada de prioridad y devuelve el peor estado aplicable.
 
-    Worst-first: a single hardware fault masks downstream issues, since the
-    operator's first action (power cycle, check cables) is the same.
+    Worst-first: una sola falla de hardware enmascara problemas downstream,
+    porque la primera acción del operador (power cycle, chequear cables) es
+    la misma.
     """
     if boot_failure:
         return LedState.BOOT_FAILURE

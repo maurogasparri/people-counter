@@ -1,4 +1,4 @@
-"""Tests for the unified Counter (ROI + N directional lines)."""
+"""Tests para el Counter unificado (ROI + N líneas direccionales)."""
 
 import numpy as np
 import pytest
@@ -873,3 +873,79 @@ def test_check_all_processes_multiple_tracks():
     assert directions == {"ingress", "egress"}
     assert counter.total_in == 1
     assert counter.total_out == 1
+
+
+# ---------------------------------------------------------------------------
+# Debounce — min_crossing_movement_px
+# ---------------------------------------------------------------------------
+
+
+def test_debounce_filters_jitter_around_line():
+    """Track parado al lado de la línea con micro-jitter no debe contar.
+
+    Sin debounce: cada flip de lado por jitter actualiza last_label, y al
+    salir del ROI el contador dispara un evento espurio. Con
+    min_crossing_movement_px=3.0, los movimientos sub-3px (medidos contra
+    la última posición no-debounced) se ignoran y no fabrican cruces.
+    """
+    counter = Counter(
+        lines=[_line_h()],
+        roi=ROI,
+        min_crossing_movement_px=3.0,
+    )
+    # Track entra arriba de la línea (y=210, line en y=300).
+    track = _make_track(1, [[300, 210, 3000]])
+    counter._process_track(track)
+    # Camina hacia la línea hasta y=298 (todavía arriba, sin cruce).
+    # last_track_pos queda en (300, 298).
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 298, 3000])
+    # Jitter alrededor de la línea: todos los valores caen dentro de 3px
+    # de y=298 (la referencia cacheada), así cada frame es debounced y
+    # last_track_pos no se actualiza. Sin debounce, esos flips de lado
+    # quedarían registrados como cruces.
+    for y in (299.5, 300.5, 299.0, 300.7, 297.5, 300.2, 298.8):
+        _advance(counter, track, [300, y, 3000])
+    # Sale del ROI por arriba (regreso). Si el debounce funcionó, no
+    # tiene last_label seteado y no dispara evento.
+    ev = _advance(counter, track, [300, 180, 3000])
+    assert ev is None
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_debounce_does_not_block_real_crossing():
+    """Movimiento normal (>threshold) sigue contando con debounce activo."""
+    counter = Counter(
+        lines=[_line_h()],
+        roi=ROI,
+        min_crossing_movement_px=3.0,
+    )
+    track = _make_track(1, [[300, 210, 3000]])
+    counter._process_track(track)
+    # Movimiento normal: 10 px/frame (típico a 1m/s, 30fps).
+    _advance(counter, track, [300, 220, 3000])
+    _advance(counter, track, [300, 280, 3000])  # cruce dentro de un solo frame
+    _advance(counter, track, [300, 320, 3000])  # del lado nuevo
+    ev = _advance(counter, track, [300, 420, 3000])  # exit abajo
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+
+
+def test_debounce_default_disabled():
+    """min_crossing_movement_px=0 (default) preserva comportamiento legacy."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Mismo escenario que test_debounce_filters_jitter_around_line, pero
+    # sin threshold — el último flip dentro del ROI gana, así que el exit
+    # dispara según el último cruce registrado.
+    track = _make_track(1, [[300, 210, 3000]])
+    counter._process_track(track)
+    _advance(counter, track, [300, 298, 3000])
+    # Cruce real abajo, después oscila por arriba — el último cruce gana.
+    _advance(counter, track, [300, 305, 3000])  # cruzó, ahora abajo (last_label=ingress)
+    _advance(counter, track, [300, 295, 3000])  # cruzó al revés (last_label=egress)
+    ev = _advance(counter, track, [300, 180, 3000])  # exit arriba
+    # Sin debounce el último cruce dentro del ROI es egress, y al salir
+    # arriba ese label se emite — el legacy permite que jitter cuente.
+    assert ev is not None and ev.direction == "egress"

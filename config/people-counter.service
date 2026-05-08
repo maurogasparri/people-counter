@@ -25,10 +25,10 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/people-counter /var/log/people-counter /etc/people-counter
 PrivateTmp=true
 
-# Live web viewer binds to port 80 by default (--web-viewer-port). Granting
-# CAP_NET_BIND_SERVICE to the service user (pi) lets it bind privileged
-# ports without running as root. Pass --web-viewer-port 0 in ExecStart to
-# disable the viewer; in that case this capability is unused.
+# El web viewer en vivo bindea al puerto 80 por default (--web-viewer-port).
+# Otorgarle CAP_NET_BIND_SERVICE al user del servicio (pi) le permite bindear
+# puertos privilegiados sin correr como root. Pasar --web-viewer-port 0 en
+# ExecStart para deshabilitar el viewer; en ese caso esta capability no se usa.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 

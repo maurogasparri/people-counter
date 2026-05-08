@@ -1,16 +1,17 @@
-"""Stereo calibration using ChArUco patterns.
+"""Calibración estéreo usando patrones ChArUco.
 
-Uses the OpenCV fisheye model (cv2.fisheye.*, Kannala-Brandt angular polynomial
-k1..k4). The Arducam IMX708 M12 lens is fisheye (120° HFOV / 152° diagonal) —
-pinhole + CALIB_RATIONAL_MODEL fits the centre but leaves measurable residuals
-at the edges of the frame, which matters for wide-coverage cenital counting
-(~40% frame eccentricity for the tracking zone).
+Usa el modelo fisheye de OpenCV (cv2.fisheye.*, polinomio angular Kannala-Brandt
+k1..k4). El lens M12 del Arducam IMX708 es fisheye (120° HFOV / 152° diagonal) —
+pinhole + CALIB_RATIONAL_MODEL fitea el centro pero deja residuales medibles en
+los bordes del frame, lo cual importa para conteo cenital de cobertura amplia
+(~40% de excentricidad de frame para la zona de tracking).
 
-The ghost overlay renderer in project_pose() stays pinhole — it's a coarse
-visual guide for the operator, and at the wizard's alignment tolerances the
-pinhole/fisheye discrepancy at frame edges (~3-9px in preview) is negligible.
+El renderer del overlay ghost en project_pose() se mantiene pinhole — es una
+guía visual gruesa para el operador, y a las tolerancias de alineación del
+wizard la discrepancia pinhole/fisheye en los bordes del frame (~3-9px en
+preview) es despreciable.
 
-Compatible with OpenCV 4.8+ (contrib) which uses the refactored ArUco API.
+Compatible con OpenCV 4.8+ (contrib) que usa la API refactoreada de ArUco.
 """
 
 import logging
@@ -25,22 +26,23 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# ChArUco board factory
+# Factory de board ChArUco
 # ---------------------------------------------------------------------------
 
-DEFAULT_BOARD_SIZE = (9, 6)  # (columns, rows) of chessboard squares — A3 landscape
+DEFAULT_BOARD_SIZE = (9, 6)  # (columnas, filas) de cuadros del chessboard — A3 landscape
 DEFAULT_SQUARE_LENGTH = 45.0  # mm
-DEFAULT_MARKER_LENGTH = 33.0  # mm (73% of square — calib.io default ratio)
+DEFAULT_MARKER_LENGTH = 33.0  # mm (73% del cuadro — ratio default de calib.io)
 ARUCO_DICT_ID = cv2.aruco.DICT_4X4_100
 
-# Nominal intrinsics for IMX708 + Arducam B0310 M12 lens.
-# Derived from physical optics: f=2.87mm / pixel_pitch=1.4μm = 2050px at native
-# 4608x2592. The lens is fisheye (152°D x 120°H x 66°V captured), so the
-# pinhole-equivalent f approximates only the center region — edges have
-# significant radial distortion that calibration corrects for. Used for
-# ghost rendering + distance estimates (±10% center accuracy is fine).
+# Intrínsecos nominales para IMX708 + lens M12 del Arducam B0310.
+# Derivados de la óptica física: f=2.87mm / pixel_pitch=1.4μm = 2050px a la res
+# nativa 4608x2592. El lens es fisheye (152°D x 120°H x 66°V capturados), así que
+# la f equivalente-pinhole aproxima solo la región central — los bordes tienen
+# distorsión radial significativa que la calibración corrige. Se usa para el
+# rendering del ghost + estimaciones de distancia (±10% precisión en el centro
+# es suficiente).
 NOMINAL_FULL_RES = (4608, 2592)
-NOMINAL_FOCAL_PX = 2050.0  # f_mm / pixel_pitch (pinhole-equiv, center region)
+NOMINAL_FOCAL_PX = 2050.0  # f_mm / pixel_pitch (pinhole-equiv, región central)
 
 
 def create_charuco_board(
@@ -50,13 +52,13 @@ def create_charuco_board(
     dict_id: int = ARUCO_DICT_ID,
     legacy_pattern: bool = True,
 ) -> cv2.aruco.CharucoBoard:
-    """Build a ChArUco board. legacy_pattern defaults to True because our
-    canonical calib.io PDFs use the pre-4.6 marker enumeration — OpenCV 4.6+
-    switched the default and CharucoDetector.detectBoard returns zero ChArUco
-    corners against legacy-printed boards when run under the new pattern
-    (markers decode, IDs don't land where the new-pattern board expects). Both
-    sides — detection and generateImage() — respect this flag, so toggling
-    produces matching producer + detector behaviour.
+    """Arma un board ChArUco. legacy_pattern por default es True porque nuestros
+    PDFs canónicos de calib.io usan la enumeración de marcadores pre-4.6 —
+    OpenCV 4.6+ cambió el default y CharucoDetector.detectBoard devuelve cero
+    esquinas ChArUco contra boards impresos con el legacy cuando corre bajo el
+    pattern nuevo (los markers decodean, los IDs no caen donde el nuevo pattern
+    espera). Ambos lados — detección y generateImage() — respetan este flag, así
+    que toggling produce comportamiento producer + detector que matchea.
     """
     aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
     board = cv2.aruco.CharucoBoard(board_size, square_length, marker_length, aruco_dict)
@@ -74,7 +76,7 @@ def generate_board_image(
 
 
 # ---------------------------------------------------------------------------
-# ChArUco corner detection
+# Detección de esquinas ChArUco
 # ---------------------------------------------------------------------------
 
 
@@ -84,14 +86,14 @@ def detect_charuco_corners(
     min_corners: int = 8,
     lenient: bool = False,
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """Detect ChArUco internal corners.
+    """Detecta esquinas internas ChArUco.
 
-    min_corners — minimum corners required to return a valid detection.
-        Calibration needs >=8 for stable intrinsics; focus/setup tools
-        can accept fewer (just enough for a rough PnP).
-    lenient — loosen marker detection thresholds so smaller/farther markers
-        are still picked up. Slightly higher false-positive rate; fine for
-        setup tools, avoid for calibration.
+    min_corners — esquinas mínimas requeridas para devolver una detección válida.
+        Calibración necesita >=8 para intrínsecos estables; tools de focus/setup
+        pueden aceptar menos (lo justo para un PnP grueso).
+    lenient — afloja los thresholds de detección de markers para levantar markers
+        más chicos/lejanos. Tasa de falso-positivo levemente más alta; está bien
+        para tools de setup, evitar para calibración.
     """
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -100,20 +102,21 @@ def detect_charuco_corners(
 
     if lenient:
         params = cv2.aruco.DetectorParameters()
-        # Default is 0.03 (3% of image dim). Lower lets us find markers
-        # that span as little as 1% of the frame — i.e. far-away small
-        # boards where each marker is only ~10-15 px across.
+        # Default es 0.03 (3% de la dim de imagen). Bajarlo nos permite encontrar
+        # markers que abarquen apenas 1% del frame — es decir, boards chicos
+        # lejanos donde cada marker ocupa solo ~10-15 px.
         params.minMarkerPerimeterRate = 0.01
         params.adaptiveThreshWinSizeMin = 3
         params.adaptiveThreshWinSizeMax = 23
         params.adaptiveThreshWinSizeStep = 4
-        # Sub-pixel refinement stabilises corner positions (~0.1px vs 1px
-        # without), which materially reduces PnP flicker when markers are
-        # small or near the edges of the detection envelope.
+        # El refinement sub-pixel estabiliza las posiciones de las esquinas
+        # (~0.1px vs 1px sin él), lo que reduce materialmente el flicker de PnP
+        # cuando los markers son chicos o cerca de los bordes del envelope de
+        # detección.
         params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        # Tolerate blurrier markers (default 0.6 rejects ~40% of bits in
-        # error; 0.8 accepts a rougher read). Small bump in false-positive
-        # rate in exchange for more stable detection near the limit.
+        # Tolera markers más borrosos (default 0.6 rechaza ~40% de bits con
+        # error; 0.8 acepta una lectura más cruda). Pequeño aumento en false-
+        # positive rate a cambio de detección más estable cerca del límite.
         params.errorCorrectionRate = 0.8
         charuco_params = cv2.aruco.CharucoParameters()
         detector = cv2.aruco.CharucoDetector(board, charuco_params, params)
@@ -131,7 +134,7 @@ def detect_charuco_corners(
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# Helpers compartidos
 # ---------------------------------------------------------------------------
 
 
@@ -140,7 +143,7 @@ def _detect_all_pairs(
     board: cv2.aruco.CharucoBoard,
     min_common: int = 8,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], tuple[int, int]]:
-    """Detect ChArUco corners in all pairs, return matched obj/img points.
+    """Detecta esquinas ChArUco en todos los pares, devuelve obj/img points matcheados.
 
     Returns (all_obj, all_corners_l, all_corners_r, image_size).
     """
@@ -185,14 +188,15 @@ def _detect_all_pairs(
 
 
 # ---------------------------------------------------------------------------
-# Stereo calibration
+# Calibración estéreo
 # ---------------------------------------------------------------------------
 
 
-# Fisheye stereoRectify balance: 0.0 crops to zero black pixels in the rectified
-# output (tight FOV). For SGBM we prefer no black borders over maximum field —
-# black regions produce spurious disparity at the image edges. Raise to ~0.3 if
-# edge FOV turns out to matter more than disparity cleanliness in testing.
+# Balance del fisheye stereoRectify: 0.0 recorta a cero pixeles negros en el
+# output rectificado (FOV ajustado). Para SGBM preferimos no tener bordes negros
+# antes que tener máximo campo — las regiones negras producen disparidad espuria
+# en los bordes de la imagen. Subir a ~0.3 si el FOV de los bordes resulta más
+# importante que la limpieza de la disparidad en testing.
 FISHEYE_RECTIFY_BALANCE = 0.0
 
 
@@ -200,9 +204,10 @@ def _reshape_for_fisheye(
     obj_pts_list: list[np.ndarray],
     img_pts_list: list[np.ndarray],
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    """cv2.fisheye.* is picky: object points must be (N,1,3) float64 and image
-    points (N,1,2) float64. _detect_all_pairs already returns image points as
-    (N,1,2) float32 — we just upcast dtype and reshape the object points.
+    """cv2.fisheye.* es exigente: los object points tienen que ser
+    (N,1,3) float64 y los image points (N,1,2) float64.
+    _detect_all_pairs ya devuelve los image points como (N,1,2)
+    float32 — solo upcasteamos el dtype y reshapeamos los object points.
     """
     obj_out = [np.asarray(o, dtype=np.float64).reshape(-1, 1, 3) for o in obj_pts_list]
     img_out = [np.asarray(p, dtype=np.float64).reshape(-1, 1, 2) for p in img_pts_list]
@@ -215,13 +220,15 @@ def _derive_stereo_rt_from_per_pose(
     rvecs_r: list[np.ndarray],
     tvecs_r: list[np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Average the per-pose relative transform (left→right) across all poses.
+    """Promedia el transform relativo per-pose (left→right) sobre todas las poses.
 
-    For a rigid stereo bracket, R_stereo @ R_board_to_left == R_board_to_right
-    and T_stereo == t_right - R_stereo @ t_left in every pose. We compute both
-    per-pose and average — translations with a simple mean, rotations via
-    quaternion averaging (arithmetic mean + renormalise is close enough for
-    this application and avoids the pypkg scipy dependency).
+    Para un bracket estéreo rígido,
+    R_stereo @ R_board_to_left == R_board_to_right y T_stereo ==
+    t_right - R_stereo @ t_left en cada pose. Computamos ambos
+    per-pose y promediamos — translations con una mean simple,
+    rotaciones via quaternion averaging (mean aritmético + renormalize
+    está suficientemente cerca para esta aplicación y evita la
+    dependencia pypkg scipy).
     """
     rel_rotations: list[np.ndarray] = []
     rel_translations: list[np.ndarray] = []
@@ -235,16 +242,17 @@ def _derive_stereo_rt_from_per_pose(
         rel_rotations.append(R_rel)
         rel_translations.append(t_rel)
 
-    # Average translations straight.
+    # Promediar las translations directamente.
     T_mean = np.mean(np.stack(rel_translations, axis=0), axis=0).reshape(3, 1)
 
-    # Average rotations: arithmetic mean of R matrices, then SVD-project to
-    # the closest valid rotation (orthogonal with det=+1).
+    # Promediar rotaciones: mean aritmético de las matrices R,
+    # después SVD-project a la rotación válida más cercana
+    # (ortogonal con det=+1).
     R_sum = np.sum(np.stack(rel_rotations, axis=0), axis=0)
     U, _, Vt = np.linalg.svd(R_sum)
     R_mean = U @ Vt
     if np.linalg.det(R_mean) < 0:
-        # Mirror reflection — flip the last singular column.
+        # Reflexión espejo — flipear la última columna singular.
         U[:, -1] *= -1
         R_mean = U @ Vt
 
@@ -264,13 +272,15 @@ def _compute_stereo_rms(
     R_stereo: np.ndarray,
     T_stereo: np.ndarray,
 ) -> float:
-    """Reprojection RMS of the fixed-intrinsics / averaged-extrinsics stereo fit.
+    """RMS de reprojection del fit estéreo con intrínsecos fijos /
+    extrínsecos promediados.
 
-    For each pose, left extrinsics come from fisheye.calibrate's per-pose
-    solve; right extrinsics are derived by applying R_stereo, T_stereo. We
-    project the 3D object points through both cameras and compare to the
-    detected corners. This is the same quantity stereoCalibrate minimises,
-    just computed after the fact.
+    Para cada pose, los extrínsecos de la izquierda vienen del solve
+    per-pose de fisheye.calibrate; los extrínsecos de la derecha se
+    derivan aplicando R_stereo, T_stereo. Proyectamos los object
+    points 3D a través de ambas cámaras y comparamos contra las
+    esquinas detectadas. Es la misma cantidad que stereoCalibrate
+    minimiza, solo que computada después del hecho.
     """
     errs: list[float] = []
     for obj_pts, pts_l, pts_r, rv_l, tv_l in zip(
@@ -296,7 +306,7 @@ def _compute_stereo_rms(
             axis=1,
         )
 
-        # Right extrinsics: chain left with the stereo transform.
+        # Extrínsecos derecha: encadenar la izquierda con el transform estéreo.
         R_r = R_stereo @ R_l
         t_r = R_stereo @ tv_l_arr + T_stereo
         rv_r_arr, _ = cv2.Rodrigues(R_r)
@@ -330,7 +340,7 @@ def calibrate_stereo(
     min_pairs: int = 15,
     legacy_pattern: bool = True,
 ) -> dict[str, np.ndarray]:
-    """Stereo calibration using the fisheye (Kannala-Brandt) model."""
+    """Calibración estéreo usando el modelo fisheye (Kannala-Brandt)."""
     board = create_charuco_board(
         board_size,
         square_length,
@@ -355,16 +365,17 @@ def calibrate_stereo(
     obj_f, corners_l_f = _reshape_for_fisheye(all_obj, all_corners_l)
     _, corners_r_f = _reshape_for_fisheye(all_obj, all_corners_r)
 
-    # CHECK_COND raises if a pose is too degenerate. We omit it — with real lab
-    # captures the 20 canonical poses are well-distributed, and keeping it off
-    # avoids cryptic failures on rare borderline cases.
+    # CHECK_COND raisea si una pose es muy degenerada. Lo omitimos —
+    # con capturas de lab reales las 20 poses canónicas están bien
+    # distribuidas, y mantenerlo off evita fallas crípticas en casos
+    # borderline raros.
     calib_flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC | cv2.fisheye.CALIB_FIX_SKEW
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
 
-    # Pre-allocate K/D with the shapes the fisheye binding expects, but do NOT
-    # pre-allocate rvecs/tvecs — the Python binding builds them itself from the
-    # pose count, and passing fixed-shape placeholders triggers an _OutputArray
-    # assertion (OpenCV 4.13+).
+    # Pre-allocar K/D con las shapes que espera el binding fisheye,
+    # pero NO pre-allocar rvecs/tvecs — el binding Python las construye
+    # él mismo a partir del count de poses, y pasar placeholders de
+    # shape fijo dispara una assertion _OutputArray (OpenCV 4.13+).
     K_l = np.zeros((3, 3), dtype=np.float64)
     D_l = np.zeros((4, 1), dtype=np.float64)
     K_r = np.zeros((3, 3), dtype=np.float64)
@@ -401,14 +412,16 @@ def calibrate_stereo(
     D_l = np.asarray(D_l, dtype=np.float64).reshape(4, 1)
     D_r = np.asarray(D_r, dtype=np.float64).reshape(4, 1)
 
-    # fisheye.stereoCalibrate requires identical point counts across poses
-    # (OpenCV 4.13 limitation). Our lab captures have variable per-pose counts
-    # (far distances lose corners), so we derive the rigid L→R transform
-    # directly from the per-pose extrinsics returned by fisheye.calibrate:
-    # for each pose i, R_stereo = R_ri @ R_li.T and T_stereo = t_ri - R_stereo @ t_li.
-    # Averaging across poses (with SO(3) projection on rotations) gives the
-    # same R, T that joint stereoCalibrate would converge to, within a
-    # fraction of a pixel RMS for a rigid bracket.
+    # fisheye.stereoCalibrate requiere counts de puntos idénticos
+    # entre poses (limitación de OpenCV 4.13). Nuestras capturas de
+    # lab tienen counts per-pose variables (las distancias lejanas
+    # pierden esquinas), así que derivamos el transform rígido L→R
+    # directamente de los extrínsecos per-pose que devuelve
+    # fisheye.calibrate: para cada pose i, R_stereo = R_ri @ R_li.T
+    # y T_stereo = t_ri - R_stereo @ t_li. Promediar sobre las poses
+    # (con proyección SO(3) en las rotaciones) da el mismo R, T al
+    # cual stereoCalibrate joint convergería, dentro de una fracción
+    # de pixel de RMS para un bracket rígido.
     R, T = _derive_stereo_rt_from_per_pose(rvecs_l, tvecs_l, rvecs_r, tvecs_r)
     rms_stereo = _compute_stereo_rms(
         obj_f,
@@ -489,7 +502,7 @@ def calibrate_stereo(
 
 
 # ---------------------------------------------------------------------------
-# Lens alignment diagnostics
+# Diagnóstico de lens alignment
 # ---------------------------------------------------------------------------
 
 
@@ -497,23 +510,25 @@ def lens_alignment_metrics(
     R: np.ndarray,
     T: np.ndarray,
 ) -> dict[str, float]:
-    """Decompose stereo extrinsics into operator-friendly alignment metrics.
+    """Descompone los extrínsecos estéreo en métricas de alineamiento
+    operator-friendly.
 
-    Diagnostic only — these numbers describe how cleanly the bracket built
-    a stereo pair, not whether the calibration is usable. The runtime
-    pipeline already accounts for any misalignment via R/T (rectification
-    absorbs the geometry), so a degree of yaw or a millimetre of vertical
-    offset is corrected internally and doesn't break depth. We surface
-    them so QA can compare units and flag fabrication outliers.
+    Solo diagnóstico — estos números describen qué tan limpiamente el
+    bracket armó un par estéreo, no si la calibración es usable. El
+    pipeline runtime ya tiene en cuenta cualquier misalignment vía
+    R/T (la rectificación absorbe la geometría), así que un grado de
+    yaw o un milímetro de offset vertical se corrige internamente y
+    no rompe el depth. Los exponemos así QA puede comparar unidades
+    y flaggear outliers de fabricación.
 
     Returns:
-        Dict with:
-        - ``offset_x_mm`` / ``offset_y_mm`` / ``offset_z_mm``: components
-          of T (mm). Offset X is the baseline; Y and Z should be tiny
-          on a clean bracket.
+        Dict con:
+        - ``offset_x_mm`` / ``offset_y_mm`` / ``offset_z_mm``:
+          componentes de T (mm). Offset X es el baseline; Y y Z
+          deberían ser chicos en un bracket limpio.
         - ``rotation_x_deg`` / ``rotation_y_deg`` / ``rotation_z_deg``:
-          Euler angles (XYZ convention) of R, in degrees. Pitch / yaw /
-          roll between the lenses. Perfect bracket = all zeros.
+          ángulos de Euler (convención XYZ) de R, en grados. Pitch /
+          yaw / roll entre los lentes. Bracket perfecto = todos cero.
     """
     T_arr = np.asarray(T, dtype=np.float64).reshape(3)
 
@@ -521,11 +536,12 @@ def lens_alignment_metrics(
     if R_arr.shape != (3, 3):
         raise ValueError(f"R must be 3x3, got {R_arr.shape}")
 
-    # Standard XYZ-convention Euler decomposition. Handles the gimbal-lock
-    # singularity when |R[2,0]| ~ 1 (cos(pitch) ~ 0): in that case roll
-    # collapses into pitch and we report the combined value with roll=0
-    # (the standard convention — there's no unique decomposition there
-    # but for a real stereo bracket we never get close).
+    # Descomposición Euler convención XYZ estándar. Maneja la
+    # singularidad gimbal-lock cuando |R[2,0]| ~ 1 (cos(pitch) ~ 0):
+    # en ese caso el roll colapsa en el pitch y reportamos el valor
+    # combinado con roll=0 (la convención estándar — no hay
+    # descomposición única ahí, pero para un bracket estéreo real
+    # nunca nos acercamos).
     sy = math.sqrt(R_arr[0, 0] ** 2 + R_arr[1, 0] ** 2)
     if sy > 1e-6:
         rx = math.atan2(R_arr[2, 1], R_arr[2, 2])
@@ -577,24 +593,26 @@ def rectify_pair(
 
 
 def _ensure_rectified_intrinsics(data: dict[str, np.ndarray]) -> None:
-    """Inject scalar rectified intrinsics derived from the projection P1.
+    """Inyecta intrínsecos rectificados escalares derivados de la proyección P1.
 
-    After ``cv2.fisheye.stereoRectify`` the left rectified frame has a
-    pinhole projection of the form
+    Después de ``cv2.fisheye.stereoRectify`` el frame rectificado
+    izquierdo tiene una proyección pinhole de la forma
 
         P1 = [[fx, 0,  cx, 0],
               [0,  fy, cy, 0],
               [0,  0,  1,  0]]
 
-    These three scalars are needed any time the runtime code wants to
-    back-project a (u, v, Z) pixel to a metric (X, Y, Z) point in the
-    left-camera frame — pretty much the entire 3-D logic that consumes
-    a depth map (``head_depth_in_bbox`` column filter, future world-space
-    helpers). They are a function of P1 alone, so we derive them once
-    here instead of asking every caller to reach into the matrix.
+    Estos tres escalares son necesarios cada vez que el código
+    runtime quiere back-proyectar un pixel (u, v, Z) a un punto
+    métrico (X, Y, Z) en el frame de cámara izquierda — prácticamente
+    toda la lógica 3D que consume un depth map (column filter de
+    ``head_depth_in_bbox``, futuros helpers de world-space). Son
+    una función solo de P1, así que los derivamos una vez acá en
+    vez de pedirle a cada caller que se meta dentro de la matriz.
 
-    The .npz on disk only stores P1 (and P2). Older calibrations missing
-    P1 are left untouched — callers must still tolerate the absence.
+    El .npz en disco solo guarda P1 (y P2). Calibraciones viejas sin
+    P1 quedan intactas — los callers todavía tienen que tolerar la
+    ausencia.
     """
     p1 = data.get("P1")
     if p1 is None:
@@ -613,16 +631,16 @@ def load_calibration(path: str) -> dict[str, np.ndarray]:
     if not cal_path.exists():
         raise FileNotFoundError(f"Calibration file not found: {path}")
     data = dict(np.load(cal_path))
-    # Derive scalar rectified intrinsics (fx, fy, cx, cy) from P1 so the
-    # runtime pipeline doesn't have to crack open the projection matrix
-    # at every depth-to-world conversion.
+    # Derivar intrínsecos rectificados escalares (fx, fy, cx, cy) de
+    # P1 así el pipeline runtime no tiene que crackear la projection
+    # matrix en cada conversión depth-to-world.
     _ensure_rectified_intrinsics(data)
-    # Convert the float32 rectify maps into fixed-point INT16 + UINT16 form
-    # (cv2 CV_16SC2 / CV_16UC1) once at load time. cv2.remap with these maps
-    # is ~2x faster than with float32 maps because the lookup is integer +
-    # bilinear-table lookup instead of float interpolation. The .npz on disk
-    # stores the float32 maps for compatibility — we re-derive the fast form
-    # at every load.
+    # Convertir los rectify maps float32 a forma fixed-point INT16 +
+    # UINT16 (cv2 CV_16SC2 / CV_16UC1) una vez al cargar. cv2.remap
+    # con estos mapas es ~2x más rápido que con mapas float32 porque
+    # el lookup es integer + bilinear-table lookup en lugar de
+    # interpolación float. El .npz en disco guarda los mapas float32
+    # por compatibilidad — re-derivamos la forma rápida en cada load.
     if "map_l_x" in data and "map_l_y" in data:
         try:
             data["map_l_x"], data["map_l_y"] = cv2.convertMaps(
@@ -661,10 +679,11 @@ def save_calibration(params: dict[str, np.ndarray], path: str) -> None:
 
 @dataclass(frozen=True)
 class PoseTarget:
-    """A target position+orientation for the ChArUco board during guided capture.
+    """Posición + orientación target para el board ChArUco durante captura guiada.
 
-    Translation is in millimeters in camera frame (+X right, +Y down, +Z forward).
-    Rotations are in degrees applied as rotZ(roll) * rotY(yaw) * rotX(pitch).
+    Translation en milímetros en camera frame (+X derecha, +Y abajo,
+    +Z adelante). Rotaciones en grados aplicadas como rotZ(roll) *
+    rotY(yaw) * rotX(pitch).
     """
 
     id: str
@@ -675,7 +694,7 @@ class PoseTarget:
     roll_deg: float = 0.0
 
     def rvec(self) -> np.ndarray:
-        """Rodrigues rotation vector from the Euler angles."""
+        """Vector de rotación Rodrigues a partir de los ángulos de Euler."""
         rx = math.radians(self.pitch_deg)
         ry = math.radians(self.yaw_deg)
         rz = math.radians(self.roll_deg)
@@ -715,25 +734,41 @@ def default_pose_sequence(
     mid_mm: float = DEFAULT_DIST_MID_MM,
     far_mm: float = DEFAULT_DIST_FAR_MM,
 ) -> list[PoseTarget]:
-    """Return a canonical 20-pose sequence covering near/mid/far × positions × tilts.
+    """Devuelve una secuencia canónica de 20 poses cubriendo
+    near/mid/far × posiciones × tilts.
 
-    Default distances (1000/2000/3000mm) span most of the fleet operating range
-    (mount heights 3.0–4.5m → head distances 1.15–3.30m) while keeping every
-    pose's required board height inside a standard 70–210cm tripod envelope.
-    With far=3.0m the D-group poses (±0.35 vertical offset) put the board at
-    1.40m ± 66cm = [0.74m, 2.06m], vs 1.40m ± 77cm = [0.63m, 2.17m] at far=3.5m
-    which blows past a typical 2.1m tripod max and a 70cm tripod min. The
-    operating ceiling (3.30m) is extrapolated 30cm beyond the sampled far —
-    low risk for the fisheye Kannala-Brandt model which stays well-behaved
-    under modest extrapolation. At 3.0m with f≈2050px full-res, a 33mm
-    DICT_4X4 marker is ~23 px wide, comfortably above the ~12 px threshold.
+    Las distancias default (1000/2000/3000mm) forman el protocolo
+    universal de fábrica — la misma calibración se shippea con cada
+    device y sirve a todo el rango de mount de la flota 2.0–3.5m sin
+    adaptación per-device. El polinomio angular K-B es independiente
+    de la profundidad: lo que importa es samplear la distorsión a lo
+    largo de todo el plano de imagen (centro + periferia), no
+    matchear punto-por-punto la profundidad operativa. El spread
+    1/2/3m más los tilts en los grupos A–E llevan las esquinas a
+    través de la periferia de alta curvatura en múltiples ángulos
+    de incidencia, que es lo que fittea k1–k4 robustamente.
+
+    Límites prácticos a 3m con f≈1025px (binned 2304×1296): un
+    marker de 33mm proyecta a ~11 px — al borde de detección
+    confiable de ChArUco. Empujar far a 3.5m deja los markers en
+    ~10 px y empieza a perder esquinas; el polinomio extrapola el
+    0.5m extra cómodamente (<20%) así el piso al mount más alto
+    queda well-behaved.
+
+    Check de cobertura operativa: cabezas a depth 1.0m (persona de
+    1.85m a mount 2.0m, borde near de la línea de conteo) hasta 2.5m
+    (niño de 1.0m a mount 3.5m); piso 2.0m–3.5m. Rango completo de
+    bbox depth 1.0–3.5m cae bien dentro de las distancias sampleadas
+    1–3m más la extrapolación tolerada de ±0.5m.
     """
     near, mid, far = near_mm, mid_mm, far_mm
 
-    # Lateral offsets: tvec X/Y values chosen so the projected board lands near
-    # the target screen position at each distance.
+    # Offsets laterales: valores X/Y de tvec elegidos así el board
+    # proyectado cae cerca de la posición target en pantalla en cada
+    # distancia.
     def off(frac_x: float, frac_y: float, z: float) -> tuple[float, float]:
-        # Project a pixel offset from image center back to world mm at depth z.
+        # Proyectar un offset en pixels del centro de imagen de vuelta
+        # a mm en world a depth z.
         half_w_px = NOMINAL_FULL_RES[0] / 2
         half_h_px = NOMINAL_FULL_RES[1] / 2
         return (
@@ -743,7 +778,7 @@ def default_pose_sequence(
 
     poses: list[PoseTarget] = []
 
-    # Group A — Center at near, systematic tilts
+    # Grupo A — Center en near, tilts sistemáticos
     poses.append(PoseTarget("A1", "Center near, frontal", (0, 0, near)))
     poses.append(PoseTarget("A2", "Center near, pitch up", (0, 0, near), pitch_deg=-20))
     poses.append(PoseTarget("A3", "Center near, yaw left", (0, 0, near), yaw_deg=-20))
@@ -753,7 +788,7 @@ def default_pose_sequence(
         )
     )
 
-    # Group B — Corners at mid, edge constraints
+    # Grupo B — Esquinas en mid, edge constraints
     dx, dy = off(-0.55, -0.45, mid)
     poses.append(PoseTarget("B1", "Top-left mid, yaw left", (dx, dy, mid), yaw_deg=-15))
     dx, dy = off(0.55, -0.45, mid)
@@ -769,7 +804,7 @@ def default_pose_sequence(
         PoseTarget("B4", "Bottom-right mid, pitch down", (dx, dy, mid), pitch_deg=-15)
     )
 
-    # Group C — Mid distance, roll + pitch diversity
+    # Grupo C — Distancia mid, diversidad de roll + pitch
     poses.append(PoseTarget("C1", "Center mid, roll +20", (0, 0, mid), roll_deg=20))
     poses.append(PoseTarget("C2", "Center mid, roll -20", (0, 0, mid), roll_deg=-20))
     dx, dy = off(0.0, -0.4, mid)
@@ -781,7 +816,7 @@ def default_pose_sequence(
         PoseTarget("C4", "Bottom-center mid, pitch down", (dx, dy, mid), pitch_deg=20)
     )
 
-    # Group D — Far distance, coverage
+    # Grupo D — Distancia far, cobertura
     poses.append(PoseTarget("D1", "Center far, frontal", (0, 0, far)))
     dx, dy = off(-0.45, -0.35, far)
     poses.append(
@@ -808,7 +843,7 @@ def default_pose_sequence(
         )
     )
 
-    # Group E — Extreme tilts at near
+    # Grupo E — Tilts extremos en near
     dx, dy = off(-0.5, 0, near)
     poses.append(
         PoseTarget("E1", "Left-mid near, strong yaw", (dx, dy, near), yaw_deg=-25)
@@ -840,17 +875,20 @@ def project_pose(
     full_res: tuple[int, int] = NOMINAL_FULL_RES,
     fitted_K: Optional[np.ndarray] = None,
 ) -> dict[str, np.ndarray]:
-    """Project a pose target into preview pixel coordinates.
+    """Proyecta un pose target a coordenadas pixel del preview.
 
     Args:
-        fitted_K: If given, use this 3x3 intrinsics matrix (at full_res) scaled
-            to preview_size. Overrides focal_full_px + centered principal point.
-            Used during bootstrap → tight-tolerance handoff.
+        fitted_K: Si se pasa, usa esta matriz 3x3 de intrínsecos
+            (a full_res) escalada a preview_size. Override de
+            focal_full_px + principal point centrado. Se usa durante
+            el handoff bootstrap → tight-tolerance.
 
-    Returns a dict with:
-        outer_corners: (4, 2) — board outline for visual ghost, clockwise TL,TR,BR,BL
-        inner_corners: (N, 2) — internal chessboard corners (for matching vs detection)
-        center: (2,) — projected center of the board
+    Devuelve un dict con:
+        outer_corners: (4, 2) — outline del board para el ghost visual,
+            sentido horario TL,TR,BR,BL
+        inner_corners: (N, 2) — esquinas internas del chessboard
+            (para matching vs detección)
+        center: (2,) — centro proyectado del board
     """
     cols, rows = board_size
     board_w_mm = cols * square_length
@@ -878,8 +916,9 @@ def project_pose(
     )
     dist = np.zeros(5)
 
-    # Board points expressed in a frame centered on the board's center
-    # (so tvec places the center of the board, not its top-left corner).
+    # Puntos del board expresados en un frame centrado en el centro
+    # del board (así tvec coloca el centro del board, no su esquina
+    # superior izquierda).
     half_w = board_w_mm / 2
     half_h = board_h_mm / 2
 
@@ -924,7 +963,7 @@ def project_pose(
 def _min_area_rect(
     points: np.ndarray,
 ) -> tuple[tuple[float, float], tuple[float, float], float]:
-    """Wrapper over cv2.minAreaRect returning (center, size, angle)."""
+    """Wrapper sobre cv2.minAreaRect devolviendo (center, size, angle)."""
     pts = points.astype(np.float32).reshape(-1, 1, 2)
     return cv2.minAreaRect(pts)
 
@@ -933,10 +972,12 @@ def compute_alignment_error(
     detected_preview: np.ndarray,
     ghost_inner: np.ndarray,
 ) -> dict[str, float]:
-    """Compare detected ChArUco corners (in preview px) to projected ghost inner corners.
+    """Compara esquinas ChArUco detectadas (en preview px) contra
+    las esquinas internas del ghost proyectado.
 
-    Returns center_px, scale_ratio (detected/ghost), rotation_deg (wrapped to [-45, 45]).
-    All comparisons are in preview pixel coordinates.
+    Devuelve center_px, scale_ratio (detected/ghost), rotation_deg
+    (wrapped a [-45, 45]). Todas las comparaciones están en
+    coordenadas pixel de preview.
     """
     det_center, det_size, det_angle = _min_area_rect(detected_preview)
     ghost_center, ghost_size, ghost_angle = _min_area_rect(ghost_inner)
@@ -949,7 +990,8 @@ def compute_alignment_error(
     ghost_diag = math.hypot(ghost_size[0], ghost_size[1])
     scale_ratio = det_diag / ghost_diag if ghost_diag > 1 else 0.0
 
-    # minAreaRect angles wrap at 90°, so wrap difference to [-45, 45]
+    # Los ángulos de minAreaRect wrapean a 90°, entonces wrapeamos
+    # la diferencia a [-45, 45]
     raw_diff = det_angle - ghost_angle
     while raw_diff > 45:
         raw_diff -= 90
@@ -971,7 +1013,7 @@ ALIGN_ROTATION_TOL_DEG = 3.0
 
 
 def is_aligned(error: dict[str, float]) -> bool:
-    """Tight tolerance gate for auto-capture (legacy minAreaRect-based)."""
+    """Gate de tolerancia tight para auto-capture (legacy basado en minAreaRect)."""
     return (
         error["center_px"] <= ALIGN_CENTER_TOL_PX
         and abs(error["scale_ratio"] - 1.0) <= ALIGN_SCALE_TOL
@@ -980,7 +1022,8 @@ def is_aligned(error: dict[str, float]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Corner-ID-based matching (preferred over minAreaRect — handles tilted poses)
+# Matching basado en IDs de esquina (preferido sobre minAreaRect —
+# maneja poses tilteadas)
 # ---------------------------------------------------------------------------
 
 
@@ -995,16 +1038,19 @@ def compute_alignment_by_corners(
     detected_ids: np.ndarray,
     ghost_inner_all: np.ndarray,
 ) -> dict[str, float]:
-    """Match detected ChArUco corners to ghost by ID, compute per-corner error.
+    """Matchea esquinas ChArUco detectadas contra el ghost por ID,
+    computa error per-corner.
 
     Args:
-        detected_preview: (N, 2) detected inner corners in preview px
-        detected_ids: (N,) ChArUco IDs for each detected corner
-        ghost_inner_all: (M, 2) all projected ghost inner corners, indexed by ID
+        detected_preview: (N, 2) esquinas internas detectadas en preview px
+        detected_ids: (N,) IDs ChArUco de cada esquina detectada
+        ghost_inner_all: (M, 2) todas las esquinas internas proyectadas
+            del ghost, indexadas por ID
 
-    Returns dict with matched count, mean_error_px, max_error_px, offset vector,
-    and centroid_offset_px. Tilted poses handled naturally because we compare
-    per-corner, not via a 2D similarity fit.
+    Devuelve dict con count matched, mean_error_px, max_error_px,
+    vector offset, y centroid_offset_px. Poses tilteadas se manejan
+    naturalmente porque comparamos per-corner, no via un fit de
+    similarity 2D.
     """
     pairs_det: list[np.ndarray] = []
     pairs_ghost: list[np.ndarray] = []
@@ -1047,8 +1093,9 @@ def is_aligned_by_corners(
     mean_err_tol_px: float = ALIGN_MEAN_ERR_TOL_PX_TIGHT,
     min_matched: int = ALIGN_MATCHED_MIN_TIGHT,
 ) -> bool:
-    """Alignment gate for the corner-ID matcher. Tolerances configurable so
-    bootstrap phase can use looser limits while fitted-K phase is strict.
+    """Gate de alignment para el matcher por corner-ID. Tolerancias
+    configurables así la fase bootstrap puede usar límites más
+    sueltos mientras la fase fitted-K es estricta.
     """
     return err["matched"] >= min_matched and err["mean_error_px"] <= mean_err_tol_px
 
@@ -1057,13 +1104,14 @@ def alignment_hint_by_corners(
     err: dict[str, float],
     mm_per_px: float | None = None,
 ) -> str:
-    """Human-readable direction for the operator. Uses centroid offset as the
-    dominant error vector; surfaces residual-after-translation when that's small.
+    """Indicación human-readable para el operador. Usa el centroid
+    offset como el vector de error dominante; expone el
+    residual-after-translation cuando es chico.
 
-    If `mm_per_px` is provided, the hint reports offsets in cm instead of
-    pixels — more meaningful to an operator holding a physical board. This
-    ratio is `target_distance_mm / focal_length_px` evaluated at the pose's
-    expected depth.
+    Si se provee `mm_per_px`, el hint reporta offsets en cm en lugar
+    de pixels — más significativo para un operador sosteniendo un
+    board físico. Esta ratio es `target_distance_mm /
+    focal_length_px` evaluada a la profundidad esperada de la pose.
     """
 
     def _fmt_offset(px: float) -> str:
@@ -1094,7 +1142,7 @@ def alignment_hint_by_corners(
 def count_common_corners(
     ids_l: Optional[np.ndarray], ids_r: Optional[np.ndarray]
 ) -> int:
-    """Count ChArUco IDs present in both left and right detections."""
+    """Cuenta los IDs ChArUco presentes en ambas detecciones (izq y der)."""
     if ids_l is None or ids_r is None:
         return 0
     return int(
@@ -1103,7 +1151,7 @@ def count_common_corners(
 
 
 # ---------------------------------------------------------------------------
-# Pose-coverage diversity check (guard against degenerate pose sets)
+# Check de diversidad de cobertura de poses (cuida contra sets degenerados)
 # ---------------------------------------------------------------------------
 
 
@@ -1114,18 +1162,19 @@ def analyze_pose_coverage(
     mid_mm: float = DEFAULT_DIST_MID_MM,
     far_mm: float = DEFAULT_DIST_FAR_MM,
 ) -> dict[str, object]:
-    """Report how diverse a set of captured poses is.
+    """Reporta qué tan diverso es un set de poses capturadas.
 
-    The canonical sequence groups poses by distance + tilt pattern via prefix
-    letter (A=center near, B=corners mid, C=roll/pitch mid, D=far, E=extreme).
-    A healthy calibration captures at least 2 poses from each of A..D and
-    covers pitch, yaw and roll tilts.
+    La secuencia canónica agrupa poses por distancia + patrón de tilt
+    via la letra prefijo (A=center near, B=corners mid, C=roll/pitch
+    mid, D=far, E=extreme). Una calibración saludable captura al
+    menos 2 poses de cada A..D y cubre tilts de pitch, yaw y roll.
 
-    near_mm/mid_mm/far_mm: thresholds for band classification, derived from the
-    wizard's actual --dist flags. Default to canonical 1/2/3m. Without these
-    parameters in scope, custom distance setups (e.g. PoC at 0.5/0.9/1.3m) had
-    everything classified as near/mid because the hardcoded 1200/2000 thresholds
-    didn't match.
+    near_mm/mid_mm/far_mm: thresholds para la clasificación de
+    bandas, derivados de los flags reales --dist del wizard.
+    Default al canónico 1/2/3m. Sin estos parámetros en scope,
+    setups de distancia custom (ej. PoC a 0.5/0.9/1.3m) tenían todo
+    clasificado como near/mid porque los thresholds hardcodeados
+    1200/2000 no matcheaban.
 
     Returns:
         {
@@ -1140,10 +1189,11 @@ def analyze_pose_coverage(
         all_poses = default_pose_sequence(near_mm=near_mm, mid_mm=mid_mm, far_mm=far_mm)
     pose_by_id = {p.id: p for p in all_poses}
 
-    # Band boundaries: midpoint between adjacent target distances. With
-    # canonical 1000/2000/3000mm this yields 1500 and 2500 (close to the
-    # previous hardcoded 1200/2000). With PoC distances (e.g. 500/900/1300)
-    # this yields 700 and 1100, correctly classifying each band.
+    # Bordes de banda: midpoint entre distancias target adyacentes.
+    # Con el canónico 1000/2000/3000mm da 1500 y 2500 (cerca de los
+    # 1200/2000 hardcodeados anteriores). Con distancias PoC
+    # (ej. 500/900/1300) da 700 y 1100, clasificando correctamente
+    # cada banda.
     near_mid_threshold = (near_mm + mid_mm) / 2
     mid_far_threshold = (mid_mm + far_mm) / 2
 
@@ -1177,7 +1227,7 @@ def analyze_pose_coverage(
         by_group[group] = by_group.get(group, 0) + 1
 
     warnings: list[str] = []
-    critical: list[str] = []  # Coverage gaps that produce degenerate fits
+    critical: list[str] = []  # Gaps de cobertura que producen fits degenerados
     for band, count in by_distance.items():
         if count == 0:
             critical.append(f"Banda de distancia '{band}' sin capturas")
@@ -1185,10 +1235,10 @@ def analyze_pose_coverage(
             warnings.append(f"Solo {count} captura en banda de distancia '{band}'")
     for axis, count in by_tilt.items():
         if axis == "frontal":
-            continue  # frontal is nice-to-have, not required
+            continue  # frontal es nice-to-have, no requerido
         if count < 2:
             warnings.append(f"Poca diversidad de tilt '{axis}' ({count} captura/s)")
-    for group in ["A", "B", "C", "D"]:  # E is extras, not required
+    for group in ["A", "B", "C", "D"]:  # E es extras, no requerido
         if by_group.get(group, 0) < 1:
             critical.append(f"Grupo de poses {group} sin capturas")
 
@@ -1203,15 +1253,17 @@ def analyze_pose_coverage(
 
 
 # ---------------------------------------------------------------------------
-# Early-stop readiness check (saves operator time on smooth sessions)
+# Check de readiness para early-stop (le ahorra tiempo al operador en
+# sesiones smooth)
 # ---------------------------------------------------------------------------
 
-# Conservative thresholds. Lab-quality sessions land RMS <0.5 px easily; if
-# you're below that with full coverage, more poses won't materially improve
-# the calibration (diminishing returns). Min poses prevents the "captured 8
-# easy frames in a hurry" trap where coverage looks fine but the solver
-# hasn't seen enough variety. Wizard adds a manual confirm on top — the
-# operator always gets to keep going if they want.
+# Thresholds conservadores. Sesiones de calidad lab caen en RMS <0.5
+# px fácilmente; si estás debajo de eso con cobertura completa, más
+# poses no van a mejorar materialmente la calibración (rendimientos
+# decrecientes). El mín de poses previene la trampa de "capturé 8
+# frames fáciles a las apuradas" donde la cobertura se ve fine pero
+# el solver no vio suficiente variedad. El wizard agrega un confirm
+# manual encima — el operador siempre puede seguir si quiere.
 EARLY_STOP_MIN_POSES = 12
 EARLY_STOP_MAX_RMS_PX = 0.50
 EARLY_STOP_MIN_PER_BAND = 2
@@ -1228,19 +1280,22 @@ def is_calibration_ready_for_early_stop(
     min_per_band: int = EARLY_STOP_MIN_PER_BAND,
     min_per_group: int = EARLY_STOP_MIN_PER_GROUP,
 ) -> tuple[bool, str]:
-    """Decide whether the wizard could finalize before reaching all poses.
+    """Decide si el wizard podría finalizar antes de alcanzar todas las poses.
 
-    All conditions must hold simultaneously:
-      - Total captures >= ``min_poses`` (default 12, well below the canonical
-        20 — leaves room for the solver to see real variety).
-      - Coverage has zero ``critical`` gaps (no missing band/group).
-      - Each band (near/mid/far) has >= ``min_per_band`` captures.
-      - Each required group (A..D) has >= ``min_per_group`` captures.
-      - Current per-pair RMS estimate <= ``max_rms_px`` (finalize only when
-        the fit is already lab-grade).
+    Todas las condiciones tienen que valer simultáneamente:
+      - Total de capturas >= ``min_poses`` (default 12, bien por
+        debajo del canónico 20 — deja margen para que el solver vea
+        variedad real).
+      - La cobertura tiene cero gaps ``critical`` (sin band/group
+        faltante).
+      - Cada banda (near/mid/far) tiene >= ``min_per_band`` capturas.
+      - Cada group requerido (A..D) tiene >= ``min_per_group`` capturas.
+      - La estimación actual de RMS per-pair <= ``max_rms_px``
+        (finalizar solo cuando el fit ya es lab-grade).
 
-    Returns ``(ready, reason)``. ``reason`` is empty when ready, or a short
-    operator-friendly string explaining what's still missing.
+    Devuelve ``(ready, reason)``. ``reason`` queda vacío cuando está
+    ready, o un string corto operator-friendly explicando qué
+    todavía falta.
     """
     if captured_count < min_poses:
         return False, (f"faltan capturas ({captured_count}/{min_poses} mínimo)")
@@ -1276,8 +1331,8 @@ def is_calibration_ready_for_early_stop(
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap intrinsics fit — switches ghost projection from nominal K to
-# per-sensor measured K after the first few captures
+# Fit bootstrap de intrínsecos — cambia la proyección del ghost de K
+# nominal a K medido per-sensor después de las primeras capturas
 # ---------------------------------------------------------------------------
 
 
@@ -1285,18 +1340,22 @@ def fit_single_camera_intrinsics(
     images: list[np.ndarray],
     board: cv2.aruco.CharucoBoard,
 ) -> Optional[np.ndarray]:
-    """Calibrate intrinsics for a single camera from a handful of ChArUco images.
+    """Calibra intrínsecos para una sola cámara a partir de un puñado
+    de imágenes ChArUco.
 
-    Returns the 3×3 camera matrix, or None if detection fails on too many frames.
-    Used for the guided-capture bootstrap — after a few captures we replace the
-    nominal K used to render ghost targets with the measured per-sensor value.
+    Devuelve la matriz 3×3 de cámara, o None si la detección falla
+    en demasiados frames. Se usa para el bootstrap de captura guiada
+    — después de unas pocas capturas reemplazamos el K nominal usado
+    para renderizar los ghost targets con el valor medido per-sensor.
 
-    Intentionally stays on the pinhole model (cv2.calibrateCamera) even though
-    the main stereo pipeline is fisheye. The only consumer is project_pose()
-    which also renders the ghost with pinhole projection — keeping both halves
-    on the same model avoids a visible offset between the ghost and the
-    detected board at frame edges during bootstrap. The final calibration that
-    actually goes into the .npz uses cv2.fisheye.* in calibrate_stereo.
+    Se mantiene intencionalmente en el modelo pinhole
+    (cv2.calibrateCamera) aunque el pipeline estéreo principal es
+    fisheye. El único consumer es project_pose() que también
+    renderiza el ghost con proyección pinhole — mantener ambas
+    mitades en el mismo modelo evita un offset visible entre el
+    ghost y el board detectado en los bordes del frame durante el
+    bootstrap. La calibración final que efectivamente va al .npz
+    usa cv2.fisheye.* en calibrate_stereo.
     """
     all_obj: list[np.ndarray] = []
     all_corners: list[np.ndarray] = []
@@ -1333,7 +1392,7 @@ def fit_single_camera_intrinsics(
 
 
 # ---------------------------------------------------------------------------
-# Per-pair residual analysis (outlier flagging in the HTML report)
+# Análisis de residuales per-par (flaggea outliers en el reporte HTML)
 # ---------------------------------------------------------------------------
 
 
@@ -1343,16 +1402,19 @@ def _fisheye_reprojection_rms(
     K: np.ndarray,
     D: np.ndarray,
 ) -> float:
-    """PnP + reprojection residual for one view under the fisheye model.
+    """Residual PnP + reproyección para una vista bajo el modelo fisheye.
 
-    OpenCV doesn't ship a fisheye solvePnP, so we undistort the observations
-    into normalised pinhole coordinates, solve PnP against an identity camera,
-    then reproject through the fisheye model and measure the pixel residual
-    against the original observations. Returns NaN on any OpenCV failure.
+    OpenCV no shippea un solvePnP fisheye, así que undistortamos las
+    observaciones a coords pinhole normalizadas, resolvemos PnP
+    contra una cámara identidad, después reproyectamos a través del
+    modelo fisheye y medimos el residual en pixels contra las
+    observaciones originales. Devuelve NaN ante cualquier falla
+    de OpenCV.
     """
     try:
-        # Normalise observations: fisheye.undistortPoints returns (N,1,2) in
-        # normalised image coords (what a pinhole camera with K=I would see).
+        # Normalizar las observaciones: fisheye.undistortPoints
+        # devuelve (N,1,2) en coords de imagen normalizadas (lo que
+        # vería una cámara pinhole con K=I).
         undistorted = cv2.fisheye.undistortPoints(
             img_pts.reshape(-1, 1, 2).astype(np.float64),
             K,
@@ -1388,11 +1450,13 @@ def compute_per_pair_residuals(
     board: cv2.aruco.CharucoBoard,
     calibration: dict[str, np.ndarray],
 ) -> list[dict[str, float]]:
-    """Compute reprojection residual for each pair after calibration.
+    """Computa el residual de reproyección para cada par tras la
+    calibración.
 
-    Returns one dict per pair: {pair_idx, rms_l, rms_r, rms, n_corners}.
-    Used to flag outlier captures in the calibration report so the operator
-    can see which poses dragged the overall RMS up.
+    Devuelve un dict por par: {pair_idx, rms_l, rms_r, rms,
+    n_corners}. Se usa para flaggear capturas outlier en el reporte
+    de calibración así el operador puede ver qué poses arrastraron
+    el RMS global hacia arriba.
     """
     K_l = calibration["camera_matrix_l"]
     D_l = calibration["dist_coeffs_l"]
@@ -1459,7 +1523,7 @@ def compute_per_pair_residuals(
 
 
 def alignment_hint(error: dict[str, float]) -> str:
-    """Human-readable direction for the operator to move the board."""
+    """Indicación human-readable para que el operador mueva el board."""
     parts = []
     if error["center_px"] > ALIGN_CENTER_TOL_PX:
         if abs(error["offset_x"]) > abs(error["offset_y"]):
@@ -1478,7 +1542,8 @@ def alignment_hint(error: dict[str, float]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Stability: rolling buffer of corner positions, check motion between frames
+# Estabilidad: buffer rolling de posiciones de esquina, chequea
+# movimiento entre frames
 # ---------------------------------------------------------------------------
 
 
@@ -1487,17 +1552,21 @@ STABILITY_WINDOW_FRAMES = 10
 
 
 class StabilityTracker:
-    """Rolling buffer of detected corner positions to detect when the board is still.
+    """Buffer rolling de posiciones de esquinas detectadas para
+    detectar cuando el board está quieto.
 
-    Call push() every frame with the detected corner array (preview px). Call
-    is_stable() to check whether the last `window` frames have max inter-frame
-    displacement below the threshold.
+    Llamar push() cada frame con el array de esquinas detectadas
+    (preview px). Llamar is_stable() para chequear si los últimos
+    `window` frames tienen un displacement inter-frame máximo por
+    debajo del threshold.
 
-    When IDs are provided, displacement is measured on the INTERSECTION of
-    corner IDs across frames. Marginal lighting often causes detection counts
-    to fluctuate (23 ↔ 35 corners) even when the board is still — the previous
-    "reset on shape change" behaviour made stability unreachable in those
-    conditions, even though the board wasn't actually moving.
+    Cuando se proveen IDs, el displacement se mide sobre la
+    INTERSECCIÓN de IDs de esquinas entre frames. Iluminación
+    marginal a menudo hace que los counts de detección fluctúen
+    (23 ↔ 35 esquinas) aunque el board esté quieto — el
+    comportamiento previo de "reset al cambio de shape" hacía la
+    estabilidad inalcanzable en esas condiciones, aunque el board
+    no se estuviese moviendo.
     """
 
     def __init__(
@@ -1507,9 +1576,10 @@ class StabilityTracker:
     ) -> None:
         self.window = window
         self.max_disp_px = max_disp_px
-        # Each entry is (positions Nx2, ids 1D array or None when caller didn't
-        # pass IDs). When ids is None we fall back to the legacy behaviour of
-        # requiring identical shapes between frames.
+        # Cada entry es (posiciones Nx2, ids array 1D o None cuando
+        # el caller no pasó IDs). Cuando ids es None caemos al
+        # comportamiento legacy de requerir shapes idénticas entre
+        # frames.
         self._buffer: list[tuple[np.ndarray, Optional[np.ndarray]]] = []
 
     def reset(self) -> None:
@@ -1520,8 +1590,8 @@ class StabilityTracker:
         corners_preview: Optional[np.ndarray],
         ids: Optional[np.ndarray] = None,
     ) -> None:
-        """Add a frame's corner positions (and optional IDs). Pass None if
-        detection failed."""
+        """Agrega las posiciones de esquinas de un frame (e IDs
+        opcionales). Pasar None si la detección falló."""
         if corners_preview is None or len(corners_preview) == 0:
             self._buffer.clear()
             return
@@ -1531,8 +1601,9 @@ class StabilityTracker:
             ids_arr = np.asarray(ids).reshape(-1).astype(int)
         else:
             ids_arr = None
-        # Legacy fallback: when no IDs are supplied we can't intersect, so we
-        # keep the old "restart on count change" semantics.
+        # Fallback legacy: cuando no se pasan IDs no podemos
+        # intersectar, así que mantenemos la semántica vieja
+        # "restart al cambio de count".
         if self._buffer and ids_arr is None and self._buffer[-1][0].shape != pts.shape:
             self._buffer.clear()
         self._buffer.append((pts, ids_arr))
@@ -1540,11 +1611,13 @@ class StabilityTracker:
             self._buffer.pop(0)
 
     def max_displacement(self) -> float:
-        """Max per-corner displacement between consecutive frames in the buffer.
+        """Displacement máximo per-corner entre frames consecutivos en
+        el buffer.
 
-        With IDs available, compares only corners that appear in both frames
-        of each consecutive pair — tolerant to detection drop-in/drop-out
-        without losing precision on the corners that DO persist."""
+        Con IDs disponibles, compara solo esquinas que aparecen en
+        ambos frames de cada par consecutivo — tolerante a
+        drop-in/drop-out de detección sin perder precisión en las
+        esquinas que SÍ persisten."""
         if len(self._buffer) < 2:
             return float("inf")
         worst = 0.0
@@ -1578,30 +1651,34 @@ class StabilityTracker:
 
 
 # ---------------------------------------------------------------------------
-# Frame quality gate (blur, corner count, saturation, exposure)
+# Gate de calidad de frame (blur, count de esquinas, saturación,
+# exposición)
 # ---------------------------------------------------------------------------
 
 
 QUALITY_MIN_CORNERS = 15
 QUALITY_MIN_BLUR = (
-    10.0  # Laplacian variance on grayscale (full-res 4608x2592 captures).
+    10.0  # Varianza Laplaciana sobre grayscale (capturas full-res 4608x2592).
 )
-# At 12MP each pixel is finer so per-pixel gradients are smaller; 10 is the
-# empirical floor for a well-focused frame. Corner-local sharpness (separate
-# check below) handles the "looks sharp globally but corners soft" case.
-QUALITY_MAX_SATURATION_PCT = 8.0  # % of pixels >250
-QUALITY_MIN_EXPOSURE = 35.0  # median grayscale value
-QUALITY_MAX_LR_BRIGHTNESS_PCT = 25.0  # % asymmetry between L and R
-QUALITY_MIN_CORNER_SHARPNESS = 40.0  # mean Laplacian var in a 15x15 window per corner
+# A 12MP cada pixel es más fino así que los gradients per-pixel son
+# más chicos; 10 es el piso empírico para un frame bien enfocado.
+# La sharpness local de esquinas (check separado abajo) maneja el
+# caso "se ve sharp globalmente pero las esquinas están blandas".
+QUALITY_MAX_SATURATION_PCT = 8.0  # % de pixels >250
+QUALITY_MIN_EXPOSURE = 35.0  # valor mediano de grayscale
+QUALITY_MAX_LR_BRIGHTNESS_PCT = 25.0  # % de asimetría entre L y R
+QUALITY_MIN_CORNER_SHARPNESS = 40.0  # var Laplaciana media en ventana 15x15 por esquina
 QUALITY_CORNER_WINDOW = 15
 
 
 def corner_local_sharpness(gray: np.ndarray, corners: Optional[np.ndarray]) -> float:
-    """Mean Laplacian-variance sharpness in a 15×15 window around each corner.
+    """Sharpness media de varianza Laplaciana en una ventana 15×15
+    alrededor de cada esquina.
 
-    Catches motion-smeared captures where the whole-frame Laplacian passes but
-    the localized corner regions are soft (common with hand-held boards).
-    Returns NaN if no corners supplied.
+    Agarra capturas con motion smearing donde el Laplaciano del
+    frame entero pasa pero las regiones localizadas de esquinas
+    están blandas (común con boards en mano). Devuelve NaN si no se
+    pasan esquinas.
     """
     if corners is None or len(corners) == 0:
         return float("nan")
@@ -1629,11 +1706,13 @@ def assess_frame_quality(
     corners_l: Optional[np.ndarray] = None,
     corners_r: Optional[np.ndarray] = None,
 ) -> dict[str, object]:
-    """Evaluate a captured frame pair. Returns checks + pass/fail + reasons.
+    """Evalúa un par de frames capturados. Devuelve checks + pass/fail
+    + reasons.
 
-    corners_l/corners_r (optional) in full-res pixel coords. If provided, a
-    per-corner local-sharpness check runs on top of the whole-frame Laplacian —
-    rejects pairs that pass the global blur test but have soft corners.
+    corners_l/corners_r (opcional) en coords pixel full-res. Si se
+    proveen, corre un check de sharpness local per-corner encima del
+    Laplaciano del frame entero — rechaza pares que pasan el test
+    global de blur pero tienen esquinas blandas.
     """
     gray_l = cv2.cvtColor(frame_l, cv2.COLOR_BGR2GRAY) if frame_l.ndim == 3 else frame_l
     gray_r = cv2.cvtColor(frame_r, cv2.COLOR_BGR2GRAY) if frame_r.ndim == 3 else frame_r
@@ -1713,12 +1792,13 @@ def assess_frame_quality(
     }
 
 
-# Real-time lighting advisories (subset of quality — warnings during aiming,
-# not blocking capture).
+# Advisories de iluminación en tiempo real (subset de calidad —
+# warnings durante el aiming, no bloquean la captura).
 
 
 def live_lighting_warnings(frame_l: np.ndarray, frame_r: np.ndarray) -> list[str]:
-    """Non-blocking warnings shown while the operator is still positioning."""
+    """Warnings no bloqueantes mostrados mientras el operador todavía
+    está posicionando."""
     gray_l = cv2.cvtColor(frame_l, cv2.COLOR_BGR2GRAY) if frame_l.ndim == 3 else frame_l
     gray_r = cv2.cvtColor(frame_r, cv2.COLOR_BGR2GRAY) if frame_r.ndim == 3 else frame_r
     sat_l = float((gray_l > 250).mean() * 100)

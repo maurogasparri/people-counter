@@ -1,20 +1,20 @@
-"""Live HTTP viewer for the runtime pipeline.
+"""Viewer HTTP en vivo del pipeline runtime.
 
-Streams a 3-panel composite (left annotated | right raw | depth colormap)
-as MJPEG over HTTP. Built for on-site debug: the operator opens the
-device's IP in a phone or laptop, walks under the cameras, and sees the
-detection / tracking / counting overlay live.
+Streamea un composite de 3 paneles (left annotated | right raw | depth
+colormap) como MJPEG sobre HTTP. Hecho para debug on-site: el operador abre
+la IP del dispositivo en un celular o laptop, camina bajo las cámaras y ve
+el overlay de detección / tracking / conteo en vivo.
 
-Designed to be safe on the runtime hot path:
+Diseñado para ser seguro en el hot path del runtime:
 
-- ``push`` is non-blocking. The encode queue drops oldest if the client
-  is slow; the pipeline never stalls waiting on a viewer.
-- JPEG encoding runs in its own thread, not in the pipeline loop.
-- Bind failures (port in use, missing CAP_NET_BIND_SERVICE on port 80)
-  are logged but don't kill the pipeline — the counter keeps running.
+- ``push`` es no-bloqueante. La queue de encode descarta el más viejo si el
+  cliente es lento; el pipeline nunca se traba esperando al viewer.
+- El encoding JPEG corre en su propio thread, no en el loop del pipeline.
+- Las fallas de bind (puerto en uso, CAP_NET_BIND_SERVICE faltante en el
+  puerto 80) se loggean pero no matan el pipeline — el counter sigue corriendo.
 
-Default port 80 because the operator on-site doesn't carry a list of
-custom ports. ``--web-viewer-port 0`` disables the viewer entirely.
+Puerto default 80 porque el operador on-site no carga una lista de puertos
+custom. ``--web-viewer-port 0`` deshabilita el viewer entero.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-_HTML = b"""<!DOCTYPE html>
+_HTML = """<!DOCTYPE html>
 <html lang='es'>
 <head>
   <meta charset='utf-8'>
@@ -40,8 +40,8 @@ _HTML = b"""<!DOCTYPE html>
   <style>
     body { margin: 0; background: #000; color: #eee;
            font-family: ui-monospace, Menlo, monospace; }
-    /* Single compact stats line so the image gets nearly the full
-       viewport height. */
+    /* Una sola línea compacta de stats así la imagen se queda casi con
+       toda la altura del viewport. */
     #stats { padding: 4px 12px; background: #1a1a1a;
              border-bottom: 1px solid #2c2c2c; font-size: 12px;
              line-height: 1.4; white-space: nowrap; overflow-x: auto; }
@@ -81,17 +81,17 @@ _HTML = b"""<!DOCTYPE html>
 
 
 class _ReusableServer(ThreadingHTTPServer):
-    # SO_REUSEADDR so a quick restart doesn't hit a TIME_WAIT'd socket.
+    # SO_REUSEADDR así un restart rápido no pega contra un socket TIME_WAIT.
     allow_reuse_address = True
     daemon_threads = True
 
 
 class WebViewer:
-    """MJPEG live viewer over HTTP, isolated from the pipeline hot path.
+    """Viewer MJPEG live sobre HTTP, aislado del hot path del pipeline.
 
     Lifecycle:
         viewer = WebViewer(port=80)
-        if viewer.start():            # False on bind failure (port busy / perm)
+        if viewer.start():            # False en falla de bind (puerto ocupado / perm)
             ...
             viewer.push(frame_bgr, {"total_in": ..., ...})
             ...
@@ -108,15 +108,15 @@ class WebViewer:
         self.port = port
         self.host = host
         self.jpeg_quality = int(jpeg_quality)
-        # Encoder input queue. Drop-oldest semantics enforced in ``push``.
+        # Queue de input al encoder. Semántica drop-oldest enforced en ``push``.
         self._encode_queue: deque[np.ndarray] = deque(maxlen=queue_size)
         self._encode_lock = threading.Lock()
         self._encode_evt = threading.Event()
-        # Latest JPEG output, served to all subscribed clients.
+        # Output JPEG más reciente, servido a todos los clientes suscriptos.
         self._latest_jpeg: Optional[bytes] = None
         self._latest_id = 0
         self._latest_cond = threading.Condition()
-        # Stats published by /stats.
+        # Stats publicados por /stats.
         self._stats: dict[str, Any] = {
             "total_in": 0, "total_out": 0, "fps": 0.0,
             "tracks": 0, "dets": 0,
@@ -133,11 +133,11 @@ class WebViewer:
         return self._server is not None and not self._stop_evt.is_set()
 
     def start(self) -> bool:
-        """Bind, start serving, return True on success.
+        """Bindea, arranca a servir, devuelve True ante éxito.
 
-        On bind failure (port in use, no permission for port 80) logs a
-        warning and returns False — caller should treat the viewer as
-        disabled but keep the pipeline running.
+        Ante falla de bind (puerto en uso, sin permiso para puerto 80)
+        loguea un warning y devuelve False — el caller debería tratar
+        al viewer como deshabilitado pero mantener el pipeline corriendo.
         """
         handler_cls = _build_handler(self)
         try:
@@ -173,7 +173,7 @@ class WebViewer:
         if self._server is None:
             return
         self._stop_evt.set()
-        # Wake any waiters so /stream handlers exit cleanly.
+        # Despertar a los waiters así los handlers de /stream salen limpio.
         with self._latest_cond:
             self._latest_cond.notify_all()
         self._encode_evt.set()
@@ -191,7 +191,7 @@ class WebViewer:
     def push(
         self, frame_bgr: np.ndarray, stats: Optional[dict] = None,
     ) -> None:
-        """Non-blocking. Drop-oldest if the encode queue is full."""
+        """No bloqueante. Drop-oldest si la queue de encode está llena."""
         if self._server is None:
             return
         with self._encode_lock:
@@ -210,8 +210,8 @@ class WebViewer:
                 with self._encode_lock:
                     if not self._encode_queue:
                         break
-                    # When the encoder falls behind, skip ahead to the
-                    # newest frame and discard the rest.
+                    # Cuando el encoder se queda atrás, saltar adelante
+                    # al frame más nuevo y descartar el resto.
                     frame = self._encode_queue.pop()
                     self._encode_queue.clear()
                 try:
@@ -244,8 +244,8 @@ class WebViewer:
 
 def _build_handler(viewer: WebViewer):
     class Handler(BaseHTTPRequestHandler):
-        # Silence default per-request stderr logging (would spam the log
-        # at every MJPEG byte).
+        # Silenciar el log default per-request a stderr (spamearía el
+        # log con cada byte de MJPEG).
         def log_message(self, fmt, *args) -> None:  # noqa: ARG002
             return
 
@@ -254,11 +254,12 @@ def _build_handler(viewer: WebViewer):
             if path in ("/", "/index", "/index.html"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(_HTML)))
+                _html_bytes = _HTML.encode("utf-8")
+                self.send_header("Content-Length", str(len(_html_bytes)))
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 try:
-                    self.wfile.write(_HTML)
+                    self.wfile.write(_html_bytes)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
@@ -302,7 +303,7 @@ def _build_handler(viewer: WebViewer):
                     self.wfile.write(jpeg)
                     self.wfile.write(b"\r\n")
             except (BrokenPipeError, ConnectionResetError):
-                # Client disconnected mid-stream; expected.
+                # Cliente desconectado mid-stream; esperado.
                 pass
 
     return Handler

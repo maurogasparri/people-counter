@@ -1,8 +1,8 @@
 [Unit]
-Description=People Counter daily reset timer
+Description=Timer del reset diario del People Counter
 
 [Timer]
-# Runs at 04:00 every day (before any store opens)
+# Corre a las 04:00 todos los días (antes de que abra cualquier local)
 OnCalendar=*-*-* 04:00:00
 Persistent=true
 

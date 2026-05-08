@@ -1,9 +1,10 @@
 [Unit]
-Description=People Counter — daily purge of best-frame JPGs
+Description=People Counter — purga diaria de JPGs best-frame
 
 [Timer]
-# Daily at 03:30, well before the 04:00 reset and before stores open.
-# Persistent=true catches a missed run if the device was off at 03:30.
+# Diario a las 03:30, bien antes del reset de las 04:00 y antes de que abran
+# los locales. Persistent=true atrapa un run perdido si el dispositivo estuvo
+# apagado a las 03:30.
 OnCalendar=*-*-* 03:30:00
 Persistent=true
 

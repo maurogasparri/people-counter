@@ -1,4 +1,4 @@
-"""Smoke tests for src/web/annotate.py."""
+"""Smoke tests para src/web/annotate.py."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

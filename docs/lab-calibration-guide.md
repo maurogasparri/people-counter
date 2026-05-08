@@ -81,7 +81,21 @@ Todas las poses entran con 4cm de margen simétrico en los extremos. Si necesit�
 
 ## Paso 2 — Foco + Lens locking con Trabasil AM3 + activador
 
-Objetivo: enfocar ambos lens a una distancia tal que el DoF cubra todo el rango operativo (1.15m a 3.30m). Focando a ~2.0m, el DoF va de ~1.2m a infinito con el M12 120° a f/~2.
+Objetivo: enfocar ambos lens a una distancia tal que el DoF cubra todo el rango operativo del bbox de detección (cabeza + pie) en la flota.
+
+**Target universal: foco a 1.5m ±20cm**. Sirve para todo el rango de mount 2.0–3.5m sin re-foco per-device.
+
+Cálculo del DoF (M12 120° a f/2.0, IMX708 binned 2.8μm pitch, CoC=4.2μm):
+
+| Caso | Mount | Cabeza (depth) | Pie/piso (depth) | Bbox depth range |
+|------|-------|----------------|-------------------|-------------------|
+| Adulto alto, mount mín | 2.0m | 1.0m (en counting line) | 2.0m | 1.0–2.0m |
+| Niño chico, mount máx | 3.5m | 2.5m | 3.5m | 2.5–3.5m |
+| **Unión flota** | 2.0–3.5m | 1.0–2.5m | 2.0–3.5m | **1.0–3.5m** |
+
+Con foco a 1.5m: DoF = 0.59m a ∞. El blur en los extremos del rango operativo (1.0m y 3.5m) queda en ~1.4–1.6μm, bien por debajo del CoC threshold de 4.2μm. Foco simétricamente balanceado entre cabeza y pie.
+
+**Por qué 1.5m y no 2.0m**: foco a 2.0m peakea la sharpness en el piso del mount máximo (3.5m), donde SGBM ya tiene textura de sobra. Penaliza la cabeza a 1.0m (extremo near del rango), donde el detector necesita más sharpness para preservar recall sobre adultos altos en mounts bajos.
 
 El holder M12 del Arducam B0310 **no tiene set screw**, así que el lens se fija químicamente con **Trabasil AM3** (pasta anaeróbica con PTFE) **acelerado con activador anaeróbico**. El activador es lo que hace viable el flujo same-day: cura parcial a ~15min (suficiente para calibrar sin drift), cura total al cabo de horas. Sin activador, el Trabasil solo da ~100min de working time + 36h de cura total — incompatible con un solo día de lab.
 
@@ -89,7 +103,7 @@ El barrel del lens M12 se gira con una **llave dedicada** que encastra en sus ra
 
 ### Paso 2A — Colocar activador + AM3
 
-1. **Dry-run previo (sin pasta)**: primero corré `focus_assist.py` y rotá el lens aproximadamente hasta que las barras entren al verde. Esto es para confirmar que el rango de foco del lens efectivamente alcanza 2m (pre-screening). Marcá con fibrita la posición tentativa del lens vs el holder.
+1. **Dry-run previo (sin pasta)**: primero corré `focus_assist.py` y rotá el lens aproximadamente hasta que las barras entren al verde. Esto es para confirmar que el rango de foco del lens efectivamente alcanza 1.5m (pre-screening). Marcá con fibrita la posición tentativa del lens vs el holder.
 2. **Desenroscar el lens completo** del holder. Limpiar ambos hilos (macho del lens, hembra del holder) con un trapo de microfibra limpio — nada de solventes fuertes que puedan migrar a la óptica.
 3. **Aplicar activador** sobre una de las dos roscas según la especificación del fabricante (típicamente la rosca macho del lens). Dejar evaporar el solvente del activador antes del paso siguiente.
 4. **Aplicar AM3** sobre la otra rosca: con un palillo de dientes o una jeringa de insulina sin aguja, depositar **una gota del tamaño de una cabeza de alfiler** (≈15 μL) alrededor del perímetro. Evitar la zona cercana al sensor — solo los primeros 2-3 mm de rosca desde la boca del holder.
@@ -103,11 +117,11 @@ Con activador, la cura empieza apenas las dos roscas se tocan. Working time efec
 sudo PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
-Defaults aplicados: target range 1.80–2.20m (lab protocol), board definitivo, compact-scene auto-detect.
+Defaults aplicados: target range 1.30–1.70m (lab protocol universal), board definitivo, compact-scene auto-detect.
 
 1. Abrir `http://<rpi-hostname>:8080` en el browser.
 2. Click "Comenzar" — desbloquea AudioContext y comienza el preview.
-3. Posicionar el board a ~2.0m de la cámara. El status indica "cerca" o "lejos" si está fuera del target range.
+3. Posicionar el board a ~1.5m de la cámara. El status indica "cerca" o "lejos" si está fuera del target range.
 4. **Ajustar el lens izquierdo** girando la llave del barrel hasta que las barras de nitidez central y corners pasen (verde). La llave da palanca para movimientos finos — giros de 2-5° (1-3μm axial) permiten encontrar el peak con precisión.
 5. **Repetir para el lens derecho**. La barra de simetría L/R debe quedar por debajo del umbral.
 6. Cuando ambos lens están en verde y el banner dice "LISTO", click "Finalizar". Guardar el reporte HTML.

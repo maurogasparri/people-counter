@@ -1,14 +1,13 @@
-"""Background health monitor that drives the status LED.
+"""Monitor de health en background que maneja el status LED.
 
-The monitor reads pipeline-side signals from a shared :class:`HealthSignals`
-dataclass (written by main.py during the loop) and OS/network probes from
-``health.py``, then maps the aggregate into a :class:`LedState` via
-``decide_state``.
+El monitor lee señales pipeline-side de un dataclass :class:`HealthSignals`
+compartido (escrito por main.py durante el loop) más probes OS/red de
+``health.py``, y mapea la agregación a un :class:`LedState` vía ``decide_state``.
 
-The monitor runs in its own thread because the internet probe is blocking
-I/O (``socket.create_connection`` with a 3-second timeout) - we don't want
-that on the pipeline's hot path. Internet probes also run at a slower
-cadence than the LED update tick to avoid flooding the network.
+El monitor corre en su propio thread porque el probe de internet es I/O
+blocking (``socket.create_connection`` con timeout de 3 segundos) — no queremos
+eso en el hot path del pipeline. Los probes de internet también corren con
+cadencia más lenta que el tick de update del LED para evitar saturar la red.
 """
 from __future__ import annotations
 
@@ -34,11 +33,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class HealthSignals:
-    """Mutable signals the pipeline writes; the monitor reads them.
+    """Señales mutables que el pipeline escribe; el monitor las lee.
 
-    Field assignments are atomic under CPython's GIL for primitive types,
-    so reads in the monitor thread don't need locking. Don't add mutable
-    containers without adding a lock.
+    Las asignaciones de campos son atómicas bajo el GIL de CPython para tipos
+    primitivos, así las lecturas en el thread monitor no necesitan locking.
+    No agregar containers mutables sin agregar un lock.
     """
 
     last_loop_ts: float = 0.0
@@ -51,14 +50,14 @@ class HealthSignals:
 
 
 class HealthMonitor:
-    """Background thread that maps :class:`HealthSignals` to LED state.
+    """Thread background que mapea :class:`HealthSignals` a estado del LED.
 
     Args:
-        led: The :class:`StatusLED` to drive.
-        signals: Shared signals object updated by the pipeline.
-        poll_interval_s: How often to re-evaluate state (default 2 s).
-        internet_probe_interval_s: How often to run the blocking internet
-            probe (default 30 s; cached between probes).
+        led: El :class:`StatusLED` a manejar.
+        signals: Objeto de señales compartido que el pipeline actualiza.
+        poll_interval_s: Cada cuánto re-evaluar el estado (default 2 s).
+        internet_probe_interval_s: Cada cuánto correr el probe de internet
+            blocking (default 30 s; cacheado entre probes).
     """
 
     def __init__(
@@ -78,7 +77,7 @@ class HealthMonitor:
         self._cached_internet_ok = True
 
     def start(self) -> None:
-        """Start the monitor thread. Idempotent."""
+        """Arranca el thread monitor. Idempotente."""
         if self._thread is not None:
             return
         self._thread = threading.Thread(
@@ -87,14 +86,14 @@ class HealthMonitor:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop and join the monitor thread."""
+        """Detiene y joinea el thread monitor."""
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._thread = None
 
     def evaluate_once(self) -> LedState:
-        """Run one tick synchronously; mainly for tests."""
+        """Corre un tick sincrónicamente; principalmente para tests."""
         return self._tick()
 
     def _run(self) -> None:
@@ -102,7 +101,7 @@ class HealthMonitor:
             try:
                 self._tick()
             except Exception:
-                logger.exception("Health monitor tick failed")
+                logger.exception("Falló tick del health monitor")
             self._stop_event.wait(timeout=self._poll_interval_s)
 
     def _tick(self) -> LedState:
@@ -118,9 +117,10 @@ class HealthMonitor:
             and check_calibration_loadable(s.calibration_path)
         )
 
-        # Pipeline freshness: only judged once the loop has produced at least
-        # one iteration. A zero ts means the pipeline hasn't started yet
-        # (boot phase) - don't fault while the operator is still waiting.
+        # Freshness del pipeline: se juzga solo una vez que el loop produjo
+        # al menos una iteración. Un ts en cero significa que el pipeline
+        # todavía no arrancó (fase de boot) — no marcar falla mientras el
+        # operador sigue esperando.
         if s.last_loop_ts == 0.0:
             pipeline_ok = True
         else:

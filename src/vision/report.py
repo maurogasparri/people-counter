@@ -1,10 +1,10 @@
-"""HTML calibration report generator.
+"""Generador de reporte HTML de calibración.
 
-Produces a single self-contained HTML file per device with:
-- Calibration RMS + focal + baseline vs design (140mm) with tolerance alert
-- 5-zone depth validation PASS/FAIL
-- Embedded base64 thumbnails of all captured pairs with corner count
-- Timestamp + device id for audit trail
+Produce un único archivo HTML self-contained por dispositivo con:
+- RMS de calibración + focal + baseline vs diseño (140mm) con alerta de tolerancia
+- Validación de profundidad en 5 zonas PASS/FAIL
+- Thumbnails embedded en base64 de todos los pares capturados con corner count
+- Timestamp + device id para audit trail
 """
 
 from __future__ import annotations
@@ -52,17 +52,17 @@ def generate_html_report(
     epipolar_image: Optional[Path] = None,
     ground_truth_image: Optional[Path] = None,
 ) -> str:
-    """Build a self-contained HTML report string.
+    """Construye un string de reporte HTML self-contained.
 
     Args:
-        calibration: dict with camera_matrix_l/r, T, P1, baseline info
-        diagnose_zones: optional dict from diagnose_depth: {zone_name: (depth, std, err_pct, fill)}
-                        plus "_pass" boolean, "_edge_ratio" float, "_center_err" float,
-                        and "_distance_mm" ground truth.
-        capture_pairs: list of (left_path, right_path, pose_id, n_corners_l, n_corners_r)
-        device_id: device identifier for the report header
-        rms_stereo: overall stereo calibration RMS (px) if known
-        timestamp: override timestamp; defaults to now
+        calibration: dict con camera_matrix_l/r, T, P1, info de baseline
+        diagnose_zones: dict opcional de diagnose_depth: {zone_name: (depth, std, err_pct, fill)}
+                        más bool "_pass", float "_edge_ratio", float "_center_err",
+                        y "_distance_mm" ground truth.
+        capture_pairs: lista de (left_path, right_path, pose_id, n_corners_l, n_corners_r)
+        device_id: identificador del dispositivo para el header del reporte
+        rms_stereo: RMS general (px) de la calibración estéreo si se conoce
+        timestamp: override del timestamp; default a ahora
     """
     ts = timestamp or _dt.datetime.now()
 
@@ -77,11 +77,12 @@ def generate_html_report(
 
     rms_text = f"{rms_stereo:.3f} px" if rms_stereo is not None else "—"
 
-    # Lens alignment metrics — operator-friendly decomposition of R+T into
-    # offset_{x,y,z}_mm + rotation_{x,y,z}_deg. Diagnostic only, doesn't
-    # gate the report. Runtime pipeline rectifies away any misalignment;
-    # we surface these for cross-unit QA (detect bracket-fabrication
-    # outliers when comparing several devices side by side).
+    # Métricas de lens alignment — descomposición operator-friendly de
+    # R+T en offset_{x,y,z}_mm + rotation_{x,y,z}_deg. Solo diagnóstico,
+    # no gate el reporte. El pipeline runtime rectifica cualquier
+    # misalignment; los exponemos para QA cross-unit (detectar
+    # outliers de fabricación del bracket comparando varios devices
+    # lado a lado).
     alignment_html = ""
     R = calibration.get("R")
     if R is not None:
@@ -106,7 +107,7 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
         except Exception:
             logger.exception("lens_alignment_metrics failed; skipping section")
 
-    # Depth validation section
+    # Sección de validación de depth
     depth_html = ""
     depth_pass = None
     if diagnose_zones:
@@ -120,12 +121,14 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
         verdict_pill = _pill("PASS Depth validation", True) if depth_pass \
             else _pill("FAIL Depth validation", False)
 
-        # Per-zone reliability classification: a zone's depth reading is
-        # trustworthy when std is low (SGBM matched cleanly) and fill is high
-        # (most pixels matched). Unreliable readings (huge std, low fill)
-        # mean SGBM failed in that zone — usually a smooth/specular surface
-        # (monitor, glass) or low-light noise. We hide the depth/error
-        # numbers for unreliable zones because they're not meaningful.
+        # Clasificación de confiabilidad per-zona: la lectura de
+        # depth de una zona es confiable cuando std es bajo (SGBM
+        # matcheó limpio) y el fill es alto (la mayoría de los
+        # pixels matchearon). Lecturas no confiables (std enorme,
+        # fill bajo) significan que SGBM falló en esa zona — usualmente
+        # superficie smooth/specular (monitor, vidrio) o ruido de luz
+        # baja. Ocultamos los números de depth/error de zonas no
+        # confiables porque no son significativos.
         def _reliability(std_mm: float, fill_pct: float) -> str:
             std_factor = max(0.0, 1.0 - std_mm / 2000.0)
             score = std_factor * (fill_pct / 100.0)
@@ -157,7 +160,7 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
             abs_err = abs(err_pct)
 
             if is_center:
-                # Verdict zone — full numbers, big VERDICT badge
+                # Zona del verdict — numbers completos, badge grande VERDICT
                 err_color = "good" if abs_err <= center_threshold else "bad"
                 row_class = "row-center"
                 status_html = ('<span class="badge-verdict">VERDICT</span>')
@@ -174,14 +177,14 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
                     depth_cell = '<span class=dim>—</span>'
                     err_cell = '<span class=dim>—</span>'
                 elif abs_err <= center_threshold:
-                    # Reliable AND close to target
+                    # Confiable Y cerca del target
                     row_class = "row-reliable"
                     status_html = ('<span class="confidence-tag '
                                    'confidence-reliable">✓ Coincide</span>')
                     depth_cell = f"{depth:.0f} mm"
                     err_cell = f'<span class="good">{err_pct:+.2f}%</span>'
                 else:
-                    # Reliable (or partial) but measuring a different plane
+                    # Confiable (o parcial) pero midiendo otro plano
                     row_class = "row-different"
                     label = ("● Otro plano (precisión limitada)"
                              if rel == "partial"
@@ -254,12 +257,12 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
 </p>
 """
 
-    # Per-pair residual analysis
+    # Análisis de residual per-par
     residuals_html = ""
     outlier_indices: set[int] = set()
     if per_pair_residuals:
         valid = [r for r in per_pair_residuals
-                 if r["rms"] == r["rms"]  # not NaN
+                 if r["rms"] == r["rms"]  # no es NaN
                  and r["rms"] != float("inf")]
         if valid:
             rms_values = sorted(r["rms"] for r in valid)
@@ -288,13 +291,14 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
 <tbody>{''.join(rows_html)}</tbody></table>
 """
 
-    # Captures grid
+    # Grid de capturas
     captures_html = ""
     if capture_pairs:
         tiles = []
         for idx, pair in enumerate(capture_pairs):
-            # Backwards-compat: old (path, path, id, n_corners) and new
-            # (path, path, id, n_l, n_r). Treat 4-tuple as symmetric.
+            # Backwards-compat: viejo (path, path, id, n_corners) y
+            # nuevo (path, path, id, n_l, n_r). Tratar 4-tuple como
+            # simétrico.
             if len(pair) == 5:
                 lp, rp, pose_id, n_l, n_r = pair
             else:
@@ -331,7 +335,7 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
             f'del diseño ({DESIGN_BASELINE_MM:.0f}mm, tolerancia ±{BASELINE_WARN_TOL_MM:.0f}mm).</div>'
         )
 
-    # Rectification (epipolar) verification image, embedded.
+    # Imagen de verificación de rectificación (epipolar), embedded.
     epipolar_html = ""
     if epipolar_image is not None and Path(epipolar_image).exists():
         img = cv2.imread(str(epipolar_image))
@@ -344,7 +348,7 @@ correspondientes entre L y R deberían caer sobre la misma línea si la rectific
 <img src="data:image/jpeg;base64,{b64}" style="width:100%;max-width:960px;border-radius:6px;border:1px solid #ddd">
 """
 
-    # Ground-truth depth visualisation, embedded.
+    # Visualización de depth ground-truth, embedded.
     ground_truth_html = ""
     if ground_truth_image is not None and Path(ground_truth_image).exists():
         img = cv2.imread(str(ground_truth_image))
@@ -381,7 +385,7 @@ th{{background:#f5f5f5}}
 .tile-label{{font-size:12px;color:#555;margin-bottom:4px}}
 .outlier-badge{{background:#e74c3c;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:4px}}
 .miss{{background:#eee;padding:30px;text-align:center;color:#999}}
-/* Depth validation panel */
+/* Panel de validación de depth */
 .depth-verdict{{background:#fafafa;border:1px solid #e3e3e3;border-radius:8px;padding:18px 22px;margin:14px 0 22px}}
 .verdict-grid{{display:grid;grid-template-columns:1fr 1fr auto;gap:28px;align-items:center}}
 .verdict-cell{{}}
@@ -440,7 +444,7 @@ Generado por people-counter · Device {device_id} · {ts.isoformat()}
 
 
 def save_report(html: str, output_path: Path) -> Path:
-    """Save an HTML report to disk. Creates parent dirs if needed."""
+    """Guarda un reporte HTML a disco. Crea los dirs padre si es necesario."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")
     logger.info("Report saved", extra={"path": str(output_path)})

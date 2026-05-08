@@ -48,7 +48,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 ## Decisiones técnicas clave
 
 ### Pipeline de visión
-- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), **modelo fisheye Kannala-Brandt** con `cv2.fisheye.calibrate` (4 coef angulares k1–k4), apropiado para el lens Arducam 120°×152° que opera en zona útil hasta ±40% horizontal del frame. El flag `--dict` en `calibrate.py` permite usar boards alternativos. R y T del par se derivan de los extrínsecos per-pose que devuelve `fisheye.calibrate` (promedio + proyección SO(3)), manejando counts de puntos variables entre poses. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. **Protocolo de lab (universal para toda la flota)**: foco y calibración se hacen una sola vez en laboratorio con distancias fijas, no por sitio. Foco a 2.0m ±20cm (el DoF del M12 120° cubre 1.15–3.30m, o sea mount 3–4.5m). Calibración con poses a 1.0/2.0/3.0m (interpola hasta el operativo 3.0m, extrapola 30cm hasta 3.30m; fisheye Kannala-Brandt tolera bien esa extrapolación). `mounting_height_m` en `config.yaml` es solo para runtime (SGBM auto-tune, head-height gating). Validar con `scripts/diagnose_depth.py` a múltiples distancias — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m y ratio borde/centro <2×.
+- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), **modelo fisheye Kannala-Brandt** con `cv2.fisheye.calibrate` (4 coef angulares k1–k4), apropiado para el lens Arducam 120°×152° que opera en zona útil hasta ±40% horizontal del frame. El flag `--dict` en `calibrate.py` permite usar boards alternativos. R y T del par se derivan de los extrínsecos per-pose que devuelve `fisheye.calibrate` (promedio + proyección SO(3)), manejando counts de puntos variables entre poses. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. **Protocolo de lab (universal para toda la flota mount 2.0–3.5m)**: foco y calibración se hacen una sola vez en laboratorio con distancias fijas, mount-independent. Foco a 1.5m ±20cm — punto que peakea el DoF (0.59m a ∞ con M12 f/2.0 + IMX708 binned, CoC=4.2μm) sobre el rango operativo bbox completo (cabeza+pie) de 1.0–3.5m, simétrico en ambos extremos. Calibración con poses a 1.0/2.0/3.0m: el polinomio K-B es angular (depth-independent), las 3 distancias + tilts en grupos A–E muestrean distorsión en periferia. 3.0m es el límite práctico (markers de 33mm a esa distancia caen a ~11px, edge de detección ChArUco). Floor a 3.5m queda como extrapolación 17%, K-B la tolera bien. `mounting_height_m` en `config.yaml` es solo para runtime (SGBM auto-tune, head-height gating), NO entra en calibración ni en foco. Validar con `scripts/diagnose_depth.py` — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m.
 - **Óptica de las cámaras**: Arducam B0310 con M12 120° HFOV (fisheye). Focal física 2.87mm / pixel pitch 1.4μm → pinhole-equivalente `f_px = 2050` a full-res 4608x2592 (`NOMINAL_FOCAL_PX` en `src/vision/calibration.py`). El FOV es fisheye real, no rectilíneo — la fórmula `f = (W/2)/tan(HFOV/2)` no aplica y daría valores erróneos.
 - **Sensor modes (IMX708)**: el modo canónico para este pipeline es **2304×1296 binned 2x2** (full FOV, 16:9, hasta 56 fps). `focus_assist.py` y `calibrate.py` lo pinean con `raw={"size": (2304, 1296)}`. Razones por las que es el modo elegido frente al full-res 4608×2592: ChArUco detection corre 4× más rápido (≥8 FPS vs <2 FPS en Pi 5 a full-res), el binning 2x2 mejora SNR, y la rectificación + SGBM cabe en el budget de 30+ FPS. Otros modos disponibles (`2304×1296 @ 30fps HDR`, `1536×864 @ 120fps` partial-FOV crop) quedan reservados para casos especiales. Para runtime de inferencia, `vision.resolution` puede ser una rescala lineal del modo de calibración (ej. 1152×648 vía `scripts/rescale_calibration.py`) — la calibración Kannala-Brandt es resolución-independiente en intrínsecos angulares, así que el K se reescala analíticamente.
 - **Rectificación**: mapas precomputados vía `cv2.fisheye.initUndistortRectifyMap` (balance=0.0 para cero bordes negros, que ensucian SGBM). Aplicados por par de frames con `cv2.remap`.
@@ -95,9 +95,10 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Linter**: Ruff
 - **Type hints**: requeridos en todas las firmas de funciones
 - **Logging**: módulo `logging`, JSON estructurado. DEBUG para dev, INFO para prod.
-- **Config**: dos niveles distintos:
-  - `config/hardware.yaml` (en repo, **inmutable**): constantes de diseño del bracket + sensores (baseline_mm, camera_left/right_csi, sensor model, focal nominal). Cargado vía `src.config.hardware.load_hardware_config()`. **Nunca se edita** — si necesitás cambiar algo acá tenés un defecto de hardware o un build no-estándar.
-  - `/etc/people-counter/config.yaml` (per-device, mutable): settings de instalación — `mounting_height_m`, paths, MQTT creds, store_id, schedule. Ver `config/config.example.yaml`.
+- **Config**: un único archivo per-device.
+  - `config/config.example.yaml` (en repo): la referencia canónica con todos los defaults de la flota. `load_config()` la lee como base y deep-mergea encima `/etc/people-counter/config.yaml` (per-device override). Cualquier key ausente en el per-device cae al default del example.
+  - `/etc/people-counter/config.yaml` (per-device, mutable): identidad del dispositivo + cosas que cambian con el sitio (mounting_height_m, ROI/lines, certs, endpoint MQTT). Puede ser tan minimal como device.id + mqtt.endpoint — los defaults llenan el resto.
+  - **No hay separación fleet vs site**. Si una key debería cambiar para todos los devices, se cambia en el example y se redeploya o se pushea via cloud shadow (RUNTIME_SAFE_KEYS en `src/config/loader.py`).
 - **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. Nunca commitear.
 - **Tests**: pytest, estructura espejo de src.
 - **No usar clases salvo que haya estado.** Tracker y MQTTClient justifican clases. Preferir funciones en el resto.
@@ -136,7 +137,7 @@ people-counter/
 │   ├── config/
 │   │   └── loader.py      <- carga y validación de config YAML
 │   └── main.py            <- orquestador del pipeline completo
-├── tests/                 <- 492 tests en todos los módulos
+├── tests/                 <- 699 tests en todos los módulos
 ├── scripts/
 │   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard, reset).
 │   │                         wizard es el flujo end-to-end con UI web: start overlay,
@@ -195,7 +196,8 @@ people-counter/
 │   │                         centro (única zona con distancia medida con
 │   │                         cinta/láser); ratio borde/centro mostrado pero
 │   │                         informativo, gate solo en escenas con target plano.
-│   │                         Lee camera CSI + default_res de `hardware.yaml`.
+│   │                         Lee camera CSI defaults desde `config/config.example.yaml`
+│   │                         (bracket.camera_left_csi/camera_right_csi).
 │   │                         Flags: --meter centre/spot, --lock-ae.
 │   ├── preview.py         <- preview en vivo browser-driven, mismo UX que
 │   │                         focus_assist + calibrate (start overlay, header).
@@ -286,7 +288,7 @@ people-counter/
 
 ## Estado de implementación
 
-**492 tests pasando.** Módulos por estado:
+**699 tests pasando.** Módulos por estado:
 
 - COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main, status (led + health + monitor)
 - INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
@@ -395,4 +397,4 @@ El detector cenital es **RAPiD pretrained** (Rotation-Aware People Detection, Bo
 - **Compartido entre `focus_assist`, `calibrate`, `preview`, `diagnose_depth`**:
   - **`--meter matrix|centre|spot`**: AE metering mode. `matrix` (default) pondera todo el frame; `centre` / `spot` exponen solo el área central, útiles cuando hay zonas brillantes en periferia (ventanas, lámparas) que descompensan el AE en luz baja.
   - **`--lock-ae` (calibrate + diagnose_depth)**: lockea exposición tras 1s de settle. Default off — para condiciones estables (lab, indoor con luz constante) el AE auto produce capturas más representativas. Activar solo en escenas con luz variable (luz natural, puertas que abren).
-  - Los CLI tools standalone (foco, calib, preview) usan los CSI defaults de `hardware.yaml` (camera_left=0, camera_right=1) sin necesidad de flags.
+  - Los CLI tools standalone (foco, calib, preview, diagnose) usan los CSI defaults de `config/config.example.yaml` (`bracket.camera_left_csi=0`, `bracket.camera_right_csi=1`) sin necesidad de flags. Override con `--left` / `--right` solo si el wiring del bracket está al revés.

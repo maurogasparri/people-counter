@@ -1,4 +1,4 @@
-"""Tests for src/telemetry.py — device + runtime observability."""
+"""Tests para src/telemetry.py — observability del device + runtime."""
 from __future__ import annotations
 
 import subprocess
@@ -11,7 +11,7 @@ from src.telemetry import collect_telemetry
 
 
 # ---------------------------------------------------------------------------
-# Schema — every documented key is always present
+# Schema — toda key documentada siempre está presente
 # ---------------------------------------------------------------------------
 
 EXPECTED_KEYS = {

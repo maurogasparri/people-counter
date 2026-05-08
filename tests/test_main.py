@@ -1,4 +1,4 @@
-"""Tests for main.py — pipeline orchestrator."""
+"""Tests para main.py — orquestador del pipeline."""
 import argparse
 import gc
 import logging
@@ -86,12 +86,12 @@ def test_build_capture_file_replay():
 
 def test_build_capture_live():
     config = {
+        "bracket": {"camera_left_csi": 0, "camera_right_csi": 1},
+        "sensor": {"default_res": [2304, 1296], "default_fps": 15},
         "vision": {
-            "camera_left": 0,
-            "camera_right": 1,
             "resolution": [640, 480],
             "fps": 15,
-        }
+        },
     }
     cap = build_capture(config, replay_dir=None)
     from src.vision.capture import StereoCapture
@@ -105,19 +105,25 @@ def test_build_capture_live():
 # ---------------------------------------------------------------------------
 
 
+def _make_config_for_disp(mount_m: float, res: list[int]) -> dict:
+    return {
+        "vision": {"mounting_height_m": mount_m, "resolution": res},
+        "sensor": {
+            "full_res": [4608, 2592],
+            "default_res": [2304, 1296],
+            "nominal_focal_full_px": 2050,
+        },
+        "bracket": {"baseline_mm": 140},
+    }
+
+
 def test_auto_num_disparities_scales_with_runtime_resolution():
     """f_px must scale with runtime width — same site at half-res should get
     roughly half the disparity envelope, not the full-res value."""
     logger = logging.getLogger("test")
-    full = _auto_num_disparities(
-        {"mounting_height_m": 2.56, "resolution": [4608, 2592]}, logger,
-    )
-    half = _auto_num_disparities(
-        {"mounting_height_m": 2.56, "resolution": [2304, 1296]}, logger,
-    )
-    quarter = _auto_num_disparities(
-        {"mounting_height_m": 2.56, "resolution": [1152, 648]}, logger,
-    )
+    full = _auto_num_disparities(_make_config_for_disp(2.56, [4608, 2592]), logger)
+    half = _auto_num_disparities(_make_config_for_disp(2.56, [2304, 1296]), logger)
+    quarter = _auto_num_disparities(_make_config_for_disp(2.56, [1152, 648]), logger)
     # disp_max ∝ f_px ∝ width. Each step should roughly halve, give or take
     # the multiple-of-16 rounding and the +1 margin bucket.
     assert half < full
@@ -133,15 +139,9 @@ def test_auto_num_disparities_scales_with_runtime_resolution():
 def test_auto_num_disparities_clamps_to_envelope():
     """Output must stay in [64, 512] regardless of mount/resolution."""
     logger = logging.getLogger("test")
-    # Tiny resolution + tall mount → very low disp_max; should clamp to 64.
-    out = _auto_num_disparities(
-        {"mounting_height_m": 5.0, "resolution": [320, 240]}, logger,
-    )
+    out = _auto_num_disparities(_make_config_for_disp(5.0, [320, 240]), logger)
     assert out >= 64
-    # Full-res + low mount → very high disp_max; should clamp to 512.
-    out = _auto_num_disparities(
-        {"mounting_height_m": 1.5, "resolution": [4608, 2592]}, logger,
-    )
+    out = _auto_num_disparities(_make_config_for_disp(1.5, [4608, 2592]), logger)
     assert out <= 512
 
 
@@ -163,6 +163,12 @@ def _make_certs_and_config(tmpdir, store_id="store-42", extra_mqtt=None):
         "cert_path": cert,
         "key_path": key,
         "ca_path": ca,
+        "topics": {
+            "counting": "store/{store_id}/counting",
+            "wifi_ble": "store/{store_id}/wifi_ble",
+            "telemetry": "store/{store_id}/telemetry",
+            "shadow": "$aws/things/{device_id}/shadow",
+        },
     }
     if extra_mqtt:
         mqtt_cfg.update(extra_mqtt)
@@ -256,17 +262,30 @@ def _make_pipeline_config(tmpdir: str) -> dict:
 
     return {
         "device": {"id": "test-001", "store_id": "store-01"},
+        "bracket": {
+            "baseline_mm": 140,
+            "camera_left_csi": 0,
+            "camera_right_csi": 1,
+        },
+        "sensor": {
+            "model": "imx708",
+            "full_res": [4608, 2592],
+            "default_res": [2304, 1296],
+            "default_fps": 15,
+            "nominal_focal_full_px": 2050,
+        },
+        "lens": {"type": "m12_120deg", "hfov_deg": 120},
         "vision": {
-            "camera_left": 0,
-            "camera_right": 1,
             "resolution": [640, 480],
             "fps": 15,
-            "baseline_cm": 14,
-            # Explicit null disables the hardware.yaml fallback to a real
-            # path that doesn't exist in the test environment.
+            "mounting_height_m": 3.0,
+            # Explicit null disables loading a real path that doesn't exist
+            # in the test environment.
             "calibration_file": None,
+            "sgbm": {"num_disparities": 192, "block_size": 9, "downscale": 1},
         },
         "counter": {
+            "foot_projection_enabled": False,
             "roi": {
                 "x_min": 0, "x_max": 640,
                 "y_min": 100, "y_max": 380,
@@ -283,11 +302,30 @@ def _make_pipeline_config(tmpdir: str) -> dict:
             ],
         },
         "detection": {
+            "architecture": "yolov8",
             "model_path": "/tmp/model.onnx",
             "confidence_threshold": 0.5,
             "nms_threshold": 0.45,
+            "cluster_distance_px": 0,
         },
-        "tracking": {"max_disappeared": 30, "max_distance": 50},
+        "tracking": {
+            "max_disappeared": 30,
+            "max_distance": 50,
+            "state_machine": {
+                "confirm_frames": 3,
+                "pending_max_frames": 5,
+                "reid_gate_px": 60,
+                "depth_gate_m": 0.5,
+            },
+        },
+        "wifi_ble": {
+            "enabled": False,
+            "wifi_interface": "wlan0",
+            "probe_interval_seconds": 900,
+            "cross_protocol_window_seconds": 2,
+            "cross_protocol_rssi_delta": 5,
+        },
+        "logging": {"format": "plain", "file": ""},
         "telemetry": {"interval_seconds": 9999},
         "mqtt": {
             "endpoint": "test.iot.amazonaws.com",

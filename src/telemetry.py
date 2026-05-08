@@ -1,13 +1,13 @@
-"""Device telemetry collection.
+"""Recolección de telemetría del dispositivo.
 
-Aggregates OS-level metrics (CPU/Hailo temps, memory, disk, uptime) plus
-runtime pipeline state (frame latency percentiles, detection rate, tracker
-state counts, MQTT connectivity, buffer backlog) into a single flat dict
-suitable for JSON publishing.
+Agrega métricas a nivel de OS (temps de CPU/Hailo, memoria, disco, uptime) más
+estado runtime del pipeline (percentiles de latencia por frame, detection rate,
+counts de estado del tracker, conectividad MQTT, backlog del buffer) en un único
+dict plano apto para publicar como JSON.
 
-Every probe is wrapped in try/except and emits ``None`` on failure so the
-downstream schema stays stable — consumers can tell the difference between
-"sensor queried, failed" and "field not emitted".
+Cada probe está wrappeado en try/except y emite ``None`` si falla, así el
+schema downstream se mantiene estable — los consumers pueden distinguir entre
+"sensor consultado, falló" y "campo no emitido".
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Keys whose presence downstream (Timestream telemetry rule) depends on.
-# Adding fields is safe; renaming would break consumers.
+# Keys de cuya presencia depende el downstream (regla de telemetría de Timestream).
+# Agregar campos es seguro; renombrar rompería los consumers.
 _STATE_DEPENDENT_KEYS = (
     "frame_latency_p50_ms",
     "frame_latency_p95_ms",
@@ -70,9 +70,9 @@ def _read_mem_available_mb() -> int | None:
     return None
 
 
-# Hailo die temperature appears in `hailortcli fw-control identify` output
-# on a line similar to:  "Die temperature: 45.3 C".  The label varies across
-# HailoRT versions ("Die Temperature", "Chip Temperature") so match loosely.
+# La temperatura del die de Hailo aparece en el output de `hailortcli fw-control identify`
+# en una línea similar a: "Die temperature: 45.3 C". El label varía entre versiones
+# de HailoRT ("Die Temperature", "Chip Temperature") así que matcheamos con flexibilidad.
 _HAILO_TEMP_RE = re.compile(
     r"(?:die|chip)\s+temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
     re.IGNORECASE,
@@ -80,7 +80,7 @@ _HAILO_TEMP_RE = re.compile(
 
 
 def _read_hailo_temp() -> float | None:
-    """Query hailortcli for die temperature. Returns None on any failure."""
+    """Consulta hailortcli por la temperatura del die. Devuelve None ante cualquier falla."""
     try:
         result = subprocess.run(
             ["hailortcli", "fw-control", "identify"],
@@ -108,14 +108,14 @@ def _read_hailo_temp() -> float | None:
 
 
 def _percentile(values: list[float], pct: float) -> float | None:
-    """Nearest-rank percentile. Returns None for empty input."""
+    """Percentil nearest-rank. Devuelve None si la entrada está vacía."""
     if not values:
         return None
     try:
         sorted_vals = sorted(values)
         n = len(sorted_vals)
         # Nearest-rank: rank = ceil(pct/100 * n), index = rank - 1
-        rank = max(1, int(-(-pct * n // 100)))  # ceil via floor-div trick
+        rank = max(1, int(-(-pct * n // 100)))  # ceil vía truco de floor-div
         rank = min(rank, n)
         return float(sorted_vals[rank - 1])
     except Exception:
@@ -132,11 +132,11 @@ def _p50(values: list[float]) -> float | None:
 
 
 def _detection_rate_per_min(state: dict[str, Any]) -> float | None:
-    """Persons-per-minute over the sampling window.
+    """Personas-por-minuto sobre la ventana de sampling.
 
-    Prefers a wall-clock window derived from ``detection_window_start_ts``.
-    Falls back to ``len(counts) / fps`` if ``fps`` is provided. Returns
-    ``None`` if neither is available or the window is degenerate.
+    Prefiere una ventana wall-clock derivada de ``detection_window_start_ts``.
+    Falla a ``len(counts) / fps`` si se provee ``fps``. Devuelve ``None`` si
+    ninguno está disponible o si la ventana es degenerada.
     """
     counts = state.get("detection_counts")
     if not counts:
@@ -168,34 +168,34 @@ def _detection_rate_per_min(state: dict[str, Any]) -> float | None:
 
 
 def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Collect device + runtime telemetry into a flat dict.
+    """Recolecta telemetría de dispositivo + runtime en un dict plano.
 
-    All keys are always present; failing probes emit ``None``.
+    Todas las keys están siempre presentes; los probes que fallan emiten ``None``.
 
     Args:
-        state: Runtime counters tracked by main.py. Recognized keys:
-            - ``frame_latencies_ms``: iterable of recent per-frame latencies
-            - ``detection_counts``: iterable of persons-per-frame counts
-            - ``detection_window_start_ts``: epoch seconds for the start of
-              the detection counting window (used to compute rate)
-            - ``fps``: fallback for rate computation if no start ts
-            - ``tracker_confirmed``: int count of CONFIRMED tracks
-            - ``tracker_pending``: int count of PENDING tracks
-            - ``mqtt_disconnect_count``: cumulative disconnect count
-            - ``mqtt_reconnect_ts``: epoch of last (re)connect, or None
-            - ``buffer_backlog``: count of unsent messages in the buffer
+        state: Counters runtime trackeados por main.py. Keys reconocidas:
+            - ``frame_latencies_ms``: iterable de latencias por frame recientes
+            - ``detection_counts``: iterable de counts de personas por frame
+            - ``detection_window_start_ts``: epoch seconds del inicio de la
+              ventana de conteo de detecciones (se usa para computar la rate)
+            - ``fps``: fallback para computar rate si no hay start ts
+            - ``tracker_confirmed``: count int de tracks CONFIRMED
+            - ``tracker_pending``: count int de tracks PENDING
+            - ``mqtt_disconnect_count``: count acumulado de disconnects
+            - ``mqtt_reconnect_ts``: epoch del último (re)connect, o None
+            - ``buffer_backlog``: count de mensajes no enviados en el buffer
     """
     state = state or {}
     telemetry: dict[str, Any] = {}
 
-    # --- OS probes (keep names stable for Timestream consumers) ---
+    # --- Probes de OS (mantener nombres estables para los consumers de Timestream) ---
     telemetry["uptime_s"] = _read_uptime()
     telemetry["cpu_temp_c"] = _read_cpu_temp()
     telemetry["disk_free_mb"] = _read_disk_free_mb()
     telemetry["mem_available_mb"] = _read_mem_available_mb()
     telemetry["hailo_temp_c"] = _read_hailo_temp()
 
-    # --- Frame latency percentiles ---
+    # --- Percentiles de latencia por frame ---
     try:
         latencies = list(state.get("frame_latencies_ms") or [])
     except Exception:
@@ -210,11 +210,11 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
         logger.exception("detection_rate_per_min computation failed")
         telemetry["detection_rate_per_min"] = None
 
-    # --- Tracker state counts ---
+    # --- Counts de estado del tracker ---
     telemetry["tracker_confirmed_count"] = state.get("tracker_confirmed")
     telemetry["tracker_pending_count"] = state.get("tracker_pending")
 
-    # --- MQTT health ---
+    # --- Health MQTT ---
     telemetry["mqtt_disconnect_count"] = state.get("mqtt_disconnect_count")
     reconnect_ts = state.get("mqtt_reconnect_ts")
     if reconnect_ts is None:
@@ -227,11 +227,11 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
         except Exception:
             telemetry["seconds_since_last_reconnect"] = None
 
-    # --- Buffer backlog ---
+    # --- Backlog del buffer ---
     telemetry["buffer_backlog_messages"] = state.get("buffer_backlog")
 
-    # Guarantee every state-dependent key exists even if something above
-    # raised before assigning it.
+    # Garantiza que toda key dependiente de state exista aunque algo arriba
+    # haya raiseado antes de asignarla.
     for key in _STATE_DEPENDENT_KEYS:
         telemetry.setdefault(key, None)
 

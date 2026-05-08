@@ -1,21 +1,21 @@
-"""AWS Lambda: Inter-camera deduplication (Layer 3).
+"""AWS Lambda: dedup inter-cámara (Capa 3).
 
-Receives WiFi/BLE hash summaries from multiple cameras in the same store
-and deduplicates across cameras using DynamoDB.
+Recibe resúmenes de hashes WiFi/BLE de múltiples cámaras del mismo local y
+deduplica entre cámaras usando DynamoDB.
 
-DynamoDB table schema:
+Schema de la tabla DynamoDB:
     Partition key: store_date (str) — "store-001#2026-03-30"
-    Sort key: hash (str) — truncated SHA-256 hex
-    ttl (number): epoch seconds at which DynamoDB auto-expires the item.
+    Sort key: hash (str) — hex SHA-256 truncado
+    ttl (number): epoch seconds al que DynamoDB auto-expira el item.
 
-Each invocation:
-    1. Receives an IoT Core rule payload with hashes from one camera.
-    2. For each hash, conditionally puts to DynamoDB (only if not exists).
-    3. Returns the count of genuinely new unique visitors.
+Cada invocación:
+    1. Recibe un payload de regla de IoT Core con hashes de una cámara.
+    2. Por cada hash, hace put condicional a DynamoDB (solo si no existe).
+    3. Devuelve la cantidad de visitantes únicos genuinamente nuevos.
 
-Environment variables:
-    DEDUP_TABLE_NAME: DynamoDB table name (default: "people-counter-dedup")
-    DEDUP_TTL_DAYS: Days after which hashes auto-expire (default: 7).
+Variables de entorno:
+    DEDUP_TABLE_NAME: Nombre de la tabla DynamoDB (default: "people-counter-dedup")
+    DEDUP_TTL_DAYS: Días después de los cuales los hashes auto-expiran (default: 7).
 """
 
 import json
@@ -27,12 +27,12 @@ from typing import Any
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Lazy import boto3 — available in Lambda runtime, not necessarily locally
+# Import lazy de boto3 — disponible en el runtime de Lambda, no necesariamente local
 _dynamodb_table = None
 
 
 def _get_table():
-    """Lazily initialize DynamoDB table resource."""
+    """Inicializa el resource de la tabla DynamoDB de manera lazy."""
     global _dynamodb_table
     if _dynamodb_table is None:
         import boto3
@@ -49,19 +49,19 @@ def deduplicate_hashes(
     hashes: list[str],
     source_device: str,
 ) -> dict[str, Any]:
-    """Deduplicate hashes against store-level DynamoDB table.
+    """Deduplica hashes contra la tabla DynamoDB a nivel de local.
 
     Args:
-        store_id: Store identifier (e.g. "store-001").
-        date: Date string (e.g. "2026-03-30").
-        hashes: List of truncated SHA-256 hex hashes.
-        source_device: Device ID that sent these hashes.
+        store_id: Identificador del local (ej: "store-001").
+        date: String de fecha (ej: "2026-03-30").
+        hashes: Lista de hashes SHA-256 truncados en hex.
+        source_device: Device ID que envió estos hashes.
 
     Returns:
-        Dict with:
-            new_count: Number of genuinely new unique visitors.
-            duplicate_count: Number already seen by another camera.
-            total_unique: Total unique for this store+date (approximate).
+        Dict con:
+            new_count: Cantidad de visitantes únicos genuinamente nuevos.
+            duplicate_count: Cantidad ya vista por otra cámara.
+            total_unique: Total único para este store+date (aproximado).
     """
     table = _get_table()
     partition_key = f"{store_id}#{date}"
@@ -74,7 +74,7 @@ def deduplicate_hashes(
 
     for h in hashes:
         try:
-            # Conditional put — only succeeds if the item doesn't exist
+            # Put condicional — solo tiene éxito si el item no existe
             table.put_item(
                 Item={
                     "store_date": partition_key,
@@ -110,9 +110,9 @@ def deduplicate_hashes(
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """Lambda handler — invoked by IoT Core rule.
+    """Handler de Lambda — invocado por la regla de IoT Core.
 
-    Expected event structure (from IoT Core SQL rule):
+    Estructura esperada del event (de la regla SQL de IoT Core):
     {
         "device_id": "store-001-cam-01",
         "store_id": "store-001",

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Hardware verification script for People Counter edge devices.
+"""Script de verificación de hardware para los edge devices del People Counter.
 
-Runs a checklist of all hardware and software prerequisites.
-Designed to run on the RPi5 after setup-guide steps are complete.
+Corre un checklist de todos los prerrequisitos de hardware y software.
+Diseñado para correr en la RPi5 después de completar los pasos del setup-guide.
 
-Usage:
+Uso:
     cd /usr/src/people-counter
     sudo PYTHONPATH=. python3 scripts/verify_hardware.py
 """

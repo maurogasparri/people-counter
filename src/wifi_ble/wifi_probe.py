@@ -1,18 +1,18 @@
-"""WiFi probe request capture via monitor mode.
+"""Captura de probe requests WiFi vía monitor mode.
 
-Uses the CYW43455 (RPi5 onboard) in monitor mode via nexmon firmware patches
-and airmon-ng (from aircrack-ng). Captures 802.11 probe request frames.
+Usa el CYW43455 (onboard de la RPi5) en monitor mode mediante los parches de
+firmware nexmon y airmon-ng (de aircrack-ng). Captura frames probe request 802.11.
 
-WiFi is EXCLUSIVE for probing — network connectivity is Ethernet only.
+WiFi es EXCLUSIVO para probing — la conectividad de red es solo por Ethernet.
 
-Prerequisites:
-    - nexmon firmware: firmware-nexmon + brcmfmac-nexmon-dkms packages
-    - aircrack-ng: provides airmon-ng for monitor mode management
-    - scapy: for packet parsing (pip install scapy)
+Prerrequisitos:
+    - firmware nexmon: paquetes firmware-nexmon + brcmfmac-nexmon-dkms
+    - aircrack-ng: provee airmon-ng para administrar monitor mode
+    - scapy: para parseo de paquetes (pip install scapy)
 
-Setup (one-time):
+Setup (una sola vez):
     sudo apt install -y aircrack-ng
-    # nexmon packages — see docs/setup-guide.md
+    # paquetes nexmon — ver docs/setup-guide.md
 """
 
 import logging
@@ -26,15 +26,15 @@ logger = logging.getLogger(__name__)
 
 PROBE_REQUEST_SUBTYPE = 4
 
-# Channel hop sequence: 2.4 GHz (1-13) + 5 GHz common channels
+# Secuencia de channel hopping: 2.4 GHz (1-13) + canales 5 GHz comunes
 CHANNELS_24GHZ = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 CHANNELS_5GHZ = [36, 40, 44, 48, 52, 56, 60, 64, 149, 153, 157, 161, 165]
-DEFAULT_HOP_INTERVAL = 0.3  # seconds per channel
+DEFAULT_HOP_INTERVAL = 0.3  # segundos por canal
 
 
 @dataclass
 class ProbeEvent:
-    """A captured WiFi probe request."""
+    """Probe request WiFi capturado."""
 
     mac: str
     rssi: float
@@ -44,19 +44,19 @@ class ProbeEvent:
 
 
 class WiFiProbeCapture:
-    """Captures WiFi probe requests in monitor mode.
+    """Captura probe requests WiFi en monitor mode.
 
-    Uses airmon-ng to create a monitor interface (wlan0mon), then captures
-    probe requests via scapy with channel hopping.
+    Usa airmon-ng para crear una interfaz monitor (wlan0mon) y captura los
+    probe requests vía scapy con channel hopping.
 
     Lifecycle:
-        1. setup_monitor_mode() — runs airmon-ng start, creates wlan0mon
-        2. start() — begins async capture + channel hopping
-        3. stop() — stops capture
-        4. teardown_monitor_mode() — runs airmon-ng stop
+        1. setup_monitor_mode() — corre airmon-ng start, crea wlan0mon
+        2. start() — arranca captura async + channel hopping
+        3. stop() — detiene la captura
+        4. teardown_monitor_mode() — corre airmon-ng stop
 
-    Each captured probe is passed to the on_probe callback, which should
-    feed it into the DedupEngine via hash_mac + process_detection.
+    Cada probe capturado se pasa al callback on_probe, que debería
+    alimentarlo al DedupEngine vía hash_mac + process_detection.
     """
 
     def __init__(
@@ -83,22 +83,22 @@ class WiFiProbeCapture:
         return self._probe_count
 
     def setup_monitor_mode(self) -> None:
-        """Create monitor interface via airmon-ng.
+        """Crea la interfaz monitor vía airmon-ng.
 
-        Requires root privileges and nexmon-patched firmware.
-        Creates wlan0mon from wlan0.
+        Requiere privilegios root y firmware con parches nexmon.
+        Crea wlan0mon a partir de wlan0.
 
         Raises:
-            RuntimeError: If airmon-ng fails.
+            RuntimeError: Si airmon-ng falla.
         """
         try:
-            # Kill interfering processes
+            # Mata procesos que interfieren
             subprocess.run(
                 ["airmon-ng", "check", "kill"],
                 capture_output=True,
             )
 
-            # Start monitor mode — creates wlan0mon
+            # Arranca monitor mode — crea wlan0mon
             result = subprocess.run(
                 ["airmon-ng", "start", self.interface],
                 check=True,
@@ -113,7 +113,7 @@ class WiFiProbeCapture:
                 },
             )
 
-            # Verify the monitor interface exists
+            # Verifica que la interfaz monitor exista
             verify = subprocess.run(
                 ["iw", "dev", self.mon_interface, "info"],
                 capture_output=True,
@@ -136,13 +136,13 @@ class WiFiProbeCapture:
             ) from e
 
     def teardown_monitor_mode(self) -> None:
-        """Stop monitor mode and restore managed interface."""
+        """Detiene monitor mode y restaura la interfaz como managed."""
         try:
             subprocess.run(
                 ["airmon-ng", "stop", self.mon_interface],
                 capture_output=True,
             )
-            # Restore NetworkManager management
+            # Restaura el manejo por NetworkManager
             subprocess.run(
                 ["nmcli", "dev", "set", self.interface, "managed", "yes"],
                 capture_output=True,
@@ -152,7 +152,7 @@ class WiFiProbeCapture:
             logger.exception("Failed to restore managed mode")
 
     def start(self) -> None:
-        """Start asynchronous probe capture and channel hopping."""
+        """Arranca captura asíncrona de probes y channel hopping."""
         if self._capture_thread is not None:
             logger.warning("wifi_capture_already_running")
             return
@@ -175,7 +175,7 @@ class WiFiProbeCapture:
         )
 
     def stop(self) -> None:
-        """Stop capture and channel hopping."""
+        """Detiene la captura y el channel hopping."""
         self._stop_event.set()
         if self._capture_thread is not None:
             self._capture_thread.join(timeout=5.0)
@@ -189,7 +189,7 @@ class WiFiProbeCapture:
         )
 
     def _channel_hop_loop(self) -> None:
-        """Cycle through channels at hop_interval."""
+        """Cicla por los canales con frecuencia hop_interval."""
         idx = 0
         while not self._stop_event.is_set():
             channel = self.channels[idx % len(self.channels)]
@@ -215,7 +215,7 @@ class WiFiProbeCapture:
             self._stop_event.wait(self.hop_interval)
 
     def _capture_loop(self) -> None:
-        """Capture probe requests using scapy on the monitor interface."""
+        """Captura probe requests con scapy sobre la interfaz monitor."""
         try:
             from scapy.all import Dot11, Dot11ProbeReq, RadioTap, sniff
         except ImportError:
@@ -231,7 +231,7 @@ class WiFiProbeCapture:
 
             dot11 = pkt.getlayer(Dot11)
 
-            # Filter for probe requests (type=0 management, subtype=4)
+            # Filtra probe requests (type=0 management, subtype=4)
             if dot11.type != 0 or dot11.subtype != PROBE_REQUEST_SUBTYPE:
                 return
 
@@ -239,7 +239,7 @@ class WiFiProbeCapture:
             if mac is None:
                 return
 
-            # Extract RSSI from RadioTap header
+            # Extrae el RSSI del header RadioTap
             rssi = -100.0
             if pkt.haslayer(RadioTap):
                 try:
@@ -247,7 +247,7 @@ class WiFiProbeCapture:
                 except (AttributeError, TypeError):
                     pass
 
-            # Extract SSID
+            # Extrae el SSID
             ssid = ""
             if pkt.haslayer(Dot11ProbeReq):
                 try:

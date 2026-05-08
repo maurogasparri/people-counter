@@ -1,19 +1,19 @@
-"""Purge best-frame JPGs older than a retention threshold.
+"""Purga JPGs best-frame más viejos que un threshold de retención.
 
-Standalone CLI invoked daily by ``people-counter-purge-best-frames.timer``
-(see ``config/``). Walks ``--output-dir`` recursively and unlinks any
-file whose mtime is older than ``--retention-days`` days. Idempotent and
-safe to run from cron.
+CLI standalone invocado diariamente por ``people-counter-purge-best-frames.timer``
+(ver ``config/``). Camina ``--output-dir`` recursivamente y unlinkea cualquier
+archivo cuyo mtime sea más viejo que ``--retention-days`` días. Idempotente y
+seguro de correr desde cron.
 
-Why a separate script (not the runtime pipeline):
+Por qué un script separado (no el pipeline runtime):
 
-  - Retention is a *legal* guarantee. It must keep working even when the
-    pipeline crashes, the device is unreachable, or the operator turns
-    the feature off — i.e. independently of ``src/main.py``.
-  - The systemd timer makes the schedule visible (`systemctl
-    list-timers`) and audit-friendly.
+  - La retención es una garantía *legal*. Tiene que seguir funcionando aún
+    cuando el pipeline crashea, el dispositivo está inalcanzable, o el operador
+    apaga el feature — es decir, independiente de ``src/main.py``.
+  - El timer de systemd hace el schedule visible (`systemctl list-timers`) y
+    audit-friendly.
 
-Usage:
+Uso:
 
     python scripts/purge_best_frames.py \
         --output-dir /var/lib/people-counter/best_frames \
@@ -22,7 +22,7 @@ Usage:
 
 Exit codes:
 
-  0 — success (no errors; may have purged 0 or more files).
+  0 — success (sin errores; puede haber purgado 0 o más archivos).
   1 — output dir does not exist (treated as a hard error so cron loudly
       reports the misconfiguration instead of silently doing nothing).
   2 — invalid arguments.

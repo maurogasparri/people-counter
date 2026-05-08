@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Bench a YOLOv8 detector over a folder of frames.
+"""Benchea un detector YOLOv8 sobre una carpeta de frames.
 
-Phase A bench harness for the cenital head detector. Two use cases:
+Harness de bench Phase A para el detector cenital de cabezas. Dos casos de uso:
 
-1. **Baseline measurement** before training: run the off-the-shelf
-   YOLOv8n COCO model (or Owen718 head model) over the frames you've
-   already captured from the Pi, see what fraction it detects, where
-   confidence sits, and which zones of the frame are weak.
+1. **Medición de baseline** antes del training: correr el modelo YOLOv8n COCO
+   off-the-shelf (o el modelo de cabezas Owen718) sobre los frames que ya
+   capturaste de la Pi, ver qué fracción detecta, dónde se sienta la confidence
+   y qué zonas del frame son débiles.
 
-2. **Post-training comparison** after Phase A finishes: same flags, new
-   weights. Diff the two reports to see if fine-tuning actually helped
-   on YOUR scene.
+2. **Comparación post-training** luego de que termina Phase A: mismos flags,
+   weights nuevos. Diff de los dos reportes para ver si el fine-tune realmente
+   ayudó en TU escena.
 
-The bench is intentionally simple: no ground truth required (we don't
-have annotations of our own frames yet). It reports detection counts +
-confidence distribution per zone (5-grid: center + 4 corners), which is
-enough to compare two models quickly.
+El bench es intencionalmente simple: no requiere ground truth (todavía no
+tenemos anotaciones de nuestros propios frames). Reporta counts de detecciones
++ distribución de confidence por zona (grilla de 5: centro + 4 esquinas), lo
+cual alcanza para comparar dos modelos rápido.
 
-Usage:
-    # Baseline with stock YOLOv8n
+Uso:
+    # Baseline con YOLOv8n stock
     python scripts/training/bench_detector.py \\
         --weights yolov8n.pt \\
         --frames /path/to/captured_frames/ \\

@@ -1,5 +1,5 @@
 [Unit]
-Description=WiFi monitor mode for probe capture (nexmon + airmon-ng)
+Description=WiFi monitor mode para captura de probes (nexmon + airmon-ng)
 After=network-pre.target
 Before=people-counter.service
 Wants=network-pre.target

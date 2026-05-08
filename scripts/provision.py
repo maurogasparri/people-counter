@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Device provisioning tool for People Counter edge devices.
+"""Tool de provisioning de devices para los edge devices del People Counter.
 
-Creates the AWS IoT Core thing, generates X.509 certificates, builds
-the device-specific config YAML, and optionally deploys to the device
-via SSH. Also covers disaster recovery: pulling calibration back to
-the workstation backup, and re-issuing certs after SD failure.
+Crea el thing en AWS IoT Core, genera certificados X.509, arma el YAML de
+config específico del device, y opcionalmente despliega al device por SSH.
+También cubre disaster recovery: traer la calibración de vuelta al backup
+del workstation, y re-emitir certs luego de falla de SD.
 
-Usage:
-    # Provision a new device (creates thing + certs + config)
+Uso:
+    # Provisiona un device nuevo (crea thing + certs + config)
     python scripts/provision.py create \
         --device-id store-001-cam-01 \
         --store-id store-001 \
         --store-name "Store Name" \
         --endpoint xxxxx.iot.us-east-1.amazonaws.com
 
-    # Deploy config + certs (+ calibration.npz if backed up) to a device
+    # Despliega config + certs (+ calibration.npz si está backupeado) a un device
     python scripts/provision.py deploy \
         --device-id store-001-cam-01 \
         --host people-counter.local \
         --user pi
 
-    # Pull calibration.npz from a device into the workstation backup
+    # Trae calibration.npz desde un device al backup del workstation
     python scripts/provision.py harvest \
         --device-id store-001-cam-01 \
         --host people-counter.local
@@ -60,7 +60,7 @@ REMOTE_LOG_DIR = "/var/log/people-counter"
 
 
 def cmd_create(args: argparse.Namespace) -> None:
-    """Create a new device: register IoT thing, generate certs, build config."""
+    """Crea un device nuevo: registra el IoT thing, genera certs, arma config."""
     device_id = args.device_id
     device_dir = PROVISION_DIR / device_id
     cert_dir = device_dir / "certs"
@@ -76,21 +76,21 @@ def cmd_create(args: argparse.Namespace) -> None:
     device_dir.mkdir(parents=True, exist_ok=True)
     cert_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Register IoT Thing ---
+    # --- Registrar IoT Thing ---
     if not args.skip_aws:
         _create_iot_thing(device_id, cert_dir, args.endpoint)
     else:
         logger.warning("Skipping AWS IoT registration (--skip-aws)")
-        # Create placeholder cert files for testing
+        # Crear archivos de cert placeholder para testing
         for name in ["device.pem.crt", "device.pem.key", "AmazonRootCA1.pem"]:
             placeholder = cert_dir / name
             if not placeholder.exists():
                 placeholder.write_text(f"# Placeholder — replace with real {name}\n")
 
-    # --- Build config YAML ---
+    # --- Armar config YAML ---
     _build_config(device_dir, args)
 
-    # --- Save device metadata ---
+    # --- Guardar metadata del device ---
     metadata = {
         "device_id": device_id,
         "store_id": args.store_id,
@@ -103,7 +103,7 @@ def cmd_create(args: argparse.Namespace) -> None:
 
 
 def _create_iot_thing(device_id: str, cert_dir: Path, endpoint: str) -> None:
-    """Register IoT thing and generate certificates via AWS CLI."""
+    """Registra el IoT thing y genera certificados via AWS CLI."""
     try:
         _create_thing(device_id)
         _issue_cert(device_id, cert_dir)
@@ -116,7 +116,7 @@ def _create_iot_thing(device_id: str, cert_dir: Path, endpoint: str) -> None:
 
 
 def _create_thing(device_id: str) -> None:
-    """Register an IoT thing. Idempotent: skips if already exists."""
+    """Registra un IoT thing. Idempotente: saltea si ya existe."""
     try:
         subprocess.run(
             ["aws", "iot", "create-thing", "--thing-name", device_id],
@@ -133,10 +133,10 @@ def _create_thing(device_id: str) -> None:
 
 
 def _issue_cert(device_id: str, cert_dir: Path) -> None:
-    """Generate keys + cert, attach policy, attach to thing. Thing must exist.
+    """Genera keys + cert, attachea policy, attachea al thing. El thing tiene que existir.
 
-    Writes device.pem.crt / device.pem.key / device.pem.pub / AmazonRootCA1.pem
-    / cert_arn.txt into cert_dir.
+    Escribe device.pem.crt / device.pem.key / device.pem.pub /
+    AmazonRootCA1.pem / cert_arn.txt en cert_dir.
     """
     cert_dir.mkdir(parents=True, exist_ok=True)
 
@@ -186,9 +186,10 @@ def _issue_cert(device_id: str, cert_dir: Path) -> None:
 
 
 def _revoke_certs(device_id: str) -> int:
-    """Detach + deactivate + delete every cert currently attached to the thing.
+    """Detachea + desactiva + borra cada cert actualmente attacheado al thing.
 
-    Returns the count of certs revoked. Safe to call when there are none.
+    Devuelve el count de certs revocados. Safe para llamar cuando no
+    hay ninguno.
     """
     result = subprocess.run(
         ["aws", "iot", "list-thing-principals", "--thing-name", device_id],
@@ -206,7 +207,7 @@ def _revoke_certs(device_id: str) -> int:
             check=True, capture_output=True,
         )
 
-        # Detach every policy attached to the cert (don't assume just one)
+        # Detachear cada policy attacheada al cert (no asumir solo una)
         pols = subprocess.run(
             ["aws", "iot", "list-attached-policies", "--target", arn],
             check=True, capture_output=True, text=True,
@@ -232,13 +233,17 @@ def _revoke_certs(device_id: str) -> int:
 
 
 def _build_config(device_dir: Path, args: argparse.Namespace) -> None:
-    """Build device-specific config.yaml from template."""
+    """Arma el config.yaml device-specific a partir del template."""
     import yaml
 
-    with open(CONFIG_TEMPLATE) as f:
+    # config.example.yaml contiene UTF-8 (acentos en español, chars
+    # especiales en comentarios). En Windows el open() default usa
+    # cp1252 y se atraganta con bytes UTF-8. Forzar UTF-8 en read +
+    # write.
+    with open(CONFIG_TEMPLATE, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    # Device identity
+    # Identidad del device
     config["device"]["id"] = args.device_id
     config["device"]["store_id"] = args.store_id
     config["device"]["store_name"] = args.store_name
@@ -249,19 +254,15 @@ def _build_config(device_dir: Path, args: argparse.Namespace) -> None:
     config["mqtt"]["key_path"] = f"{REMOTE_CERT_DIR}/device.pem.key"
     config["mqtt"]["ca_path"] = f"{REMOTE_CERT_DIR}/AmazonRootCA1.pem"
 
-    # buffer.db_path and logging.file follow the install convention from
-    # hardware.yaml (REMOTE_DATA_DIR/buffer.db, REMOTE_LOG_DIR/app.log) — no
-    # per-device write needed unless a deployment deviates.
-
     config_path = device_dir / "config.yaml"
-    with open(config_path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     logger.info("Config written to %s", config_path)
 
 
 def cmd_deploy(args: argparse.Namespace) -> None:
-    """Deploy config and certs to a device via SSH."""
+    """Deploya config y certs a un device via SSH."""
     device_id = args.device_id
     device_dir = PROVISION_DIR / device_id
 
@@ -271,29 +272,29 @@ def cmd_deploy(args: argparse.Namespace) -> None:
 
     host = f"{args.user}@{args.host}"
 
-    # Create remote directories
+    # Crear directorios remotos
     _ssh(host, f"sudo mkdir -p {REMOTE_CONFIG_DIR} {REMOTE_CERT_DIR} {REMOTE_DATA_DIR} {REMOTE_LOG_DIR}")
     _ssh(host, f"sudo chown -R {args.user}:{args.user} {REMOTE_CONFIG_DIR} {REMOTE_DATA_DIR} {REMOTE_LOG_DIR}")
 
-    # Copy config
+    # Copiar config
     _scp(str(device_dir / "config.yaml"), f"{host}:{REMOTE_CONFIG_DIR}/config.yaml")
 
-    # Copy certs
+    # Copiar certs
     for cert_file in (device_dir / "certs").glob("*.pem*"):
         if cert_file.suffix in (".crt", ".key", ".pem"):
             _scp(str(cert_file), f"{host}:{REMOTE_CERT_DIR}/{cert_file.name}")
 
-    # Set cert permissions
+    # Setear permisos del cert
     _ssh(host, f"chmod 600 {REMOTE_CERT_DIR}/device.pem.key")
     _ssh(host, f"chmod 644 {REMOTE_CERT_DIR}/device.pem.crt {REMOTE_CERT_DIR}/AmazonRootCA1.pem")
 
-    # Push calibration.npz if a backup exists for this device
+    # Pushear calibration.npz si hay backup para este device
     calibration = device_dir / "calibration.npz"
     if calibration.exists():
         _scp(str(calibration), f"{host}:{REMOTE_CONFIG_DIR}/calibration.npz")
         logger.info("Calibration deployed from backup")
 
-    # Install systemd services and logrotate
+    # Instalar systemd services y logrotate
     config_dir = Path(__file__).resolve().parent.parent / "config"
     for config_file in [
         "wifi-monitor.service",
@@ -319,7 +320,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
 
 
 def cmd_harvest(args: argparse.Namespace) -> None:
-    """Pull calibration.npz from a device into the workstation backup."""
+    """Pullea calibration.npz de un device al backup del workstation."""
     device_id = args.device_id
     device_dir = PROVISION_DIR / device_id
 
@@ -336,10 +337,11 @@ def cmd_harvest(args: argparse.Namespace) -> None:
 
 
 def cmd_reprovision(args: argparse.Namespace) -> None:
-    """Re-issue cert for an existing thing. Revokes the old cert first.
+    """Re-emite el cert para un thing existente. Revoca el viejo primero.
 
-    Use after SD failure or whenever you suspect the device cert is
-    compromised. The thing keeps its identity; only the principal rotates.
+    Usar tras una falla de SD o siempre que se sospeche que el cert
+    del device está comprometido. El thing mantiene su identidad;
+    solo rota el principal.
     """
     device_id = args.device_id
     device_dir = PROVISION_DIR / device_id
@@ -349,7 +351,8 @@ def cmd_reprovision(args: argparse.Namespace) -> None:
         logger.error("Device %s not provisioned. Run 'create' first.", device_id)
         sys.exit(1)
 
-    # Move the old cert dir aside before overwriting (in case we need to dig)
+    # Mover el dir viejo de cert a un costado antes de sobreescribir
+    # (por si hay que escarbar)
     if cert_dir.exists() and any(cert_dir.iterdir()):
         archived = cert_dir.parent / f"certs.old-{int(time.time())}"
         cert_dir.rename(archived)
@@ -373,7 +376,7 @@ def cmd_reprovision(args: argparse.Namespace) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    """List all provisioned devices."""
+    """Lista todos los devices provisionados."""
     if not PROVISION_DIR.exists():
         logger.info("No devices provisioned yet.")
         return
@@ -394,7 +397,7 @@ def cmd_list(args: argparse.Namespace) -> None:
 
 
 def _ssh(host: str, command: str) -> None:
-    """Run a command on a remote host via SSH."""
+    """Corre un comando en un host remoto via SSH."""
     try:
         subprocess.run(
             ["ssh", host, command],
@@ -408,7 +411,7 @@ def _ssh(host: str, command: str) -> None:
 
 
 def _scp(local: str, remote: str) -> None:
-    """Copy a file to a remote host via SCP."""
+    """Copia un archivo a un host remoto via SCP."""
     try:
         subprocess.run(
             ["scp", local, remote],
@@ -422,50 +425,50 @@ def _scp(local: str, remote: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="People Counter device provisioning")
+    parser = argparse.ArgumentParser(description="Provisioning de devices People Counter")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- create ---
-    p_create = sub.add_parser("create", help="Provision a new device")
-    p_create.add_argument("--device-id", required=True, help="Unique device ID")
-    p_create.add_argument("--store-id", required=True, help="Store identifier")
-    p_create.add_argument("--store-name", default="", help="Human-readable store name")
+    p_create = sub.add_parser("create", help="Provisiona un device nuevo")
+    p_create.add_argument("--device-id", required=True, help="ID único del device")
+    p_create.add_argument("--store-id", required=True, help="Identificador del store")
+    p_create.add_argument("--store-name", default="", help="Nombre human-readable del store")
     p_create.add_argument(
         "--endpoint",
         default="xxxxx.iot.us-east-1.amazonaws.com",
-        help="AWS IoT Core endpoint",
+        help="Endpoint de AWS IoT Core",
     )
-    p_create.add_argument("--skip-aws", action="store_true", help="Skip AWS IoT registration")
-    p_create.add_argument("--force", action="store_true", help="Overwrite existing")
+    p_create.add_argument("--skip-aws", action="store_true", help="Saltea el registro de AWS IoT")
+    p_create.add_argument("--force", action="store_true", help="Sobreescribe el existente")
     p_create.set_defaults(func=cmd_create)
 
     # --- deploy ---
-    p_deploy = sub.add_parser("deploy", help="Deploy config and certs to device")
+    p_deploy = sub.add_parser("deploy", help="Deploya config y certs al device")
     p_deploy.add_argument("--device-id", required=True)
-    p_deploy.add_argument("--host", required=True, help="Device hostname or IP")
-    p_deploy.add_argument("--user", default="pi", help="SSH user")
+    p_deploy.add_argument("--host", required=True, help="Hostname o IP del device")
+    p_deploy.add_argument("--user", default="pi", help="Usuario SSH")
     p_deploy.set_defaults(func=cmd_deploy)
 
     # --- harvest ---
     p_harvest = sub.add_parser(
         "harvest",
-        help="Pull calibration.npz from a device into the workstation backup",
+        help="Pullea calibration.npz de un device al backup del workstation",
     )
     p_harvest.add_argument("--device-id", required=True)
-    p_harvest.add_argument("--host", required=True, help="Device hostname or IP")
-    p_harvest.add_argument("--user", default="pi", help="SSH user")
+    p_harvest.add_argument("--host", required=True, help="Hostname o IP del device")
+    p_harvest.add_argument("--user", default="pi", help="Usuario SSH")
     p_harvest.set_defaults(func=cmd_harvest)
 
     # --- reprovision ---
     p_reprov = sub.add_parser(
         "reprovision",
-        help="Re-issue cert for an existing thing (revokes the old cert)",
+        help="Re-emite cert para un thing existente (revoca el viejo)",
     )
     p_reprov.add_argument("--device-id", required=True)
     p_reprov.set_defaults(func=cmd_reprovision)
 
     # --- list ---
-    p_list = sub.add_parser("list", help="List provisioned devices")
+    p_list = sub.add_parser("list", help="Lista los devices provisionados")
     p_list.set_defaults(func=cmd_list)
 
     args = parser.parse_args()

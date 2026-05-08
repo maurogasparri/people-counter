@@ -1,13 +1,20 @@
-"""Configuration loader with local/cloud merge support.
+"""Loader de configuración con defaults + merge per-device + cloud shadow.
 
-Strategy:
-    - LOCAL config: hardware-intrinsic settings from YAML file.
-    - CLOUD config: business-driven settings from AWS IoT Device Shadow.
-    - Cloud values override local defaults in the 'cloud_defaults' section.
+Estrategia:
+    - DEFAULTS: ``config/config.example.yaml`` shippeado con el codebase provee
+      cada key con un valor fleet-uniform best-practice.
+    - PER-DEVICE: ``/etc/people-counter/config.yaml`` overridea solo lo que
+      el sitio necesita (device.id, endpoint mqtt, mounting_height_m, ROI/lines,
+      paths de certs). Cualquier cosa ausente cae al default.
+    - CLOUD: el AWS IoT Device Shadow puede pushear overrides runtime-safe
+      encima (bloque ``cloud_defaults`` + una whitelist chica de keys
+      operacionales — ver ``RUNTIME_SAFE_KEYS`` debajo).
 
-The device boots with local YAML, then fetches its IoT Shadow and merges
-cloud-pushed overrides. This allows operations teams to change operating
-hours, enable/disable features, or adjust scaling factors without SSH.
+La fuente única de verdad es el dict mergeado que devuelve ``load_config()``.
+El split defaults+per-device es la única estructura YAML: cada dispositivo
+shippea con los mismos defaults canónicos y overridea solo las keys que
+genuinamente varían per-sitio. Los cambios fleet-wide se shippean vía el
+archivo canónico del repo (redeploy) o vía cloud shadow (keys runtime-safe).
 """
 
 from __future__ import annotations
@@ -22,7 +29,36 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# Keys that may be overridden by cloud shadow
+
+# Defaults bundled — mismo archivo shippeado como example canónico. Lo
+# cargamos en cada llamada a ``load_config`` (barato: ~5 KB de YAML) y
+# mergeamos el archivo per-device encima. Los tests pueden overridear vía
+# el kwarg ``defaults_path``.
+DEFAULTS_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "config.example.yaml"
+)
+
+
+# Defaults que se aplican cuando el bloque opcional ``best_frame`` falta
+# enteramente. Mirrorea el schema en config.example.yaml — mantener ambos
+# en sync. ``enabled: False`` es el default GDPR/LPDP-safe: cero storage,
+# cero PII, cero side effects cuando el operador no hizo opt-in explícito.
+BEST_FRAME_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "output_dir": "/var/lib/people-counter/best_frames",
+    "retention_days": 7,
+    "buffer_size": 20,
+    "jpeg_quality": 85,
+    "scoring": {
+        "confidence_weight": 0.4,
+        "bbox_area_weight": 0.2,
+        "centrality_weight": 0.2,
+        "sharpness_weight": 0.2,
+    },
+}
+
+
+# Keys que pueden ser overrideadas por el cloud shadow bajo ``cloud_defaults``.
 CLOUD_OVERRIDABLE = {
     "operating_hours",
     "on_invalid_schedule",
@@ -44,9 +80,10 @@ VALID_DAYS = {
 
 VALID_INVALID_SCHEDULE_MODES = {"fail_open", "fail_closed"}
 
-# Dotted-path whitelist of config keys that can be applied at runtime from
-# an IoT Shadow delta without restarting the service.  Anything outside
-# this set (and unknown keys) is logged as "requires restart" and skipped.
+# Whitelist dotted-path de keys del config que pueden aplicarse en runtime
+# desde un delta del IoT Shadow sin restartear el servicio. Cualquier cosa
+# fuera de este set (y keys desconocidas) se loggea como "requires restart"
+# y se skipea.
 RUNTIME_SAFE_KEYS = frozenset(
     {
         "cloud_defaults.operating_hours",
@@ -60,14 +97,14 @@ RUNTIME_SAFE_KEYS = frozenset(
         # vision.num_disparities / block_size explicit entries
         "vision.num_disparities",
         "vision.block_size",
-        # mounting_height_m is runtime-safe: main.py reads it live for the
-        # height classifier and for auto num_disparities on SGBM rebuild.
+        # mounting_height_m es runtime-safe: main.py lo lee en vivo para el
+        # height classifier y para auto num_disparities en el rebuild de SGBM.
         "vision.mounting_height_m",
         # operational.* handled via prefix below
     }
 )
 
-# Prefixes under which any child key is runtime-safe.
+# Prefijos bajo los cuales cualquier child key es runtime-safe.
 RUNTIME_SAFE_PREFIXES = (
     "counter.tracker.",
     "counter.height_classifier.",
@@ -77,29 +114,90 @@ RUNTIME_SAFE_PREFIXES = (
 SHADOW_CACHE_SUFFIX = ".shadow.json"
 
 
-def load_config(path: str) -> dict[str, Any]:
-    """Load and validate device configuration from YAML file.
+def load_defaults() -> dict[str, Any]:
+    """Carga solo los defaults bundled de ``config/config.example.yaml``.
+
+    Lo usan los tools standalone de diagnóstico / setup (``diagnose_depth.py``,
+    ``capture_baseline_frames.py``, etc.) que no tienen un YAML per-device
+    contra el cual mergear y solo necesitan los invariantes fleet-wide como
+    las asignaciones CSI de las cámaras + defaults del sensor.
+    """
+    if not DEFAULTS_PATH.exists():
+        raise FileNotFoundError(
+            f"Defaults config not found: {DEFAULTS_PATH}. The bundled "
+            "config.example.yaml ships with the codebase — your install "
+            "is missing it."
+        )
+    with open(DEFAULTS_PATH, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Devuelve un dict nuevo con ``overlay`` deep-mergeado encima de ``base``.
+
+    Los mappings recursan; los scalars y listas en ``overlay`` reemplazan los
+    de ``base`` directamente. ``base`` no se muta.
+    """
+    result = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def load_config(
+    path: str,
+    *,
+    defaults_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Carga y valida la config del dispositivo desde un archivo YAML.
+
+    El ``config.example.yaml`` bundled se carga primero como defaults; después
+    el YAML per-device en ``path`` se deep-mergea encima; luego el dict
+    mergeado se valida end-to-end.
 
     Args:
-        path: Path to the YAML config file.
+        path: Path al archivo YAML de config per-device.
+        defaults_path: Overridea la fuente de defaults (tests). Default al
+            ``config/config.example.yaml`` bundled shippeado con el repo.
 
     Returns:
-        Validated config dict with 'cloud_defaults' as effective cloud config.
-        If operating_hours fails soft validation, the dict contains a
-        '_schedule_error' key describing the problem so runtime can honor
-        on_invalid_schedule.
+        Dict de config validado con ``cloud_defaults`` como el cloud config
+        efectivo. Si operating_hours falla la validación soft, el dict
+        contiene una key ``_schedule_error`` describiendo el problema así el
+        runtime puede honorar ``on_invalid_schedule``.
     """
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    defaults_p = Path(defaults_path) if defaults_path else DEFAULTS_PATH
+    if not defaults_p.exists():
+        raise FileNotFoundError(
+            f"Defaults config not found: {defaults_p}. The bundled "
+            "config.example.yaml ships with the codebase — your install "
+            "is missing it."
+        )
+
+    with open(defaults_p, encoding="utf-8") as f:
+        defaults = yaml.safe_load(f) or {}
+
+    with open(config_path, encoding="utf-8") as f:
+        per_device = yaml.safe_load(f) or {}
+
+    config = _deep_merge(defaults, per_device)
 
     _validate(config)
+    _normalise_best_frame(config)
 
-    # Soft-validate the schedule: errors are surfaced via _schedule_error
-    # rather than raising, so the runtime can honor on_invalid_schedule.
+    # Soft-valida el schedule: los errores se surfacean vía _schedule_error
+    # en vez de raisear, así el runtime puede honorar on_invalid_schedule.
     schedule_error = validate_operating_hours(
         get_effective_value(config, "operating_hours", None)
     )
@@ -113,20 +211,303 @@ def load_config(path: str) -> dict[str, Any]:
     return config
 
 
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def _validate(config: dict[str, Any]) -> None:
+    """Valida keys requeridas + tipos + rangos en el config mergeado.
+
+    Se divide en dos fases por readability:
+      1. Secciones requeridas + leaf keys (check de presencia).
+      2. Checks de tipo / rango / cross-field (semánticos).
+    """
+    # --- Fase 1: secciones + keys requeridas -------------------------------
+    required: dict[str, tuple[str, ...]] = {
+        "device": ("id", "store_id"),
+        "bracket": ("baseline_mm", "camera_left_csi", "camera_right_csi"),
+        "sensor": (
+            "model",
+            "full_res",
+            "default_res",
+            "default_fps",
+            "nominal_focal_full_px",
+        ),
+        "lens": ("type", "hfov_deg"),
+        "vision": ("resolution", "fps", "calibration_file", "sgbm"),
+        "detection": (
+            "architecture",
+            "model_path",
+            "confidence_threshold",
+            "nms_threshold",
+            "cluster_distance_px",
+        ),
+        "tracking": ("max_disappeared", "max_distance", "state_machine"),
+        "counter": ("foot_projection_enabled",),
+        "wifi_ble": (
+            "wifi_interface",
+            "probe_interval_seconds",
+            "cross_protocol_window_seconds",
+            "cross_protocol_rssi_delta",
+        ),
+        "mqtt": ("endpoint", "port", "topics"),
+        "buffer": ("db_path", "max_age_hours"),
+        "logging": ("format", "file"),
+    }
+    for section, keys in required.items():
+        if section not in config:
+            raise ValueError(f"config missing section: {section}")
+        if not isinstance(config[section], dict):
+            raise ValueError(
+                f"config.{section} must be a mapping, got "
+                f"{type(config[section]).__name__}"
+            )
+        for key in keys:
+            if key not in config[section]:
+                raise ValueError(f"config missing key: {section}.{key}")
+
+    # --- Fase 2: checks de tipo + rango ------------------------------------
+    bracket = config["bracket"]
+    if not isinstance(bracket["camera_left_csi"], int):
+        raise ValueError("bracket.camera_left_csi must be int")
+    if not isinstance(bracket["camera_right_csi"], int):
+        raise ValueError("bracket.camera_right_csi must be int")
+    if bracket["camera_left_csi"] == bracket["camera_right_csi"]:
+        raise ValueError(
+            "bracket.camera_left_csi and camera_right_csi must differ"
+        )
+
+    sgbm = config["vision"]["sgbm"]
+    for k in ("num_disparities", "block_size", "downscale"):
+        if k not in sgbm:
+            raise ValueError(f"config missing key: vision.sgbm.{k}")
+
+    sm = config["tracking"]["state_machine"]
+    for k in ("confirm_frames", "pending_max_frames", "reid_gate_px", "depth_gate_m"):
+        if k not in sm:
+            raise ValueError(f"config missing key: tracking.state_machine.{k}")
+    # El bloque Kalman es OPCIONAL — el tracker tiene defaults razonables si
+    # falta. Cuando está presente, cada leaf tiene que ser un number; las
+    # leaves que falten igual caen al default del tracker en vez de crashear.
+    kalman = sm.get("kalman")
+    if kalman is not None:
+        if not isinstance(kalman, dict):
+            raise ValueError(
+                "config.tracking.state_machine.kalman must be a mapping"
+            )
+        for k in (
+            "process_noise",
+            "measurement_noise",
+            "initial_velocity_uncertainty",
+        ):
+            if k in kalman and not isinstance(kalman[k], (int, float)):
+                raise ValueError(
+                    "config.tracking.state_machine.kalman."
+                    f"{k} must be a number"
+                )
+
+    if not isinstance(config["counter"]["foot_projection_enabled"], bool):
+        raise ValueError(
+            "config.counter.foot_projection_enabled must be a bool"
+        )
+
+    # Threshold de debounce opcional para line crossing. ``None`` /
+    # ausente / 0 deshabilita el feature; un float >= 0 lo activa.
+    min_move = config["counter"].get("min_crossing_movement_px")
+    if min_move is not None:
+        if not isinstance(min_move, (int, float)) or isinstance(min_move, bool):
+            raise ValueError(
+                "config.counter.min_crossing_movement_px must be null or a number"
+            )
+        if min_move < 0:
+            raise ValueError(
+                "config.counter.min_crossing_movement_px must be >= 0"
+            )
+
+    topics = config["mqtt"]["topics"]
+    for k in ("counting", "wifi_ble", "telemetry", "shadow"):
+        if k not in topics:
+            raise ValueError(f"config missing key: mqtt.topics.{k}")
+
+    # Threshold opcional para matching two-stage. Debe ser:
+    #   - missing o null  → feature deshabilitado
+    #   - 0 < value < confidence_threshold → feature enabled, el matching
+    #     two-stage pipea detecciones en [low, high) solo a re-asociación
+    # Valores >= confidence_threshold se coercen silenciosamente a "off" +
+    # warning así una misconfiguración nunca *expande* silenciosamente el
+    # pool de spawn.
+    detection = config["detection"]
+    low = detection.get("low_confidence_threshold")
+    if low is not None:
+        if not isinstance(low, (int, float)) or isinstance(low, bool):
+            raise ValueError(
+                "config.detection.low_confidence_threshold "
+                "must be null or a number"
+            )
+        low_f = float(low)
+        if low_f <= 0.0:
+            raise ValueError(
+                "config.detection.low_confidence_threshold "
+                "must be > 0 (or null to disable)"
+            )
+        high_f = float(detection["confidence_threshold"])
+        if low_f >= high_f:
+            logger.warning(
+                "detection.low_confidence_threshold (%.3f) >= "
+                "confidence_threshold (%.3f) — disabling two-stage "
+                "matching (treated as null)",
+                low_f,
+                high_f,
+            )
+            detection["low_confidence_threshold"] = None
+
+    # Threshold opcional de spawn de tracks nuevos. Debe ser:
+    #   - missing o null  → el floor de spawn cae a confidence_threshold
+    #   - >= confidence_threshold → las detecciones en [confidence, new_track)
+    #     pueden matchear tracks existentes pero nunca spawnear nuevos
+    # Valores < confidence_threshold se coercen silenciosamente a "off" +
+    # warning así una misconfiguración nunca *baja* silenciosamente el floor
+    # de spawn.
+    new_track = detection.get("new_track_threshold")
+    if new_track is not None:
+        if not isinstance(new_track, (int, float)) or isinstance(new_track, bool):
+            raise ValueError(
+                "config.detection.new_track_threshold "
+                "must be null or a number"
+            )
+        nt_f = float(new_track)
+        if nt_f <= 0.0 or nt_f > 1.0:
+            raise ValueError(
+                "config.detection.new_track_threshold "
+                "must be in (0, 1] (or null to disable)"
+            )
+        high_f = float(detection["confidence_threshold"])
+        if nt_f < high_f:
+            logger.warning(
+                "detection.new_track_threshold (%.3f) < "
+                "confidence_threshold (%.3f) — disabling spawn gate "
+                "(treated as null)",
+                nt_f,
+                high_f,
+            )
+            detection["new_track_threshold"] = None
+
+    # Valida los thresholds de RSSI si wifi_ble está configurado.
+    wifi_cfg = config.get("wifi_ble", {})
+    if wifi_cfg.get("enabled"):
+        passerby = wifi_cfg.get("rssi_passerby_threshold", -75)
+        shopper = wifi_cfg.get("rssi_shopper_threshold", -55)
+        if shopper <= passerby:
+            raise ValueError(
+                f"rssi_shopper_threshold ({shopper}) must be greater than "
+                f"rssi_passerby_threshold ({passerby}) — "
+                "shoppers are closer so their signal is stronger (less negative)"
+            )
+
+
+def _normalise_best_frame(config: dict[str, Any]) -> None:
+    """Rellena los defaults de ``best_frame`` + valida cuando el operador hizo opt-in.
+
+    El bloque es *opcional* — un config sin él recibe los defaults GDPR-safe
+    inlineados (``enabled: False``, sin side effects). Cuando el bloque está
+    presente validamos tipos y rangos así un typo en el YAML no se cuela al
+    runtime.
+    """
+    raw = config.get("best_frame")
+    if raw is None:
+        # Inlinea una copia fresca así los callers pueden mutar sin polucionar
+        # el dict default a nivel de módulo.
+        config["best_frame"] = {
+            **BEST_FRAME_DEFAULTS,
+            "scoring": dict(BEST_FRAME_DEFAULTS["scoring"]),
+        }
+        return
+
+    if not isinstance(raw, dict):
+        raise ValueError("config: best_frame must be a mapping")
+
+    enabled = raw.get("enabled", BEST_FRAME_DEFAULTS["enabled"])
+    if not isinstance(enabled, bool):
+        raise ValueError("config: best_frame.enabled must be a bool")
+
+    retention_days = raw.get("retention_days", BEST_FRAME_DEFAULTS["retention_days"])
+    if not isinstance(retention_days, int) or retention_days <= 0:
+        raise ValueError(
+            "config: best_frame.retention_days must be a positive int"
+        )
+
+    buffer_size = raw.get("buffer_size", BEST_FRAME_DEFAULTS["buffer_size"])
+    if not isinstance(buffer_size, int) or buffer_size <= 0:
+        raise ValueError("config: best_frame.buffer_size must be a positive int")
+
+    jpeg_quality = raw.get("jpeg_quality", BEST_FRAME_DEFAULTS["jpeg_quality"])
+    if not isinstance(jpeg_quality, int) or not (1 <= jpeg_quality <= 100):
+        raise ValueError(
+            "config: best_frame.jpeg_quality must be an int in [1, 100]"
+        )
+
+    output_dir = raw.get("output_dir", BEST_FRAME_DEFAULTS["output_dir"])
+    if not isinstance(output_dir, str) or not output_dir:
+        raise ValueError(
+            "config: best_frame.output_dir must be a non-empty string"
+        )
+
+    scoring_default = BEST_FRAME_DEFAULTS["scoring"]
+    scoring_in = raw.get("scoring") or {}
+    if not isinstance(scoring_in, dict):
+        raise ValueError("config: best_frame.scoring must be a mapping")
+    scoring: dict[str, float] = {}
+    for key in scoring_default:
+        val = scoring_in.get(key, scoring_default[key])
+        if not isinstance(val, (int, float)) or val < 0:
+            raise ValueError(
+                f"config: best_frame.scoring.{key} must be a non-negative number"
+            )
+        scoring[key] = float(val)
+
+    # Soft-warn (no raise) cuando los weights se alejan mucho de 1.0 — la
+    # función de scoring sigue funcionando con weights positivos arbitrarios,
+    # pero una suma muy off es casi siempre un typo del operador.
+    weight_sum = sum(scoring.values())
+    if weight_sum > 0 and not (0.9 <= weight_sum <= 1.1):
+        logger.warning(
+            "best_frame.scoring weights sum to %.3f — expected ~1.0. "
+            "Component contributions will be non-uniform; verify YAML is "
+            "intentional.",
+            weight_sum,
+        )
+
+    config["best_frame"] = {
+        "enabled": enabled,
+        "output_dir": output_dir,
+        "retention_days": retention_days,
+        "buffer_size": buffer_size,
+        "jpeg_quality": jpeg_quality,
+        "scoring": scoring,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cloud shadow merge
+# ---------------------------------------------------------------------------
+
+
 def merge_cloud_config(config: dict[str, Any], shadow: dict[str, Any]) -> dict[str, Any]:
-    """Merge AWS IoT Device Shadow overrides into config.
+    """Mergea overrides del AWS IoT Device Shadow al config.
 
-    The shadow 'desired' state may contain keys matching CLOUD_OVERRIDABLE.
-    These override the corresponding values in config['cloud_defaults'].
+    El estado 'desired' del shadow puede contener keys que matchean
+    CLOUD_OVERRIDABLE. Estas overridean los valores correspondientes en
+    config['cloud_defaults'].
 
-    This function does NOT mutate the input config; it returns a new dict.
+    Esta función NO muta el config de entrada; devuelve un dict nuevo.
 
     Args:
-        config: Local config loaded from YAML.
-        shadow: IoT Shadow document (the 'state.desired' portion).
+        config: Config local cargada del YAML.
+        shadow: Documento del IoT Shadow (la porción 'state.desired').
 
     Returns:
-        New config dict with cloud overrides applied.
+        Dict de config nuevo con los overrides del cloud aplicados.
     """
     merged = copy.deepcopy(config)
 
@@ -155,36 +536,22 @@ def merge_cloud_config(config: dict[str, Any], shadow: dict[str, Any]) -> dict[s
 
 
 def get_effective_value(config: dict[str, Any], key: str, fallback: Any = None) -> Any:
-    """Get the effective value for a cloud-overridable config key.
+    """Devuelve el valor efectivo de una key de config overrideable por cloud.
 
-    Looks up the key in cloud_defaults first (which may have been overridden
-    by shadow merge), then falls back to the provided default.
-
-    Args:
-        config: Config dict (after merge_cloud_config).
-        key: Key name from CLOUD_OVERRIDABLE.
-        fallback: Default if key not found anywhere.
-
-    Returns:
-        Effective value.
+    Busca primero la key en cloud_defaults (que puede haber sido overrideada
+    por el merge del shadow), después cae al default provisto.
     """
     cloud = config.get("cloud_defaults", {})
     return cloud.get(key, fallback)
 
 
 def validate_operating_hours(hours: Any) -> str | None:
-    """Validate an operating_hours structure.
+    """Valida una estructura operating_hours.
 
-    Returns None if valid, otherwise a human-readable error string describing
-    the first problem found. Unknown days are tolerated (extensions), but a
-    day present must be either null (closed) or a "HH:MM-HH:MM" string with
-    end strictly after start.
-
-    Args:
-        hours: The operating_hours value (expected: dict[str, str|None]).
-
-    Returns:
-        None if valid, else error message.
+    Devuelve None si es válida, o un string human-readable describiendo el
+    primer problema encontrado. Los días desconocidos se toleran
+    (extensiones), pero un día presente debe ser o bien null (cerrado) o un
+    string "HH:MM-HH:MM" con fin estrictamente posterior al inicio.
     """
     if hours is None:
         return "operating_hours is missing"
@@ -193,7 +560,7 @@ def validate_operating_hours(hours: Any) -> str | None:
 
     for day, schedule in hours.items():
         if schedule is None:
-            continue  # closed
+            continue  # cerrado
         if not isinstance(schedule, str):
             return f"{day}: schedule must be a string or null, got {type(schedule).__name__}"
         if "-" not in schedule:
@@ -222,7 +589,7 @@ def validate_operating_hours(hours: Any) -> str | None:
 
 
 def _parse_hhmm(value: str) -> tuple[int, int] | None:
-    """Parse a HH:MM string. Returns (hour, minute) or None if invalid."""
+    """Parsea un string HH:MM. Devuelve (hour, minute) o None si es inválido."""
     if ":" not in value:
         return None
     parts = value.split(":")
@@ -239,9 +606,9 @@ def _parse_hhmm(value: str) -> tuple[int, int] | None:
 
 
 def get_invalid_schedule_mode(config: dict[str, Any]) -> str:
-    """Return the configured on_invalid_schedule mode.
+    """Devuelve el modo on_invalid_schedule configurado.
 
-    Falls back to 'fail_open' for unknown or missing values (back-compat).
+    Cae a 'fail_open' para valores desconocidos o faltantes (back-compat).
     """
     mode = get_effective_value(config, "on_invalid_schedule", "fail_open")
     if mode not in VALID_INVALID_SCHEDULE_MODES:
@@ -254,22 +621,12 @@ def get_invalid_schedule_mode(config: dict[str, Any]) -> str:
 
 
 def has_schedule_error(config: dict[str, Any]) -> bool:
-    """Return True if the loaded config flagged an invalid schedule."""
+    """Devuelve True si el config cargado flageó un schedule inválido."""
     return bool(config.get("_schedule_error"))
 
 
 def is_within_operating_hours(config: dict[str, Any], day_name: str, hour: int, minute: int) -> bool:
-    """Check if the current time falls within the operating hours for a given day.
-
-    Args:
-        config: Config dict with cloud_defaults.operating_hours.
-        day_name: Lowercase day name (e.g. "monday").
-        hour: Current hour (0-23).
-        minute: Current minute (0-59).
-
-    Returns:
-        True if within operating hours, False otherwise.
-    """
+    """Chequea si la hora actual cae dentro de las operating hours del día dado."""
     hours = get_effective_value(config, "operating_hours", {})
     schedule = hours.get(day_name)
 
@@ -285,7 +642,7 @@ def is_within_operating_hours(config: dict[str, Any], day_name: str, hour: int, 
             "invalid_operating_hours_format",
             extra={"day": day_name, "schedule": schedule},
         )
-        return True  # Fail open — count if format is broken
+        return True  # Fail open — contar si el formato está roto
 
     current_minutes = hour * 60 + minute
     open_minutes = open_h * 60 + open_m
@@ -295,37 +652,36 @@ def is_within_operating_hours(config: dict[str, Any], day_name: str, hour: int, 
 
 
 def is_counting_enabled(config: dict[str, Any]) -> bool:
-    """Check if counting is enabled (can be toggled from cloud)."""
+    """Chequea si counting está enabled (toggleable desde el cloud)."""
     return bool(get_effective_value(config, "counting_enabled", True))
 
 
 def is_wifi_ble_enabled(config: dict[str, Any]) -> bool:
-    """Check if WiFi/BLE probing is enabled (can be toggled from cloud)."""
+    """Chequea si el probing WiFi/BLE está enabled (toggleable desde el cloud)."""
     local_enabled = config.get("wifi_ble", {}).get("enabled", False)
     cloud_enabled = get_effective_value(config, "wifi_ble_enabled", True)
     return local_enabled and cloud_enabled
 
 
 def get_scaling_factor(config: dict[str, Any]) -> float:
-    """Get the footfall scaling factor (cloud-overridable)."""
+    """Devuelve el footfall scaling factor (overrideable por cloud)."""
     return float(get_effective_value(config, "footfall_scaling_factor", 1.0))
+
+
+# ---------------------------------------------------------------------------
+# Shadow delta application
+# ---------------------------------------------------------------------------
 
 
 def _flatten_delta(
     delta: dict[str, Any],
     prefix: str = "",
 ) -> list[tuple[str, Any]]:
-    """Flatten a nested delta into ``[(dotted_path, value), ...]``.
-
-    A sub-dict whose dotted path matches a RUNTIME_SAFE_KEYS entry (or a
-    safe prefix) is treated as a leaf so the whole sub-tree is applied
-    atomically (e.g. ``cloud_defaults.operating_hours`` keeps its shape).
-    """
+    """Aplana un delta anidado a ``[(dotted_path, value), ...]``."""
     items: list[tuple[str, Any]] = []
     for key, value in delta.items():
         path = f"{prefix}{key}"
         if isinstance(value, dict) and not _is_runtime_safe(path):
-            # Only recurse if no ancestor path is a whitelisted leaf.
             items.extend(_flatten_delta(value, prefix=f"{path}."))
         else:
             items.append((path, value))
@@ -333,14 +689,14 @@ def _flatten_delta(
 
 
 def _is_runtime_safe(path: str) -> bool:
-    """Return True if a dotted-path delta key is runtime-applicable."""
+    """Devuelve True si una key de delta dotted-path es runtime-aplicable."""
     if path in RUNTIME_SAFE_KEYS:
         return True
     return any(path.startswith(p) for p in RUNTIME_SAFE_PREFIXES)
 
 
 def _set_dotted(config: dict[str, Any], path: str, value: Any) -> None:
-    """Assign ``value`` at dotted ``path`` within ``config`` (mutates)."""
+    """Asigna ``value`` en el ``path`` dotted dentro de ``config`` (muta)."""
     parts = path.split(".")
     target = config
     for part in parts[:-1]:
@@ -353,7 +709,7 @@ def _set_dotted(config: dict[str, Any], path: str, value: Any) -> None:
 
 
 def _shadow_cache_path(config_path: str | Path) -> Path:
-    """Return the sibling ``.shadow.json`` path for a YAML config file."""
+    """Devuelve el path sibling ``.shadow.json`` para un archivo YAML de config."""
     p = Path(config_path)
     return p.with_suffix(SHADOW_CACHE_SUFFIX)
 
@@ -363,22 +719,11 @@ def apply_shadow_delta(
     delta: dict[str, Any],
     config_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Apply a shadow delta to the running config.
+    """Aplica un shadow delta al config corriendo.
 
-    Only whitelisted (runtime-safe) keys are applied; other keys are
-    logged as requiring a restart and skipped.  The returned config is a
-    deep copy — the input is not mutated.
-
-    Args:
-        current_config: Currently active config dict.
-        delta: The ``state`` sub-document from a shadow delta message
-            (i.e. the keys whose desired value differs from reported).
-        config_path: Optional path to the main YAML config; when provided
-            the merged config is persisted to ``<stem>.shadow.json`` so
-            the device picks up the latest shadow on next boot.
-
-    Returns:
-        Tuple ``(new_config, applied_keys)``.
+    Solo se aplican las keys whitelisted (runtime-safe); las demás se
+    loggean como que requieren restart y se skipean. El config devuelto
+    es una deep copy — el input no se muta.
     """
     new_config = copy.deepcopy(current_config)
     applied: list[str] = []
@@ -421,17 +766,13 @@ def apply_shadow_delta(
                 "shadow_cache_persisted", extra={"path": str(cache_path)}
             )
         except OSError:
-            logger.exception("Failed to persist shadow cache")
+            logger.exception("Falló persistir el shadow cache")
 
     return new_config, applied
 
 
 def _get_dotted(config: dict[str, Any], path: str) -> tuple[bool, Any]:
-    """Look up a dotted ``path`` in ``config``.
-
-    Returns ``(found, value)``.  Missing intermediate keys or non-dict
-    parents short-circuit to ``(False, None)``.
-    """
+    """Busca un ``path`` dotted en ``config``."""
     parts = path.split(".")
     cur: Any = config
     for part in parts:
@@ -445,49 +786,22 @@ def build_reported_state(
     config: dict[str, Any],
     calibration: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Extract the runtime-visible config subset for shadow reporting.
-
-    The returned dict is suitable to publish as the ``reported`` state of
-    an AWS IoT Device Shadow. It contains:
-
-    * The whitelisted runtime-safe config keys (same set that shadow
-      delta can modify — see RUNTIME_SAFE_KEYS / RUNTIME_SAFE_PREFIXES).
-    * A small metadata block: ``firmware_version`` (from config), a
-      ``boot_ts`` snapshot, and calibration provenance
-      (``calibration_file_path`` + ``effective_baseline_mm``).
-
-    Keys absent from ``config`` are silently skipped so the shadow doesn't
-    carry ``null``-filled noise. Prefix-based keys are walked and every
-    descendant leaf is copied into the reported state, preserving the
-    original nested structure (e.g. ``counter.tracker.confirm_frames``).
-
-    Args:
-        config: Effective config dict (post-shadow-delta merge).
-        calibration: Loaded calibration dict (as returned by
-            ``load_calibration``) or None if calibration is not loaded.
-
-    Returns:
-        New dict ready for ``{"state": {"reported": ...}}``.
-    """
+    """Extrae el subset de config runtime-visible para el reporting al shadow."""
     import time as _time
 
     reported: dict[str, Any] = {}
 
-    # --- Whitelisted scalar / sub-tree keys --------------------------------
     for path in RUNTIME_SAFE_KEYS:
         found, value = _get_dotted(config, path)
         if found:
             _set_dotted(reported, path, value)
 
-    # --- Whitelisted prefixes: copy the whole sub-tree if present ----------
     for prefix in RUNTIME_SAFE_PREFIXES:
-        # prefix looks like "counter.tracker." — strip trailing dot
         prefix_path = prefix.rstrip(".")
         found, value = _get_dotted(config, prefix_path)
         if found and isinstance(value, dict):
             _set_dotted(reported, prefix_path, copy.deepcopy(value))
 
-    # --- Metadata ----------------------------------------------------------
     device_cfg = config.get("device", {}) if isinstance(config.get("device"), dict) else {}
     reported["firmware_version"] = device_cfg.get("firmware_version", "unknown")
     reported["boot_ts"] = int(_time.time())
@@ -496,14 +810,6 @@ def build_reported_state(
     vision_cfg = config.get("vision", {})
     if isinstance(vision_cfg, dict):
         cal_path = vision_cfg.get("calibration_file")
-    if not cal_path:
-        # Fall back to the fleet default in hardware.yaml.
-        try:
-            from src.config.hardware import load_hardware_config
-            hw = load_hardware_config()
-            cal_path = hw.get("vision_runtime", {}).get("calibration_file")
-        except Exception:
-            cal_path = None
     reported["calibration_file_path"] = cal_path
 
     baseline_mm: float | None = None
@@ -515,40 +821,8 @@ def build_reported_state(
 
                 baseline_mm = float(_np.linalg.norm(_np.asarray(t_vec)))
         except Exception:
-            logger.exception("Failed to derive baseline from calibration")
+            logger.exception("Falló derivar el baseline desde la calibración")
             baseline_mm = None
     reported["effective_baseline_mm"] = baseline_mm
 
     return reported
-
-
-def _validate(config: dict[str, Any]) -> None:
-    """Validate required config keys are present.
-
-    Most fleet-uniform settings live in hardware.yaml (resolution, fps,
-    calibration_file path, model_path, detection thresholds, tracker params,
-    SGBM tuning, MQTT topics, buffer paths, log paths). config.yaml only
-    needs the device identity and the MQTT endpoint + cert paths
-    (per-device install).
-    """
-    required = ["device", "mqtt"]
-    missing = [k for k in required if k not in config]
-    if missing:
-        raise ValueError(f"Missing required config sections: {missing}")
-
-    if "id" not in config["device"]:
-        raise ValueError("device.id is required")
-    if "store_id" not in config["device"]:
-        raise ValueError("device.store_id is required")
-
-    # Validate RSSI thresholds if wifi_ble is configured
-    wifi_cfg = config.get("wifi_ble", {})
-    if wifi_cfg.get("enabled"):
-        passerby = wifi_cfg.get("rssi_passerby_threshold", -75)
-        shopper = wifi_cfg.get("rssi_shopper_threshold", -55)
-        if shopper <= passerby:
-            raise ValueError(
-                f"rssi_shopper_threshold ({shopper}) must be greater than "
-                f"rssi_passerby_threshold ({passerby}) — "
-                "shoppers are closer so their signal is stronger (less negative)"
-            )

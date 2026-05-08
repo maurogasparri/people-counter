@@ -1,4 +1,4 @@
-"""WiFi/BLE deduplication: intra-protocol and cross-protocol."""
+"""Dedup WiFi/BLE: intra-protocolo y cross-protocolo."""
 import logging
 import sqlite3
 import time
@@ -10,9 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 class DedupEngine:
-    """Handles dedup layers 1 (intra-protocol) and 2 (cross-protocol).
+    """Maneja las capas de dedup 1 (intra-protocolo) y 2 (cross-protocolo).
 
-    Layer 3 (inter-camera) is handled cloud-side in Lambda.
+    La capa 3 (inter-cámara) se maneja del lado cloud en Lambda.
     """
 
     def __init__(
@@ -50,7 +50,7 @@ class DedupEngine:
     def process_detection(
         self, mac: str, protocol: str, rssi: float, salt: str = ""
     ) -> dict:
-        """Process a single WiFi or BLE detection.
+        """Procesa una detección individual de WiFi o BLE.
 
         Returns:
             {"is_new": bool, "hash": str, "unified": bool}
@@ -59,7 +59,7 @@ class DedupEngine:
         now = time.time()
 
         with sqlite3.connect(self.db_path) as conn:
-            # Layer 1: intra-protocol dedup
+            # Capa 1: dedup intra-protocolo
             existing = conn.execute(
                 "SELECT hash FROM seen_hashes WHERE hash = ? AND protocol = ?",
                 (mac_hash, protocol),
@@ -68,13 +68,13 @@ class DedupEngine:
             if existing:
                 return {"is_new": False, "hash": mac_hash, "unified": False}
 
-            # New detection — store it
+            # Nueva detección — la guardamos
             conn.execute(
                 "INSERT INTO seen_hashes (hash, protocol, first_seen, rssi) VALUES (?, ?, ?, ?)",
                 (mac_hash, protocol, now, rssi),
             )
 
-            # Layer 2: cross-protocol correlation
+            # Capa 2: correlación cross-protocolo
             other_protocol = "ble" if protocol == "wifi" else "wifi"
             candidates = conn.execute(
                 """SELECT hash, rssi FROM seen_hashes
@@ -84,7 +84,7 @@ class DedupEngine:
 
             for other_hash, other_rssi in candidates:
                 if other_rssi is not None and abs(rssi - other_rssi) <= self.cross_rssi_delta:
-                    # Cross-protocol match — create unified hash
+                    # Match cross-protocolo — generamos hash unificado
                     unified = hash_mac(f"{mac_hash}{other_hash}")
                     conn.execute(
                         """INSERT OR IGNORE INTO unified_hashes
@@ -112,16 +112,16 @@ class DedupEngine:
             return {"is_new": True, "hash": mac_hash, "unified": False}
 
     def get_unique_count(self) -> int:
-        """Get total unique visitors for current day.
+        """Devuelve el total de visitantes únicos del día actual.
 
-        Counts: individual hashes that are NOT part of a unified pair,
-        plus unified hashes.
+        Cuenta: hashes individuales que NO son parte de un par unificado,
+        más los hashes unificados.
         """
         with sqlite3.connect(self.db_path) as conn:
-            # All unified hashes
+            # Todos los hashes unificados
             unified = conn.execute("SELECT COUNT(*) FROM unified_hashes").fetchone()[0]
 
-            # Individual hashes not in any unified pair
+            # Hashes individuales que no están en ningún par unificado
             individual = conn.execute("""
                 SELECT COUNT(*) FROM seen_hashes sh
                 WHERE NOT EXISTS (
@@ -138,21 +138,21 @@ class DedupEngine:
         rssi_shopper: float = -55.0,
         protocol: str | None = None,
     ) -> dict:
-        """Classify WiFi/BLE detections by RSSI into passersby vs shoppers.
+        """Clasifica detecciones WiFi/BLE por RSSI en passersby vs shoppers.
 
-        Dual-threshold model:
-            - rssi_passerby (-75 dBm): device is "present" (outside traffic)
-            - rssi_shopper  (-55 dBm): device is "very close" (entered store)
+        Modelo de doble umbral:
+            - rssi_passerby (-75 dBm): el dispositivo está "presente" (tráfico exterior)
+            - rssi_shopper  (-55 dBm): el dispositivo está "muy cerca" (entró al local)
 
         Turn In Rate = shoppers / passersby.
 
         Args:
-            rssi_passerby: Minimum RSSI to count as passerby (default -75 dBm).
-            rssi_shopper: Minimum RSSI to count as shopper (default -55 dBm).
-            protocol: If set ("wifi" or "ble"), only count that protocol.
-                WiFi and BLE have different RSSI reference levels and antenna
-                characteristics, so per-protocol breakdowns can be more
-                interpretable than the mixed total.
+            rssi_passerby: RSSI mínimo para contar como passerby (default -75 dBm).
+            rssi_shopper: RSSI mínimo para contar como shopper (default -55 dBm).
+            protocol: Si se setea ("wifi" o "ble"), cuenta solo ese protocolo.
+                WiFi y BLE tienen distintos niveles de referencia de RSSI y
+                características de antena, así que un breakdown per-protocolo
+                puede ser más interpretable que el total mezclado.
 
         Returns:
             {"passersby": int, "shoppers": int, "turn_in_rate": float}
@@ -185,7 +185,7 @@ class DedupEngine:
         }
 
     def reset_daily(self) -> None:
-        """Clear all hashes for new business day."""
+        """Limpia todos los hashes para un nuevo día comercial."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM seen_hashes")
             conn.execute("DELETE FROM unified_hashes")

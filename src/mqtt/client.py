@@ -1,7 +1,7 @@
-"""AWS IoT Core MQTT client with automatic reconnection and buffer replay.
+"""Cliente MQTT para AWS IoT Core con reconexión automática y replay del buffer.
 
-Uses paho-mqtt 2.0+ with TLS mutual authentication (X.509 client certs).
-Integrates with MessageBuffer for resilience against connectivity loss.
+Usa paho-mqtt 2.0+ con TLS mutual authentication (certs cliente X.509).
+Se integra con MessageBuffer para resiliencia ante pérdida de conectividad.
 """
 
 import json
@@ -18,20 +18,20 @@ from src.mqtt.buffer import MessageBuffer
 
 logger = logging.getLogger(__name__)
 
-# Reconnect parameters (passed to paho's built-in reconnect_delay_set)
-RECONNECT_MIN_DELAY = 1  # seconds
-RECONNECT_MAX_DELAY = 120  # seconds
+# Parámetros de reconexión (se pasan al reconnect_delay_set built-in de paho)
+RECONNECT_MIN_DELAY = 1  # segundos
+RECONNECT_MAX_DELAY = 120  # segundos
 
 
 class MQTTClient:
-    """MQTT client for AWS IoT Core with local buffering.
+    """Cliente MQTT para AWS IoT Core con buffering local.
 
     Features:
-        - TLS mutual auth with X.509 certificates.
-        - QoS 1 for guaranteed delivery.
-        - Local SQLite buffer for offline resilience.
-        - Automatic reconnection with exponential backoff.
-        - Buffer replay on reconnect.
+        - TLS mutual auth con certificados X.509.
+        - QoS 1 para delivery garantizado.
+        - Buffer SQLite local para resiliencia offline.
+        - Reconexión automática con backoff exponencial.
+        - Replay del buffer al reconectar.
     """
 
     def __init__(
@@ -45,17 +45,17 @@ class MQTTClient:
         buffer: MessageBuffer,
         topics: Optional[dict[str, str]] = None,
     ) -> None:
-        """Initialize MQTT client.
+        """Inicializa el cliente MQTT.
 
         Args:
-            device_id: Unique device identifier (used as client_id).
-            endpoint: AWS IoT Core endpoint (xxxxx.iot.region.amazonaws.com).
-            port: MQTT port (8883 for TLS).
-            cert_path: Path to device certificate (.pem.crt).
-            key_path: Path to device private key (.pem.key).
-            ca_path: Path to Amazon Root CA certificate.
-            buffer: MessageBuffer instance for local persistence.
-            topics: Dict mapping logical names to MQTT topic strings.
+            device_id: Identificador único del dispositivo (se usa como client_id).
+            endpoint: Endpoint de AWS IoT Core (xxxxx.iot.region.amazonaws.com).
+            port: Puerto MQTT (8883 para TLS).
+            cert_path: Ruta al certificado del dispositivo (.pem.crt).
+            key_path: Ruta a la clave privada del dispositivo (.pem.key).
+            ca_path: Ruta al certificado Amazon Root CA.
+            buffer: Instancia de MessageBuffer para persistencia local.
+            topics: Dict que mapea nombres lógicos a strings de topic MQTT.
         """
         self.device_id = device_id
         self.endpoint = endpoint
@@ -71,22 +71,23 @@ class MQTTClient:
         self._replay_lock = threading.Lock()
         self._pending_acks: dict[int, int] = {}  # mqtt_mid -> buffer_msg_id
         self._pending_lock = threading.Lock()
-        # Registered shadow-delta callbacks keyed by MQTT topic so we can
-        # dispatch incoming messages without relying on paho's per-sub wiring.
+        # Callbacks de shadow-delta registrados por topic MQTT para poder
+        # dispatchear mensajes entrantes sin depender del wiring per-sub de paho.
         self._shadow_callbacks: dict[str, Callable[[dict], None]] = {}
         self._shadow_lock = threading.Lock()
-        # Optional hook fired on every successful (re)connect. Runs in the paho
-        # network thread, so callers must keep the callback fast + thread-safe
-        # (typically: enqueue a job for the main loop to drain).
+        # Hook opcional que se dispara en cada (re)conexión exitosa. Corre en el
+        # thread de red de paho, así que los callers tienen que mantener el callback
+        # rápido + thread-safe (típicamente: enqueue un job para que lo drene el
+        # main loop).
         self.on_connected: Optional[Callable[[], None]] = None
-        # Connectivity telemetry: incremented on every disconnect callback,
-        # reconnect_ts stamped on each successful connect. Read-only from the
-        # main thread via the public properties.
+        # Telemetría de conectividad: se incrementa en cada callback de disconnect,
+        # reconnect_ts se stampa en cada conexión exitosa. Read-only desde el
+        # main thread vía las properties públicas.
         self._disconnect_count = 0
         self._reconnect_ts: float | None = None
         self._conn_lock = threading.Lock()
 
-        # Validate certificate files exist
+        # Valida que los archivos de certificado existan
         for name, path in [
             ("cert", cert_path),
             ("key", key_path),
@@ -95,14 +96,14 @@ class MQTTClient:
             if not Path(path).exists():
                 raise FileNotFoundError(f"MQTT {name} file not found: {path}")
 
-        # Create paho client (v2 API)
+        # Crea el cliente paho (API v2)
         self._client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=device_id,
             protocol=mqtt.MQTTv311,
         )
 
-        # Configure TLS
+        # Configura TLS
         self._client.tls_set(
             ca_certs=ca_path,
             certfile=cert_path,
@@ -111,13 +112,13 @@ class MQTTClient:
             tls_version=ssl.PROTOCOL_TLSv1_2,
         )
 
-        # Delegate reconnect/backoff to paho's built-in logic (active while
-        # loop_start() is running). Avoids stacking custom reconnect threads.
+        # Delega reconnect/backoff a la lógica built-in de paho (activa mientras
+        # loop_start() esté corriendo). Evita acumular threads custom de reconexión.
         self._client.reconnect_delay_set(
             min_delay=RECONNECT_MIN_DELAY, max_delay=RECONNECT_MAX_DELAY
         )
 
-        # Set callbacks
+        # Setea callbacks
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_publish = self._on_publish
@@ -134,20 +135,20 @@ class MQTTClient:
 
     @property
     def disconnect_count(self) -> int:
-        """Cumulative count of unexpected disconnects since client creation."""
+        """Cuenta acumulada de disconnects inesperados desde la creación del cliente."""
         with self._conn_lock:
             return self._disconnect_count
 
     @property
     def reconnect_ts(self) -> float | None:
-        """Epoch seconds of the last successful (re)connect, or None."""
+        """Epoch seconds del último (re)conexión exitosa, o None."""
         with self._conn_lock:
             return self._reconnect_ts
 
     def connect(self) -> None:
-        """Connect to the MQTT broker.
+        """Conecta al broker MQTT.
 
-        Non-blocking: starts the network loop in a background thread.
+        No-bloqueante: arranca el network loop en un thread background.
         """
         try:
             self._client.connect(self.endpoint, self.port, keepalive=60)
@@ -158,7 +159,7 @@ class MQTTClient:
             raise
 
     def disconnect(self) -> None:
-        """Gracefully disconnect."""
+        """Desconecta de manera limpia."""
         self._stop_event.set()
         self._client.loop_stop()
         self._client.disconnect()
@@ -171,25 +172,25 @@ class MQTTClient:
         payload: dict[str, Any],
         qos: int = 1,
     ) -> Optional[int]:
-        """Publish a message, buffering locally first.
+        """Publica un mensaje, buffereándolo localmente primero.
 
-        The message is always written to the local buffer first.
-        If connected, it's also sent immediately via MQTT.
-        The buffer entry is marked as sent only after PUBACK.
+        El mensaje siempre se escribe al buffer local antes que nada.
+        Si está conectado, también se envía inmediatamente vía MQTT.
+        La entrada del buffer se marca como enviada solo después del PUBACK.
 
         Args:
-            topic: MQTT topic string.
-            payload: Dict to serialize as JSON.
-            qos: MQTT QoS level (default 1).
+            topic: String del topic MQTT.
+            payload: Dict a serializar como JSON.
+            qos: Nivel QoS de MQTT (default 1).
 
         Returns:
-            Buffer message ID, or None on buffer failure.
+            ID del mensaje en el buffer, o None si falla el buffer.
         """
-        # Always buffer first
+        # Siempre bufferear primero
         try:
             msg_id = self.buffer.enqueue(topic, payload)
         except Exception:
-            logger.exception("Failed to buffer message")
+            logger.exception("Falló bufferear el mensaje")
             return None
 
         if self._connected:
@@ -203,25 +204,25 @@ class MQTTClient:
         data: dict[str, Any],
         qos: int = 1,
     ) -> Optional[int]:
-        """Publish using a logical topic name from config.
+        """Publica usando un nombre lógico de topic del config.
 
-        Convenience method that looks up the topic from self.topics.
+        Método de conveniencia que busca el topic en self.topics.
 
         Args:
-            event_type: Logical name matching a key in self.topics
-                (e.g. "counting", "wifi_ble", "telemetry").
-            data: Payload dict.
-            qos: MQTT QoS level.
+            event_type: Nombre lógico que matchea una key en self.topics
+                (ej: "counting", "wifi_ble", "telemetry").
+            data: Dict del payload.
+            qos: Nivel QoS de MQTT.
 
         Returns:
-            Buffer message ID.
+            ID del mensaje en el buffer.
         """
         topic = self.topics.get(event_type)
         if not topic:
-            logger.error("Unknown event type: %s", event_type)
+            logger.error("Tipo de evento desconocido: %s", event_type)
             return None
 
-        # Add standard metadata
+        # Agrega metadata estándar
         payload = {
             "device_id": self.device_id,
             "timestamp": time.time(),
@@ -236,15 +237,15 @@ class MQTTClient:
         thing_name: str,
         callback: Callable[[dict], None],
     ) -> None:
-        """Subscribe to the device shadow delta topic.
+        """Suscribe al topic delta del shadow del dispositivo.
 
-        When AWS IoT publishes a delta (desired != reported), the callback
-        is invoked with the parsed ``state`` dict.  The callback runs in
-        the paho network thread; it should be fast and thread-safe.
+        Cuando AWS IoT publica un delta (desired != reported), se invoca el
+        callback con el dict ``state`` parseado. El callback corre en el thread
+        de red de paho; tiene que ser rápido y thread-safe.
 
         Args:
-            thing_name: AWS IoT thing name (typically the device_id).
-            callback: Invoked with the parsed ``state`` delta dict.
+            thing_name: Nombre del thing en AWS IoT (típicamente el device_id).
+            callback: Se invoca con el dict del delta ``state`` parseado.
         """
         topic = f"$aws/things/{thing_name}/shadow/update/delta"
         with self._shadow_lock:
@@ -267,14 +268,14 @@ class MQTTClient:
         thing_name: str,
         state: dict[str, Any],
     ) -> None:
-        """Publish an update to the device shadow ``reported`` state.
+        """Publica un update al estado ``reported`` del shadow del dispositivo.
 
-        Wraps ``state`` in the required ``{"state": {"reported": ...}}``
-        envelope and publishes to ``$aws/things/{thing}/shadow/update``.
+        Envuelve ``state`` en el envelope requerido ``{"state": {"reported": ...}}``
+        y publica a ``$aws/things/{thing}/shadow/update``.
 
         Args:
-            thing_name: AWS IoT thing name (typically the device_id).
-            state: Dict of values to report.
+            thing_name: Nombre del thing en AWS IoT (típicamente el device_id).
+            state: Dict de valores a reportar.
         """
         topic = f"$aws/things/{thing_name}/shadow/update"
         envelope = {"state": {"reported": state}}
@@ -292,12 +293,12 @@ class MQTTClient:
             logger.exception("Shadow reported publish failed: %s", topic)
 
     def replay_buffer(self) -> int:
-        """Replay all pending messages from the buffer.
+        """Reenvía todos los mensajes pendientes del buffer.
 
-        Called automatically on reconnect. Can also be called manually.
+        Se llama automáticamente al reconectar. También puede llamarse manual.
 
         Returns:
-            Number of messages replayed.
+            Cantidad de mensajes reenviados.
         """
         with self._replay_lock:
             pending = self.buffer.get_pending(limit=200)
@@ -314,7 +315,7 @@ class MQTTClient:
             logger.info("Buffer replay: %d messages sent", count)
             return count
 
-    # --- Internal methods ---
+    # --- Métodos internos ---
 
     def _send_buffered_message(
         self,
@@ -323,13 +324,13 @@ class MQTTClient:
         payload: dict[str, Any],
         qos: int,
     ) -> None:
-        """Send a single buffered message. Marked as sent only on PUBACK."""
+        """Envía un único mensaje buffereado. Se marca enviado solo al recibir PUBACK."""
         try:
             result = self._client.publish(
                 topic, json.dumps(payload), qos=qos
             )
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                # Track mid -> buffer_msg_id; mark_sent happens in _on_publish
+                # Trackea mid -> buffer_msg_id; mark_sent ocurre en _on_publish
                 with self._pending_lock:
                     self._pending_acks[result.mid] = msg_id
             else:
@@ -349,20 +350,20 @@ class MQTTClient:
         rc: int,
         properties: Any = None,
     ) -> None:
-        """Called when connection is established."""
+        """Se llama cuando se establece la conexión."""
         if rc == 0:
             self._connected = True
             with self._conn_lock:
                 self._reconnect_ts = time.time()
-            logger.info("MQTT connected to %s", self.endpoint)
+            logger.info("MQTT conectado a %s", self.endpoint)
 
-            # Replay buffered messages
+            # Reenvía los mensajes buffereados
             threading.Thread(
                 target=self.replay_buffer, daemon=True
             ).start()
 
-            # Fire the external on_connected hook (e.g. shadow reconciliation).
-            # Exceptions here must not break the paho loop.
+            # Dispara el hook externo on_connected (ej: reconciliación de shadow).
+            # Las excepciones acá no deben romper el loop de paho.
             hook = self.on_connected
             if hook is not None:
                 try:
@@ -380,7 +381,7 @@ class MQTTClient:
         rc: int = 0,
         properties: Any = None,
     ) -> None:
-        """Called when disconnected. paho handles reconnect while loop_start is active."""
+        """Se llama al desconectarse. paho maneja el reconnect mientras loop_start esté activo."""
         self._connected = False
         if self._stop_event.is_set():
             return
@@ -396,7 +397,7 @@ class MQTTClient:
         rc: int = 0,
         properties: Any = None,
     ) -> None:
-        """Called on successful publish (PUBACK for QoS 1)."""
+        """Se llama tras un publish exitoso (PUBACK para QoS 1)."""
         with self._pending_lock:
             buf_id = self._pending_acks.pop(mid, None)
         if buf_id is not None:
@@ -411,24 +412,24 @@ class MQTTClient:
         userdata: Any,
         message: mqtt.MQTTMessage,
     ) -> None:
-        """Dispatch incoming messages to registered shadow callbacks.
+        """Dispatchea mensajes entrantes a los callbacks de shadow registrados.
 
-        Runs in the paho network thread.  JSON decode errors and
-        callback exceptions are logged but never propagated so the
-        MQTT loop stays healthy.
+        Corre en el thread de red de paho. Los errores de decode JSON y las
+        excepciones del callback se loggean pero nunca se propagan, así el
+        loop de MQTT sigue sano.
         """
         topic = message.topic
         with self._shadow_lock:
             callback = self._shadow_callbacks.get(topic)
         if callback is None:
-            logger.debug("MQTT message on unhandled topic: %s", topic)
+            logger.debug("Mensaje MQTT en topic no manejado: %s", topic)
             return
 
         try:
             payload = json.loads(message.payload.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
             logger.warning(
-                "Invalid JSON on shadow topic %s: %s", topic, e
+                "JSON inválido en topic shadow %s: %s", topic, e
             )
             return
 

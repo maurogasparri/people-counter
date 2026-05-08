@@ -1,9 +1,10 @@
-"""Export counting events, telemetry and WiFi/BLE summaries to CSV.
+"""Exporta eventos de conteo, telemetría y resúmenes WiFi/BLE a CSV.
 
-Operators occasionally report that the device count does not match a manual
-count. When that happens engineering needs the raw events for a given time
-window so they can reconcile. This script queries AWS Timestream (and
-optionally DynamoDB for WiFi/BLE dedup hashes) and dumps them as CSV.
+Los operadores ocasionalmente reportan que el conteo del device no matchea
+con un conteo manual. Cuando eso pasa, ingeniería necesita los eventos raw de
+una ventana de tiempo dada para poder reconciliar. Este script queriea AWS
+Timestream (y opcionalmente DynamoDB para los hashes de dedup WiFi/BLE) y los
+dumpea como CSV.
 
 Usage:
     python scripts/export_events.py \
@@ -104,9 +105,9 @@ TELEMETRY_COLUMNS = (
     "buffer_backlog_messages",
 )
 
-# Mapping from Timestream measure names to CSV column names for telemetry.
-# The device publishes slightly shorter names (no "_count" suffix) — keep both
-# sides explicit so renames upstream are easy to spot.
+# Mapeo de measure names de Timestream a column names de CSV para telemetría.
+# El dispositivo publica nombres ligeramente más cortos (sin sufijo "_count") —
+# mantener ambos lados explícitos así renames upstream son fáciles de detectar.
 TELEMETRY_MEASURE_MAP = {
     "cpu_temp_c": "cpu_temp_c",
     "hailo_temp_c": "hailo_temp_c",
@@ -258,8 +259,8 @@ def _parse_datum(datum: dict[str, Any]) -> Any:
         return None
     if "ScalarValue" in datum:
         return datum["ScalarValue"]
-    # Timestream also supports arrays/rows/timeseries; the counting + telemetry
-    # tables are scalar-only so we don't expand those shapes.
+    # Timestream también soporta arrays/rows/timeseries; las tablas de counting
+    # + telemetría son scalar-only así que no expandimos esas formas.
     return None
 
 
@@ -630,10 +631,10 @@ def main(argv: list[str] | None = None) -> int:
 
         wifi_ble_rows: list[dict[str, Any]] | None = None
         if include_wifi_ble:
-            # WiFi/BLE is routed to Lambda/DynamoDB, not Timestream. Without
-            # per-event storage the best we can offer is a note — this slot is
-            # reserved for a future DynamoDB scan if the Lambda stores
-            # per-summary aggregates.
+            # WiFi/BLE va a Lambda/DynamoDB, no a Timestream. Sin storage
+            # per-event lo mejor que podemos ofrecer es una nota — este
+            # slot queda reservado para un eventual DynamoDB scan si el
+            # Lambda guarda agregados per-summary.
             logger.warning(
                 "WiFi/BLE payloads are routed to Lambda+DynamoDB and are not "
                 "currently persisted as per-event aggregates. Returning an "

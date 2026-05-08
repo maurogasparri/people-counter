@@ -1,9 +1,9 @@
-"""Stereo frame acquisition from dual CSI cameras.
+"""Adquisición de frames estéreo desde dos cámaras CSI.
 
-Supports three modes:
-  - picamera2: RPi5 CSI cameras via libcamera/picamera2 (production).
-  - opencv: USB or V4L2 cameras via OpenCV VideoCapture (fallback).
-  - file: Replay from saved image pairs (for testing/development).
+Soporta tres modos:
+  - picamera2: cámaras CSI de la RPi5 vía libcamera/picamera2 (producción).
+  - opencv: cámaras USB o V4L2 vía OpenCV VideoCapture (fallback).
+  - file: replay desde pares de imágenes guardados (testing/desarrollo).
 """
 
 import logging
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class StereoCapture:
-    """Manages simultaneous capture from left and right CSI cameras via picamera2."""
+    """Maneja la captura simultánea desde las cámaras CSI izquierda y derecha vía picamera2."""
 
     def __init__(
         self,
@@ -30,24 +30,24 @@ class StereoCapture:
         meter_mode: str = "matrix",
         lock_ae: bool = False,
     ) -> None:
-        """Initialize stereo capture.
+        """Inicializa la captura estéreo.
 
         Args:
-            cam_left_id: Left camera index as listed by rpicam-hello --list-cameras.
-            cam_right_id: Right camera index.
-            resolution: (width, height) capture resolution.
-            fps: Target frame rate.
-            meter_mode: AE metering mode ('matrix', 'centre', 'spot'). Centre/spot
-                ignore the frame periphery during the AE settle, useful when
-                bright zones outside the working area drag exposure down on the
-                target (calibration board). Default 'matrix' matches picamera2's
-                default whole-frame weighting.
-            lock_ae: When True, AE/AWB are locked to the values that AE settled
-                on after a 1-second wait. Useful when the calibration scene has
-                fluctuating light (natural daylight, doors opening) — the lock
-                prevents L/R AE drift mid-session. Default False — for stable
-                indoor lighting AE auto is simpler and produces representative
-                images for the ground-truth report.
+            cam_left_id: Índice de la cámara izquierda según lista rpicam-hello --list-cameras.
+            cam_right_id: Índice de la cámara derecha.
+            resolution: Resolución de captura (width, height).
+            fps: Frame rate objetivo.
+            meter_mode: Modo de AE metering ('matrix', 'centre', 'spot'). Centre/spot
+                ignoran la periferia del frame durante el settle del AE, útil cuando
+                hay zonas brillantes fuera del área de trabajo que bajan la exposición
+                sobre el target (board de calibración). Default 'matrix' matchea la
+                ponderación whole-frame default de picamera2.
+            lock_ae: Cuando es True, AE/AWB se lockean a los valores donde el AE
+                hizo settle tras una espera de 1 segundo. Útil cuando la escena de
+                calibración tiene luz fluctuante (luz natural, puertas que abren) —
+                el lock evita drift independiente de AE entre L/R mid-session.
+                Default False — para iluminación interior estable, AE auto es más
+                simple y produce imágenes representativas para el reporte de ground-truth.
         """
         self.cam_left_id = cam_left_id
         self.cam_right_id = cam_right_id
@@ -60,17 +60,17 @@ class StereoCapture:
         self._executor: Optional[ThreadPoolExecutor] = None
 
     def open(self) -> None:
-        """Open both camera streams via picamera2.
+        """Abre ambos streams de cámara vía picamera2.
 
         Raises:
-            RuntimeError: If either camera fails to open.
+            RuntimeError: Si alguna cámara no puede abrirse.
         """
         try:
             from picamera2 import Picamera2
         except ImportError:
             raise RuntimeError(
-                "picamera2 not installed. "
-                "Install with: pip install picamera2"
+                "picamera2 no instalado. "
+                "Instalar con: pip install picamera2"
             )
 
         try:
@@ -78,7 +78,7 @@ class StereoCapture:
             self._cam_right = Picamera2(self.cam_right_id)
         except Exception as e:
             self.close()
-            raise RuntimeError(f"Failed to open cameras: {e}") from e
+            raise RuntimeError(f"Falló abrir las cámaras: {e}") from e
 
         w, h = self.resolution
         for cam, name in [
@@ -92,8 +92,8 @@ class StereoCapture:
             cam.configure(config)
             cam.start()
 
-        # Set AE metering mode before the settle so the locked exposure
-        # reflects the chosen weighting (matrix/centre/spot).
+        # Setea el modo de AE metering antes del settle, así la exposición
+        # lockeada refleja el weighting elegido (matrix/centre/spot).
         if self.meter_mode != "matrix":
             try:
                 from libcamera import controls as _libcam_controls
@@ -114,13 +114,13 @@ class StereoCapture:
                     extra={"mode": self.meter_mode, "error": str(e)},
                 )
 
-        # Optionally lock exposure, gain and white balance after a 1s settle.
-        # Default behaviour (lock_ae=False) keeps AE auto throughout the
-        # session — simpler, produces representative ground-truth images,
-        # and works fine for stable indoor lighting. Enable lock_ae=True
-        # when the scene has fluctuating light (natural daylight, doors
-        # opening, mixed lighting) — the lock prevents independent L/R AE
-        # drift mid-session.
+        # Opcionalmente lockea exposición, gain y white balance tras 1s de settle.
+        # El comportamiento default (lock_ae=False) mantiene AE auto durante toda
+        # la sesión — más simple, produce imágenes ground-truth representativas
+        # y anda bien para iluminación interior estable. Activar lock_ae=True
+        # cuando la escena tiene luz fluctuante (luz natural, puertas que abren,
+        # iluminación mixta) — el lock evita drift de AE independiente entre L/R
+        # mid-session.
         if self.lock_ae:
             import time as _time
             _time.sleep(1.0)
@@ -160,16 +160,16 @@ class StereoCapture:
         )
 
     def read(self) -> tuple[np.ndarray, np.ndarray]:
-        """Read frame pair.
+        """Lee un par de frames.
 
         Returns:
-            (left_frame, right_frame) as BGR numpy arrays.
+            (left_frame, right_frame) como arrays BGR de numpy.
 
         Raises:
-            RuntimeError: If cameras not opened or read fails.
+            RuntimeError: Si las cámaras no están abiertas o falla la lectura.
         """
         if self._cam_left is None or self._cam_right is None or self._executor is None:
-            raise RuntimeError("Cameras not opened. Call open() first.")
+            raise RuntimeError("Cámaras no abiertas. Llamar open() primero.")
 
         try:
             fut_l = self._executor.submit(self._cam_left.capture_array, "main")
@@ -177,19 +177,19 @@ class StereoCapture:
             frame_l = fut_l.result()
             frame_r = fut_r.result()
         except Exception as e:
-            raise RuntimeError(f"Frame capture failed: {e}") from e
+            raise RuntimeError(f"Falló la captura de frame: {e}") from e
 
-        # picamera2 with "BGR888" format empirically delivers RGB on RPi OS
-        # Trixie / libcamera builds we ship with. Convert to BGR so downstream
-        # consumers (OpenCV, YOLO preprocess that assumes BGR input) see the
-        # correct channel order.
+        # picamera2 con formato "BGR888" entrega empíricamente RGB en los builds
+        # de RPi OS Trixie / libcamera con los que shippeamos. Convertir a BGR
+        # para que los consumers downstream (OpenCV, preproceso YOLO que asume
+        # entrada BGR) vean el orden de canales correcto.
         frame_l = cv2.cvtColor(frame_l, cv2.COLOR_RGB2BGR)
         frame_r = cv2.cvtColor(frame_r, cv2.COLOR_RGB2BGR)
 
         return frame_l, frame_r
 
     def read_with_timestamps(self) -> tuple[np.ndarray, np.ndarray, int, int]:
-        """Read frame pair along with each camera's sensor timestamp (ns).
+        """Lee un par de frames junto con el timestamp del sensor de cada cámara (ns).
 
         Returns:
             (left_frame, right_frame, ts_left_ns, ts_right_ns)
@@ -200,14 +200,15 @@ class StereoCapture:
     def read_with_metadata(
         self,
     ) -> tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]:
-        """Read frame pair with sensor timestamps (ns) and sensor temperatures (°C).
+        """Lee par de frames con timestamps de sensor (ns) y temperaturas (°C).
 
-        Temperature comes from picamera2 SensorTemperature metadata key when
-        available (IMX708 on RPi5 exposes it). Returns None per camera if the
-        key isn't present — older libcamera builds or non-IMX708 sensors.
+        La temperatura viene de la key SensorTemperature de la metadata de
+        picamera2 cuando está disponible (el IMX708 en RPi5 la expone). Devuelve
+        None por cámara si la key no está — builds más viejos de libcamera o
+        sensores no-IMX708.
         """
         if self._cam_left is None or self._cam_right is None or self._executor is None:
-            raise RuntimeError("Cameras not opened. Call open() first.")
+            raise RuntimeError("Cámaras no abiertas. Llamar open() primero.")
 
         def _grab(cam):
             req = cam.capture_request()
@@ -227,7 +228,7 @@ class StereoCapture:
             frame_l, ts_l, temp_l = fut_l.result()
             frame_r, ts_r, temp_r = fut_r.result()
         except Exception as e:
-            raise RuntimeError(f"Frame capture failed: {e}") from e
+            raise RuntimeError(f"Falló la captura de frame: {e}") from e
 
         frame_l = cv2.cvtColor(frame_l, cv2.COLOR_RGB2BGR)
         frame_r = cv2.cvtColor(frame_r, cv2.COLOR_RGB2BGR)
@@ -235,7 +236,7 @@ class StereoCapture:
         return frame_l, frame_r, ts_l, ts_r, temp_l, temp_r
 
     def close(self) -> None:
-        """Release camera resources."""
+        """Libera los recursos de las cámaras."""
         if self._executor is not None:
             self._executor.shutdown(wait=True)
             self._executor = None
@@ -262,10 +263,10 @@ class StereoCapture:
 
 
 class FileCapture:
-    """Replay stereo frame pairs from saved image files.
+    """Reproduce pares de frames estéreo desde archivos de imagen guardados.
 
-    Looks for files named left_NNN.png and right_NNN.png in the given
-    directory. Useful for development and testing without hardware.
+    Busca archivos llamados left_NNN.png y right_NNN.png en el directorio
+    dado. Útil para desarrollo y testing sin hardware.
     """
 
     def __init__(
@@ -274,12 +275,12 @@ class FileCapture:
         loop: bool = True,
         fps: int = 15,
     ) -> None:
-        """Initialize file-based capture.
+        """Inicializa la captura desde archivos.
 
         Args:
-            directory: Path to directory containing left_*/right_* images.
-            loop: Whether to restart from beginning after all pairs.
-            fps: Simulated frame rate (controls read delay).
+            directory: Path al directorio que contiene imágenes left_*/right_*.
+            loop: Si reiniciar desde el principio luego de todos los pares.
+            fps: Frame rate simulado (controla el delay de lectura).
         """
         self.directory = Path(directory)
         self.loop = loop
@@ -290,10 +291,10 @@ class FileCapture:
         self._last_read = 0.0
 
     def open(self) -> None:
-        """Scan directory for image pairs.
+        """Escanea el directorio en busca de pares de imágenes.
 
         Raises:
-            RuntimeError: If no valid pairs found.
+            RuntimeError: Si no se encuentra ningún par válido.
         """
         left_files = sorted(self.directory.glob("left_*.png"))
         self._pairs = []
@@ -304,7 +305,7 @@ class FileCapture:
                 self._pairs.append((lf, rf))
 
         if not self._pairs:
-            # Also try .jpg
+            # Probar también con .jpg
             left_files = sorted(self.directory.glob("left_*.jpg"))
             for lf in left_files:
                 rf = lf.parent / lf.name.replace("left_", "right_")
@@ -313,8 +314,8 @@ class FileCapture:
 
         if not self._pairs:
             raise RuntimeError(
-                f"No stereo pairs found in {self.directory}. "
-                "Expected files named left_NNN.png and right_NNN.png"
+                f"No stereo pairs encontrados en {self.directory}. "
+                "Se esperaban archivos llamados left_NNN.png y right_NNN.png"
             )
 
         self._index = 0
@@ -324,25 +325,25 @@ class FileCapture:
         )
 
     def read(self) -> tuple[np.ndarray, np.ndarray]:
-        """Read next frame pair.
+        """Lee el siguiente par de frames.
 
         Returns:
-            (left_frame, right_frame) as BGR numpy arrays.
+            (left_frame, right_frame) como arrays BGR de numpy.
 
         Raises:
-            StopIteration: If all pairs consumed and loop=False.
-            RuntimeError: If pairs not loaded.
+            StopIteration: Si se consumieron todos los pares y loop=False.
+            RuntimeError: Si los pares no fueron cargados.
         """
         if not self._pairs:
-            raise RuntimeError("No pairs loaded. Call open() first.")
+            raise RuntimeError("No pairs loaded. Llamar open() primero.")
 
         if self._index >= len(self._pairs):
             if self.loop:
                 self._index = 0
             else:
-                raise StopIteration("All frame pairs consumed")
+                raise StopIteration("Todos los pares de frames consumidos")
 
-        # Simulate frame rate
+        # Simula el frame rate
         now = time.monotonic()
         elapsed = now - self._last_read
         if elapsed < self._frame_interval:
@@ -354,7 +355,7 @@ class FileCapture:
         img_r = cv2.imread(str(rf))
 
         if img_l is None or img_r is None:
-            raise RuntimeError(f"Failed to read pair at index {self._index}")
+            raise RuntimeError(f"Falló la lectura del par en el índice {self._index}")
 
         self._index += 1
         return img_l, img_r
@@ -368,7 +369,7 @@ class FileCapture:
         return self._index
 
     def close(self) -> None:
-        """Reset state."""
+        """Resetea el estado."""
         self._pairs = []
         self._index = 0
 

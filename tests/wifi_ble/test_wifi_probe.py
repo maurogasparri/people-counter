@@ -1,4 +1,4 @@
-"""Tests for WiFi probe request capture module."""
+"""Tests para el módulo de captura de probe requests WiFi."""
 import threading
 import time
 from unittest.mock import MagicMock, patch, call

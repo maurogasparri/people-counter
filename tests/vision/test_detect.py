@@ -1,6 +1,6 @@
-"""Tests for person detection module.
+"""Tests para el módulo de detección de personas.
 
-Tests the preprocessing, postprocessing, and Detection dataclass.
+Testea el preproceso, postproceso, y la dataclass Detection.
 Does NOT test actual model inference (requires HEF or ONNX model file).
 """
 

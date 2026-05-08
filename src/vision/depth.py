@@ -1,16 +1,16 @@
-"""Disparity map computation from rectified stereo pairs.
+"""Computación del mapa de disparidad a partir de pares estéreo rectificados.
 
-Uses Semi-Global Block Matching (SGBM) as described by Hirschmuller (2008),
-with parameters tuned for ceiling-mounted Arducam IMX708 stereo pair at
-~1.3-6m range and 14cm baseline.
+Usa Semi-Global Block Matching (SGBM) según Hirschmuller (2008), con parámetros
+tuneados para el par estéreo Arducam IMX708 montado en techo a un rango de
+~1.3-6m y baseline 14cm.
 
-The depth (Z) at each pixel is: Z = f * B / disparity
-where f = focal length in pixels, B = baseline in mm.
+La profundidad (Z) en cada pixel es: Z = f * B / disparity
+donde f = focal length en pixels, B = baseline en mm.
 
-Focal length estimate for IMX708 120° HFOV at full resolution:
+Estimación de focal length para IMX708 120° HFOV a resolución completa:
   f_px ≈ 4608 / (2 * tan(60°)) ≈ 1330 px
-  disparity at 3m  = 1330 * 140 / 3000 ≈ 62 px
-  disparity at 1.3m = 1330 * 140 / 1300 ≈ 143 px
+  disparity a 3m  = 1330 * 140 / 3000 ≈ 62 px
+  disparity a 1.3m = 1330 * 140 / 1300 ≈ 143 px
 """
 
 import logging
@@ -24,16 +24,16 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Depth debug dump — diagnostic for the height-bug triage.
-# When enabled, ``head_depth_in_bbox`` saves up to DEPTH_DEBUG_MAX_DUMPS
-# side-by-side PNGs (depth heatmap + layered masks) under DEPTH_DEBUG_DIR
-# and then auto-stops. Cheap when off (single bool check). Use to confirm
-# what's at the picked head-depth slice when the histogram walk lands on
-# something it shouldn't (SGBM speckle on parquet floor, neighbouring
-# structure, etc.).
+# Dump de debug de profundidad — diagnóstico para el triage del bug de height.
+# Cuando está habilitado, ``head_depth_in_bbox`` guarda hasta DEPTH_DEBUG_MAX_DUMPS
+# PNGs side-by-side (heatmap de profundidad + máscaras en capas) bajo
+# DEPTH_DEBUG_DIR y luego se auto-detiene. Barato cuando está apagado (un solo
+# check bool). Usarlo para confirmar qué hay en la slice de head-depth elegida
+# cuando el walk del histograma cae en algo que no debería (speckle SGBM sobre
+# piso de parquet, estructura vecina, etc.).
 #
-# Toggle via ``enable_depth_debug()`` — main.py wires it to the
-# ``--depth-debug`` CLI flag.
+# Toggle vía ``enable_depth_debug()`` — main.py lo wirea al flag CLI
+# ``--depth-debug``.
 # ---------------------------------------------------------------------------
 DEPTH_DEBUG_DIR = "/tmp"
 DEPTH_DEBUG_MAX_DUMPS = 5
@@ -42,34 +42,36 @@ _depth_debug_count = 0
 
 
 def enable_depth_debug(enabled: bool = True) -> None:
-    """Toggle the head_depth_in_bbox diagnostic dump.
+    """Toggle del dump diagnóstico de head_depth_in_bbox.
 
-    When enabled, the next ``DEPTH_DEBUG_MAX_DUMPS`` calls to
-    ``head_depth_in_bbox`` that produce a result write a PNG to
-    ``DEPTH_DEBUG_DIR`` and log a histogram summary. Subsequent calls
-    are no-ops until the counter is reset (call again with True after
-    a process restart, or call ``reset_depth_debug()`` to re-arm).
+    Cuando está habilitado, las próximas ``DEPTH_DEBUG_MAX_DUMPS`` llamadas a
+    ``head_depth_in_bbox`` que produzcan resultado escriben un PNG a
+    ``DEPTH_DEBUG_DIR`` y loguean un resumen de histograma. Las llamadas
+    subsiguientes son no-op hasta que el counter se resetee (llamar de nuevo
+    con True tras un restart de proceso, o llamar a ``reset_depth_debug()``
+    para re-armar).
     """
     global _depth_debug_enabled
     _depth_debug_enabled = bool(enabled)
 
 
 def reset_depth_debug() -> None:
-    """Reset the dump counter so the next ``DEPTH_DEBUG_MAX_DUMPS`` calls
-    fire again. Useful for tests and re-arming mid-process."""
+    """Resetea el counter de dumps para que las próximas
+    ``DEPTH_DEBUG_MAX_DUMPS`` llamadas vuelvan a disparar. Útil para tests y
+    re-armar mid-process."""
     global _depth_debug_count
     _depth_debug_count = 0
 
 
-# SGBM parameters for Arducam IMX708 120° HFOV, 14cm baseline, 1.3-6m range.
-DEFAULT_NUM_DISPARITIES = 192  # Covers disparity range up to ~143px at 1.3m
-DEFAULT_BLOCK_SIZE = 9  # Robust matching on wide-angle images
-DEFAULT_P1_FACTOR = 12  # Smoothness penalty for ±1 disparity change
-DEFAULT_P2_FACTOR = 96  # Smoothness penalty for large discontinuities (8× P1)
-DEFAULT_DISP12_MAX_DIFF = 2  # Allow ±2px left-right mismatch
-DEFAULT_UNIQUENESS_RATIO = 5  # Lower for IR-filter cameras with good contrast
-DEFAULT_SPECKLE_WINDOW_SIZE = 150  # Filter small noise blobs
-DEFAULT_SPECKLE_RANGE = 16  # Max disparity variation within a speckle
+# Parámetros SGBM para Arducam IMX708 120° HFOV, baseline 14cm, rango 1.3-6m.
+DEFAULT_NUM_DISPARITIES = 192  # Cubre rango de disparidad hasta ~143px a 1.3m
+DEFAULT_BLOCK_SIZE = 9  # Matching robusto en imágenes wide-angle
+DEFAULT_P1_FACTOR = 12  # Penalidad de smoothness para cambio de disparidad ±1
+DEFAULT_P2_FACTOR = 96  # Penalidad para discontinuidades grandes (8× P1)
+DEFAULT_DISP12_MAX_DIFF = 2  # Permite mismatch left-right de ±2px
+DEFAULT_UNIQUENESS_RATIO = 5  # Más bajo para cámaras con filtro IR y buen contraste
+DEFAULT_SPECKLE_WINDOW_SIZE = 150  # Filtra blobs chicos de ruido
+DEFAULT_SPECKLE_RANGE = 16  # Variación máxima de disparidad dentro de un speckle
 DEFAULT_PRE_FILTER_CAP = 63
 DEFAULT_MIN_DISPARITY = 0
 
@@ -86,23 +88,23 @@ def create_sgbm(
     pre_filter_cap: int = DEFAULT_PRE_FILTER_CAP,
     min_disparity: int = DEFAULT_MIN_DISPARITY,
 ) -> cv2.StereoSGBM:
-    """Create a configured SGBM matcher.
+    """Crea un matcher SGBM configurado.
 
     Args:
-        num_disparities: Maximum disparity minus minimum disparity.
-            Must be divisible by 16.
-        block_size: Matched block size. Must be odd.
-        p1_factor: Multiplier for P1 smoothness penalty.
-        p2_factor: Multiplier for P2 smoothness penalty (must be > p1_factor).
-        disp12_max_diff: Max allowed difference in left-right disparity check.
-        uniqueness_ratio: Margin (%) by which best match must beat second best.
-        speckle_window_size: Max area of connected component to filter.
-        speckle_range: Max disparity variation within a connected component.
-        pre_filter_cap: Truncation value for pre-filtered image pixels.
-        min_disparity: Minimum disparity value (usually 0).
+        num_disparities: Disparidad máxima menos disparidad mínima.
+            Debe ser divisible por 16.
+        block_size: Tamaño del bloque de matching. Debe ser impar.
+        p1_factor: Multiplicador de la penalidad de smoothness P1.
+        p2_factor: Multiplicador de la penalidad de smoothness P2 (debe ser > p1_factor).
+        disp12_max_diff: Diferencia máxima permitida en el check left-right de disparidad.
+        uniqueness_ratio: Margen (%) por el cual el mejor match debe superar al segundo.
+        speckle_window_size: Área máxima del componente conexo a filtrar.
+        speckle_range: Variación máxima de disparidad dentro de un componente conexo.
+        pre_filter_cap: Valor de truncation para los pixels pre-filtrados.
+        min_disparity: Valor mínimo de disparity (usualmente 0).
 
     Returns:
-        Configured StereoSGBM instance.
+        Instancia configurada de StereoSGBM.
     """
     channels = 1
     p1 = p1_factor * channels * block_size * block_size
@@ -125,16 +127,16 @@ def create_sgbm(
 
 
 def _to_gray(image: np.ndarray, use_green_channel: bool = False) -> np.ndarray:
-    """Convert image to grayscale.
+    """Convierte una imagen a grayscale.
 
     Args:
-        image: BGR or grayscale image.
-        use_green_channel: If True, extract green channel only.
+        image: Imagen BGR o grayscale.
+        use_green_channel: Si True, extrae solo el channel verde.
     """
     if len(image.shape) != 3:
         return image
     if use_green_channel:
-        return image[:, :, 1]  # Green in BGR
+        return image[:, :, 1]  # Verde en BGR
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
@@ -149,30 +151,34 @@ def compute_disparity(
     use_clahe: bool = True,
     downscale: int = 1,
 ) -> np.ndarray:
-    """Compute disparity map using SGBM.
+    """Computa el disparity map usando SGBM.
 
-    Calibration is resolution-independent (K, D don't change), so we can
-    match at lower resolution for speed and noise reduction, then upscale
-    the disparity map. The disparity values are scaled back to correspond
-    to the original resolution.
+    La calibración es resolución-independiente (K, D no cambian), así
+    que podemos matchear a menor resolución para velocidad y reducción
+    de ruido, después upscalear el disparity map. Los valores de
+    disparity se reescalan para que correspondan a la resolución
+    original.
 
     Args:
-        left_rect: Left rectified image (BGR or grayscale).
-        right_rect: Right rectified image (BGR or grayscale).
-        num_disparities: Max disparity range. Ignored if sgbm is provided.
-        block_size: Block size for matching. Ignored if sgbm is provided.
-        sgbm: Pre-created SGBM matcher. If None, one is created.
-        use_wls_filter: Apply WLS filter for edge-preserving smoothing.
-        use_green_channel: Use green channel only.
-        use_clahe: Apply CLAHE contrast enhancement before matching.
-        downscale: Factor to reduce resolution before matching (1=full,
-            2=half, 4=quarter). Disparity is upscaled back and values
-            are multiplied by the factor so depth calculations remain
-            correct. Higher = faster but less detail.
+        left_rect: Imagen izquierda rectificada (BGR o grayscale).
+        right_rect: Imagen derecha rectificada (BGR o grayscale).
+        num_disparities: Rango máximo de disparity. Ignorado si se
+            pasa sgbm.
+        block_size: Tamaño de bloque para matching. Ignorado si se
+            pasa sgbm.
+        sgbm: Matcher SGBM pre-creado. Si None, se crea uno.
+        use_wls_filter: Aplica filtro WLS para smoothing edge-preserving.
+        use_green_channel: Usa solo el channel verde.
+        use_clahe: Aplica enhancement de contraste CLAHE antes del matching.
+        downscale: Factor para reducir resolución antes del matching
+            (1=full, 2=half, 4=quarter). La disparity se upscalea de
+            vuelta y los valores se multiplican por el factor así los
+            cálculos de depth siguen siendo correctos. Más alto =
+            más rápido pero menos detalle.
 
     Returns:
-        Disparity map as float32 in pixels (at original resolution).
-        Invalid pixels are -1.0.
+        Disparity map como float32 en pixels (a la resolución original).
+        Los pixels inválidos son -1.0.
     """
     gray_l = _to_gray(left_rect, use_green_channel)
     gray_r = _to_gray(right_rect, use_green_channel)
@@ -195,7 +201,7 @@ def compute_disparity(
         gray_r = clahe.apply(gray_r)
 
     if sgbm is None:
-        # Scale numDisparities down for reduced resolution
+        # Escalar numDisparities hacia abajo para resolución reducida
         nd = (
             max(16, (num_disparities // downscale // 16) * 16)
             if downscale > 1
@@ -221,10 +227,11 @@ def compute_disparity(
     disparity[disparity < 0] = -1.0
 
     if downscale > 1:
-        # Upscale disparity to original resolution.
-        # Disparity values scale linearly with resolution, so multiply
-        # by the downscale factor: Z = fx * B / d, and both fx and d
-        # scale together, but we need d at original resolution.
+        # Upscalear disparity a la resolución original. Los valores
+        # de disparity escalan linealmente con la resolución, así
+        # que multiplicamos por el factor de downscale: Z = fx * B / d,
+        # y tanto fx como d escalan juntos, pero necesitamos d a la
+        # resolución original.
         orig_h, orig_w = left_rect.shape[:2]
         valid_mask = disparity > 0
         disparity = cv2.resize(
@@ -250,19 +257,19 @@ def disparity_to_depth(
     min_depth_mm: float = 500.0,
     max_depth_mm: float = 10000.0,
 ) -> np.ndarray:
-    """Convert disparity map to depth map in millimeters.
+    """Convierte un disparity map a depth map en milímetros.
 
     Z = f * B / d
 
     Args:
-        disparity: Disparity map from compute_disparity() (float32, pixels).
-        focal_length_px: Focal length in pixels (from calibration P1[0,0]).
-        baseline_mm: Stereo baseline in mm.
-        min_depth_mm: Minimum valid depth.
-        max_depth_mm: Maximum valid depth.
+        disparity: Disparity map de compute_disparity() (float32, pixels).
+        focal_length_px: Focal length en pixels (de calibración P1[0,0]).
+        baseline_mm: Baseline estéreo en mm.
+        min_depth_mm: Profundidad mínima válida.
+        max_depth_mm: Profundidad máxima válida.
 
     Returns:
-        Depth map in mm as float32. Invalid pixels are 0.0.
+        Depth map en mm como float32. Los pixels inválidos son 0.0.
     """
     depth = np.zeros_like(disparity)
 
@@ -281,18 +288,19 @@ def depth_at_bbox(
     bbox: tuple[int, int, int, int],
     percentile: float = 50.0,
 ) -> float:
-    """Estimate depth of a detected person from their bounding box.
+    """Estima la profundidad de una persona detectada a partir de su bbox.
 
-    Uses the median (or specified percentile) of valid depth values
-    within the center 50% of the bbox.
+    Usa la mediana (o el percentile especificado) de los valores de
+    depth válidos dentro del 50% central del bbox.
 
     Args:
-        depth_map: Depth map in mm from disparity_to_depth().
-        bbox: (x1, y1, x2, y2) bounding box in pixel coordinates.
-        percentile: Percentile of depth values to use (50 = median).
+        depth_map: Depth map en mm de disparity_to_depth().
+        bbox: (x1, y1, x2, y2) bounding box en coordenadas pixel.
+        percentile: Percentile de valores de depth a usar (50 = mediana).
 
     Returns:
-        Estimated depth in mm. Returns 0.0 if no valid pixels in ROI.
+        Profundidad estimada en mm. Devuelve 0.0 si no hay pixels
+        válidos en el ROI.
     """
     x1, y1, x2, y2 = bbox
 
@@ -332,84 +340,98 @@ def head_depth_in_bbox(
     debug_frame: Optional[np.ndarray] = None,
     debug_confidence: Optional[float] = None,
 ) -> Optional[float]:
-    """Find head depth inside a bbox using histogram + connected components,
-    pre-filtered by a vertical column anchored on the body's 3-D centroid.
+    """Encuentra la depth de la cabeza dentro de un bbox usando histograma +
+    connected components, pre-filtrado por una columna vertical anclada
+    en el centroide 3D del cuerpo.
 
-    The 2-D bbox is the only anchor the detector hands us, but in cenital
-    geometry the bbox often clips overhead structure (cables, cornices,
-    shelf edges) that sits at a different metric (X, Y) than the body
-    underneath. When the body partially occludes that structure the gate
-    works fine; when the body shifts (sitting, crouching) and the
-    structure becomes visible, the histogram-walk-from-nearest happily
-    picks the structure as "head" because it really is closer to the
-    camera than the actual head.
+    El bbox 2D es el único anchor que nos da el detector, pero en
+    geometría cenital el bbox a menudo recorta estructura overhead
+    (cables, cornisas, bordes de estantes) que está a un (X, Y) métrico
+    distinto al del cuerpo abajo. Cuando el cuerpo ocluye parcialmente
+    esa estructura el gate funciona bien; cuando el cuerpo se mueve
+    (se sienta, se agacha) y la estructura se vuelve visible, el
+    histogram-walk-from-nearest alegremente elige la estructura como
+    "head" porque realmente está más cerca de la cámara que la cabeza
+    real.
 
-    The fix is to anchor on a small estimate of the body's metric
-    centroid (X_center, Y_center) and reject pixels whose back-projected
-    metric (X, Y) falls outside a vertical column of radius
-    ``column_radius_mm`` around it. Real heads always sit inside that
-    column (the head is part of the body that produced the bbox).
-    Overhead structure offset in metric X or Y is excluded.
+    El fix es anclar en una estimación chica del centroide métrico
+    del cuerpo (X_center, Y_center) y rechazar pixels cuyo (X, Y)
+    métrico back-proyectado cae fuera de una columna vertical de
+    radio ``column_radius_mm`` alrededor de él. Las cabezas reales
+    siempre caen dentro de esa columna (la cabeza es parte del cuerpo
+    que produjo el bbox). La estructura overhead offset en X o Y
+    métrico queda excluida.
 
-    For zenith-mount stereo with a YOLO-COCO person bbox the centroid
-    sits on the torso, not the head, so neither the central-crop median
-    (measures the torso surface) nor a low percentile of the bbox depth
-    (single-pixel speckle wins) gives a reliable head-height reading.
-    After the spatial column filter we run the canonical histogram
-    walk + connected-components pick: walk the depth distribution from
-    camera-nearest outward, return the median of the largest connected
-    pixel cluster in the first 10 cm slice that has enough area to be
-    a real head.
+    Para estéreo zenith-mount con un bbox YOLO-COCO de persona el
+    centroide cae sobre el torso, no la cabeza, así que ni la
+    mediana del crop central (mide la superficie del torso) ni un
+    percentile bajo del depth del bbox (gana single-pixel speckle)
+    dan una lectura confiable de altura de cabeza. Después del
+    filtro espacial de columna corremos el pick canónico de
+    histogram walk + connected-components: caminar la distribución
+    de depth desde lo más cercano a la cámara hacia afuera, devolver
+    la mediana del cluster conexo de pixels más grande en el primer
+    slice de 10 cm que tenga área suficiente como para ser una cabeza
+    real.
 
-    Reference: Del Pizzo et al., "Counting people by RGB or depth
+    Referencia: Del Pizzo et al., "Counting people by RGB or depth
     overhead cameras", Pattern Recognition Letters 2016 (histogram +
-    components). Spatial column gate is our extension — needed because
-    overhead structure produces depth slices that pass the anthropometric
-    gate but are nowhere near the body in the world frame.
+    components). El gate espacial de columna es nuestra extensión —
+    se necesita porque la estructura overhead produce depth slices
+    que pasan el gate antropométrico pero no están cerca del cuerpo
+    en el world frame.
 
     Args:
-        depth_map: Depth map in mm from disparity_to_depth(). 0 = invalid.
-        bbox: (x1, y1, x2, y2) bounding box in pixel coordinates.
-        mounting_height_mm: Camera-to-floor distance.
-        fx_px: Rectified focal length in px (P1[0, 0]). Used to back-
-            project pixels to metric X, Y. We use the same fx for X and
-            Y because the rectified model is square-pixel and only the
-            horizontal scale enters depth-to-world conversion.
-        cx_px: Rectified principal point x in px (P1[0, 2]).
-        cy_px: Rectified principal point y in px (P1[1, 2]).
-        rotated_bbox: Optional rotated rectangle ``(cx, cy, w, h, angle_deg)``
-            in image-pixel coordinates. When provided, depth sampling is
-            restricted to pixels inside this polygon — strictly tighter
-            than the axis-aligned ``bbox``, which the rotated rectangle's
-            envelope inflates by up to 2× area at 45° rotation. Crucial
-            for cenital geometry where RAPiD emits a body-aligned rotated
-            rectangle but ``bbox`` overshoots into floor + neighbouring
-            structure that pass the anthropometric depth gate. Pass
-            ``None`` (default) for axis-aligned detectors (yolov8) where
-            ``bbox`` is already the tight envelope.
-        slice_thickness_mm: Histogram bin width. 10 cm is wider than
-            SGBM's depth quantization at the operational range, so a
-            real head fills at least one bin solidly.
-        min_head_area_px: Minimum pixel count for a slice to qualify as
-            a head cluster. Tuned for the disparity grid at the runtime
-            resolution + downscale combo — small enough to catch a child
-            but big enough to reject speckle clusters.
-        max_head_height_mm: Anthropometric ceiling on head height; depths
-            below ``mount - max_head_height`` are rejected as impossible.
-        min_head_above_floor_mm: Anthropometric floor (ignore depths
-            corresponding to a head essentially on the ground — that's
-            the floor itself, not a person).
-        column_radius_mm: Radius (mm) of the vertical column around the
-            body's 3-D centroid that pixels must fall inside to be
-            considered as candidate head material. Default 250 mm: a
-            human head sits well inside a 50 cm-wide column centred on
-            the torso, while overhead structure offset by >25 cm in
-            metric X or Y is rejected. Set very large to disable
-            (effectively reverting to the pre-spatial-filter behaviour).
+        depth_map: Depth map en mm de disparity_to_depth(). 0 = inválido.
+        bbox: (x1, y1, x2, y2) bounding box en coordenadas pixel.
+        mounting_height_mm: Distancia camera-to-floor.
+        fx_px: Focal length rectificado en px (P1[0, 0]). Se usa para
+            back-proyectar pixels a X, Y métrico. Usamos el mismo fx
+            para X e Y porque el modelo rectificado es de pixel
+            cuadrado y solo la escala horizontal entra en la
+            conversión depth-to-world.
+        cx_px: Principal point x rectificado en px (P1[0, 2]).
+        cy_px: Principal point y rectificado en px (P1[1, 2]).
+        rotated_bbox: Rectángulo rotado opcional ``(cx, cy, w, h,
+            angle_deg)`` en coordenadas pixel de imagen. Cuando se
+            provee, el sampling de depth se restringe a los pixels
+            dentro de este polígono — estrictamente más tight que el
+            ``bbox`` axis-aligned, cuyo envelope del rectángulo rotado
+            infla el área hasta 2× a 45° de rotación. Crucial para
+            geometría cenital donde RAPiD emite un rectángulo rotado
+            body-aligned pero ``bbox`` se desborda al piso +
+            estructura vecina que pasan el depth gate antropométrico.
+            Pasar ``None`` (default) para detectores axis-aligned
+            (yolov8) donde ``bbox`` ya es el envelope tight.
+        slice_thickness_mm: Ancho de bin del histograma. 10 cm es
+            más ancho que la cuantización de depth de SGBM en el
+            rango operativo, así que una cabeza real llena al menos
+            un bin sólidamente.
+        min_head_area_px: Cantidad mínima de pixels para que un slice
+            califique como cluster de cabeza. Tuneado para el
+            disparity grid en el combo runtime resolution + downscale
+            — chico suficiente para agarrar un niño pero grande
+            suficiente para rechazar clusters de speckle.
+        max_head_height_mm: Techo antropométrico de altura de cabeza;
+            depths debajo de ``mount - max_head_height`` se rechazan
+            como imposibles.
+        min_head_above_floor_mm: Piso antropométrico (ignorar depths
+            que corresponden a una cabeza esencialmente en el suelo —
+            ese es el piso mismo, no una persona).
+        column_radius_mm: Radio (mm) de la columna vertical alrededor
+            del centroide 3D del cuerpo dentro del cual los pixels
+            tienen que caer para ser considerados material candidato
+            de cabeza. Default 250 mm: una cabeza humana cae bien
+            dentro de una columna de 50 cm de ancho centrada en el
+            torso, mientras la estructura overhead offset por >25 cm
+            en X o Y métrico se rechaza. Setear muy grande para
+            desactivar (efectivamente revierte al comportamiento
+            pre-filtro espacial).
 
     Returns:
-        Estimated head depth in mm, or None if no plausible head cluster
-        is found. Use ``head_height_above_floor()`` to convert to height.
+        Depth estimada de la cabeza en mm, o None si no se encuentra
+        cluster plausible de cabeza. Usar ``head_height_above_floor()``
+        para convertir a altura.
     """
     if depth_map.size == 0:
         return None
@@ -425,7 +447,8 @@ def head_depth_in_bbox(
 
     roi = depth_map[y1:y2, x1:x2]
 
-    # Anthropometric gate: heads live in [mount-max_head, mount-min_above_floor].
+    # Gate antropométrico: las cabezas viven en
+    # [mount-max_head, mount-min_above_floor].
     near = mounting_height_mm - max_head_height_mm
     far = mounting_height_mm - min_head_above_floor_mm
     if far <= near:
@@ -435,21 +458,21 @@ def head_depth_in_bbox(
     if int(valid.sum()) < min_head_area_px:
         return None
 
-    # ---- Rotated-rectangle mask (RAPiD-style detectors) ----
-    # The axis-aligned ``bbox`` is the tight envelope of a rotated
-    # rectangle for architectures like RAPiD. At non-trivial angles the
-    # envelope sweeps in floor + neighbouring structure; in cenital
-    # geometry that structure can sit at depths inside the anthropometric
-    # gate (a desk edge, a chair back, a tall cabinet at the bbox
-    # margin) and the histogram-walk-from-nearest then picks it as the
-    # "head". Filtering ``valid`` against the rotated polygon hands the
-    # function a body-shaped ROI even when the axis-aligned bbox is
-    # 2× the area of the actual body.
+    # ---- Máscara de rectángulo rotado (detectores estilo RAPiD) ----
+    # El ``bbox`` axis-aligned es el envelope tight de un rectángulo
+    # rotado para arquitecturas como RAPiD. En ángulos no triviales
+    # el envelope arrastra piso + estructura vecina; en geometría
+    # cenital esa estructura puede caer a depths dentro del gate
+    # antropométrico (borde de escritorio, respaldo de silla, gabinete
+    # alto al margen del bbox) y el histogram-walk-from-nearest lo
+    # elige como "cabeza". Filtrar ``valid`` contra el polígono rotado
+    # le da a la función un ROI con forma de cuerpo incluso cuando el
+    # bbox axis-aligned es 2× el área del cuerpo real.
     if rotated_bbox is not None:
         rcx, rcy, rw, rh, rang_deg = rotated_bbox
         rang = float(np.deg2rad(rang_deg))
         cos_a, sin_a = float(np.cos(rang)), float(np.sin(rang))
-        # 4 corners of the rotated rectangle in original-image coords.
+        # 4 esquinas del rectángulo rotado en coords de imagen original.
         dx = np.array(
             [-rw / 2.0, rw / 2.0, rw / 2.0, -rw / 2.0], dtype=np.float32
         )
@@ -458,8 +481,8 @@ def head_depth_in_bbox(
         )
         corners_x = rcx + dx * cos_a - dy * sin_a
         corners_y = rcy + dx * sin_a + dy * cos_a
-        # Translate to ROI-local coords (origin at bbox top-left). Round
-        # to int once — fillPoly takes int32.
+        # Translate a coords ROI-locales (origen en bbox top-left).
+        # Redondear a int una sola vez — fillPoly toma int32.
         poly = np.empty((4, 2), dtype=np.int32)
         poly[:, 0] = np.round(corners_x - x1).astype(np.int32)
         poly[:, 1] = np.round(corners_y - y1).astype(np.int32)
@@ -469,12 +492,14 @@ def head_depth_in_bbox(
         if int(valid.sum()) < min_head_area_px:
             return None
 
-    # ---- 3-D back-projection of every gated pixel in the ROI ----
-    # Build pixel-centre (u, v) grids covering the bbox in full-frame
-    # coordinates so cx/cy reference the same origin as P1. Z is the
-    # gated depth; X, Y come from the standard pinhole back-projection
+    # ---- Back-projection 3D de cada pixel gateado en el ROI ----
+    # Construir grids (u, v) de pixel-centre cubriendo el bbox en
+    # coords full-frame así cx/cy referencian el mismo origen que
+    # P1. Z es el depth gateado; X, Y vienen de la back-projection
+    # pinhole estándar
     # X = (u - cx) * Z / fx,  Y = (v - cy) * Z / fx
-    # (same fx for both axes — rectified pixels are square).
+    # (mismo fx para ambos ejes — los pixels rectificados son
+    # cuadrados).
     us = np.arange(x1, x2, dtype=np.float32) - float(cx_px)
     vs = np.arange(y1, y2, dtype=np.float32) - float(cy_px)
     u_grid, v_grid = np.meshgrid(us, vs)
@@ -483,13 +508,14 @@ def head_depth_in_bbox(
     x_full = u_grid * z_full * inv_fx
     y_full = v_grid * z_full * inv_fx
 
-    # ---- 3-D centroid of the body inside the bbox ----
-    # Median over the gated central crop is robust to the overhead
-    # structure that motivates the column filter — the structure
-    # typically only kisses the bbox at the top/edges, while the
-    # body fills the central crop. Using the centre means we anchor
-    # on the body even when the structure dominates the gated area
-    # count along the histogram nearest slice.
+    # ---- Centroide 3D del cuerpo dentro del bbox ----
+    # La mediana sobre el crop central gateado es robusta a la
+    # estructura overhead que motiva el column filter — la estructura
+    # típicamente solo besa el bbox en el tope/bordes, mientras el
+    # cuerpo llena el crop central. Usar el centro significa que
+    # anclamos en el cuerpo incluso cuando la estructura domina el
+    # count de área gateada a lo largo del slice nearest del
+    # histograma.
     bw, bh = x2 - x1, y2 - y1
     cw = max(1, bw // 2)
     ch = max(1, bh // 2)
@@ -504,15 +530,16 @@ def head_depth_in_bbox(
             np.median(y_full[cy_off : cy_off + ch, cx_off : cx_off + cw][central_valid])
         )
     else:
-        # Central crop has too few valid pixels — fall back to the full
-        # gated set so the function still returns something for thin
-        # bboxes or holes-y depth maps.
+        # El crop central tiene muy pocos pixels válidos — caer al
+        # set gateado completo así la función igual devuelve algo
+        # para bboxes finos o depth maps con muchos huecos.
         x_center = float(np.median(x_full[valid]))
         y_center = float(np.median(y_full[valid]))
 
-    # ---- Spatial column filter ----
-    # Keep only gated pixels whose (X, Y) is within column_radius_mm of
-    # the body centroid. Squared-distance comparison avoids the sqrt.
+    # ---- Filtro espacial de columna ----
+    # Mantener solo pixels gateados cuyo (X, Y) está dentro de
+    # column_radius_mm del centroide del cuerpo. Comparar distancia
+    # al cuadrado evita el sqrt.
     dx = x_full - x_center
     dy = y_full - y_center
     column_mask = (dx * dx + dy * dy) <= (column_radius_mm * column_radius_mm)
@@ -520,10 +547,10 @@ def head_depth_in_bbox(
     if int(valid_col.sum()) < min_head_area_px:
         return None
 
-    # Despeckle: median blur over the column-gated ROI. Use NaN for
-    # invalids so the blur doesn't smear depth across holes. Fall back
-    # to plain median if medianBlur isn't applicable to the dtype/shape
-    # (paranoia).
+    # Despeckle: median blur sobre el ROI gateado por columna. Usar
+    # NaN para los inválidos así el blur no smearea depth a través
+    # de los huecos. Caer a mediana plana si medianBlur no es
+    # aplicable al dtype/shape (paranoia).
     roi_f = np.where(valid_col, roi.astype(np.float32), np.nan)
     try:
         smooth = cv2.medianBlur(roi_f, 3)
@@ -539,7 +566,8 @@ def head_depth_in_bbox(
         return float(np.median(d))
     hist, edges = np.histogram(d, bins=bin_edges)
 
-    # Walk from camera-nearest outward; first slice with >= min_head_area_px is the head.
+    # Caminar desde lo más cercano a la cámara hacia afuera; el primer
+    # slice con >= min_head_area_px es la cabeza.
     candidates = np.where(hist >= min_head_area_px)[0]
     if len(candidates) == 0:
         return None
@@ -547,8 +575,9 @@ def head_depth_in_bbox(
     d_lo = float(edges[bin_idx])
     d_hi = float(edges[bin_idx + 1])
 
-    # Connected components within the head slice. The biggest blob is
-    # the head; smaller blobs in the same depth slice are usually noise.
+    # Connected components dentro del slice de cabeza. El blob más
+    # grande es la cabeza; blobs más chicos en el mismo depth slice
+    # suelen ser ruido.
     head_mask = ((smooth >= d_lo) & (smooth < d_hi)).astype(np.uint8)
     n, lbl, stats, _ = cv2.connectedComponentsWithStats(head_mask, connectivity=4)
     if n <= 1:
@@ -562,7 +591,7 @@ def head_depth_in_bbox(
         return None
     head_depth_mm = float(np.median(blob_pixels))
 
-    # Diagnostic dump — toggle-gated, auto-stops after MAX_DUMPS.
+    # Dump diagnóstico — gateado por toggle, auto-stop después de MAX_DUMPS.
     if _depth_debug_enabled:
         _dump_depth_debug(
             roi=roi,
@@ -609,16 +638,19 @@ def _dump_depth_debug(
     edges: np.ndarray,
     debug_frame: Optional[np.ndarray],
 ) -> None:
-    """Save a 3-panel composite PNG (frame | depth heatmap | masks) for triage.
+    """Guarda un PNG compuesto de 3 paneles (frame | depth heatmap | máscaras)
+    para triage.
 
-    When ``debug_frame`` is provided (the rectified left frame from main.py),
-    the first panel shows the bbox crop with rotated polygon + text overlay
-    so the visual scene is matched against the depth analysis side-by-side
-    in a single image.
+    Cuando se provee ``debug_frame`` (el frame izquierdo rectificado
+    de main.py), el primer panel muestra el crop del bbox con
+    polígono rotado + overlay de texto así la escena visual se
+    matchea contra el análisis de depth side-by-side en una única
+    imagen.
 
-    Auto-disables after ``DEPTH_DEBUG_MAX_DUMPS`` to keep disk usage bounded.
-    One log line per dump summarises the picked slice + the histogram so the
-    diagnosis stays useful even without the PNG.
+    Auto-desactiva después de ``DEPTH_DEBUG_MAX_DUMPS`` para mantener
+    bounded el uso de disco. Una línea de log por dump resume el
+    slice elegido + el histograma así el diagnóstico sigue siendo
+    útil incluso sin el PNG.
     """
     global _depth_debug_count
     if _depth_debug_count >= DEPTH_DEBUG_MAX_DUMPS:
@@ -630,28 +662,28 @@ def _dump_depth_debug(
         x1, y1, x2, y2 = bbox
         h, w = roi.shape[:2]
 
-        # ---- Panel 2: depth heatmap of the ROI ----
-        # Normalised to the anthropometric range so the head-band stands
-        # out visually. Pixels outside [near, far] (floor, sky, invalid)
-        # → black.
+        # ---- Panel 2: heatmap de depth del ROI ----
+        # Normalizado al rango antropométrico así la banda de cabeza
+        # se destaca visualmente. Pixels fuera de [near, far] (piso,
+        # cielo, inválidos) → negro.
         norm = np.zeros_like(roi, dtype=np.float32)
         in_range = (roi >= near_mm) & (roi <= far_mm)
         if far_mm > near_mm:
             norm[in_range] = (roi[in_range] - near_mm) / (far_mm - near_mm)
         norm = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
         heatmap = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
-        heatmap[roi == 0] = 0  # invalid → black
+        heatmap[roi == 0] = 0  # inválido → negro
 
-        # ---- Panel 3: layered masks ----
-        # Blue = anthropometric range; green = after column filter;
-        # red = picked head blob.
+        # ---- Panel 3: máscaras en capas ----
+        # Azul = rango antropométrico; verde = después del column
+        # filter; rojo = blob de cabeza elegido.
         masks = np.zeros((h, w, 3), dtype=np.uint8)
-        masks[valid] = (180, 80, 0)         # B (anthropometric)
+        masks[valid] = (180, 80, 0)         # B (antropométrico)
         masks[valid_col] = (0, 200, 0)      # G (column filter)
-        masks[head_blob_mask] = (0, 0, 255) # R (picked head blob)
+        masks[head_blob_mask] = (0, 0, 255) # R (blob de cabeza elegido)
 
-        # ---- Panel 1: frame crop with bbox + rotated polygon + text ----
-        # Built only when main.py handed us the rectified frame.
+        # ---- Panel 1: crop de frame con bbox + polígono rotado + texto ----
+        # Construido solo cuando main.py nos pasó el frame rectificado.
         if debug_frame is not None:
             fh, fw = debug_frame.shape[:2]
             fx1 = max(0, int(x1))
@@ -663,12 +695,14 @@ def _dump_depth_debug(
                 crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
             elif crop.shape[2] == 1:
                 crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
-            # Resize to match the heatmap panel size if cropping clipped.
+            # Resize para matchear el tamaño del panel del heatmap
+            # si el cropping clipeó.
             if crop.shape[:2] != (h, w):
                 crop = cv2.resize(crop, (w, h), interpolation=cv2.INTER_AREA)
 
-            # Draw rotated polygon (the body footprint detected by RAPiD)
-            # in green; axis-aligned envelope in white for contrast.
+            # Dibujar el polígono rotado (el footprint del cuerpo
+            # detectado por RAPiD) en verde; envelope axis-aligned
+            # en blanco para contraste.
             cv2.rectangle(
                 crop, (0, 0), (w - 1, h - 1), (255, 255, 255), 1,
             )
@@ -686,15 +720,15 @@ def _dump_depth_debug(
                 )
                 corners_x = rcx + dx * cos_a - dy * sin_a
                 corners_y = rcy + dx * sin_a + dy * cos_a
-                # Translate to crop-local coords (origin at bbox top-left).
+                # Translate a coords crop-locales (origen en bbox top-left).
                 poly = np.empty((4, 2), dtype=np.int32)
                 poly[:, 0] = np.round(corners_x - x1).astype(np.int32)
                 poly[:, 1] = np.round(corners_y - y1).astype(np.int32)
                 cv2.polylines(crop, [poly], True, (0, 255, 0), 2)
 
-            # Mark the picked head blob centroid on the crop with a red
-            # cross — main visual cue: matches what's at the blob in the
-            # actual scene.
+            # Marcar el centroide del blob de cabeza elegido en el
+            # crop con una cruz roja — pista visual principal:
+            # matchea con lo que está en el blob en la escena real.
             ys, xs = np.where(head_blob_mask)
             if ys.size > 0:
                 cv_crop_h, cv_crop_w = crop.shape[:2]
@@ -705,9 +739,9 @@ def _dump_depth_debug(
                     cv2.MARKER_CROSS, 20, 2,
                 )
 
-            # Text overlay (top-left corner, two lines so it stays
-            # readable on small bboxes). White on black background for
-            # contrast on any image.
+            # Overlay de texto (esquina top-left, dos líneas así
+            # queda legible en bboxes chicos). Blanco sobre fondo
+            # negro para contraste en cualquier imagen.
             height_m = (mounting_height_mm - head_depth_mm) / 1000.0
             line_a = f"d={head_depth_mm/1000.0:.2f}m h={height_m:.2f}m"
             line_b = f"bin=[{int(d_lo)}-{int(d_hi)}]"
@@ -733,8 +767,8 @@ def _dump_depth_debug(
         )
         cv2.imwrite(path, panel)
 
-        # Histogram dump: bin (mm range) → pixel count, only for bins
-        # that contain pixels. Pinpoints which depth bin won.
+        # Dump de histograma: bin (rango mm) → pixel count, solo para
+        # bins que contienen pixels. Apunta a qué depth bin ganó.
         hist_summary = ", ".join(
             f"[{int(edges[i])}-{int(edges[i + 1])}]={int(hist[i])}"
             for i in range(len(hist))
@@ -755,7 +789,7 @@ def _dump_depth_debug(
             y_center,
             hist_summary,
         )
-    except Exception as e:  # pragma: no cover — diagnostic, must never crash runtime
+    except Exception as e:  # pragma: no cover — diagnóstico, nunca debe crashear runtime
         logger.warning("depth_debug_dump_failed err=%s", e)
 
 
@@ -764,26 +798,28 @@ def min_depth_at_bbox(
     bbox: tuple[int, int, int, int],
     low_percentile: float = 15.0,
 ) -> float:
-    """Estimate the depth of the nearest point in a bbox (top of head for
-    ceiling-mounted stereo).
+    """Estima la profundidad del punto más cercano en un bbox (tope
+    de la cabeza para estéreo ceiling-mounted).
 
-    Samples the central 50% of the bbox (matching ``depth_at_bbox``):
-    in zenith geometry the head sits near the bbox centroid, so the
-    central crop excludes peripheral SGBM noise from background pixels
-    that happen to fall inside the YOLO-stock person bbox. Then takes
-    a low percentile (default 15%) to stay robust to speckle outliers
-    — the raw min or 5th percentile is too easily pulled below the
-    true head depth at high SGBM downscale factors.
+    Sample del 50% central del bbox (matcheando ``depth_at_bbox``):
+    en geometría cenital la cabeza cae cerca del centroide del bbox,
+    así que el crop central excluye el ruido SGBM periférico de
+    pixels de fondo que caen casualmente dentro del bbox de persona
+    del YOLO stock. Después toma un percentile bajo (default 15%)
+    para mantenerse robusto a outliers de speckle — el min raw o el
+    percentile 5 son demasiado fáciles de tirar abajo de la depth
+    real de cabeza con factores altos de downscale SGBM.
 
     Args:
-        depth_map: Depth map in mm from disparity_to_depth().
-        bbox: (x1, y1, x2, y2) bounding box in pixel coordinates.
-        low_percentile: Percentile for the "near" value. 15 is the
-            empirical floor under which speckle clusters in the SGBM
-            output start dominating at downscale=8.
+        depth_map: Depth map en mm de disparity_to_depth().
+        bbox: (x1, y1, x2, y2) bounding box en coordenadas pixel.
+        low_percentile: Percentile para el valor "near". 15 es el
+            piso empírico bajo el cual los clusters de speckle en
+            el output SGBM empiezan a dominar a downscale=8.
 
     Returns:
-        Estimated near-depth in mm. Returns 0.0 if no valid pixels.
+        Near-depth estimada en mm. Devuelve 0.0 si no hay pixels
+        válidos.
     """
     x1, y1, x2, y2 = bbox
 

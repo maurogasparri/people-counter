@@ -5,8 +5,8 @@ la salvaguarda técnica/organizativa que aplica cuando se activa la
 captura opcional de frames "best-frame" para data de active learning.
 
 > **Estado por defecto: OFF.** En la configuración por defecto del
-> sistema (`config/hardware.yaml: best_frame.enabled: false`) **no se
-> almacena ni se transmite ninguna imagen ni video**. El sistema procesa
+> sistema (`config/config.example.yaml: best_frame.enabled: false`) **no
+> se almacena ni se transmite ninguna imagen ni video**. El sistema procesa
 > el frame en RAM, extrae metadatos (conteo, dirección, altura
 > aproximada, confianza del detector) y descarta la imagen. Activar la
 > captura local de un frame representativo por evento requiere los pasos
@@ -56,11 +56,12 @@ captura opcional de frames "best-frame" para data de active learning.
 
 ### Medidas técnicas de mitigación
 
-1. **Default OFF en código.** El esquema en `config/hardware.yaml`
-   define `best_frame.enabled: false`. Activar requiere editar
-   explícitamente el archivo y el wrapper de validación
-   (`src/config/hardware.py`) chequea el tipo bool. No es accionable
-   por error humano remoto.
+1. **Default OFF en código.** El default canónico en
+   `config/config.example.yaml` define `best_frame.enabled: false`.
+   Activar requiere editar explícitamente el override per-device en
+   `/etc/people-counter/config.yaml` y el validador en
+   `src/config/loader.py` chequea el tipo bool. No es accionable por
+   error humano remoto.
 2. **Local-only.** El cliente MQTT nunca recibe los bytes del JPG; solo
    el path. Auditoría: revisar `src/main.py` en la sección "Publish
    counting events" — el campo `best_frame_path` es un string, no un
@@ -137,9 +138,10 @@ Checklist obligatorio:
       (`people-counter-purge-best-frames.timer`) está activo:
       `systemctl is-active people-counter-purge-best-frames.timer`.
 
-Una vez completado, editar `config/hardware.yaml`, cambiar
-`best_frame.enabled: true`, y redeployar. La primera ejecución del
-pipeline emitirá un `WARNING` en los logs confirmando la activación.
+Una vez completado, editar `/etc/people-counter/config.yaml` en el
+device, agregar la sección `best_frame` con `enabled: true`, y reiniciar
+el servicio (`systemctl restart people-counter`). La primera ejecución
+del pipeline emitirá un `WARNING` en los logs confirmando la activación.
 
 ## Responsable del tratamiento
 

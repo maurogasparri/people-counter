@@ -1,4 +1,4 @@
-"""Tests for src/status/monitor.py — HealthMonitor end-to-end."""
+"""Tests para src/status/monitor.py — HealthMonitor end-to-end."""
 from __future__ import annotations
 
 import time

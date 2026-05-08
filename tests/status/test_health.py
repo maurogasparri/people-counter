@@ -1,4 +1,4 @@
-"""Tests for src/status/health.py — probes + state-decision cascade."""
+"""Tests para src/status/health.py — probes + cascada de decisión de estado."""
 from __future__ import annotations
 
 import socket

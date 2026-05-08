@@ -1,4 +1,4 @@
-"""Tests for stereo capture module (FileCapture only — no real cameras)."""
+"""Tests para el módulo de captura estéreo (solo FileCapture — sin cámaras reales)."""
 
 import tempfile
 from pathlib import Path

@@ -1,8 +1,8 @@
-"""Annotation helpers for the runtime web viewer.
+"""Helpers de anotación para el viewer web del runtime.
 
-Pure functions that draw onto BGR frames. No state, no I/O. Kept out of
-``viewer.py`` so the streaming module is small and easy to test in
-isolation.
+Funciones puras que dibujan sobre frames BGR. Sin estado, sin I/O. Se
+mantienen fuera de ``viewer.py`` así el módulo de streaming queda chico y
+fácil de testear aislado.
 """
 from __future__ import annotations
 
@@ -14,21 +14,21 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# BGR colour palette
+# Paleta de colores BGR
 _COLOR_CONFIRMED = (0, 255, 0)
 _COLOR_PENDING = (0, 165, 255)
 _COLOR_CANDIDATE = (180, 180, 180)
 _COLOR_DET = (90, 90, 90)
-_COLOR_ROI = (0, 0, 255)         # red
+_COLOR_ROI = (0, 0, 255)         # rojo
 _COLOR_TEXT = (255, 255, 255)
 _COLOR_OVERLAY_BG = (0, 0, 0)
 
-# Counting-line palette by direction label. Anything else falls back to
-# white so an exotic label still renders visibly. Greens for IN-side
-# events, blues for OUT-side — matches the operator's mental model.
+# Paleta de la counting-line por label de dirección. Cualquier otra cosa cae
+# a blanco así que un label exótico igual renderiza visiblemente. Verdes para
+# eventos IN-side, azules para OUT-side — matchea el modelo mental del operador.
 _LINE_COLOR_BY_LABEL = {
-    "ingress": (0, 255, 0),       # green: IN
-    "egress": (255, 0, 0),        # blue: OUT
+    "ingress": (0, 255, 0),       # verde: IN
+    "egress": (255, 0, 0),        # azul: OUT
     "in": (0, 255, 0),
     "out": (255, 0, 0),
     "enter": (0, 255, 0),
@@ -44,24 +44,24 @@ def annotate_left(
     counter: Optional[Any],
     fps: float = 0.0,
 ) -> np.ndarray:
-    """Draw ROI, line, raw detections and tracks onto a copy of ``frame``.
+    """Dibuja ROI, línea, detecciones raw y tracks sobre una copia de ``frame``.
 
     Args:
-        frame: BGR left-camera frame (rectified).
-        detections: Detection objects (have ``.bbox`` and ``.centroid``).
-        tracks: dict[int, Track] from EuclideanTracker.
-        counter: LineCounter or ROICounter instance (read for geometry +
-            totals overlay). May be None.
-        fps: pipeline FPS estimate for the bottom overlay.
+        frame: Frame BGR de la cámara izquierda (rectificado).
+        detections: objetos Detection (tienen ``.bbox`` y ``.centroid``).
+        tracks: dict[int, Track] de EuclideanTracker.
+        counter: instancia LineCounter o ROICounter (se lee para el
+            overlay de geometría + totales). Puede ser None.
+        fps: estimación de FPS del pipeline para el overlay inferior.
     """
     out = frame.copy()
 
-    # Geometry first so detections sit on top.
+    # Geometría primero así las detecciones quedan arriba.
     _draw_counter_geometry(out, counter)
 
-    # Raw detections in subtle gray. Tracked positions get a coloured
-    # marker on top so the operator can see which detections produced
-    # tracks and which didn't.
+    # Detecciones raw en gris sutil. Las posiciones trackeadas reciben
+    # un marker coloreado encima así el operador puede ver qué
+    # detecciones produjeron tracks y cuáles no.
     for det in detections:
         try:
             x1, y1, x2, y2 = det.bbox
@@ -70,17 +70,17 @@ def annotate_left(
         cv2.rectangle(out, (int(x1), int(y1)), (int(x2), int(y2)),
                       _COLOR_DET, 1)
 
-    # Defer the import so a circular import on partial init doesn't blow
-    # up the viewer module.
+    # Diferir el import así un import circular en init parcial no
+    # vuela el módulo viewer.
     from src.tracking.tracker import CONFIRMED, PENDING, CANDIDATE
     state_colour = {
         CONFIRMED: _COLOR_CONFIRMED,
         PENDING: _COLOR_PENDING,
         CANDIDATE: _COLOR_CANDIDATE,
     }
-    # Larger fonts so the operator can read the overlay while walking
-    # under the cameras during a piloto check (the live viewer is meant
-    # for on-site debug, not for archival).
+    # Fuentes más grandes así el operador puede leer el overlay
+    # mientras camina bajo las cámaras durante un check de piloto (el
+    # live viewer está pensado para debug on-site, no para archivar).
     for tid, track in tracks.items():
         colour = state_colour.get(getattr(track, "state", None))
         if colour is None:
@@ -93,7 +93,7 @@ def annotate_left(
         cv2.putText(out, f"#{tid}", (cx + 14, cy - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, colour, 2,
                     cv2.LINE_AA)
-        # Height label from the most recent detection meta on the track.
+        # Label de altura de la metadata de detección más reciente del track.
         meta = getattr(track, "meta", None)
         history = meta.get("detection_history") if isinstance(meta, dict) else None
         if history:
@@ -117,11 +117,12 @@ def depth_to_colormap(
     vmin_mm: float = 500.0,
     vmax_mm: float = 5000.0,
 ) -> np.ndarray:
-    """Render a depth-in-mm map as a BGR JET colormap.
+    """Renderiza un mapa depth-en-mm como un colormap BGR JET.
 
-    Zero (= invalid disparity) renders black. None / empty input returns
-    a small dark gray frame so the panel is visually distinct from a
-    real depth map and the caller doesn't need a None check.
+    Cero (= disparity inválido) renderiza en negro. Input None /
+    vacío devuelve un frame chico gris oscuro así el panel es
+    visualmente distinto de un depth map real y el caller no necesita
+    chequear None.
     """
     if depth_map is None or depth_map.size == 0:
         return np.full((100, 100, 3), 30, dtype=np.uint8)
@@ -141,13 +142,14 @@ def compose_3panel(
     depth: Optional[np.ndarray],
     target_height: int = 480,
 ) -> np.ndarray:
-    """Two-row composite: top row is L | R side-by-side, bottom row is the
-    depth panel spanning the same width.
+    """Composite de dos filas: fila superior L | R side-by-side, fila
+    inferior el panel de depth que span el mismo ancho.
 
-    The L/R top row gives the operator the same view as the cameras see;
-    the depth row underneath stays roughly square so the colormap is
-    legible. Missing / empty panels are filled with a dark gray
-    placeholder so the composite never crashes on partial input.
+    La fila superior L/R le da al operador la misma vista que ven
+    las cámaras; la fila de depth abajo queda aproximadamente
+    cuadrada así el colormap es legible. Los paneles faltantes /
+    vacíos se llenan con un placeholder gris oscuro así el composite
+    nunca crashea ante input parcial.
     """
     def _to_bgr_height(img: Optional[np.ndarray], h_target: int,
                        w_fallback: int) -> np.ndarray:
@@ -164,14 +166,15 @@ def compose_3panel(
             )
         return img
 
-    # Top row: L and R at target_height each.
+    # Fila superior: L y R a target_height cada una.
     l_img = _to_bgr_height(left, target_height, target_height)
     r_img = _to_bgr_height(right, target_height, target_height)
     top = cv2.hconcat([l_img, r_img])
     top_w = top.shape[1]
 
-    # Bottom row: depth resized to span exactly the top width. Keep it
-    # roughly half the height so the layout looks balanced.
+    # Fila inferior: depth redimensionado para spanear exactamente el
+    # ancho del top. Mantenerlo aproximadamente la mitad de la altura
+    # así el layout se ve balanceado.
     depth_h = max(1, target_height // 2)
     if depth is None or depth.size == 0:
         bottom = np.full((depth_h, top_w, 3), 30, dtype=np.uint8)
@@ -187,13 +190,14 @@ def compose_3panel(
 
 # ----------------------------------------------------------------- internals
 def _draw_counter_geometry(frame: np.ndarray, counter: Optional[Any]) -> None:
-    """Overlay ROI rectangle (if any) and each line segment with a
-    perpendicular arrow showing the counted direction.
+    """Overlay del rectángulo del ROI (si hay) y cada segmento de
+    línea con una flecha perpendicular mostrando la dirección contada.
 
-    Each line is drawn in the colour matching its dominant label
-    (``ingress`` -> green, ``egress`` -> blue, anything else white). One
-    arrow per labelled direction, perpendicular to the segment, pointing
-    towards the side a crossing must end on for that label to fire.
+    Cada línea se dibuja en el color que matchea su label dominante
+    (``ingress`` -> verde, ``egress`` -> azul, cualquier otra cosa en
+    blanco). Una flecha por dirección con label, perpendicular al
+    segmento, apuntando hacia el lado en el que un cruce tiene que
+    terminar para que dispare ese label.
     """
     if counter is None:
         return
@@ -215,12 +219,12 @@ def _draw_counter_geometry(frame: np.ndarray, counter: Optional[Any]) -> None:
 
 
 def _draw_line_with_arrows(frame: np.ndarray, line: Any) -> None:
-    """Draw one counting line + per-direction arrows.
+    """Dibuja una línea de conteo + flechas per-dirección.
 
-    The arrow length scales with segment length so it stays visible on
-    short ROIs without overflowing on big ones. If both directions are
-    labelled the segment renders white (neutral) and the per-arrow colour
-    encodes which side of the line is which event.
+    El largo de la flecha escala con el largo del segmento así sigue
+    siendo visible en ROIs chicos sin desbordar en grandes. Si ambas
+    direcciones tienen label el segmento renderiza en blanco (neutral)
+    y el color per-flecha codifica qué lado de la línea es qué evento.
     """
     x1, y1 = int(line.from_xy[0]), int(line.from_xy[1])
     x2, y2 = int(line.to_xy[0]), int(line.to_xy[1])
@@ -240,10 +244,11 @@ def _draw_line_with_arrows(frame: np.ndarray, line: Any) -> None:
         )
     cv2.line(frame, (x1, y1), (x2, y2), seg_color, 4)
 
-    # The arrow's tail anchors on the line and the tip extends one
-    # ``arrow_len`` away on the side the crossing must end on. This keeps
-    # the arrow strictly on one side of the segment instead of straddling
-    # it, which makes the "go this way" reading immediate.
+    # La cola de la flecha se ancla sobre la línea y la punta se
+    # extiende un ``arrow_len`` hacia el lado donde el cruce tiene
+    # que terminar. Esto mantiene la flecha estrictamente de un lado
+    # del segmento en vez de cruzarlo, lo cual hace que la lectura
+    # "andá para acá" sea inmediata.
     if orientation == "horizontal":
         for direction, label in labels.items():
             color = _LINE_COLOR_BY_LABEL.get(label, _LINE_COLOR_FALLBACK)

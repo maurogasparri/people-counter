@@ -73,13 +73,13 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 492/492 pasando | Visión, tracking, MQTT, WiFi/BLE, config (hardware + user), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (download_roboflow + bench_detector) |
-| Config | Hardware + Local + Cloud | Tres niveles: `config/hardware.yaml` (en repo, inmutable — bracket geometry + sensor invariants), `/etc/people-counter/config.yaml` (per-device, mutable — mounting_height, paths, MQTT), AWS IoT Shadow (cloud, business-driven — schedule, scaling, toggles). Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
+| Tests | 699/699 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (download_roboflow + bench_detector) |
+| Config | Defaults + Per-device + Cloud | Dos archivos + un cloud channel: `config/config.example.yaml` (en repo, defaults canónicos para toda la flota — bracket geometry, sensor, vision, detection, tracking, etc.), `/etc/people-counter/config.yaml` (per-device override — device.id, mounting_height_m, ROI/lines, certs, endpoint MQTT), AWS IoT Shadow (cloud, business-driven — schedule, scaling, toggles). El loader hace deep-merge defaults+per-device al boot. Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
 | Detección | Software validado, modelo en fine-tuning | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN. El detector se entrena específicamente para geometría cenital (no se usa el stock COCO porque CrowdHuman entrena vistas frontales/laterales). Phase A en marcha: fine-tune con dataset Roboflow `coding-compass-nmjfb/overhead-head-detection-cwetj v2` (15.4k imgs `head-top-view`), entreno en Kaggle T4 → ONNX → `hailomz compile` en WSL2 → HEF a la Pi. Pipeline en `scripts/training/` |
-| Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab: poses a 1.0/2.0/3.0m, foco único a 2.0m ±20cm para toda la flota. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
-| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. Target range lab protocol 1.80–2.20m por default. Lens locking con Trabasil AM3 + activador anaeróbico (cura parcial 15min) y llave dedicada en el barrel — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
+| Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab universal (mount-independent, sirve para flota mount 2.0–3.5m): poses a 1.0/2.0/3.0m, foco único a 1.5m ±20cm. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
+| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. Target range lab protocol 1.30–1.70m (foco a 1.5m ±20cm) por default — universal para mount 2.0–3.5m. Lens locking con Trabasil AM3 + activador anaeróbico (cura parcial 15min) y llave dedicada en el barrel — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
 | Preview en vivo | Disponible | `preview.py` — tool minimal browser-driven con UX consistente con focus / calib (start overlay, header). MJPEG side-by-side L|R con grid de tercios + crosshair central. Para apuntar el bracket, verificar oclusiones, o sanity check del wiring antes de correr foco/calibración. Sin detección, sin análisis. Flag `--meter centre/spot` |
 | Validación de profundidad | Reformulada | `diagnose_depth.py` y la fase ground-truth del wizard reportan **verdict basado solo en error del centro** (única zona con distancia conocida). Las 4 zonas perimetrales se clasifican con tags: ✓ Coincide / ● Otro plano / ⚠ SGBM falló según `std × fill_rate` — distinción honesta entre "calibración errada" vs "está midiendo otro objeto" vs "SGBM no puede matchear esta superficie". Reporte HTML con verdict card prominente arriba + tabla por zonas con tags de confianza |
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
@@ -113,12 +113,13 @@ En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suf
 
 ## Configuración
 
-El sistema usa una estrategia de doble config:
+El sistema usa **defaults canónicos + override per-device + cloud channel**:
 
-- **Local** (`config/config.yaml`): settings intrínsecos al hardware — IDs de cámara, archivo de calibración, parámetros SGBM (`num_disparities: auto` deriva el rango de disparidad desde `mounting_height_m` para cada sitio), path del modelo, certificados MQTT
-- **Cloud** (AWS IoT Device Shadow): settings del negocio — horarios operativos, factor de escala, toggles de habilitación
+- **Defaults** ([`config/config.example.yaml`](config/config.example.yaml)): el config canónico de la flota — bracket geometry, sensor mode, vision pipeline (SGBM, rectify), detection, tracking, counter, MQTT topics, buffer paths, status LED, etc. Todos los devices heredan estos valores.
+- **Per-device** (`/etc/people-counter/config.yaml`): override mínimo con lo que cambia por unidad — `device.id`, `mounting_height_m`, ROI/lines, MQTT endpoint + certs. Cualquier key ausente cae al default. El loader hace deep-merge al boot.
+- **Cloud** (AWS IoT Device Shadow): settings de negocio — horarios operativos, factor de escala, toggles de habilitación. Se aplican vía `RUNTIME_SAFE_KEYS` sin reinicio.
 
-Ver [`config/config.example.yaml`](config/config.example.yaml) para el config anotado completo.
+`mounting_height_m` (per-device) alimenta el SGBM auto-tune (`num_disparities: auto` deriva el rango de disparidad por sitio) y el head-height gating del clasificador adulto/niño. La calibración estéreo es mount-independent (un único `.npz` factory sirve para mount 2.0–3.5m).
 
 ## Instalación en sitio
 
@@ -140,10 +141,11 @@ Abre UI en `http://people-counter.local:8080`. Flujo:
 5. Audio TTS lee los hints (opcional, toggle en la UI; OFF corta la voz al toque)
 6. Finalizar → reporte HTML auto-abierto en nueva pestaña
 
-Target de foco: **1.80–2.20m** por default (lab protocol — focar a 2.0m ±20cm
-cubre con el DoF del M12 todo el rango operativo 1.15–3.30m de la flota).
-Overridear con `--target-distance-min-mm` / `--target-distance-max-mm` si hace
-falta. El flag `--mount-height-m` es solo informativo.
+Target de foco: **1.30–1.70m** por default (lab protocol universal — focar a
+1.5m ±20cm peakea el DoF sobre el rango operativo bbox 1.0–3.5m de la flota
+mount 2.0–3.5m, simétrico en ambos extremos). Overridear con
+`--target-distance-min-mm` / `--target-distance-max-mm` si hace falta. El flag
+`--mount-height-m` es solo informativo.
 
 **Escena compacta**: si el bounding-box del ChArUco cubre >25% del frame
 (ambiente chico donde el board llena la vista) el tool auto-detecta
@@ -217,10 +219,10 @@ src/
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
 ├── cloud/           # Lambda dedup L3 (inter-cámara)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
-├── config/          # Loader de hardware.yaml + user config.yaml + merge con IoT Shadow + runtime-safe prefixes
+├── config/          # Loader: deep-merge config.example.yaml (defaults) + /etc/people-counter/config.yaml (per-device) + IoT Shadow runtime-safe prefixes
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
-tests/               # 451 tests espejando src/ + tests/scripts/ para el wizard
+tests/               # 699 tests espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,
@@ -255,8 +257,7 @@ scripts/
 notebooks/
 └── train_yolov8n_heads.ipynb    # Notebook Kaggle T4 (training Phase A)
 config/
-├── config.example.yaml           # User config anotado con estrategia local/cloud
-├── hardware.yaml                 # Hardware design constants (baseline, CSI L/R, sensor) — inmutable
+├── config.example.yaml           # Defaults canónicos para toda la flota (bracket, sensor, vision, detection, tracking, counter, mqtt, etc.). Cualquier key ausente del per-device cae a los valores de acá.
 ├── people-counter.service        # Servicio systemd principal
 ├── people-counter-reset.*        # Timer de reset diario de dedup (04:00)
 └── logrotate.conf                # Rotación de logs

@@ -1,4 +1,4 @@
-"""Tests for disparity and depth computation."""
+"""Tests para la computación de disparidad y profundidad."""
 
 import cv2
 import numpy as np

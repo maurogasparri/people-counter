@@ -1,4 +1,4 @@
-"""Tests for MQTT message buffer."""
+"""Tests para el buffer de mensajes MQTT."""
 import tempfile
 from pathlib import Path
 

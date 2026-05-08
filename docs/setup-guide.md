@@ -308,10 +308,11 @@ otro factor. Verificar también que el bracket mecánico no flexa — si el base
 cambia entre calibración y operación, el depth deriva.
 
 Las IMX708 tienen un anillo de foco manual M12 que se gira con pinza de punta fina.
-Poner el **board ChArUco** (el mismo que vas a usar para calibración) a **2.5–3m**
+Poner el **board ChArUco** (el mismo que vas a usar para calibración) a **1.5m**
 de las cámaras. El asistente de foco lo detecta automáticamente y valida la
-distancia. Con M12 fija y 120° HFOV, la depth-of-field a esa distancia cubre
-~1m–infinito.
+distancia. Con M12 fija y 120° HFOV, focar a 1.5m peakea el DoF sobre el rango
+operativo del bbox de detección (cabeza+pie) en toda la flota mount 2.0–3.5m,
+con DoF efectivo 0.59m–infinito.
 
 ```bash
 cd /usr/src/people-counter
@@ -320,7 +321,7 @@ PYTHONPATH=. python3 scripts/focus_assist.py
 
 Abrir **http://people-counter.local:8080**. La UI muestra:
 - Barras de sharpness por cámara (centro + corners absoluto) con zona verde = target
-- Distancia detectada del board (objetivo **1.80–2.20m** por default — lab protocol universal, override con `--target-distance-min-mm` / `--target-distance-max-mm`)
+- Distancia detectada del board (objetivo **1.30–1.70m** por default — lab protocol universal, override con `--target-distance-min-mm` / `--target-distance-max-mm`)
 - Simetría L/R
 - Warnings de iluminación/glare en vivo
 

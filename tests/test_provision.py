@@ -1,4 +1,4 @@
-"""Tests for device provisioning script."""
+"""Tests para el script de provisioning del device."""
 import argparse
 import json
 import tempfile
@@ -71,9 +71,10 @@ def test_build_config_generates_yaml():
 
 def test_build_config_sets_remote_paths():
     """The cert paths come from REMOTE_CERT_DIR. buffer.db_path and
-    logging.file are no longer rewritten per-device — they fall back to
-    hardware.yaml's install convention (same path), so they don't appear
-    in the per-device config.yaml at all.
+    logging.file are not rewritten per-device — they fall back to the
+    canonical install convention from ``config/config.example.yaml``
+    (same path), so they don't appear in the per-device config.yaml at
+    all.
     """
     tmpdir = tempfile.mkdtemp()
     device_dir = Path(tmpdir) / "device"
@@ -92,10 +93,12 @@ def test_build_config_sets_remote_paths():
     assert config["mqtt"]["cert_path"] == "/etc/people-counter/certs/device.pem.crt"
     assert config["mqtt"]["key_path"] == "/etc/people-counter/certs/device.pem.key"
     assert config["mqtt"]["ca_path"] == "/etc/people-counter/certs/AmazonRootCA1.pem"
-    # buffer + logging.file now come from hardware.yaml at runtime; no
-    # per-device override needed.
-    assert "buffer" not in config
-    assert config.get("logging", {}).get("file") is None
+    # After the hardware↔config unification, the per-device YAML is a copy
+    # of the bundled defaults with device + mqtt overridden. The buffer +
+    # logging blocks ride along carrying their fleet-wide install paths;
+    # operators are free to keep the defaults or edit per-site.
+    assert config["buffer"]["db_path"] == "/var/lib/people-counter/buffer.db"
+    assert config["logging"]["file"] == "/var/log/people-counter/app.log"
 
 
 # ---------------------------------------------------------------------------

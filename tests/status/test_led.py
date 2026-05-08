@@ -1,4 +1,4 @@
-"""Tests for src/status/led.py — RGB status LED driver."""
+"""Tests para src/status/led.py — driver del status LED RGB."""
 from __future__ import annotations
 
 import threading

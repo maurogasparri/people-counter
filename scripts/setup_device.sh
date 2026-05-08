@@ -51,22 +51,22 @@ systemctl start watchdog
 
 info "  Configuring config.txt (RTC, PCIe Gen 3, USB current, IMX708 cameras, low power)"
 CONFIG_TXT="/boot/firmware/config.txt"
-# RTC charging: only for rechargeable ML2032 batteries.
-# If using non-rechargeable CR2032, comment out or remove this line after setup.
+# Carga del RTC: solo para baterías ML2032 recargables.
+# Si se usa una CR2032 no-recargable, comentar o sacar esta línea después del setup.
 grep -q "^dtparam=rtc_bbat_vchg" "$CONFIG_TXT" || echo "dtparam=rtc_bbat_vchg=3000000" >> "$CONFIG_TXT"
-# PCIe Gen 3: required by AI HAT+
+# PCIe Gen 3: requerido por el AI HAT+
 grep -q "^dtparam=pciex1_gen=3" "$CONFIG_TXT" || echo "dtparam=pciex1_gen=3" >> "$CONFIG_TXT"
-# USB current: required by Waveshare PoE HAT (H) to avoid power-supply prompt
+# USB current: requerido por Waveshare PoE HAT (H) para evitar el prompt de power-supply
 grep -q "^usb_max_current_enable=1" "$CONFIG_TXT" || echo "usb_max_current_enable=1" >> "$CONFIG_TXT"
-# IMX708 cameras: disable autodetect, force overlay per CSI port.
-# Pi 5 requires explicit ,cam0/,cam1 — a plain "dtoverlay=imx708" only loads one camera.
+# Cámaras IMX708: deshabilitar autodetect, forzar overlay por CSI port.
+# Pi 5 requiere ,cam0/,cam1 explícitos — un "dtoverlay=imx708" pelado solo carga una cámara.
 sed -i 's/^camera_auto_detect=1/camera_auto_detect=0/' "$CONFIG_TXT"
 grep -q "^dtoverlay=imx708,cam0" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708,cam0' "$CONFIG_TXT"
 grep -q "^dtoverlay=imx708,cam1" "$CONFIG_TXT" || sed -i '/^\[all\]/a dtoverlay=imx708,cam1' "$CONFIG_TXT"
-# Quiet the onboard LEDs (ACT + power), the Ethernet jack LEDs (link/activity),
-# and the audio PWM. The external RGB is the canonical status indicator.
+# Apagar los LEDs onboard (ACT + power), los LEDs del jack Ethernet (link/activity),
+# y el PWM de audio. El RGB externo es el indicador de status canónico.
 #
-# eth_led0 / eth_led1 use bcm54213 PHY mode codes; mode 4 = "off / always low".
+# eth_led0 / eth_led1 usan los mode codes del PHY bcm54213; mode 4 = "off / always low".
 grep -q "^dtparam=audio=" "$CONFIG_TXT" \
     && sed -i 's/^dtparam=audio=.*/dtparam=audio=off/' "$CONFIG_TXT" \
     || echo "dtparam=audio=off" >> "$CONFIG_TXT"

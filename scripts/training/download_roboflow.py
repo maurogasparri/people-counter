@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Download a Roboflow Universe dataset in YOLOv8 format.
+"""Descarga un dataset de Roboflow Universe en formato YOLOv8.
 
-Phase A of the cenital head-detection training pipeline. Wraps the
-Roboflow Python SDK so you can pull a dataset deterministically without
-clicking through the UI.
+Phase A del pipeline de training de detección cenital de cabezas. Wrappea el
+SDK Python de Roboflow así podés bajar un dataset deterministicamente sin
+clickear por la UI.
 
-The dataset goes to ``dataset/roboflow_<workspace>_<project>_v<N>/`` with
-the standard YOLOv8 layout (``data.yaml`` + ``train/`` + ``valid/`` +
-``test/``). That folder is what bench_detector.py expects locally; the
-Kaggle notebook re-pulls the same dataset directly from the Roboflow API
-inside its own runtime.
+El dataset va a ``dataset/roboflow_<workspace>_<project>_v<N>/`` con el layout
+YOLOv8 estándar (``data.yaml`` + ``train/`` + ``valid/`` + ``test/``). Esa
+carpeta es la que espera localmente bench_detector.py; el notebook de Kaggle
+re-tira el mismo dataset directo desde la API de Roboflow dentro de su propio
+runtime.
 
-Usage:
-    # API key via env (preferred — avoids leaking it to shell history)
+Uso:
+    # API key vía env (preferido — evita filtrarla al shell history)
     export ROBOFLOW_API_KEY=xxxxxxxxxxxxxx
     python scripts/training/download_roboflow.py \\
         --workspace <workspace-slug> \\
         --project   <project-slug> \\
         --version   N
 
-    # Or pass it inline (less safe, useful in CI)
+    # O pasarla inline (menos seguro, útil en CI)
     python scripts/training/download_roboflow.py \\
         --api-key xxxxxxxxxxxxxx \\
         --workspace <workspace-slug> \\
@@ -103,7 +103,7 @@ def download(
             "the Pi never downloads training data)."
         ) from e
 
-    # Make sure the parent exists; let the SDK create the leaf directory.
+    # Asegurar que el parent existe; dejar que el SDK cree el dir hoja.
     out_dir.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(

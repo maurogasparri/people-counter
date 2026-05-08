@@ -1,6 +1,6 @@
-"""Integration tests for the best-frame buffer + counter event flow.
+"""Tests de integración para el flow buffer best-frame + evento del counter.
 
-The actual wiring lives in ``src/main.py`` (the counter itself is
+El wiring real vive en ``src/main.py`` (el counter en sí mismo es
 intentionally untouched — see scope rules). These tests validate the
 contract from the counter's perspective:
 

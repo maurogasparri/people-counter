@@ -1,6 +1,6 @@
-"""Tests for MQTT client.
+"""Tests para el cliente MQTT.
 
-Tests client construction and publish-to-buffer logic without
+Testea la construcción del cliente y la lógica de publish-to-buffer sin
 requiring a real MQTT broker or AWS IoT Core endpoint.
 """
 

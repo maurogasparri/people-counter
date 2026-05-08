@@ -1,4 +1,4 @@
-"""Tests for BLE advertising capture module (bleak-based)."""
+"""Tests para el módulo de captura de advertising BLE (basado en bleak)."""
 import threading
 import time
 from unittest.mock import MagicMock, patch

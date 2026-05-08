@@ -1,4 +1,4 @@
-"""SQLite local buffer for MQTT message resilience."""
+"""Buffer SQLite local para resiliencia de mensajes MQTT."""
 import json
 import logging
 import sqlite3
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class MessageBuffer:
-    """Buffers MQTT messages locally for resilience against connectivity loss."""
+    """Buffer local de mensajes MQTT para resiliencia ante pérdida de conectividad."""
 
     def __init__(self, db_path: str, max_age_hours: int = 72) -> None:
         self.db_path = db_path
@@ -29,7 +29,7 @@ class MessageBuffer:
                     sent INTEGER DEFAULT 0
                 )
             """)
-            # Speeds up get_pending() on large buffers after extended offline periods.
+            # Acelera get_pending() en buffers grandes después de períodos largos offline.
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sent_id ON messages(sent, id)"
             )
@@ -38,7 +38,7 @@ class MessageBuffer:
             )
 
     def enqueue(self, topic: str, payload: dict[str, Any]) -> int:
-        """Add message to buffer. Returns message ID."""
+        """Agrega mensaje al buffer. Devuelve el ID del mensaje."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO messages (topic, payload, created_at) VALUES (?, ?, ?)",
@@ -47,12 +47,12 @@ class MessageBuffer:
             return cursor.lastrowid
 
     def mark_sent(self, message_id: int) -> None:
-        """Mark message as successfully sent."""
+        """Marca el mensaje como enviado con éxito."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("UPDATE messages SET sent = 1 WHERE id = ?", (message_id,))
 
     def get_pending(self, limit: int = 100) -> list[tuple[int, str, dict]]:
-        """Get unsent messages, oldest first."""
+        """Devuelve los mensajes no enviados, los más viejos primero."""
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT id, topic, payload FROM messages WHERE sent = 0 ORDER BY id LIMIT ?",
@@ -61,17 +61,17 @@ class MessageBuffer:
             return [(r[0], r[1], json.loads(r[2])) for r in rows]
 
     def purge_old(self) -> int:
-        """Delete messages older than max_age_hours. Returns count deleted."""
+        """Borra mensajes más viejos que max_age_hours. Devuelve la cantidad borrada."""
         cutoff = time.time() - (self.max_age_hours * 3600)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM messages WHERE created_at < ?", (cutoff,))
             return cursor.rowcount
 
     def count_unsent(self) -> int:
-        """Return the number of unsent messages currently in the buffer.
+        """Devuelve la cantidad de mensajes no enviados actualmente en el buffer.
 
-        Safe to call frequently — uses the ``idx_sent_id`` index and returns
-        0 on any SQLite error (so telemetry collection never crashes).
+        Seguro de llamar frecuentemente — usa el índice ``idx_sent_id`` y devuelve
+        0 ante cualquier error de SQLite (así la recolección de telemetría no crashea).
         """
         try:
             with sqlite3.connect(self.db_path) as conn:

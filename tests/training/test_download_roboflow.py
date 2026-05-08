@@ -1,4 +1,4 @@
-"""Tests for scripts/training/download_roboflow.py."""
+"""Tests para scripts/training/download_roboflow.py."""
 from __future__ import annotations
 
 import importlib.util

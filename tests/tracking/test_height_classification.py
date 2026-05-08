@@ -1,6 +1,6 @@
-"""Integration test: tracker → counter → CountEvent with height_class.
+"""Test de integración: tracker → counter → CountEvent con height_class.
 
-Drives the unified Counter (ROI + line) end-to-end from synthetic
+Maneja el Counter unificado (ROI + line) end-to-end desde sintético
 detections, checking that per-frame height metadata propagates through
 the tracker into the emitted CountEvent.
 """

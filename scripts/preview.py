@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Stereo live preview for aiming cameras.
+"""Preview en vivo estéreo para apuntar las cámaras.
 
-Browser-driven minimal preview — no detection, no audio, no analysis. Just
-what the cameras see, side-by-side, with a thirds grid + center crosshair to
-help framing. Same UX as focus_assist / calibrate (start overlay, header).
+Preview minimal browser-driven — sin detección, sin audio, sin análisis.
+Solamente lo que las cámaras ven, side-by-side, con una grilla de tercios +
+crosshair central para ayudar al encuadre. Misma UX que focus_assist /
+calibrate (overlay de start, header).
 
-Usage:
+Uso:
     sudo PYTHONPATH=. python3 scripts/preview.py
-    # then open http://people-counter.local:8080
+    # después abrir http://people-counter.local:8080
 """
 
 import argparse
@@ -353,12 +354,13 @@ def main() -> None:
 
     # Single try/finally around BOTH the wait-for-start phase and the
     # main capture loop so Ctrl+C in either path goes through cleanup.
-    # Previously the wait loop sat outside the try and a Ctrl+C there
-    # leaked the HTTP server thread, leaving the port in TIME_WAIT for
-    # the next tool to start.
+    # Antes el wait loop estaba afuera del try y un Ctrl+C ahí dejaba
+    # el thread del HTTP server colgando, dejando el puerto en TIME_WAIT
+    # cuando arrancaba la siguiente tool.
     try:
-        # Wait for the operator to click "Comenzar". URL is loadable but
-        # the camera capture loop only runs once the page is open.
+        # Esperar a que el operador haga click en "Comenzar". La URL es
+        # cargable pero el loop de captura de cámara solo arranca cuando
+        # la página está abierta.
         print("Esperando 'Comenzar' en el browser...")
         while not shutting_down:
             with preview_started_lock:
@@ -374,9 +376,10 @@ def main() -> None:
                 cam_r.capture_array("main"), cv2.COLOR_RGB2BGR,
             )
 
-            # Optional rectification — when --config gave us a calibration,
-            # the preview shows what the pipeline actually sees post-rectify.
-            # Without it the raw frames are shown.
+            # Rectificación opcional — cuando --config nos dio una
+            # calibración, el preview muestra lo que el pipeline
+            # efectivamente ve post-rectify. Sin eso se muestran los
+            # frames raw.
             if calibration is not None:
                 from src.vision.calibration import rectify_pair
                 frame_l, frame_r = rectify_pair(frame_l, frame_r, calibration)

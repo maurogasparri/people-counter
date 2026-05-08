@@ -1,4 +1,4 @@
-"""Tests for WiFi/BLE deduplication engine."""
+"""Tests para el engine de dedup WiFi/BLE."""
 import tempfile
 from pathlib import Path
 

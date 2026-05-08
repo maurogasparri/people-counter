@@ -1,4 +1,4 @@
-"""Smoke tests for src/web/viewer.py."""
+"""Smoke tests para src/web/viewer.py."""
 from __future__ import annotations
 
 import time

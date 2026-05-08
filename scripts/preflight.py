@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Pre-flight validation for People Counter edge devices.
+"""Validación pre-flight para los edge devices del People Counter.
 
-Runs a battery of checks against a device before the main service starts.
-Intended for use during deployment or on-demand troubleshooting.
+Corre una batería de checks contra un dispositivo antes de que arranque el
+servicio principal. Pensado para usar durante el deployment o para
+troubleshooting on-demand.
 
-Each check returns one of PASS / FAIL / SKIP with a short detail string.
-Exit code 0 if no FAIL, 1 otherwise.
+Cada check devuelve uno de PASS / FAIL / SKIP con un string corto de detalle.
+Exit code 0 si no hay FAIL, 1 en caso contrario.
 
-Usage:
+Uso:
     cd /usr/src/people-counter
     sudo PYTHONPATH=. python3 scripts/preflight.py
     python3 scripts/preflight.py --json

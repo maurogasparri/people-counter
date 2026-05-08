@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Download YOLOv8n model for People Counter.
+"""Descarga el modelo YOLOv8n para el People Counter.
 
-Downloads the model in the appropriate format:
-  - ONNX: For development/testing with the OpenCV backend.
-  - HEF: For production on Hailo-8L (from Hailo Model Zoo).
+Descarga el modelo en el formato apropiado:
+  - ONNX: para desarrollo/testing con el backend OpenCV.
+  - HEF: para producción en el Hailo-8L (del Hailo Model Zoo).
 
-Usage:
-    # Download ONNX for development (works on any machine)
+Uso:
+    # Descarga ONNX para desarrollo (funciona en cualquier máquina)
     python scripts/download_model.py onnx
 
-    # Download pre-compiled HEF for Hailo-8L (run on RPi5)
+    # Descarga HEF pre-compilado para Hailo-8L (correr en la RPi5)
     python scripts/download_model.py hef
 
-    # Export ONNX from ultralytics (requires ultralytics pip package)
+    # Exporta ONNX desde ultralytics (requiere el paquete pip ultralytics)
     python scripts/download_model.py export-onnx
 """
 

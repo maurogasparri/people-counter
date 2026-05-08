@@ -1,15 +1,15 @@
-"""End-to-end integration test for the full pipeline.
+"""Test de integración end-to-end del pipeline completo.
 
-Drives ``src.main.run_pipeline`` with all external boundaries mocked
-(capture, calibration/disparity, detector, MQTT client, time) and asserts
-that the orchestration wires each stage correctly:
+Maneja ``src.main.run_pipeline`` con todos los boundaries externos mockeados
+(capture, calibration/disparity, detector, cliente MQTT, time) y asserta
+que la orquestación wirea cada stage correctamente:
 
-    capture -> rectify -> depth -> detect -> track -> count -> MQTT publish
-    plus periodic telemetry.
+    capture -> rectify -> depth -> detect -> track -> count -> publish MQTT
+    más telemetría periódica.
 
-Unlike the per-module tests in ``tests/test_main.py``, this file scripts a
-multi-frame scenario for a single simulated person and verifies the
-counting/telemetry side-effects produced by the whole loop.
+A diferencia de los tests per-módulo en ``tests/test_main.py``, este archivo
+scriptea un escenario multi-frame para una única persona simulada y verifica
+los side-effects de counting/telemetría producidos por el loop entero.
 """
 from __future__ import annotations
 
@@ -53,26 +53,49 @@ def _make_config(tmpdir: str) -> dict[str, Any]:
 
     return {
         "device": {"id": "dev-e2e", "store_id": "store-e2e"},
+        "bracket": {
+            "baseline_mm": 140,
+            "camera_left_csi": 0,
+            "camera_right_csi": 1,
+        },
+        "sensor": {
+            "model": "imx708",
+            "full_res": [4608, 2592],
+            "default_res": [2304, 1296],
+            "default_fps": 15,
+            "nominal_focal_full_px": 2050,
+        },
+        "lens": {"type": "m12_120deg", "hfov_deg": 120},
         "vision": {
-            "camera_left": 0,
-            "camera_right": 1,
             "resolution": [FRAME_W, FRAME_H],
             "fps": 15,
-            "baseline_cm": 14,
             "calibration_file": cal,
-            "num_disparities": 192,
-            "block_size": 9,
+            "mounting_height_m": 3.0,
+            "sgbm": {
+                "num_disparities": 192,
+                "block_size": 9,
+                "downscale": 1,
+            },
         },
         "detection": {
+            "architecture": "yolov8",
             "model_path": "/tmp/model.onnx",
             "confidence_threshold": 0.5,
             "nms_threshold": 0.45,
+            "cluster_distance_px": 0,
         },
         "tracking": {
             "max_disappeared": 30,
             "max_distance": 120.0,
+            "state_machine": {
+                "confirm_frames": 3,
+                "pending_max_frames": 5,
+                "reid_gate_px": 60,
+                "depth_gate_m": 0.5,
+            },
         },
         "counter": {
+            "foot_projection_enabled": False,
             "roi": {"x_min": 100, "x_max": 540, "y_min": 180, "y_max": 300},
             "lines": [
                 {
@@ -91,6 +114,14 @@ def _make_config(tmpdir: str) -> dict[str, Any]:
                 "depth_gate_m": 0.5,
             },
         },
+        "wifi_ble": {
+            "enabled": False,
+            "wifi_interface": "wlan0",
+            "probe_interval_seconds": 900,
+            "cross_protocol_window_seconds": 2,
+            "cross_protocol_rssi_delta": 5,
+        },
+        "logging": {"format": "plain", "file": ""},
         "telemetry": {"interval_seconds": 9999},
         "mqtt": {
             "endpoint": "test.iot.amazonaws.com",
