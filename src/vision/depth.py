@@ -269,8 +269,8 @@ def head_depth_in_bbox(
     bbox: tuple[int, int, int, int],
     mounting_height_mm: float,
     slice_thickness_mm: float = 100.0,
-    min_head_area_px: int = 15,
-    max_head_height_mm: float = 2100.0,
+    min_head_area_px: int = 40,
+    max_head_height_mm: float = 1800.0,
     min_head_above_floor_mm: float = 500.0,
 ) -> Optional[float]:
     """Find head depth inside a bbox using histogram + connected components.

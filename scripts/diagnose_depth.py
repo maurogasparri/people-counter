@@ -22,6 +22,8 @@ Validation thresholds (PASS/FAIL):
 """
 
 import argparse
+import json
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -88,7 +90,26 @@ def main() -> None:
                              "light (natural daylight). Default off — AE adjusts "
                              "to current scene, single-frame capture is unaffected "
                              "by drift.")
+    parser.add_argument("--json", dest="json_path",
+                        help="Write the per-zone results + verdict to this JSON "
+                             "path. Lets the wizard / CI tooling parse the score "
+                             "without scraping stdout. Schema: "
+                             "{distance_mm, zones: {<name>: {depth_mm, std_mm, "
+                             "err_pct, fill_pct}}, center_threshold_pct, "
+                             "edge_ratio, verdict: 'PASS'|'FAIL', "
+                             "checks: [{name, detail, ok}]}.")
+    parser.add_argument("--output-dir", default="/tmp",
+                        help="Directory for the visualization images "
+                             "(diagnose_rect_l.jpg, diagnose_rect_r.jpg, "
+                             "diagnose_depth.jpg). Default /tmp.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress stdout output (still writes JSON + "
+                             "images). Headless mode for orchestration.")
     args = parser.parse_args()
+
+    def _emit(*a, **kw) -> None:
+        if not args.quiet:
+            print(*a, **kw)
 
     # Hardware constants: camera CSI assignments + sensor defaults from
     # config/hardware.yaml. Single source of truth across all tools.
@@ -100,25 +121,25 @@ def main() -> None:
     cal = load_calibration(args.calibration)
 
     # --- Print calibration parameters ---
-    print("=" * 70)
-    print("PARÁMETROS DE CALIBRACIÓN")
-    print("=" * 70)
+    _emit("=" * 70)
+    _emit("PARÁMETROS DE CALIBRACIÓN")
+    _emit("=" * 70)
     K_l, K_r = cal["camera_matrix_l"], cal["camera_matrix_r"]
     P1, P2, T, Q = cal["P1"], cal["P2"], cal["T"], cal["Q"]
     fx_p1 = float(P1[0, 0])
     baseline_T = float(np.linalg.norm(T))
     baseline_P2 = abs(float(P2[0, 3])) / fx_p1 if fx_p1 != 0 else 0.0
 
-    print(f"P1 fx={fx_p1:.1f}  fy={P1[1,1]:.1f}  cx={P1[0,2]:.1f}  cy={P1[1,2]:.1f}")
-    print(f"Baseline ||T|| = {baseline_T:.1f} mm  /  P2[0,3]/fx = {baseline_P2:.1f} mm")
+    _emit(f"P1 fx={fx_p1:.1f}  fy={P1[1,1]:.1f}  cx={P1[0,2]:.1f}  cy={P1[1,2]:.1f}")
+    _emit(f"Baseline ||T|| = {baseline_T:.1f} mm  /  P2[0,3]/fx = {baseline_P2:.1f} mm")
 
     if abs(baseline_T - baseline_P2) > 5:
         print(f"  ATENCIÓN: discrepancia de baseline (>5mm)")
 
     # --- Capture ---
-    print(f"\n{'=' * 70}")
-    print("CAPTURANDO...")
-    print("=" * 70)
+    _emit(f"\n{'=' * 70}")
+    _emit("CAPTURANDO...")
+    _emit("=" * 70)
 
     cap = StereoCapture(
         cam_left_id=cam_left, cam_right_id=cam_right,
@@ -136,7 +157,7 @@ def main() -> None:
 
     left, right = cap.read()
     cap.close()
-    print(f"Capturado: {left.shape}, rectificando...")
+    _emit(f"Capturado: {left.shape}, rectificando...")
 
     rect_l, rect_r = rectify_pair(left, right, cal)
 
@@ -165,12 +186,12 @@ def main() -> None:
     }
 
     # --- Per-zone analysis ---
-    print(f"\n{'=' * 70}")
-    print(f"PROFUNDIDAD POR ZONA  (distancia real: {args.distance:.0f} mm = {args.distance/1000:.2f} m)")
-    print(f"Tamaño de zona: {2*half}×{2*half} px  ({args.zone_fraction*100:.0f}% del lado del frame)")
-    print("=" * 70)
-    print(f"{'Zona':<14s} {'Válidos':>7s} {'Fill%':>7s} {'Prof(mm)':>11s} {'Std(mm)':>9s} {'Error':>9s}")
-    print("-" * 70)
+    _emit(f"\n{'=' * 70}")
+    _emit(f"PROFUNDIDAD POR ZONA  (distancia real: {args.distance:.0f} mm = {args.distance/1000:.2f} m)")
+    _emit(f"Tamaño de zona: {2*half}×{2*half} px  ({args.zone_fraction*100:.0f}% del lado del frame)")
+    _emit("=" * 70)
+    _emit(f"{'Zona':<14s} {'Válidos':>7s} {'Fill%':>7s} {'Prof(mm)':>11s} {'Std(mm)':>9s} {'Error':>9s}")
+    _emit("-" * 70)
 
     results = {}
     for name, (cy, cx) in zones.items():
@@ -184,9 +205,9 @@ def main() -> None:
         print(f"{name:<14s} {n:>7d} {fill:>6.1f}% {median:>10.0f} {std:>8.0f}  {err_pct:>+7.1f}%")
 
     # --- Consistency analysis ---
-    print(f"\n{'=' * 70}")
-    print("CONSISTENCIA CENTRO vs BORDES")
-    print("=" * 70)
+    _emit(f"\n{'=' * 70}")
+    _emit("CONSISTENCIA CENTRO vs BORDES")
+    _emit("=" * 70)
 
     center = results.get("center")
     edges = [v for k, v in results.items() if k != "center" and v is not None]
@@ -207,9 +228,9 @@ def main() -> None:
         print(f"Max bordes / centro:   {edge_ratio:5.2f}×")
 
     # --- PASS/FAIL ---
-    print(f"\n{'=' * 70}")
-    print("VEREDICTO DE VALIDACIÓN")
-    print("=" * 70)
+    _emit(f"\n{'=' * 70}")
+    _emit("VEREDICTO DE VALIDACIÓN")
+    _emit("=" * 70)
 
     # Threshold scales linearly between 2m and 3m
     d_m = args.distance / 1000
@@ -232,20 +253,56 @@ def main() -> None:
     if not np.isnan(edge_ratio):
         info_ok = edge_ratio <= PASS_EDGE_CENTER_RATIO
         flag = "OK" if info_ok else "INFO"
-        print(f"  [{flag}] Ratio bordes/centro: {edge_ratio:.2f}× "
+        _emit(f"  [{flag}] Ratio bordes/centro: {edge_ratio:.2f}× "
               f"(referencia {PASS_EDGE_CENTER_RATIO:.1f}× — informativo, "
               f"solo significativo con target plano)")
 
     for name, detail, ok in checks:
         status = "PASS" if ok else "FAIL"
-        print(f"  [{status}] {name}: {detail}")
+        _emit(f"  [{status}] {name}: {detail}")
 
     overall = all(ok for _, _, ok in checks) if checks else False
-    print(f"\nVEREDICTO: {'PASS — calibración correcta para depth' if overall else 'FAIL — recalibrar (más capturas, mejor foco, verificar rigidez)'}")
+    _emit(f"\nVEREDICTO: {'PASS — calibración correcta para depth' if overall else 'FAIL — recalibrar (más capturas, mejor foco, verificar rigidez)'}")
+
+    # --- Optional JSON output (for orchestration / wizard integration) ---
+    if args.json_path:
+        zones_json: dict[str, object] = {}
+        for name, vals in results.items():
+            if vals is None:
+                zones_json[name] = None
+            else:
+                depth, std, err_pct, fill = vals
+                zones_json[name] = {
+                    "depth_mm": float(depth),
+                    "std_mm": float(std),
+                    "err_pct": float(err_pct),
+                    "fill_pct": float(fill),
+                }
+        json_payload = {
+            "distance_mm": float(args.distance),
+            "zones": zones_json,
+            "center_threshold_pct": float(center_threshold),
+            "edge_ratio": (
+                None if np.isnan(edge_ratio) else float(edge_ratio)
+            ),
+            "verdict": "PASS" if overall else "FAIL",
+            "checks": [
+                {"name": n, "detail": d, "ok": bool(o)}
+                for n, d, o in checks
+            ],
+        }
+        json_out = Path(args.json_path)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(
+            json.dumps(json_payload, indent=2), encoding="utf-8",
+        )
+        _emit(f"\nJSON guardado: {json_out}")
 
     # --- Save annotated visualization ---
-    cv2.imwrite("/tmp/diagnose_rect_l.jpg", rect_l)
-    cv2.imwrite("/tmp/diagnose_rect_r.jpg", rect_r)
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_dir / "diagnose_rect_l.jpg"), rect_l)
+    cv2.imwrite(str(out_dir / "diagnose_rect_r.jpg"), rect_r)
     depth_map = disparity_to_depth(disparity, fx_p1, baseline_T)
     depth_vis = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     depth_vis = cv2.applyColorMap(depth_vis, cv2.COLORMAP_JET)
@@ -261,8 +318,12 @@ def main() -> None:
         cv2.putText(depth_vis, label, (x1 + 5, y1 + 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
 
-    cv2.imwrite("/tmp/diagnose_depth.jpg", depth_vis)
-    print(f"\nGuardado: /tmp/diagnose_rect_l.jpg, /tmp/diagnose_rect_r.jpg, /tmp/diagnose_depth.jpg")
+    cv2.imwrite(str(out_dir / "diagnose_depth.jpg"), depth_vis)
+    _emit(
+        f"\nGuardado: {out_dir / 'diagnose_rect_l.jpg'}, "
+        f"{out_dir / 'diagnose_rect_r.jpg'}, "
+        f"{out_dir / 'diagnose_depth.jpg'}",
+    )
 
 
 if __name__ == "__main__":

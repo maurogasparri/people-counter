@@ -88,23 +88,24 @@ vision_runtime:
 
 # --- Detection thresholds (model-specific, fleet-uniform after lab tune) ---
 detection:
-  architecture: yolov8            # Postprocessor selector: "yolov8" (raw or
+  architecture: rapid             # Postprocessor selector: "yolov8" (raw or
                                   # Hailo built-in NMS) or "rapid" (rotated-
                                   # bbox head, anchors decoded on CPU). The
                                   # registry in src/vision/detect.py maps the
                                   # name to its expected input size + decode
-                                  # path. Switch to "rapid" together with the
-                                  # rapid_mwhb1024.hef model_path.
-  model_path: /usr/src/people-counter/models/yolov8n.hef
+                                  # path. Producción usa "rapid" pareado con
+                                  # rapid_mwhb1024.hef. "yolov8" se mantiene
+                                  # disponible como baseline de comparación.
+  model_path: /usr/src/people-counter/models/rapid_mwhb1024.hef
                                   # HEF compiled for Hailo-8L. Same path on
                                   # every device; the .hef itself is shipped
                                   # with the install.
-  confidence_threshold: 0.15      # Person/head detection score floor.
-                                  # Tuned for YOLOv8n stock on top-down — when
-                                  # the fine-tuned RAPiD HEF replaces it the
-                                  # threshold typically rises to 0.30.
+  confidence_threshold: 0.30      # Person/head detection score floor.
+                                  # Tuneado para RAPiD MWHB1024 — corta FPs
+                                  # del modelo (alucinaciones en piso vacío).
+                                  # El baseline YOLOv8n stock usaba 0.15.
   nms_threshold: 0.45             # IoU threshold for non-maximum suppression.
-  cluster_distance_px: 150        # Post-NMS centroid clustering: detections
+  cluster_distance_px: 200        # Post-NMS centroid clustering: detections
                                   # whose centroids fall within this many
                                   # pixels are merged, keeping the highest-
                                   # confidence one. Catches stock YOLOv8's
