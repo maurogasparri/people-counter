@@ -38,6 +38,7 @@ from src.vision.calibration import (
     ALIGN_MATCHED_MIN_LOOSE,
     ALIGN_MATCHED_MIN_TIGHT,
     NOMINAL_FOCAL_PX,
+    NOMINAL_FULL_RES,
     DEFAULT_BOARD_SIZE,
     DEFAULT_DIST_FAR_MM,
     DEFAULT_DIST_MID_MM,
@@ -1579,9 +1580,22 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             scale_x = GUIDED_HALF[0] / frame_l.shape[1]
             scale_y = GUIDED_HALF[1] / frame_l.shape[0]
 
-            # Proyectar ghost — usa fitted_K después del bootstrap
+            # Proyectar ghost — usa fitted_K después del bootstrap.
+            # Pasamos la resolución de captura REAL así project_pose escala
+            # fitted_K (que vive a esa res, no a NOMINAL_FULL_RES 4608x2592)
+            # correctamente al preview. focal_full_px también escalado a la
+            # res de captura para el path de bootstrap (fitted_K=None). Sin
+            # esto el ghost se proyectaba ~2× más chico de lo que debería en
+            # captura binned 2304x1296, dando la impresión de que la pose
+            # target estaba al doble de profundidad — los overrides de
+            # --dist-*-mm parecían ignorarse cuando en realidad la
+            # proyección visual estaba mal escalada.
+            capture_res = (frame_l.shape[1], frame_l.shape[0])
+            focal_capture = NOMINAL_FOCAL_PX * capture_res[0] / NOMINAL_FULL_RES[0]
             ghost = project_pose(
                 pose, board_size, args.square_length, GUIDED_HALF,
+                focal_full_px=focal_capture,
+                full_res=capture_res,
                 fitted_K=state.fitted_K,
             )
 
