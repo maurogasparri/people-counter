@@ -53,11 +53,16 @@ _save_result: dict = {}
 _save_lock = threading.Lock()
 
 
-def _capture_from_cameras(camera: str) -> np.ndarray:
+def _capture_from_cameras(
+    camera: str, resolution: tuple[int, int],
+) -> np.ndarray:
     """Toma un frame BGR único desde picamera2.
 
     Args:
         camera: "left", "right" o "both" (vista side-by-side, dibuja sobre L).
+        resolution: (W, H) matcheando la del runtime — fundamental para que
+            la ROI / línea dibujadas tengan el mismo sistema de coordenadas
+            que el pipeline.
 
     Returns:
         Un frame BGR único.
@@ -102,7 +107,7 @@ def _capture_from_cameras(camera: str) -> np.ndarray:
             if cam is None:
                 continue
             cfg = cam.create_still_configuration(
-                main={"size": (1296, 972), "format": "BGR888"},
+                main={"size": resolution, "format": "BGR888"},
             )
             cam.configure(cfg)
             cam.start()
@@ -602,6 +607,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--output", type=Path, default=Path("./roi_config.yaml"),
         help="Where to write the YAML snippet on save.",
     )
+    parser.add_argument(
+        "--resolution", type=int, nargs=2, default=None,
+        help="Capture resolution (W H) when --image is not set. Default: "
+             "reads vision.resolution from /etc/people-counter/config.yaml "
+             "so the ROI/line use the same coordinate system as the runtime.",
+    )
     args = parser.parse_args(argv)
 
     _output_path = args.output
@@ -612,8 +623,36 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.info("Loading static image %s", args.image)
             frame = _load_image(args.image)
         else:
-            logger.info("Capturing live frame (camera=%s)", args.camera)
-            frame = _capture_from_cameras(args.camera)
+            if args.resolution is None:
+                from src.config.loader import (
+                    DEFAULT_DEVICE_CONFIG_PATH,
+                    load_device_config,
+                )
+                try:
+                    cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
+                except FileNotFoundError:
+                    parser.error(
+                        f"--resolution no provisto y "
+                        f"{DEFAULT_DEVICE_CONFIG_PATH} no existe. Pasá "
+                        "--resolution explícito o aprovisioná el config "
+                        "per-device."
+                    )
+                res = cfg.get("vision", {}).get("resolution")
+                if not res or not isinstance(res, list) or len(res) != 2:
+                    parser.error(
+                        f"vision.resolution no definido o malformado en "
+                        f"{DEFAULT_DEVICE_CONFIG_PATH}. Esperaba lista "
+                        "[W, H]."
+                    )
+                args.resolution = [int(res[0]), int(res[1])]
+            logger.info(
+                "Capturing live frame (camera=%s, resolution=%dx%d)",
+                args.camera, args.resolution[0], args.resolution[1],
+            )
+            frame = _capture_from_cameras(
+                args.camera,
+                (int(args.resolution[0]), int(args.resolution[1])),
+            )
     except RuntimeError as exc:
         logger.error("Frame acquisition failed: %s", exc)
         return 2

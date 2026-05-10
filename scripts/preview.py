@@ -256,8 +256,11 @@ def main() -> None:
                         help="Left camera index. Default 0.")
     parser.add_argument("--right", type=int, default=1,
                         help="Right camera index. Default 1.")
-    parser.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
-                        help="Capture resolution. Default 2304x1296 (binned).")
+    parser.add_argument("--resolution", type=int, nargs=2, default=None,
+                        help="Capture resolution. Default: reads "
+                             "vision.resolution from /etc/people-counter/"
+                             "config.yaml (matches the runtime). Pass "
+                             "explicit only for tests / dev workstations.")
     parser.add_argument("--port", type=int, default=8080,
                         help="HTTP port for the preview UI. Default 8080.")
     parser.add_argument("--meter", choices=("matrix", "centre", "spot"),
@@ -288,9 +291,10 @@ def main() -> None:
         # Honour the resolution from config so the ROI/line scale match
         # whatever main.py will see.
         cfg_res = vision_cfg.get("resolution")
-        if cfg_res and tuple(cfg_res) != tuple(args.resolution):
-            print(f"Resolución del config: {cfg_res} (override del default "
-                  f"{args.resolution})")
+        if cfg_res:
+            if args.resolution is not None and tuple(cfg_res) != tuple(args.resolution):
+                print(f"Resolución del config: {cfg_res} (override del CLI "
+                      f"{args.resolution})")
             args.resolution = list(cfg_res)
         # Calibration for rectification — without it the ROI overlay still
         # shows but at the un-rectified frame, which won't match the
@@ -307,6 +311,28 @@ def main() -> None:
         counter_cfg = runtime_cfg.get("counter")
         if counter_cfg:
             print("ROI + línea de conteo se dibujarán sobre el preview L.")
+
+    if args.resolution is None:
+        # No --config y no --resolution: leer del device config strict —
+        # fuente única de verdad para que el preview matchee el runtime.
+        from src.config.loader import (
+            DEFAULT_DEVICE_CONFIG_PATH,
+            load_device_config,
+        )
+        try:
+            cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
+        except FileNotFoundError:
+            parser.error(
+                f"--resolution no provisto y {DEFAULT_DEVICE_CONFIG_PATH} "
+                "no existe. Pasá --resolution o --config explícito."
+            )
+        res = cfg.get("vision", {}).get("resolution")
+        if not res or not isinstance(res, list) or len(res) != 2:
+            parser.error(
+                f"vision.resolution no definido o malformado en "
+                f"{DEFAULT_DEVICE_CONFIG_PATH}. Esperaba lista [W, H]."
+            )
+        args.resolution = [int(res[0]), int(res[1])]
 
     from picamera2 import Picamera2
     from libcamera import controls as _libcam_controls

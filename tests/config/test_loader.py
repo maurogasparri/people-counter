@@ -1,6 +1,7 @@
-"""Tests para el loader de configuración con defaults + merge del cloud."""
+"""Tests para el loader del config strict + el merge del cloud shadow."""
 
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -15,171 +16,82 @@ from src.config.loader import (
     is_wifi_ble_enabled,
     is_within_operating_hours,
     load_config,
-    load_defaults,
     merge_cloud_config,
     validate_operating_hours,
 )
 
-
-# Tests that exercise the validator on a per-device YAML *without* the
-# bundled defaults filling in missing keys pass an empty defaults file.
-# Tests that exercise the full load (defaults + per-device merge + validate)
-# rely on the shipped config.example.yaml — they only override per-device
-# bits that the test cares about.
-
-
-@pytest.fixture
-def empty_defaults(tmp_path):
-    """An empty YAML file used as `defaults_path` for validator unit tests.
-
-    Letting the bundled defaults fill in missing required keys would mask
-    validator behaviour ("device.id missing => raise"), so tests that want
-    to assert validation errors disable the defaults merge by passing this
-    empty file as `defaults_path`.
-    """
-    p = tmp_path / "empty_defaults.yaml"
-    p.write_text("", encoding="utf-8")
-    return p
-
-
-@pytest.fixture
-def minimal_yaml(tmp_path):
-    """Write a minimal valid config YAML and return its path."""
-    config = {
-        "device": {"id": "test-device-01", "store_id": "store-001"},
-        "vision": {
-            "camera_left": 0,
-            "camera_right": 1,
-            "resolution": [640, 480],
-            "calibration_file": "/tmp/cal.npz",
-            "mounting_height_m": 3.0,
-            "counting_line_y": 0.5,
-        },
-        "detection": {
-            "model_path": "/tmp/model.hef",
-            "confidence_threshold": 0.5,
-            "nms_threshold": 0.45,
-        },
-        "mqtt": {
-            "endpoint": "test.iot.amazonaws.com",
-            "port": 8883,
-            "cert_path": "/tmp/cert.pem",
-            "key_path": "/tmp/key.pem",
-            "ca_path": "/tmp/ca.pem",
-            "topics": {"counting": "store/{store_id}/counting"},
-        },
-        "buffer": {"db_path": "/tmp/buffer.db", "max_age_hours": 24},
-        "wifi_ble": {
-            "enabled": True,
-            "wifi_interface": "wlan0",
-            "rssi_passerby_threshold": -75,
-            "rssi_shopper_threshold": -55,
-        },
-        "cloud_defaults": {
-            # Each day must be explicit so the deep-merge against the
-            # bundled defaults (which set every weekday) doesn't leak
-            # unexpected open-hours into tests that assume "closed".
-            "operating_hours": {
-                "monday": "10:00-22:00",
-                "tuesday": "10:00-22:00",
-                "wednesday": None,
-                "thursday": None,
-                "friday": None,
-                "saturday": None,
-                "sunday": "11:00-20:00",
-            },
-            "footfall_scaling_factor": 1.0,
-            "counting_enabled": True,
-            "wifi_ble_enabled": True,
-            "telemetry_interval_seconds": 300,
-        },
-    }
-    path = tmp_path / "config.yaml"
-    path.write_text(yaml.dump(config))
-    return str(path)
+from .conftest import write_config
 
 
 # --- load_config ---
 
 
 class TestLoadConfig:
-    def test_load_valid_config(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
-        assert cfg["device"]["id"] == "test-device-01"
-        assert cfg["device"]["store_id"] == "store-001"
+    def test_load_valid_config(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
+        assert cfg["device"]["id"] == "test-device"
+        assert cfg["device"]["store_id"] == "test-store"
 
     def test_missing_file_raises(self):
         with pytest.raises(FileNotFoundError):
             load_config("/nonexistent/path.yaml")
 
-    def test_missing_device_id_raises(self, tmp_path, empty_defaults):
-        bad = {"device": {"store_id": "s1"}}
-        path = tmp_path / "bad.yaml"
-        path.write_text(yaml.dump(bad))
+    def test_missing_device_id_raises(self, tmp_path, complete_config):
+        complete_config["device"] = {"store_id": "s1"}
         with pytest.raises(ValueError, match="device.id"):
-            load_config(str(path), defaults_path=empty_defaults)
+            load_config(write_config(tmp_path, complete_config))
 
-    def test_missing_section_raises(self, tmp_path, empty_defaults):
-        bad = {"device": {"id": "d1", "store_id": "s1"}}
-        path = tmp_path / "bad.yaml"
-        path.write_text(yaml.dump(bad))
+    def test_missing_section_raises(self, tmp_path, complete_config):
+        complete_config.pop("mqtt", None)
         with pytest.raises(ValueError, match="missing section"):
-            load_config(str(path), defaults_path=empty_defaults)
+            load_config(write_config(tmp_path, complete_config))
 
-    def test_rssi_threshold_validation(self, minimal_yaml, tmp_path):
-        """Shopper threshold must be greater (less negative) than passerby.
-
-        The minimal_yaml fixture sets the right values; we override with bad
-        ones via a sibling per-device YAML so the rest of the schema is
-        provided by the bundled defaults.
-        """
-        config = yaml.safe_load(open(minimal_yaml))
-        config["wifi_ble"]["rssi_passerby_threshold"] = -55
-        config["wifi_ble"]["rssi_shopper_threshold"] = -75
-        path = tmp_path / "bad.yaml"
-        path.write_text(yaml.dump(config))
+    def test_rssi_threshold_validation(self, tmp_path, complete_config):
+        """Shopper threshold must be greater (less negative) than passerby."""
+        complete_config["wifi_ble"]["rssi_passerby_threshold"] = -55
+        complete_config["wifi_ble"]["rssi_shopper_threshold"] = -75
         with pytest.raises(ValueError, match="rssi_shopper_threshold"):
-            load_config(str(path))
+            load_config(write_config(tmp_path, complete_config))
 
 
 # --- merge_cloud_config ---
 
 
 class TestMergeCloudConfig:
-    def test_no_shadow_returns_local(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_no_shadow_returns_local(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {})
         assert merged["cloud_defaults"]["footfall_scaling_factor"] == 1.0
 
-    def test_shadow_overrides_scaling_factor(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_shadow_overrides_scaling_factor(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         shadow = {"footfall_scaling_factor": 1.15}
         merged = merge_cloud_config(cfg, shadow)
         assert merged["cloud_defaults"]["footfall_scaling_factor"] == 1.15
 
-    def test_shadow_overrides_operating_hours(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_shadow_overrides_operating_hours(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         new_hours = {"monday": "09:00-21:00", "sunday": None}
         shadow = {"operating_hours": new_hours}
         merged = merge_cloud_config(cfg, shadow)
         assert merged["cloud_defaults"]["operating_hours"]["monday"] == "09:00-21:00"
         assert merged["cloud_defaults"]["operating_hours"]["sunday"] is None
 
-    def test_shadow_does_not_override_non_allowed_keys(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_shadow_does_not_override_non_allowed_keys(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         shadow = {"device_id": "hacked", "model_path": "/evil"}
         merged = merge_cloud_config(cfg, shadow)
-        assert merged["device"]["id"] == "test-device-01"
+        assert merged["device"]["id"] == "test-device"
         assert "device_id" not in merged["cloud_defaults"]
 
-    def test_shadow_disables_counting(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_shadow_disables_counting(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         shadow = {"counting_enabled": False}
         merged = merge_cloud_config(cfg, shadow)
         assert not is_counting_enabled(merged)
 
-    def test_original_config_not_mutated(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_original_config_not_mutated(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         original_factor = cfg["cloud_defaults"]["footfall_scaling_factor"]
         merge_cloud_config(cfg, {"footfall_scaling_factor": 2.0})
         assert cfg["cloud_defaults"]["footfall_scaling_factor"] == original_factor
@@ -189,37 +101,37 @@ class TestMergeCloudConfig:
 
 
 class TestOperatingHours:
-    def test_within_hours(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_within_hours(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert is_within_operating_hours(cfg, "monday", 12, 0)
 
-    def test_before_opening(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_before_opening(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert not is_within_operating_hours(cfg, "monday", 9, 30)
 
-    def test_after_closing(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_after_closing(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert not is_within_operating_hours(cfg, "monday", 22, 0)
 
-    def test_at_exact_opening(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_at_exact_opening(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert is_within_operating_hours(cfg, "monday", 10, 0)
 
-    def test_at_exact_closing_is_outside(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_at_exact_closing_is_outside(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert not is_within_operating_hours(cfg, "monday", 22, 0)
 
-    def test_sunday_different_hours(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_sunday_different_hours(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert is_within_operating_hours(cfg, "sunday", 15, 0)
         assert not is_within_operating_hours(cfg, "sunday", 20, 30)
 
-    def test_missing_day_returns_false(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_missing_day_returns_false(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert not is_within_operating_hours(cfg, "wednesday", 12, 0)
 
-    def test_null_schedule_returns_false(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_null_schedule_returns_false(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         cfg["cloud_defaults"]["operating_hours"]["monday"] = None
         assert not is_within_operating_hours(cfg, "monday", 12, 0)
 
@@ -228,35 +140,35 @@ class TestOperatingHours:
 
 
 class TestFeatureToggles:
-    def test_counting_enabled_default(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_counting_enabled_default(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert is_counting_enabled(cfg)
 
-    def test_wifi_ble_enabled_both_true(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_wifi_ble_enabled_both_true(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert is_wifi_ble_enabled(cfg)
 
-    def test_wifi_ble_disabled_locally(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_wifi_ble_disabled_locally(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         cfg["wifi_ble"]["enabled"] = False
         assert not is_wifi_ble_enabled(cfg)
 
-    def test_wifi_ble_disabled_from_cloud(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_wifi_ble_disabled_from_cloud(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {"wifi_ble_enabled": False})
         assert not is_wifi_ble_enabled(merged)
 
-    def test_scaling_factor_default(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_scaling_factor_default(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert get_scaling_factor(cfg) == 1.0
 
-    def test_scaling_factor_from_cloud(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_scaling_factor_from_cloud(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {"footfall_scaling_factor": 1.1})
         assert get_scaling_factor(merged) == pytest.approx(1.1)
 
-    def test_get_effective_value_with_fallback(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_get_effective_value_with_fallback(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert get_effective_value(cfg, "nonexistent_key", 42) == 42
 
 
@@ -314,34 +226,25 @@ class TestValidateOperatingHours:
 
 
 class TestLoadConfigSoftScheduleValidation:
-    def _write(self, tmp_path, hours):
-        config = {
-            "device": {"id": "d1", "store_id": "s1"},
-            "vision": {},
-            "detection": {},
-            "mqtt": {},
-            "buffer": {},
-            "cloud_defaults": {"operating_hours": hours},
-        }
-        path = tmp_path / "cfg.yaml"
-        path.write_text(yaml.dump(config))
-        return str(path)
-
-    def test_valid_schedule_no_error_flag(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_valid_schedule_no_error_flag(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert not has_schedule_error(cfg)
         assert "_schedule_error" not in cfg
 
-    def test_invalid_schedule_does_not_raise(self, tmp_path):
-        path = self._write(tmp_path, {"monday": "25:00-26:00"})
-        cfg = load_config(path)  # must not raise
+    def test_invalid_schedule_does_not_raise(self, tmp_path, complete_config):
+        complete_config["cloud_defaults"]["operating_hours"] = {
+            "monday": "25:00-26:00",
+        }
+        cfg = load_config(write_config(tmp_path, complete_config))  # must not raise
         assert has_schedule_error(cfg)
         assert "25:00" in cfg["_schedule_error"]
 
-    def test_invalid_schedule_logs_warning(self, tmp_path, caplog):
-        path = self._write(tmp_path, {"monday": "22:00-10:00"})
+    def test_invalid_schedule_logs_warning(self, tmp_path, complete_config, caplog):
+        complete_config["cloud_defaults"]["operating_hours"] = {
+            "monday": "22:00-10:00",
+        }
         with caplog.at_level("WARNING", logger="src.config.loader"):
-            cfg = load_config(path)
+            cfg = load_config(write_config(tmp_path, complete_config))
         assert has_schedule_error(cfg)
         assert any(
             rec.message == "invalid_operating_hours"
@@ -349,78 +252,21 @@ class TestLoadConfigSoftScheduleValidation:
             for rec in caplog.records
         )
 
-    def test_missing_operating_hours_is_error(self, tmp_path, empty_defaults):
-        # Use empty defaults so the bundled cloud_defaults.operating_hours
-        # doesn't fill in — we want to assert the validator's behaviour
-        # when operating_hours is *truly* missing from the merged config.
-        config = {
-            "device": {"id": "d1", "store_id": "s1"},
-            "mqtt": {"endpoint": "x", "port": 8883, "topics": {
-                "counting": "c", "wifi_ble": "w", "telemetry": "t",
-                "shadow": "s",
-            }},
-            "bracket": {
-                "baseline_mm": 140,
-                "camera_left_csi": 0,
-                "camera_right_csi": 1,
-            },
-            "sensor": {
-                "model": "imx708",
-                "full_res": [4608, 2592],
-                "default_res": [2304, 1296],
-                "default_fps": 15,
-                "nominal_focal_full_px": 2050,
-            },
-            "lens": {"type": "m12_120deg", "hfov_deg": 120},
-            "vision": {
-                "resolution": [1152, 648],
-                "fps": 30,
-                "calibration_file": "x",
-                "sgbm": {"num_disparities": "auto", "block_size": 9, "downscale": 4},
-            },
-            "detection": {
-                "architecture": "rapid",
-                "model_path": "x",
-                "confidence_threshold": 0.3,
-                "nms_threshold": 0.45,
-                "cluster_distance_px": 200,
-            },
-            "tracking": {
-                "max_disappeared": 30,
-                "max_distance": 50,
-                "state_machine": {
-                    "confirm_frames": 1,
-                    "pending_max_frames": 20,
-                    "reid_gate_px": 300,
-                    "depth_gate_m": 0.5,
-                },
-            },
-            "counter": {"foot_projection_enabled": False},
-            "wifi_ble": {
-                "wifi_interface": "wlan0",
-                "probe_interval_seconds": 900,
-                "cross_protocol_window_seconds": 2,
-                "cross_protocol_rssi_delta": 5,
-            },
-            "buffer": {"db_path": "x", "max_age_hours": 72},
-            "logging": {"format": "json", "file": "x"},
-            "cloud_defaults": {},
-        }
-        path = tmp_path / "cfg.yaml"
-        path.write_text(yaml.dump(config))
-        cfg = load_config(str(path), defaults_path=empty_defaults)
+    def test_missing_operating_hours_is_error(self, tmp_path, complete_config):
+        complete_config["cloud_defaults"] = {}
+        cfg = load_config(write_config(tmp_path, complete_config))
         assert has_schedule_error(cfg)
 
 
 class TestApplyShadowDelta:
-    def test_empty_delta_no_applied_keys(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_empty_delta_no_applied_keys(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         new_cfg, applied = apply_shadow_delta(cfg, {})
         assert applied == []
         assert new_cfg == cfg
 
-    def test_safe_key_applied_operating_hours(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_safe_key_applied_operating_hours(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         new_hours = {"monday": "08:00-20:00", "tuesday": "08:00-20:00"}
         delta = {"cloud_defaults": {"operating_hours": new_hours}}
         new_cfg, applied = apply_shadow_delta(cfg, delta)
@@ -429,8 +275,8 @@ class TestApplyShadowDelta:
         # Original config untouched (deep copy returned).
         assert cfg["cloud_defaults"]["operating_hours"] != new_hours
 
-    def test_unsafe_key_ignored(self, minimal_yaml, caplog):
-        cfg = load_config(minimal_yaml)
+    def test_unsafe_key_ignored(self, complete_config_yaml, caplog):
+        cfg = load_config(complete_config_yaml)
         delta = {"mqtt": {"endpoint": "attacker.example.com"}}
         with caplog.at_level("WARNING", logger="src.config.loader"):
             new_cfg, applied = apply_shadow_delta(cfg, delta)
@@ -441,8 +287,8 @@ class TestApplyShadowDelta:
             for r in caplog.records
         )
 
-    def test_unknown_key_ignored(self, minimal_yaml, caplog):
-        cfg = load_config(minimal_yaml)
+    def test_unknown_key_ignored(self, complete_config_yaml, caplog):
+        cfg = load_config(complete_config_yaml)
         delta = {"totally_unknown_thing": 42}
         with caplog.at_level("WARNING", logger="src.config.loader"):
             new_cfg, applied = apply_shadow_delta(cfg, delta)
@@ -453,8 +299,8 @@ class TestApplyShadowDelta:
             for r in caplog.records
         )
 
-    def test_nested_counter_tracker_prefix_applied(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_nested_counter_tracker_prefix_applied(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         delta = {
             "counter": {
                 "tracker": {"confirm_frames": 5, "reid_gate_px": 100.0}
@@ -466,8 +312,8 @@ class TestApplyShadowDelta:
         assert new_cfg["counter"]["tracker"]["confirm_frames"] == 5
         assert new_cfg["counter"]["tracker"]["reid_gate_px"] == 100.0
 
-    def test_mixed_safe_and_unsafe(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_mixed_safe_and_unsafe(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         delta = {
             "telemetry": {"interval_seconds": 60},
             "device_id": "hacker",  # identity — must be rejected
@@ -482,17 +328,15 @@ class TestApplyShadowDelta:
         assert new_cfg["vision"]["num_disparities"] == 128
         assert new_cfg["device"]["id"] == cfg["device"]["id"]
 
-    def test_persists_shadow_cache(self, minimal_yaml, tmp_path):
-        cfg = load_config(minimal_yaml)
+    def test_persists_shadow_cache(self, complete_config_yaml, tmp_path):
+        cfg = load_config(complete_config_yaml)
         delta = {"cloud_defaults": {"on_invalid_schedule": "fail_closed"}}
         new_cfg, applied = apply_shadow_delta(
-            cfg, delta, config_path=minimal_yaml
+            cfg, delta, config_path=complete_config_yaml
         )
         assert applied == ["cloud_defaults.on_invalid_schedule"]
 
-        from pathlib import Path
-
-        shadow_file = Path(minimal_yaml).with_suffix(".shadow.json")
+        shadow_file = Path(complete_config_yaml).with_suffix(".shadow.json")
         assert shadow_file.exists()
         persisted = json.loads(shadow_file.read_text())
         assert (
@@ -500,17 +344,16 @@ class TestApplyShadowDelta:
             == "fail_closed"
         )
 
-    def test_no_persist_when_no_keys_applied(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_no_persist_when_no_keys_applied(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         delta = {"mqtt": {"endpoint": "blocked"}}
-        apply_shadow_delta(cfg, delta, config_path=minimal_yaml)
-        from pathlib import Path
+        apply_shadow_delta(cfg, delta, config_path=complete_config_yaml)
 
-        shadow_file = Path(minimal_yaml).with_suffix(".shadow.json")
+        shadow_file = Path(complete_config_yaml).with_suffix(".shadow.json")
         assert not shadow_file.exists()
 
-    def test_operational_prefix_applied(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_operational_prefix_applied(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         delta = {"operational": {"max_queue_depth": 500, "debug_trace": True}}
         new_cfg, applied = apply_shadow_delta(cfg, delta)
         assert "operational.max_queue_depth" in applied
@@ -519,22 +362,22 @@ class TestApplyShadowDelta:
 
 
 class TestInvalidScheduleMode:
-    def test_default_is_fail_open(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_default_is_fail_open(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         assert get_invalid_schedule_mode(cfg) == "fail_open"
 
-    def test_fail_closed_from_cloud_defaults(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_fail_closed_from_cloud_defaults(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         cfg["cloud_defaults"]["on_invalid_schedule"] = "fail_closed"
         assert get_invalid_schedule_mode(cfg) == "fail_closed"
 
-    def test_unknown_value_falls_back_to_fail_open(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_unknown_value_falls_back_to_fail_open(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         cfg["cloud_defaults"]["on_invalid_schedule"] = "nonsense"
         assert get_invalid_schedule_mode(cfg) == "fail_open"
 
-    def test_shadow_can_override_mode(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_shadow_can_override_mode(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {"on_invalid_schedule": "fail_closed"})
         assert get_invalid_schedule_mode(merged) == "fail_closed"
 
@@ -639,16 +482,11 @@ class TestBuildReportedState:
     def test_missing_config_sections_gracefully_skipped(self):
         from src.config.loader import build_reported_state
 
-        # Only device section present — should not raise. ``calibration_file_path``
-        # falls back to the fleet default in ``config/config.example.yaml``
-        # when the config has no vision.calibration_file (the runtime does
-        # the same fallback, so reported state matches what the device
-        # will actually use).
+        # Only device section present — should not raise.
         cfg = {"device": {"id": "x", "store_id": "y"}}
         reported = build_reported_state(cfg, calibration=None)
         assert reported["firmware_version"] == "unknown"
-        # Either None (no fallback configured) or the canonical default
-        # path — both are valid; we just assert the runtime didn't crash.
+        # Either None or the configured path — both valid; assert no crash.
         assert "calibration_file_path" in reported
         assert reported["effective_baseline_mm"] is None
         # None of the whitelisted keys should appear (they're absent from cfg)

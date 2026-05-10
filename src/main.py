@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from src.config.loader import (
+    DEFAULT_DEVICE_CONFIG_PATH,
     apply_shadow_delta,
     build_reported_state,
     get_invalid_schedule_mode,
@@ -1490,7 +1491,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="People Counter Edge Device")
-    parser.add_argument("--config", required=True, help="Path al config YAML")
+    parser.add_argument(
+        "--config",
+        default=DEFAULT_DEVICE_CONFIG_PATH,
+        help=f"Path al config YAML (default: {DEFAULT_DEVICE_CONFIG_PATH}).",
+    )
     parser.add_argument(
         "--replay-dir",
         help="Replay desde pares estéreo guardados en vez de cámaras en vivo",

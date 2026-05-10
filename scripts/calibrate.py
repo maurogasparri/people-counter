@@ -3199,10 +3199,11 @@ def main() -> None:
     p_cap = sub.add_parser("capture", help="Captura interactiva con preview HTTP")
     p_cap.add_argument("--left", type=int, default=0, help="Índice de la cámara izquierda (lente izquierda mirando desde la cámara hacia la escena). Default 0 matchea el wiring de la flota.")
     p_cap.add_argument("--right", type=int, default=1, help="Índice de la cámara derecha. Default 1.")
-    p_cap.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
-                        help="Resolución de captura. Default 2304x1296 (IMX708 binned, "
-                             "FOV completo, detección de ChArUco ~4x más rápida que full-res). "
-                             "El config de runtime tiene que matchear esto — ver config.example.yaml.")
+    p_cap.add_argument("--resolution", type=int, nargs=2, default=None,
+                        help="Resolución de captura. Default: lee vision.resolution "
+                             "de /etc/people-counter/config.yaml (fuente única de verdad — "
+                             "garantiza match con el runtime). Pasá explícito solo para "
+                             "tests / dev workstation donde no hay config per-device.")
     p_cap.add_argument("--fps", type=int, default=5)
     p_cap.add_argument("--output-dir", default="./calibration/captures")
     p_cap.add_argument("--count", type=int, default=30, help="Número mínimo de pares")
@@ -3271,17 +3272,11 @@ def main() -> None:
     p_wiz.add_argument("--output-dir", default="./calibration/captures", help="Directorio para los pares capturados")
     p_wiz.add_argument("--left", type=int, default=0)
     p_wiz.add_argument("--right", type=int, default=1)
-    p_wiz.add_argument("--resolution", type=int, nargs=2, default=[2304, 1296],
-                        help="Resolución de captura. Default 2304x1296 (binned, "
-                             "FOV completo) — el modo canónico para la flota. "
-                             "Full-res 4608x2592 está disponible para casos "
-                             "especiales pero hace que la detección per-frame "
-                             "sea ~4x más lenta (<2 FPS en Pi 5) y es más "
-                             "propenso a dropear markers en los corners "
-                             "fisheye, lo que puede producir una calibración "
-                             "con RMS bajo pero un fit geométricamente "
-                             "incorrecto. El config de runtime tiene que "
-                             "matchear esta resolución.")
+    p_wiz.add_argument("--resolution", type=int, nargs=2, default=None,
+                        help="Resolución de captura. Default: lee vision.resolution "
+                             "de /etc/people-counter/config.yaml (fuente única de verdad — "
+                             "garantiza match con el runtime). Pasá explícito solo para "
+                             "tests / dev workstation donde no hay config per-device.")
     p_wiz.add_argument("--fps", type=int, default=5)
     p_wiz.add_argument("--port", type=int, default=8080)
     p_wiz.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0])
@@ -3391,7 +3386,40 @@ def main() -> None:
     p_wiz.set_defaults(func=cmd_wizard)
 
     args = parser.parse_args()
+    _resolve_resolution_from_device_config(args, parser)
     args.func(args)
+
+
+def _resolve_resolution_from_device_config(
+    args: argparse.Namespace, parser: argparse.ArgumentParser,
+) -> None:
+    """Si --resolution no fue provisto, lo levanta de /etc/people-counter/config.yaml.
+
+    Los setup tools deben ser consistentes con el runtime — leer la misma
+    fuente. Si el config per-device no existe o le falta vision.resolution,
+    abortamos con error claro en vez de caer a un default hardcoded.
+    Solo aplica a subcomandos que aceptan --resolution (capture, wizard).
+    """
+    if not hasattr(args, "resolution") or args.resolution is not None:
+        return
+    from src.config.loader import (
+        DEFAULT_DEVICE_CONFIG_PATH,
+        load_device_config,
+    )
+    try:
+        cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
+    except FileNotFoundError as e:
+        parser.error(
+            f"--resolution no provisto y {DEFAULT_DEVICE_CONFIG_PATH} no existe. "
+            "Pasá --resolution explícito o aprovisioná el config per-device."
+        )
+    res = cfg.get("vision", {}).get("resolution")
+    if not res or not isinstance(res, list) or len(res) != 2:
+        parser.error(
+            f"--resolution no provisto y vision.resolution falta/está mal en "
+            f"{DEFAULT_DEVICE_CONFIG_PATH} — pasá --resolution explícito."
+        )
+    args.resolution = [int(res[0]), int(res[1])]
 
 
 if __name__ == "__main__":

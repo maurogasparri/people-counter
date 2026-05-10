@@ -1027,6 +1027,39 @@ setInterval(()=>{
         pass
 
 
+def _resolve_resolution_from_device_config(
+    args: argparse.Namespace, parser: argparse.ArgumentParser,
+) -> None:
+    """Si --resolution no fue pasado, leerlo de /etc/people-counter/config.yaml.
+
+    Setup tools (focus, calib, preview, diagnose) tienen que matchear la
+    resolución del runtime para que las calibraciones / decisiones de foco
+    sean válidas. No hay fallback a defaults — si el config per-device no
+    existe o no tiene ``vision.resolution`` definido, error.
+    """
+    if args.resolution is not None:
+        return
+    from src.config.loader import (
+        DEFAULT_DEVICE_CONFIG_PATH,
+        load_device_config,
+    )
+    try:
+        cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
+    except FileNotFoundError:
+        parser.error(
+            f"--resolution no provisto y {DEFAULT_DEVICE_CONFIG_PATH} no "
+            "existe. Pasá --resolution explícito o aprovisioná el config "
+            "per-device."
+        )
+    res = cfg.get("vision", {}).get("resolution")
+    if not res or not isinstance(res, list) or len(res) != 2:
+        parser.error(
+            f"vision.resolution no definido o malformado en "
+            f"{DEFAULT_DEVICE_CONFIG_PATH}. Esperaba lista [W, H]."
+        )
+    args.resolution = [int(res[0]), int(res[1])]
+
+
 def main() -> None:
     global latest_jpeg, shutting_down, _status_html, finish_requested
     global _report_path_global
@@ -1134,8 +1167,16 @@ def main() -> None:
                              "poniendo el board a distancia conocida y "
                              "ajustando hasta que la distancia reportada "
                              "matchee.")
+    parser.add_argument("--resolution", type=int, nargs=2, default=None,
+                        help="Resolución de captura. Default: lee "
+                             "vision.resolution de /etc/people-counter/"
+                             "config.yaml (fuente única de verdad — "
+                             "garantiza match con el runtime). Pasá "
+                             "explícito solo para tests / dev workstation "
+                             "donde no hay config per-device.")
     args = parser.parse_args()
     _apply_threshold_overrides(args)
+    _resolve_resolution_from_device_config(args, parser)
 
     dict_attr = args.aruco_dict if args.aruco_dict.startswith("DICT_") else f"DICT_{args.aruco_dict}"
     if not hasattr(cv2.aruco, dict_attr):
@@ -1147,15 +1188,14 @@ def main() -> None:
 
     cam_l = Picamera2(args.left)
     cam_r = Picamera2(args.right)
+    res = (int(args.resolution[0]), int(args.resolution[1]))
     for cam in [cam_l, cam_r]:
-        # Capturar en el modo nativo full-FOV binned del IMX708
-        # (2304x1296 @ 56fps, 16:9) así no hay ambigüedad de
-        # sensor-mode, no hay cropping de aspect-ratio, y los
-        # markers a 2.5-3m tienen suficientes píxeles para ser
-        # detectados.
+        # Resolución desde vision.resolution del config per-device — el
+        # foco y la calibración tienen que matchear el sensor mode del
+        # runtime (típicamente 2304x1296 binned, full-FOV, 16:9, @56fps).
         config = cam.create_still_configuration(
-            main={"size": (2304, 1296), "format": "BGR888"},
-            raw={"size": (2304, 1296)},
+            main={"size": res, "format": "BGR888"},
+            raw={"size": res},
         )
         cam.configure(config)
         cam.start()

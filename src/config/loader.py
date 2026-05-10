@@ -1,20 +1,19 @@
-"""Loader de configuración con defaults + merge per-device + cloud shadow.
+"""Loader de configuración strict + cloud shadow.
 
 Estrategia:
-    - DEFAULTS: ``config/config.example.yaml`` shippeado con el codebase provee
-      cada key con un valor fleet-uniform best-practice.
-    - PER-DEVICE: ``/etc/people-counter/config.yaml`` overridea solo lo que
-      el sitio necesita (device.id, endpoint mqtt, mounting_height_m, ROI/lines,
-      paths de certs). Cualquier cosa ausente cae al default.
+    - PER-DEVICE: ``/etc/people-counter/config.yaml`` es la fuente única de
+      verdad. Tiene que contener TODAS las keys que el runtime espera
+      (validadas en ``_validate``); cualquier key faltante es error duro al
+      arrancar.
     - CLOUD: el AWS IoT Device Shadow puede pushear overrides runtime-safe
-      encima (bloque ``cloud_defaults`` + una whitelist chica de keys
-      operacionales — ver ``RUNTIME_SAFE_KEYS`` debajo).
+      encima del config cargado (bloque ``cloud_defaults`` + una whitelist
+      chica de keys operacionales — ver ``RUNTIME_SAFE_KEYS`` debajo).
 
-La fuente única de verdad es el dict mergeado que devuelve ``load_config()``.
-El split defaults+per-device es la única estructura YAML: cada dispositivo
-shippea con los mismos defaults canónicos y overridea solo las keys que
-genuinamente varían per-sitio. Los cambios fleet-wide se shippean vía el
-archivo canónico del repo (redeploy) o vía cloud shadow (keys runtime-safe).
+``config/config.example.yaml`` queda como TEMPLATE documentado del repo —
+útil para aprovisionar un device nuevo o para auditar qué keys son válidas,
+pero NO se mergea en runtime. Cambios fleet-wide se shippean editando el
+template + redeployando el config a cada device (no hay magic merge en el
+hot path).
 """
 
 from __future__ import annotations
@@ -28,15 +27,6 @@ from typing import Any
 import yaml
 
 logger = logging.getLogger(__name__)
-
-
-# Defaults bundled — mismo archivo shippeado como example canónico. Lo
-# cargamos en cada llamada a ``load_config`` (barato: ~5 KB de YAML) y
-# mergeamos el archivo per-device encima. Los tests pueden overridear vía
-# el kwarg ``defaults_path``.
-DEFAULTS_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "config.example.yaml"
-)
 
 
 # Defaults que se aplican cuando el bloque opcional ``best_frame`` falta
@@ -114,58 +104,53 @@ RUNTIME_SAFE_PREFIXES = (
 SHADOW_CACHE_SUFFIX = ".shadow.json"
 
 
-def load_defaults() -> dict[str, Any]:
-    """Carga solo los defaults bundled de ``config/config.example.yaml``.
+DEFAULT_DEVICE_CONFIG_PATH = "/etc/people-counter/config.yaml"
 
-    Lo usan los tools standalone de diagnóstico / setup (``diagnose_depth.py``,
-    ``capture_baseline_frames.py``, etc.) que no tienen un YAML per-device
-    contra el cual mergear y solo necesitan los invariantes fleet-wide como
-    las asignaciones CSI de las cámaras + defaults del sensor.
+
+def load_device_config(path: str | Path = DEFAULT_DEVICE_CONFIG_PATH) -> dict[str, Any]:
+    """Carga el config per-device strict — solo lee ``path``, sin merge.
+
+    Lo usan los setup tools (``calibrate.py``, ``focus_assist.py``,
+    ``preview.py``, ``roi_picker.py``, ``diagnose_depth.py``) que necesitan
+    pullear runtime knobs como ``vision.resolution`` de la misma fuente que
+    el pipeline. Strict por diseño: si el archivo no existe o le falta una
+    key que el tool requiere, el tool falla rápido con un error claro en
+    vez de caer a un default hardcoded que pueda diferir del runtime.
+
+    NO mergea con ``config/config.example.yaml`` — la fuente única de verdad
+    es ``/etc/people-counter/config.yaml`` del device. Cualquier device que
+    corra setup tools tiene que tener un config completo (no minimal override
+    contra la example).
+
+    Args:
+        path: Path al config per-device. Default ``/etc/people-counter/config.yaml``.
+
+    Returns:
+        Dict crudo del YAML. Sin validation — los callers chequean lo que
+        necesitan ellos (ej. ``cfg["vision"]["resolution"]``).
+
+    Raises:
+        FileNotFoundError: Si el archivo no existe.
     """
-    if not DEFAULTS_PATH.exists():
+    config_path = Path(path)
+    if not config_path.exists():
         raise FileNotFoundError(
-            f"Defaults config not found: {DEFAULTS_PATH}. The bundled "
-            "config.example.yaml ships with the codebase — your install "
-            "is missing it."
+            f"Device config not found: {config_path}. Los setup tools "
+            "necesitan el config per-device completo del dispositivo."
         )
-    with open(DEFAULTS_PATH, encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Devuelve un dict nuevo con ``overlay`` deep-mergeado encima de ``base``.
+def load_config(path: str) -> dict[str, Any]:
+    """Carga y valida la config del dispositivo desde un archivo YAML strict.
 
-    Los mappings recursan; los scalars y listas en ``overlay`` reemplazan los
-    de ``base`` directamente. ``base`` no se muta.
-    """
-    result = copy.deepcopy(base)
-    for key, value in overlay.items():
-        if (
-            key in result
-            and isinstance(result[key], dict)
-            and isinstance(value, dict)
-        ):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = copy.deepcopy(value)
-    return result
-
-
-def load_config(
-    path: str,
-    *,
-    defaults_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Carga y valida la config del dispositivo desde un archivo YAML.
-
-    El ``config.example.yaml`` bundled se carga primero como defaults; después
-    el YAML per-device en ``path`` se deep-mergea encima; luego el dict
-    mergeado se valida end-to-end.
+    NO mergea con ``config/config.example.yaml`` — el archivo del device es la
+    fuente única de verdad y tiene que contener todas las keys requeridas
+    (validadas por ``_validate``). Si falta una key, error duro.
 
     Args:
         path: Path al archivo YAML de config per-device.
-        defaults_path: Overridea la fuente de defaults (tests). Default al
-            ``config/config.example.yaml`` bundled shippeado con el repo.
 
     Returns:
         Dict de config validado con ``cloud_defaults`` como el cloud config
@@ -177,21 +162,8 @@ def load_config(
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    defaults_p = Path(defaults_path) if defaults_path else DEFAULTS_PATH
-    if not defaults_p.exists():
-        raise FileNotFoundError(
-            f"Defaults config not found: {defaults_p}. The bundled "
-            "config.example.yaml ships with the codebase — your install "
-            "is missing it."
-        )
-
-    with open(defaults_p, encoding="utf-8") as f:
-        defaults = yaml.safe_load(f) or {}
-
     with open(config_path, encoding="utf-8") as f:
-        per_device = yaml.safe_load(f) or {}
-
-    config = _deep_merge(defaults, per_device)
+        config = yaml.safe_load(f) or {}
 
     _validate(config)
     _normalise_best_frame(config)

@@ -28,7 +28,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.config.loader import load_defaults
+from src.config.loader import DEFAULT_DEVICE_CONFIG_PATH, load_device_config
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import StereoCapture
 from src.vision.depth import compute_disparity, create_sgbm, disparity_to_depth
@@ -112,12 +112,24 @@ def main() -> None:
         if not args.quiet:
             print(*a, **kw)
 
-    # Asignaciones de CSI de cámara + invariantes de sensor vienen de
-    # los defaults bundled en config.example.yaml — misma fuente que
-    # lee el pipeline runtime.
-    defaults = load_defaults()
-    cam_left = defaults["bracket"]["camera_left_csi"]
-    cam_right = defaults["bracket"]["camera_right_csi"]
+    # Asignaciones de CSI de cámara vienen del config per-device strict.
+    # Sin fallback a config.example.yaml — el dispositivo tiene su mapping
+    # explícito y diagnose tiene que matchear lo que usa el runtime.
+    try:
+        device_cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
+    except FileNotFoundError:
+        parser.error(
+            f"{DEFAULT_DEVICE_CONFIG_PATH} no existe. Aprovisioná el config "
+            "per-device antes de correr diagnose_depth."
+        )
+    bracket = device_cfg.get("bracket")
+    if not bracket or "camera_left_csi" not in bracket or "camera_right_csi" not in bracket:
+        parser.error(
+            f"bracket.camera_left_csi / bracket.camera_right_csi no "
+            f"definidos en {DEFAULT_DEVICE_CONFIG_PATH}."
+        )
+    cam_left = bracket["camera_left_csi"]
+    cam_right = bracket["camera_right_csi"]
 
     cal = load_calibration(args.calibration)
 

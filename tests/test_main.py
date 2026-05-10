@@ -705,9 +705,15 @@ def test_run_pipeline_capture_error_continues(mock_build_cap, mock_load_model, m
 
 
 def test_main_missing_config_exits():
-    """main() should fail if --config is not provided."""
+    """main() falla si --config no se pasa Y el default no existe.
+
+    Después del refactor strict, --config defaultea a
+    /etc/people-counter/config.yaml. En un entorno de test (Windows / CI)
+    ese path no existe, así que load_config raisea FileNotFoundError —
+    el mismo fail-fast que antes, distinta exception.
+    """
     with patch("sys.argv", ["main.py"]):
-        with pytest.raises(SystemExit):
+        with pytest.raises((SystemExit, FileNotFoundError)):
             from src.main import main
             main()
 
