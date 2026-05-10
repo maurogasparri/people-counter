@@ -36,7 +36,7 @@ _HTML = """<!DOCTYPE html>
 <head>
   <meta charset='utf-8'>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
-  <title>People Counter \xe2\x80\x94 Live</title>
+  <title>People Counter — Live</title>
   <style>
     body { margin: 0; background: #000; color: #eee;
            font-family: ui-monospace, Menlo, monospace; }
