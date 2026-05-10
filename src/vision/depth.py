@@ -337,6 +337,7 @@ def head_depth_in_bbox(
     max_head_height_mm: float = 1800.0,
     min_head_above_floor_mm: float = 500.0,
     column_radius_mm: float = 250.0,
+    blob_percentile: float = 75.0,
     debug_frame: Optional[np.ndarray] = None,
     debug_confidence: Optional[float] = None,
 ) -> Optional[float]:
@@ -427,6 +428,16 @@ def head_depth_in_bbox(
             en X o Y métrico se rechaza. Setear muy grande para
             desactivar (efectivamente revierte al comportamiento
             pre-filtro espacial).
+        blob_percentile: Percentile (0-100) sobre los depths del blob
+            de cabeza más grande dentro del slice nearest del
+            histograma. Default 75: representa la superficie típica
+            del cráneo, robusto a (a) speckle near-camera de SGBM
+            sobre hair fluff con contraste alto y (b) edge-bleed de
+            bbox cuando el envelope del bbox toca background closer
+            que la cabeza. La mediana (50) capturaba esos artefactos
+            y producía depths sistemáticamente bajos (heights
+            sistemáticamente altos). Bajar a 50 para back-compat /
+            A-B testing.
 
     Returns:
         Depth estimada de la cabeza en mm, o None si no se encuentra
@@ -589,7 +600,13 @@ def head_depth_in_bbox(
     blob_pixels = smooth[lbl == biggest]
     if blob_pixels.size == 0:
         return None
-    head_depth_mm = float(np.median(blob_pixels))
+    # ``blob_percentile`` (default 75) en vez de mediana: el blob agrupa
+    # pixels en el slice nearest [d_lo, d_hi] pero contiene tanto la
+    # superficie real del cráneo (en el lado FAR del slice) como
+    # artefactos near-camera de SGBM sobre hair fluff / edge bleed (en
+    # el lado NEAR del slice). La mediana promediaba ambos y devolvía
+    # un depth sistemáticamente más bajo que la cabeza real.
+    head_depth_mm = float(np.percentile(blob_pixels, blob_percentile))
 
     # Dump diagnóstico — gateado por toggle, auto-stop después de MAX_DUMPS.
     if _depth_debug_enabled:

@@ -420,6 +420,16 @@ head_depth:
                                     # del cuerpo. 25cm cubre cabezas reales
                                     # con holgura. Subir a >1m efectivamente
                                     # desactiva el filtro espacial.
+  blob_percentile: 75               # Percentile (0-100) sobre los depths del
+                                    # blob de cabeza más grande dentro del slice
+                                    # nearest del histograma. Default 75 captura
+                                    # la superficie típica del cráneo, robusto a
+                                    # speckle near-camera de SGBM sobre hair fluff
+                                    # con contraste alto (pixels cercanos que se
+                                    # cuelan en el mismo bin que la cabeza real
+                                    # y, con mediana, tiran el depth promedio
+                                    # hacia abajo → height sobre-estimada por
+                                    # ~3-5cm). Bajar a 50 = mediana = back-compat.
 
 
 # --- Height sanity filter (defensa post-tracker) ----------------------------

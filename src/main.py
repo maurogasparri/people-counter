@@ -572,6 +572,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     head_depth_column_radius_mm = (
         float(head_depth_cfg.get("column_radius_m", 0.25)) * 1000.0
     )
+    # Percentile sobre los depths del blob (default 75): captura la superficie
+    # del cráneo en el slice nearest del histograma sin promediar con
+    # speckle near-camera de SGBM. Ver head_depth_in_bbox docstring para
+    # rationale completo.
+    head_depth_blob_percentile = float(
+        head_depth_cfg.get("blob_percentile", 75.0)
+    )
 
     height_cfg = config.get("height", {}) or {}
     height_sanity_min_mm = _resolve_height_bound_mm(
@@ -1154,6 +1161,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                                 max_head_height_mm=head_depth_max_mm,
                                 min_head_above_floor_mm=head_depth_min_mm,
                                 column_radius_mm=head_depth_column_radius_mm,
+                                blob_percentile=head_depth_blob_percentile,
                                 # Cuando --depth-debug está on, pasamos el
                                 # frame rectificado + la confidence de la
                                 # detección así el panel de dump puede mostrar
