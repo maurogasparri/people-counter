@@ -68,6 +68,20 @@ vision:
                                     # tiene que ser reescalado para matchear via
                                     # scripts/rescale_calibration.py.
   fps: 30                           # Frame rate de captura a la resolución runtime.
+  max_exposure_us: 16000            # Cap de shutter time en microsegundos.
+                                    # Limita motion blur para que la distribución
+                                    # del runtime quede dentro de la del training.
+                                    # 16000us (16ms) reduce blur a ~5cm a 3 m/s
+                                    # (caminata viva / trote) — suficiente para
+                                    # mantener confidence del detector arriba del
+                                    # spawn threshold. AE sigue activo dentro del
+                                    # límite, compensa luz baja con AnalogueGain
+                                    # (más ruido pero shutter consistente). Setear
+                                    # a null para volver al comportamiento default
+                                    # (FrameRate=fps, shutter hasta ~1/fps). Side
+                                    # effect: la cámara corre internamente a
+                                    # 1/max_exposure_us FPS (60 con 16000us); el
+                                    # pipeline siempre lee el frame más reciente.
   calibration_file: /etc/people-counter/calibration.npz
                                     # Path al .npz de calibración estéreo.
                                     # Mismo path en cada install; el contenido
@@ -143,6 +157,29 @@ detection:
                                     # de la misma persona producen cajas
                                     # distintas que NMS no colapsa porque sus
                                     # IoUs pairwise son <0.45. 0 desactiva.
+
+  # Static FP suppressor — defense-in-depth contra clutter estructural
+  # (sombras estables, blobs aprendidos sobre maniquíes / ropa colgada
+  # que sobreviven NMS y cluster-por-centroide). Cuadricula el frame en
+  # celdas y suprime cualquier detección que caiga en una celda activa
+  # >= hit_rate_threshold de los últimos `window_seconds`. Inactivo
+  # durante warm-up para no filtrar antes de tener historia. El conteo
+  # de personas legítimas no se afecta — se mueven por el frame, no se
+  # quedan ≥70% del tiempo en la misma celda de 30px.
+  static_suppressor:
+    enabled: true
+    cell_size_px: 30                # Resolución espacial del filtro.
+                                    # 30px funciona para 1152×648 con cabezas
+                                    # ~50-80px (cada cabeza ocupa ~2-3 celdas).
+    window_seconds: 3.0             # Ventana del análisis. 3s da tiempo
+                                    # a un FP estable para acumular hit rate
+                                    # alto sin penalizar a una persona quieta.
+    hit_rate_threshold: 0.7         # Fracción mínima para considerar la
+                                    # celda hot. 0.7 separa FP estable (~1.0)
+                                    # de presencia ocasional (~0.3-0.5).
+    approx_fps: 17                  # Estimación FPS efectivo del pipeline,
+                                    # usado para convertir window_seconds
+                                    # a frames. No tiene que ser exacto.
 
 
 # =============================================================================

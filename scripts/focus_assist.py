@@ -51,7 +51,7 @@ finish_requested = False
 # Se setea True cuando el operador apreta "Comenzar" en el browser.
 # Bloquea el loop principal de captura hasta que eso pase para que (a)
 # el operador tenga tiempo de posicionarse y (b) el click unlockee el
-# audio context del browser.
+# AudioContext del browser para los beeps.
 capture_started = False
 capture_started_lock = threading.Lock()
 
@@ -836,7 +836,7 @@ main{display:flex;flex:1;min-height:0}
   <div style="color:#aaa;font-size:15px;max-width:480px;text-align:center;line-height:1.6">
     Posicioná el board ChArUco o un target texturado frente a las cámaras.
     Cuando esté listo, presioná <b>Comenzar</b>. Esto también activa el audio
-    del navegador para las indicaciones de voz.
+    del navegador para las notificaciones sonoras.
   </div>
   <button id="btn-start" style="padding:14px 36px;font-size:18px;
        background:#27ae60;color:#fff;border:none;border-radius:10px;
@@ -858,8 +858,6 @@ let finalized=false;
 // Default ON — el operador lo puede apagar y la preferencia persiste.
 let audioOn = localStorage.getItem('focus.audio') !== '0';
 let audioCtx = null;
-let lastSpokenHint = '';
-let lastSpokenAt = 0;
 function ensureAudioCtx(){
   if(!audioCtx && window.AudioContext){
     try{ audioCtx = new AudioContext(); }catch(e){}
@@ -879,14 +877,45 @@ function beep(freq, durMs, gain){
     osc.stop(ctx.currentTime + durMs/1000);
   }catch(e){}
 }
-function speak(text){
-  // Encolar utterances; no cancelar el speech in-flight así los hints fluyen.
-  if(!audioOn || !window.speechSynthesis) return;
-  try{
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'es-ES'; u.rate = 1.05;
-    window.speechSynthesis.speak(u);
-  }catch(e){}
+// Patrones diferenciados para los eventos clave de la sesión.
+function beepStart(){       // par ascendente — arranque
+  beep(600, 80); setTimeout(() => beep(900, 80), 100);
+}
+function beepFinish(){      // triple descendente — fin de sesión
+  beep(800, 100);
+  setTimeout(() => beep(600, 100), 130);
+  setTimeout(() => beep(400, 150), 260);
+}
+function beepActivated(){   // tap simple — toggle de audio ON
+  beep(900, 60);
+}
+// Pulso tipo "detector": tap corto que se acelera a medida que el foco
+// mejora. El intervalo se deriva del score normalizado (1.0 = umbral
+// MIN_SCORE de paso). El operador puede ajustar el lente sin mirar la
+// pantalla — la cadencia le dice qué tan cerca está del foco óptimo.
+let pulseTimerId = null;
+let pulseInterval = 0;
+function updatePulse(score){
+  let interval;
+  if(score < 0.25){
+    interval = 0;          // board fuera del frame o muy desenfocado
+  }else if(score >= 1.5){
+    interval = 130;        // lock holgado — pulso rápido sostenido
+  }else{
+    // [0.25 .. 1.5] → [1200 .. 130] ms (slow → fast)
+    const t = (score - 0.25) / 1.25;
+    interval = Math.round(1200 - t * 1070);
+  }
+  pulseInterval = interval;
+  if(pulseTimerId === null && interval > 0 && audioOn && !finalized){
+    schedulePulse();
+  }
+}
+function schedulePulse(){
+  pulseTimerId = null;
+  if(!audioOn || finalized || pulseInterval <= 0) return;
+  beep(700, 35, 0.06);
+  pulseTimerId = setTimeout(schedulePulse, pulseInterval);
 }
 function updateAudioBtn(){
   const b = document.getElementById('btn-audio');
@@ -897,15 +926,16 @@ function toggleAudio(){
   audioOn = !audioOn;
   localStorage.setItem('focus.audio', audioOn ? '1' : '0');
   updateAudioBtn();
-  if(audioOn){ ensureAudioCtx(); speak('Audio activado'); beep(800, 80); }
-  else if(window.speechSynthesis){
-    // Cancelar cualquier utterance in-flight + la queue así apagarlo es inmediato.
-    try{ window.speechSynthesis.cancel(); }catch(e){}
+  if(audioOn){
+    ensureAudioCtx();
+    beepActivated();
+    // Reanudar el pulso si ya hay señal activa.
+    if(pulseTimerId === null && pulseInterval > 0) schedulePulse();
   }
 }
 function startCapture(){
   ensureAudioCtx();
-  if(audioOn) speak('Comenzando ajuste de foco');
+  if(audioOn) beepStart();
   const overlay = document.getElementById('start-overlay');
   if(overlay) overlay.style.display = 'none';
   fetch('/start',{method:'POST'});
@@ -927,27 +957,18 @@ updateAudioBtn();
 setInterval(()=>{
   fetch('/status').then(r=>r.text()).then(t=>{
     document.getElementById('status').innerHTML=t;
-    // TTS del hint primario cuando cambia (throttle 3s). Comparamos
-    // el hint con los dígitos strippeados así fluctuaciones
-    // numéricas ("315 < 200" vs "318 < 200") no re-triggerean —
-    // solo los cambios semánticos lo hacen.
-    const hintMatch = t.match(/data-audio-hint="([^"]*)"/);
-    if(audioOn && hintMatch){
-      const hint = hintMatch[1];
-      const hintKey = hint.replace(/[\d.,]+/g, '').trim();
-      const now = Date.now();
-      if(hint && hintKey !== lastSpokenHint && now - lastSpokenAt > 3000){
-        lastSpokenHint = hintKey;
-        lastSpokenAt = now;
-        speak(hint);
-      }
-    }
+    // Update del pulso: score normalizado al MIN_SCORE del backend.
+    const scoreMatch = t.match(/data-pulse-score="([\d.]+)"/);
+    updatePulse(scoreMatch ? parseFloat(scoreMatch[1]) : 0);
     if(!finalized && t.indexOf('data-finalized="1"')!==-1){
       finalized=true;
+      // Cortar el pulso antes del beep de finalización para que no se solape.
+      pulseInterval = 0;
+      if(pulseTimerId !== null){ clearTimeout(pulseTimerId); pulseTimerId = null; }
       const btn=document.getElementById('finbtn');
       btn.textContent='Finalizado';
       btn.style.background='#27ae60';
-      if(audioOn) speak('Sesión finalizada');
+      if(audioOn) beepFinish();
       const w=window.open('/report','_blank');
       if(!w){
         const note=document.createElement('div');
@@ -1387,12 +1408,12 @@ def main() -> None:
                     '</div>'
                 )
 
-            # data-audio-hint: lo que el TTS del browser va a leer
-            # en voz alta. Sanitizar las comillas así el atributo
-            # parsea limpio.
-            audio_hint = lead.replace('"', '')
+            # Score normalizado al threshold para el pulso del browser:
+            # ratio del centro más débil contra MIN_SCORE. 0 = sin señal,
+            # 1.0 = umbral de paso, ≥1.5 = lock holgado.
+            pulse_score = min(ev["center_l"], ev["center_r"]) / max(1.0, MIN_SCORE)
             html = (
-                f'<div data-audio-hint="{audio_hint}" '
+                f'<div data-pulse-score="{pulse_score:.2f}" '
                 f'style="color:{color_status};font-size:18px;font-weight:700">{lead}</div>'
                 f'{lighting_html}'
                 f'{compact_html}'

@@ -54,8 +54,9 @@ class TestEvaluateFocus:
         assert not ev["checks"]["distance"]
 
     def test_only_one_camera_detects_blocks_distance_pass(self):
-        # Regression: previously falling back to whichever camera detected
-        # let LISTO fire when one was blind. Both cameras must see the board.
+        # Diseño: el LISTO requiere que ambas cámaras detecten el board.
+        # Aceptar la detección de una sola dejaría firing al LISTO con un
+        # lente ciego, comprometiendo la calibración estéreo posterior.
         g = self._sharp_grid()
         ev = focus_assist.evaluate_focus(g, g, 2000.0, None)
         assert not ev["distance_ok"]

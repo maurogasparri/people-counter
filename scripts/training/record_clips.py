@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record continuous video clips from N MJPEG HTTP streams concurrently.
+"""Grabador concurrente de clips de video de N streams MJPEG HTTP.
 
 Pensado para armar dataset de validación E2E del pipeline de conteo
 (detect → tracking → line crossing). A diferencia del capture de
@@ -12,13 +12,13 @@ stream-copy sin re-encoding (rápido + lossless). Corre en paralelo
 con ``capture_mjpeg.py`` sin conflicto (cada site soporta varias
 conexiones concurrentes en MJPEG HTTP).
 
-Usage:
+Uso:
     python scripts/training/record_clips.py \\
         --config debug/mjpeg_sites.yaml \\
         --output debug/mjpeg_clips \\
         --duration 900           # 15 minutos por site
 
-Output:
+Salida:
     <output>/<site_name>/<YYYYmmdd_HHMMSS>.mp4
 """
 from __future__ import annotations
@@ -72,13 +72,13 @@ def _record_site_realtime(
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = site_dir / f"{ts}.mp4"
 
-    logger.info("[%s] connecting → %s", name, url)
+    logger.info("[%s] conectando → %s", name, url)
     cap = cv2.VideoCapture(url)
     if not cap.isOpened():
-        logger.error("[%s] cannot open stream", name)
+        logger.error("[%s] no pude abrir el stream", name)
         return
 
-    # Probe fps
+    # Probe del fps real
     probe_frames: list[tuple[float, Any]] = []
     t_start = time.time()
     while not stop_event.is_set():
@@ -90,7 +90,7 @@ def _record_site_realtime(
             break
 
     if len(probe_frames) < 5:
-        logger.error("[%s] probe failed: %d frames in 10s",
+        logger.error("[%s] probe falló: %d frames en 10s",
                      name, len(probe_frames))
         cap.release()
         return
@@ -98,13 +98,13 @@ def _record_site_realtime(
     span = probe_frames[-1][0] - probe_frames[0][0]
     actual_fps = (len(probe_frames) - 1) / max(span, 0.1)
     h, w = probe_frames[0][1].shape[:2]
-    logger.info("[%s] real fps=%.1f, %dx%d → recording %ds",
+    logger.info("[%s] fps real=%.1f, %dx%d → grabando %ds",
                 name, actual_fps, w, h, duration)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(str(out_path), fourcc, actual_fps, (w, h))
     if not out.isOpened():
-        logger.error("[%s] VideoWriter init failed", name)
+        logger.error("[%s] VideoWriter init falló", name)
         cap.release()
         return
 
@@ -126,7 +126,7 @@ def _record_site_realtime(
     elapsed = time.time() - t_start
     size_mb = out_path.stat().st_size / 1e6 if out_path.exists() else 0
     logger.info(
-        "[%s] done: %d frames in %.1fs (%.1f fps) → %s (%.1f MB)",
+        "[%s] listo: %d frames en %.1fs (%.1f fps) → %s (%.1f MB)",
         name, n_written, elapsed, n_written / max(elapsed, 1),
         out_path.name, size_mb,
     )
@@ -166,7 +166,7 @@ def _record_site(
         "-f", "mp4",
         str(out_path),
     ]
-    logger.info("[%s] starting → %s", name, out_path.name)
+    logger.info("[%s] arrancando → %s", name, out_path.name)
     # stdin=PIPE permite mandar 'q' a ffmpeg para shutdown limpio.
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE,
@@ -205,7 +205,7 @@ def _record_site(
                        name, proc.returncode, stderr.strip()[:300])
     else:
         size_mb = out_path.stat().st_size / 1e6 if out_path.exists() else 0
-        logger.info("[%s] done → %s (%.1f MB)", name, out_path.name, size_mb)
+        logger.info("[%s] listo → %s (%.1f MB)", name, out_path.name, size_mb)
 
 
 def main() -> int:
@@ -223,7 +223,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--realtime", action="store_true",
-        help="Modo recommended: usa cv2 + auto-detección de fps real "
+        help="Modo recomendado: usa cv2 + auto-detección de fps real "
              "del stream. El MP4 resultante reproduce a real-time (sin "
              "aceleración) y cv2.VideoCapture devuelve el fps correcto. "
              "Default: ffmpeg stream-copy (rápido pero puede grabar "

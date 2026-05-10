@@ -54,23 +54,23 @@ _save_lock = threading.Lock()
 
 
 def _capture_from_cameras(camera: str) -> np.ndarray:
-    """Grab a single BGR frame from picamera2.
+    """Toma un frame BGR único desde picamera2.
 
     Args:
-        camera: "left", "right" or "both" (side-by-side view, draws on left).
+        camera: "left", "right" o "both" (vista side-by-side, dibuja sobre L).
 
     Returns:
-        Single BGR frame.
+        Un frame BGR único.
 
     Raises:
-        RuntimeError: If picamera2 is not installed or a camera fails to open.
+        RuntimeError: si picamera2 no está instalado o alguna cámara no abre.
     """
     try:
         from picamera2 import Picamera2  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError(
-            "picamera2 not installed — use --image PATH for dev testing, "
-            "or install picamera2 on the RPi."
+            "picamera2 no está instalado — usá --image PATH para testing de "
+            "desarrollo, o instalá picamera2 en la RPi."
         ) from exc
 
     want_left = camera in ("left", "both")
@@ -94,7 +94,7 @@ def _capture_from_cameras(camera: str) -> np.ndarray:
                 cam_right.close()
             except Exception:
                 pass
-        raise RuntimeError(f"Failed to open camera(s): {exc}") from exc
+        raise RuntimeError(f"No pude abrir cámara(s): {exc}") from exc
 
     frames: dict[str, np.ndarray] = {}
     try:
@@ -106,14 +106,14 @@ def _capture_from_cameras(camera: str) -> np.ndarray:
             )
             cam.configure(cfg)
             cam.start()
-        # Let auto-exposure settle.
+        # Esperamos que el AE se asiente.
         time.sleep(1.0)
         for cam, key in [(cam_left, "left"), (cam_right, "right")]:
             if cam is None:
                 continue
             raw = cam.capture_array("main")
-            # picamera2 with "BGR888" delivers RGB on current RPi OS builds;
-            # convert to BGR to match the rest of the codebase.
+            # picamera2 con "BGR888" entrega RGB en builds actuales de RPi
+            # OS; convertimos a BGR para alinear con el resto del codebase.
             frames[key] = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
     finally:
         for cam in (cam_left, cam_right):
@@ -123,11 +123,11 @@ def _capture_from_cameras(camera: str) -> np.ndarray:
                 cam.stop()
                 cam.close()
             except Exception:
-                logger.warning("Error closing camera", exc_info=True)
+                logger.warning("Error cerrando cámara", exc_info=True)
 
     if camera == "both":
         if "left" not in frames or "right" not in frames:
-            raise RuntimeError("Could not capture both cameras")
+            raise RuntimeError("No pude capturar ambas cámaras")
         return np.hstack([frames["left"], frames["right"]])
     if camera == "left":
         return frames["left"]
@@ -135,19 +135,19 @@ def _capture_from_cameras(camera: str) -> np.ndarray:
 
 
 def _load_image(path: Path) -> np.ndarray:
-    """Load a static image from disk.
+    """Carga una imagen estática del disco.
 
     Raises:
-        RuntimeError: If the image cannot be read.
+        RuntimeError: si la imagen no se puede leer.
     """
     img = cv2.imread(str(path))
     if img is None:
-        raise RuntimeError(f"Could not read image: {path}")
+        raise RuntimeError(f"No pude leer la imagen: {path}")
     return img
 
 
 def _local_ip() -> str:
-    """Best-effort local IP (for the startup hint)."""
+    """IP local best-effort (para el hint de arranque)."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
@@ -158,7 +158,7 @@ def _local_ip() -> str:
 
 def _format_yaml(x_min: int, x_max: int, y_min: int, y_max: int,
                  orientation: str, position: int) -> str:
-    """Render the counter.roi / counter.line snippet."""
+    """Renderiza el snippet counter.roi / counter.line."""
     return (
         "counter:\n"
         "  roi:\n"
@@ -173,11 +173,11 @@ def _format_yaml(x_min: int, x_max: int, y_min: int, y_max: int,
 
 
 def _validate_payload(data: dict, img_w: int, img_h: int) -> tuple[Optional[dict], Optional[str]]:
-    """Validate the JSON payload from the UI.
+    """Valida el payload JSON que viene de la UI.
 
-    Returns (cleaned_dict, None) on success, (None, error_message) on failure.
-    Coordinates are clamped to image bounds and the line must lie strictly
-    inside the ROI.
+    Devuelve ``(cleaned_dict, None)`` en éxito, ``(None, error_message)``
+    en falla. Las coordenadas quedan clampeadas a los bounds de la imagen
+    y la línea tiene que caer estrictamente dentro de la ROI.
     """
     try:
         x_min = int(round(float(data["x_min"])))

@@ -161,10 +161,11 @@ class HailoBackend:
             info.name for info in self._hef.get_output_vstream_infos()
         ]
 
-        # Activar el network group y abrir el pipeline de inferencia
-        # persistente en vez de per-frame. Mantiene el contexto HW caliente.
-        self._activation_ctx = self._network_group.activate()
-        self._activation_ctx.__enter__()
+        # Pipeline de inferencia persistente (vs per-frame). Mantiene el
+        # contexto HW caliente. NO llamar a network_group.activate() —
+        # con HailoSchedulingAlgorithm.ROUND_ROBIN el scheduler maneja la
+        # activación automáticamente, y un activate() manual queda
+        # deprecated en SDKs >=4.23 (raisea en futuras versiones).
         self._pipeline = InferVStreams(
             self._network_group, self._input_params, self._output_params
         )
@@ -207,10 +208,6 @@ class HailoBackend:
         """Libera los recursos de Hailo."""
         try:
             self._pipeline.__exit__(None, None, None)
-        except Exception:
-            pass
-        try:
-            self._activation_ctx.__exit__(None, None, None)
         except Exception:
             pass
         logger.info("hailo_backend_closed")
@@ -794,6 +791,54 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
+def suppress_contained(
+    detections: list[Detection],
+    containment_threshold: float = 0.5,
+) -> list[Detection]:
+    """Suprime detecciones cuyo bbox está mayormente contenido en otra
+    detección con confidence más alta.
+
+    Por qué esto sobre NMS y cluster por centroide: en geometría
+    cenital el detector dispara una caja chica sobre una parte del
+    cuerpo (hombro, brazo, mano) que cae dentro de la caja grande de
+    la persona. NMS estándar usa IoU pairwise — IoU es bajo cuando
+    una caja es chica y la otra es grande aunque haya overlap total,
+    así que la chica sobrevive. El cluster por centroide tampoco la
+    agarra cuando las cajas son lo suficientemente grandes para que
+    sus centroides queden a >cluster_distance_px. Containment
+    (intersection / area_chica) cierra ese gap.
+
+    Pasar ``containment_threshold <= 0`` para desactivar.
+    """
+    if containment_threshold <= 0 or len(detections) <= 1:
+        return list(detections)
+
+    sorted_dets = sorted(detections, key=lambda d: -d.confidence)
+    kept: list[Detection] = []
+    for det in sorted_dets:
+        x1, y1, x2, y2 = det.bbox
+        area = max(0, x2 - x1) * max(0, y2 - y1)
+        if area <= 0:
+            continue
+        absorbed = False
+        for k in kept:
+            kx1, ky1, kx2, ky2 = k.bbox
+            ix1 = max(x1, kx1)
+            iy1 = max(y1, ky1)
+            ix2 = min(x2, kx2)
+            iy2 = min(y2, ky2)
+            iw = ix2 - ix1
+            ih = iy2 - iy1
+            if iw <= 0 or ih <= 0:
+                continue
+            if (iw * ih) / area >= containment_threshold:
+                absorbed = True
+                break
+        if not absorbed:
+            kept.append(det)
+    return kept
+
+
 def cluster_detections(
     detections: list[Detection],
     max_centroid_distance_px: float,
@@ -943,4 +988,9 @@ def detect_persons(
     )
     if cluster_distance_px > 0:
         detections = cluster_detections(detections, cluster_distance_px)
+    # Containment suppression: corre siempre con threshold conservador.
+    # Captura el caso geométrico de un bbox chico (hombro / mano /
+    # parte de cuerpo) mayormente contenido en otro grande (cabeza /
+    # persona completa) que NMS y cluster-por-centroide dejan pasar.
+    detections = suppress_contained(detections, 0.5)
     return detections

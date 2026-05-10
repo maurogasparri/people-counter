@@ -341,9 +341,10 @@ class Counter:
     SGBM y el principal point de calibración + altura de montaje están
     disponibles, el counter usa :func:`project_to_floor` para escalar
     el head pixel hacia el principal point por ``Z_head / mount`` y
-    cuenta el cruce del *foot* pixel proyectado. Este es el truco del
-    firmware viejo de FootfallCam que la línea nueva RK3588 perdió —
-    y el diferenciador que el depth nos permite preservar.
+    cuenta el cruce del *foot* pixel proyectado. La altura 3D que SGBM
+    nos provee permite recuperar el footpoint geométricamente, evitando
+    el sesgo sistemático de contar por centroide/hombros bajo lentes
+    cenitales con FOV ancho.
 
     Cuando la proyección no es viable para un track (sin head height
     todavía, sin calibración plumbed in, mount=0), el counter cae al
@@ -355,6 +356,16 @@ class Counter:
     """
 
     META_KEY = "counter"
+
+    # Gate de mediana de confidence per-track. Bajo este threshold los
+    # campos demográficos del CountEvent (height_class, height_m,
+    # head_depth_m) se reportan como unknown/None — el bbox fue marginal
+    # a lo largo del track y la altura derivada de SGBM no es confiable.
+    # 0.5 separa razonablemente las pasadas tipo "v2 normal" (0.6-0.8)
+    # de las degradadas por motion blur (0.3-0.45 que vimos en pasadas
+    # rápidas). El conteo en sí (in/out) NO se afecta — solo la
+    # clasificación adult/child se vuelve conservadora.
+    HEIGHT_CONFIDENCE_GATE = 0.5
 
     def __init__(
         self,
@@ -398,8 +409,8 @@ class Counter:
             _validate_roi(roi) if roi else None
         )
         # Params de proyección de footpoint. Ambos tienen que estar
-        # populados para que la proyección se active; si no, nos
-        # comportamos exactamente como el counter pre-parallax-fix.
+        # populados para que la proyección se active; si no, el counter
+        # cae al modo centroide (sin corrección de parallax).
         self._mounting_height_mm: Optional[float] = (
             float(mounting_height_mm)
             if mounting_height_mm is not None and float(mounting_height_mm) > 0
@@ -666,15 +677,38 @@ class Counter:
                     "count_event",
                     extra={"track_id": track.track_id, "label": label},
                 )
+                # Demographics gate: la altura se calcula desde SGBM dentro
+                # del bbox, y SGBM degrada con motion blur (matching estéreo
+                # falla en bordes desenfocados) y con bbox poco precisos
+                # (centroide off-cabeza). Cuando la mediana de confidence
+                # del track cae bajo HEIGHT_CONFIDENCE_GATE, el bbox fue
+                # marginal a lo largo de la trayectoria y la altura
+                # derivada no es confiable — el conteo en sí (dirección,
+                # cruce) se mantiene porque solo depende del centroide.
+                # Limpiar height_m/head_depth_m a None y height_class a
+                # "unknown" así los dashboards no surfacean valores
+                # demográficos espurios.
+                conf_median = _aggregate_confidence_from_track(track)
+                if (
+                    conf_median is not None
+                    and conf_median < self.HEIGHT_CONFIDENCE_GATE
+                ):
+                    height_class = "unknown"
+                    height_m = None
+                    head_depth_m = None
+                else:
+                    height_class = _aggregate_height_class_from_track(track)
+                    height_m = _aggregate_height_m_from_track(track)
+                    head_depth_m = _aggregate_head_depth_m_from_track(track)
                 return CountEvent(
                     track_id=track.track_id,
                     direction=label,
                     timestamp=time.time(),
                     position_y=cy,
-                    height_class=_aggregate_height_class_from_track(track),
-                    height_m=_aggregate_height_m_from_track(track),
-                    head_depth_m=_aggregate_head_depth_m_from_track(track),
-                    confidence=_aggregate_confidence_from_track(track),
+                    height_class=height_class,
+                    height_m=height_m,
+                    head_depth_m=head_depth_m,
+                    confidence=conf_median,
                 )
             logger.debug(
                 "exit_without_crossing",

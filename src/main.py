@@ -56,6 +56,7 @@ from src.vision.depth import (
 from src.vision.best_frame import BestFrameManager
 from src.vision.world_coords import classify_height, head_height_above_floor
 from src.vision.detect import detect_persons, load_model
+from src.vision.static_suppressor import StaticSuppressor
 from src.web.annotate import annotate_left, compose_3panel, depth_to_colormap
 from src.web.viewer import WebViewer
 
@@ -143,11 +144,18 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
     else:
         # camera_left / camera_right vienen de config.bracket — seteado en
         # el lab, determinado por qué puerto CSI conecta cada ribbon.
+        # max_exposure_us es opcional: cap-ea shutter time vía FrameDurationLimits
+        # para reducir motion blur en runtime. Con AE auto y luz interior típica,
+        # el shutter sube hasta 30ms — produce blur OOD del training distribution
+        # para personas en movimiento rápido. 16000us (16ms) achata el blur a
+        # niveles cubiertos por los frames motion-trigger del dataset.
+        max_exposure_us = config.get("vision", {}).get("max_exposure_us")
         cap = StereoCapture(
             cam_left_id=config["bracket"]["camera_left_csi"],
             cam_right_id=config["bracket"]["camera_right_csi"],
             resolution=_runtime_resolution(config),
             fps=_runtime_fps(config),
+            max_exposure_us=max_exposure_us,
         )
     return cap
 
@@ -313,9 +321,10 @@ def _auto_num_disparities(
     runtime_w = float(
         tuple(vision_cfg.get("resolution") or config["sensor"]["default_res"])[0]
     )
-    # f_px scales linearly with width (pinhole-equiv center region). The .npz
-    # focal will be close to this once calibration loads; this estimate only
-    # has to be good enough to size the SGBM search range.
+    # f_px escala linealmente con el ancho (región centro pinhole-equiv). El
+    # focal del .npz va a estar cerca una vez que la calibración cargue; este
+    # estimado solo necesita ser suficiente para dimensionar el rango de
+    # búsqueda del SGBM.
     f_px = nominal_focal_full_px * runtime_w / full_w
     head_max_m = 1.85  # cabeza adulta más alta
     floor_margin_m = 0.5  # un poco más allá del piso así SGBM cubre todo el bg
@@ -489,6 +498,32 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             tracker_cfg.get("reid_gate_px", sm_cfg["reid_gate_px"])
         ),
     )
+
+    # Static FP suppressor: defense-in-depth contra detecciones que el
+    # detector emite consistentemente sobre clutter del ambiente
+    # (sombras, blobs estructurales). Inactivo durante warm-up; cuando
+    # se acumulan ~3s de historia identifica celdas hot por hit rate y
+    # las descarta. Configurable bajo `detection.static_suppressor`;
+    # `enabled: false` lo deshabilita (default true).
+    detect_cfg_init = config.get("detection", {})
+    ss_cfg = detect_cfg_init.get("static_suppressor", {}) or {}
+    static_suppressor: StaticSuppressor | None
+    if ss_cfg.get("enabled", True):
+        static_suppressor = StaticSuppressor(
+            cell_size_px=int(ss_cfg.get("cell_size_px", 30)),
+            window_seconds=float(ss_cfg.get("window_seconds", 3.0)),
+            hit_rate_threshold=float(ss_cfg.get("hit_rate_threshold", 0.7)),
+            approx_fps=int(ss_cfg.get("approx_fps", 17)),
+        )
+        logger.info(
+            "static_suppressor_enabled cell=%dpx window=%.1fs threshold=%.2f",
+            static_suppressor.cell_size_px,
+            float(ss_cfg.get("window_seconds", 3.0)),
+            static_suppressor.hit_rate_threshold,
+        )
+    else:
+        static_suppressor = None
+
     line_y = vision_cfg.get("counting_line_y", 0.5)
     # Counter construido lazy una vez que se conoce la altura del frame
     # (necesario para los valores relativos legacy de line_y)
@@ -958,8 +993,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # sube el floor de spawn independientemente. Las detecciones en
             # [confidence_threshold, new_track_threshold) se vuelven
             # match-only — misma banda que los candidatos low-conf pero del
-            # otro lado de confidence_threshold. Pattern del incumbent FFC:
-            # ByteTrackNewTrackThresh separado de MatchThresh evita IDs
+            # otro lado de confidence_threshold. Separar
+            # ``new_track_threshold`` de ``confidence_threshold`` evita IDs
             # fantasma cuando el detector titubea sobre clutter.
             high_conf_thr = float(detect_cfg["confidence_threshold"])
             low_conf_thr_raw = detect_cfg.get("low_confidence_threshold")
@@ -998,6 +1033,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 health_signals.detect_ok = False
                 time.sleep(0.1)
                 continue
+
+            # Static FP suppressor: cualquier celda hot acumulada en los
+            # últimos ~3s se descarta acá, antes del split en buckets.
+            # Durante warm-up devuelve la lista intacta. Si el feature
+            # está disabled, suppressor=None y skip.
+            if static_suppressor is not None:
+                all_detections = static_suppressor.update_and_filter(
+                    all_detections
+                )
+
             # Separa las detecciones en buckets spawn-eligible vs match-only.
             # Spawn-eligible: conf >= spawn_thr (max de high_conf_thr y
             # new_track_threshold). Match-only: conf < spawn_thr pero >=

@@ -51,11 +51,11 @@ logger = logging.getLogger("rescale_calibration")
 def rescale_calibration(
     cal: dict, new_w: int, new_h: int,
 ) -> dict:
-    """Return a new calibration dict mathematically rescaled to new_w × new_h.
+    """Devuelve un dict de calibración reescalado matemáticamente a new_w × new_h.
 
-    Intrinsics K scale linearly. Distortion D and extrinsics R, T are
-    invariant. Rectification (R1, R2, P1, P2, Q) and the rectify maps are
-    recomputed for the new resolution.
+    Los intrínsecos K escalan linealmente. La distorsión D y los
+    extrínsecos R, T son invariantes. La rectificación (R1, R2, P1, P2,
+    Q) y los rectify maps se recomputan para la nueva resolución.
     """
     old_size = tuple(int(v) for v in cal["image_size"])
     old_w, old_h = old_size

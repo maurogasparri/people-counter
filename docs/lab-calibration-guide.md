@@ -185,9 +185,9 @@ El wizard guía al operador a través de 20 poses, agrupadas por zona del frame 
 
 Para cada pose:
 
-1. El wizard muestra el ghost overlay (silueta translúcida del board en la posición target) y dice por TTS "Pose N. [label]. A [X]cm de la cámara".
+1. El wizard muestra el ghost overlay (silueta translúcida del board en la posición target), emite un doble-tap agudo de notificación y muestra en el banner "Pose N. [label]. A [X]cm de la cámara".
 2. El operador **mueve el trípode del board** para que coincida con el ghost: distancia, posición lateral, altura. Ajusta tilts de la cabeza del trípode (pitch/yaw/roll) según indique el ghost.
-3. El wizard detecta alineación + estabilidad (10 frames consecutivos con < 1.5px de jitter) → **captura automática**. Feedback audio confirma el shot.
+3. El wizard detecta alineación + estabilidad (10 frames consecutivos con < 1.5px de jitter) → **captura automática**. Beep cálido (660 Hz × 220ms) confirma el shot.
 4. Pasa a la siguiente pose. Si una pose tarda >180s, se auto-saltea.
 
 ### Checkpoints del wizard

@@ -537,21 +537,21 @@ def test_reset_daily():
 
 
 # ---------------------------------------------------------------------------
-# Parallax-corrected footpoint tracking — the FFC-old-firmware trick
+# Parallax-corrected footpoint tracking
 # ---------------------------------------------------------------------------
 #
-# These tests pin the behaviour described in the bug report: in zenith
-# fisheye the bbox encloses head + shoulders + torso (no feet), so using
-# the centroid as the tracking point trips line crossings several tens of
-# centimetres before the feet actually cross. Adding mount + principal
-# point lets the counter scale the head pixel toward the principal point
-# by Z_head/H, recovering the *foot* pixel.
+# Estos tests pinean el comportamiento de diseño: en fisheye cenital el bbox
+# envuelve cabeza + hombros + torso (sin pies), así que usar el centroide
+# como punto de tracking dispara cruces de línea decenas de centímetros antes
+# de que los pies efectivamente crucen. Con mount + principal point el counter
+# escala el head pixel hacia el principal point por Z_head/H y recupera el
+# pixel del *pie*.
 #
-# The tests are arranged so the parallax shift is large enough that the
-# centroid path counts a crossing and the footpoint path does NOT, or
-# vice versa — that's the only way to verify the convention is actually
-# being used (matching counts under both conventions wouldn't prove
-# anything).
+# Los tests están armados para que el shift de parallax sea lo suficientemente
+# grande como para que el path de centroide cuente un cruce y el de footpoint
+# NO, o viceversa — es la única forma de verificar que la convención se está
+# aplicando efectivamente (counts iguales bajo ambas convenciones no probaría
+# nada).
 
 
 def _meta_for_track(

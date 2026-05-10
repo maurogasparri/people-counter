@@ -80,11 +80,12 @@ def purge(
     dry_run: bool = False,
     now: float | None = None,
 ) -> tuple[int, int]:
-    """Delete files older than ``retention_days``.
+    """Borra archivos más viejos que ``retention_days``.
 
-    Returns ``(deleted, kept)``. The ``now`` parameter is injected by
-    tests so they can produce deterministic age comparisons; production
-    callers leave it ``None`` to use ``time.time()``.
+    Devuelve ``(deleted, kept)``. El parámetro ``now`` está pensado para
+    inyectarse desde los tests y producir comparaciones de edad
+    determinísticas; los callers de producción lo dejan en ``None`` para
+    usar ``time.time()``.
     """
     if not output_dir.exists():
         logger.error("output_dir does not exist: %s", output_dir)

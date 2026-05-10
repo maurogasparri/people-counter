@@ -50,6 +50,14 @@ Thumbs.db
 # Models (downloaded, not committed)
 /models/
 
+# Ultralytics default training/eval output dir — generated when calling
+# YOLO().train()/val() without an explicit project=. Regenerable, no value.
+/runs/
+
+# Kaggle download outputs — comparison.json y artefactos sueltos del
+# notebook de training. Los .pt / .onnx útiles se mueven a /models/.
+/kaggle_outputs/
+
 # Calibration captures (large image sets)
 /calibration_captures/
 /calibration/captures/

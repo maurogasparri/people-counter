@@ -450,19 +450,19 @@ class _GuidedState:
         self.bootstrap_done = False
         self.fitted_K: Optional[np.ndarray] = None
         self.drift_warning: Optional[str] = None
-        # Una key de evento corta que la capa de audio del browser va a
-        # hablar cuando cambie. Se actualiza cada tick — el browser
-        # throttlea el speech en sí.
+        # Texto del evento de audio que el browser usa para detectar
+        # pose-announcements (los que arrancan con "Pose "). Los demás
+        # hints quedan solo en el banner visual.
         self.audio_event: str = ""
         self.audio_event_seq: int = 0
-        # Último hint que realmente hablamos (key sin dígitos). Separada
-        # de banner_text así no "recordamos" haber dicho hints que
-        # quedaron suprimidos durante el lockout de la pose-announcement.
+        # Último hint que efectivamente promovimos al banner (key sin
+        # dígitos). Separada de banner_text así no "recordamos" haber
+        # mostrado hints que quedaron suprimidos durante el lockout de
+        # la pose-announcement.
         self.last_spoken_key: str = ""
-        # Texto completo del último hint hablado. Se usa para sobreescribir
-        # el banner en vivo así lo que lee el operador coincide con lo
-        # que recién escuchó (si no, fluctuaciones de 1cm entre emit y
-        # display se cuelan).
+        # Texto completo del último hint promovido al banner. Se usa
+        # para mantener estable lo que lee el operador frente a
+        # fluctuaciones numéricas (ej. "movelo 4cm" vs "movelo 3cm").
         self.locked_alignment_text: str = ""
 
 
@@ -471,7 +471,7 @@ _guided_state: Optional[_GuidedState] = None
 # Se setea True cuando el operador apreta "Comenzar" en el browser.
 # Bloquea el loop principal de captura hasta que eso pase para que (a)
 # el operador tenga oportunidad de posicionarse y (b) el click unlockee
-# el audio context del browser para TTS / beeps.
+# el AudioContext del browser para los beeps de notificación.
 _capture_started = False
 _capture_started_lock = threading.Lock()
 
@@ -491,12 +491,12 @@ _guided_server: Optional[ThreadingHTTPServer] = None
 _wizard_input_event = threading.Event()
 _wizard_input_value: str = ""
 
-# True mientras el browser está narrando una pose announcement. Lo
-# setea el path de emisión _pose_announce; lo limpia /announce-done que
-# pega el JS en SpeechSynthesisUtterance.onend (o inmediatamente si el
-# audio está apagado). Las capturas y otras emisiones de audio gatean
-# en esto así el bloque tres-piezas "número / label / distancia" nunca
-# se interrumpe.
+# True mientras el browser está reproduciendo el beep de pose-announce.
+# Lo setea el path de emisión _pose_announce; lo limpia /announce-done
+# que pega el JS al terminar el patrón de beep (o inmediatamente si el
+# audio está apagado). Las capturas y otras emisiones gatean en esto
+# así el operador siempre tiene oportunidad de leer el banner del
+# bloque "número / label / distancia" antes de que cambie.
 _announce_pending = False
 
 
@@ -652,7 +652,7 @@ def _guided_html() -> str:
     <div style="color:#aaa;font-size:15px;max-width:480px;text-align:center;line-height:1.6">
       Posicioná el board ChArUco frente a las cámaras. Cuando esté listo,
       presioná <b>Comenzar</b>. Esto también activa el audio del navegador
-      para las indicaciones de voz.
+      para las notificaciones sonoras.
     </div>
     <button id="btn-start" style="padding:14px 36px;font-size:18px;
          background:#27ae60;color:#fff;border:none;border-radius:10px;
@@ -667,9 +667,9 @@ def _guided_html() -> str:
     <div id="status" class="stat">Conectando...</div>
     <div class="row">
       <button id="btn-audio" class="btn btn-audio" onclick="toggleAudio()">Audio OFF</button>
-      <button class="btn btn-undo" onclick="flushSpeech();post('/undo')">Deshacer última</button>
-      <button class="btn btn-skip" onclick="flushSpeech();post('/skip')">Saltear pose</button>
-      <button class="btn btn-finish" onclick="if(confirm('Finalizar captura?')){flushSpeech();post('/finish')}">Finalizar</button>
+      <button class="btn btn-undo" onclick="flushAnnounce();post('/undo')">Deshacer última</button>
+      <button class="btn btn-skip" onclick="flushAnnounce();post('/skip')">Saltear pose</button>
+      <button class="btn btn-finish" onclick="if(confirm('Finalizar captura?')){flushAnnounce();post('/finish')}">Finalizar</button>
     </div>
   </div>
 <script>
@@ -705,35 +705,23 @@ function submitGt(){
       : 'Salteando validación...');
   fetch('/wizard-input', {method:'POST', body: val, headers: {'Content-Type':'text/plain'}});
 }
-function flushSpeech(){
-  // Limpia cualquier pose announcement encolado así no se cuela en la
-  // próxima fase (ej. "pose 9" todavía pending cuando la captura ya terminó).
-  if (window.speechSynthesis) {
-    try { window.speechSynthesis.cancel(); } catch(e){}
-  }
-  // También avisa al backend que el announce está "done" — si lo
-  // cancelamos a mitad del utterance, su onend no se dispara y el
-  // server se queda lockeado.
+function flushAnnounce(){
+  // Si hay un pose-announce pending, desbloqueamos el backend ya
+  // mismo. Sin esto el server queda lockeado esperando el
+  // /announce-done que el setTimeout de beepPose tenía pendiente.
   try { fetch('/announce-done', {method:'POST'}); } catch(e){}
 }
 function startCapture(){
-  // Gesto del usuario — unlockea el AudioContext para beeps + TTS.
+  // Gesto del usuario — unlockea el AudioContext para los beeps.
   ensureAudioCtx();
-  if (audioOn && window.speechSynthesis) {
-    try {
-      const u = new SpeechSynthesisUtterance('Comenzando calibración');
-      u.lang = 'es-ES';
-      window.speechSynthesis.speak(u);
-    } catch(e){}
-  }
+  if (audioOn) beepStart();
   const overlay = document.getElementById('start-overlay');
   if (overlay) overlay.style.display = 'none';
   fetch('/start',{method:'POST'});
 }
 // Default ON; el operador lo puede apagar y recordamos esa preferencia.
 let audioOn = localStorage.getItem('guided.audio') !== '0';
-let lastSpokenSeq = -1;
-let lastSpokenAt = 0;
+let lastBeepedSeq = -1;
 // State machine de beep: trackea el bucket previo de hold-progress + el last capture count
 let lastBeepBucket = -1;  // 0..3 = buckets de tick en 0/33/66% del hold
 let lastCapturedN = 0;
@@ -757,6 +745,21 @@ function beep(freq, durMs, gain){
     osc.stop(ctx.currentTime + durMs/1000);
   } catch(e){}
 }
+// Patrones diferenciados para los eventos clave del wizard.
+function beepStart(){       // par ascendente — arranque de sesión
+  beep(600, 80); setTimeout(() => beep(900, 80), 100);
+}
+function beepPose(){        // doble tap agudo — anuncio de pose nueva
+  beep(1100, 80, 0.18); setTimeout(() => beep(1100, 80, 0.18), 130);
+}
+function beepFinish(){      // triple descendente — fin de sesión
+  beep(800, 100);
+  setTimeout(() => beep(600, 100), 130);
+  setTimeout(() => beep(400, 150), 260);
+}
+function beepActivated(){   // tap simple — toggle de audio ON
+  beep(900, 60);
+}
 function updateAudioBtn(){
   const b = document.getElementById('btn-audio');
   b.textContent = audioOn ? 'Audio ON' : 'Audio OFF';
@@ -766,25 +769,13 @@ function toggleAudio(){
   audioOn = !audioOn;
   localStorage.setItem('guided.audio', audioOn ? '1' : '0');
   updateAudioBtn();
-  if (audioOn) { ensureAudioCtx(); speak('Audio activado'); beep(800, 80); }
+  if (audioOn) { ensureAudioCtx(); beepActivated(); }
   else {
-    // Cancela el speech in-flight + la queue así el OFF es inmediato.
-    // También desbloquea el backend si hay un pose announce en curso —
-    // flushSpeech postea /announce-done dado que onend no va a
-    // disparar después del cancel().
-    flushSpeech();
+    // Desbloquea el backend si hay un pose announce en curso — el
+    // setTimeout del beep que iba a postear /announce-done puede
+    // quedar pending cuando se apaga el audio.
+    flushAnnounce();
   }
-}
-function speak(text){
-  // Encola los utterances en lugar de cancelar — el operador escucha
-  // uno y después el siguiente. Nuestro dedup de 3s sobre hints
-  // idénticos mantiene la queue corta.
-  if (!audioOn || !window.speechSynthesis) return;
-  try {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'es-ES'; u.rate = 1.05;
-    window.speechSynthesis.speak(u);
-  } catch(e){}
 }
 updateAudioBtn();
 let postCaptureMode = false;
@@ -815,8 +806,9 @@ async function refresh(){
         // La fase realmente cambió — limpiar cualquier estado de prompt
         // pending así los prompts siguientes pueden renderizarse limpios.
         promptSubmitted = false;
-        // Entrar a cualquier fase post-captura tira los pose announcements encolados.
-        flushSpeech();
+        // Entrar a cualquier fase post-captura desbloquea el backend si
+        // había un pose announce pending.
+        flushAnnounce();
       }
       // Ocultar el stream en vivo una vez que la captura terminó.
       const stage = document.getElementById('stage');
@@ -886,6 +878,7 @@ async function refresh(){
       }
       if (phaseMatch[1] === 'complete' && !finalizedSeen) {
         finalizedSeen = true;
+        if (audioOn) beepFinish();
         // Solo auto-abrir el reporte cuando realmente existe (path de éxito).
         const hasReport = /data-has-report="1"/.test(html);
         if (hasReport) {
@@ -903,14 +896,13 @@ async function refresh(){
       return;
     }
     document.getElementById('status').innerHTML = html;
-    // Detectar cambio de pose y flushear la queue de speech así la
-    // nueva pose announcement arranca limpia — sin residuo de los
-    // utterances sobrantes de la pose previa drenando primero.
+    // Detectar cambio de pose y desbloquear el backend si quedaba un
+    // pose announce pending de la pose anterior.
     const poseIdxMatch = html.match(/data-pose-idx="([^"]+)"/);
     if (poseIdxMatch) {
       const idx = poseIdxMatch[1];
       if (window._lastPoseIdx !== undefined && window._lastPoseIdx !== idx) {
-        flushSpeech();
+        flushAnnounce();
       }
       window._lastPoseIdx = idx;
     }
@@ -923,39 +915,22 @@ async function refresh(){
       const seq = parseInt(m[4], 10);
       const audioText = m[5];
       const capturedN = parseInt(m[6], 10) || 0;
-      const now = Date.now();
-      // TTS: hablar cada nuevo seq. El backend ya dedupea por key
-      // semántica (sin dígitos), así que un cambio de seq significa
-      // un hint genuinamente nuevo que vale la pena decir. Confiamos
-      // en la queue en lugar de un throttle por tiempo — así nada se
-      // dropea silencioso durante capturas rápidas.
-      if (seq !== lastSpokenSeq) {
-        lastSpokenSeq = seq;
-        lastSpokenAt = now;
-        // Las pose announcements tienen handling especial: son el
-        // "bloque atómico" (número/label/distancia) y el backend
-        // espera la señal onend antes de unlockear capturas u otros
-        // hints.
+      // Reaccionamos a cada nuevo seq solo para detectar pose-announce
+      // (el bloque atómico "número/label/distancia"); los movement
+      // hints van solo al banner visual. Si es pose-announce, el beep
+      // dispara el unlock del backend cuando termina su patrón.
+      if (seq !== lastBeepedSeq) {
+        lastBeepedSeq = seq;
         const isPoseAnnounce = audioText && audioText.startsWith('Pose ');
-        if (audioOn && audioText) {
-          if (isPoseAnnounce && window.speechSynthesis) {
-            try {
-              const u = new SpeechSynthesisUtterance(audioText);
-              u.lang = 'es-ES'; u.rate = 1.05;
-              u.onend = () => fetch('/announce-done', {method:'POST'});
-              u.onerror = () => fetch('/announce-done', {method:'POST'});
-              window.speechSynthesis.speak(u);
-            } catch(e) {
-              fetch('/announce-done', {method:'POST'});
-            }
+        if (isPoseAnnounce) {
+          if (audioOn) {
+            beepPose();
+            // beepPose dura ~210ms (80 + 50 gap + 80). 250ms le da margen.
+            setTimeout(() => fetch('/announce-done', {method:'POST'}), 250);
           } else {
-            speak(audioText);
+            // Audio off — desbloqueamos el backend ya mismo.
+            fetch('/announce-done', {method:'POST'});
           }
-        } else if (isPoseAnnounce) {
-          // Audio off — desbloqueamos el backend ya mismo así el
-          // operador no se queda atrapado en un lockout que no
-          // puede escuchar.
-          fetch('/announce-done', {method:'POST'});
         }
       }
       // Beep: tick en 0/33/66% del hold-progress (buckets 0/1/2). Reset en progress=0.
@@ -1440,14 +1415,16 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         state.audio_event_seq += 1
 
     def _pose_announce(idx: int) -> str:
-        """Prompt hablado de una pose: label + distancia target en cm."""
+        """Texto del anuncio de pose: label + distancia target en cm.
+        Se muestra en el banner; el browser dispara el beep de pose
+        en paralelo cuando lo detecta (texto que arranca con "Pose ")."""
         p = poses[idx]
         z_cm = p.tvec_mm[2] / 10.0
         return f"Pose {idx + 1}. {p.label}. A {z_cm:.0f} centímetros de la cámara"
 
     def _emit_pose_announce(idx: int) -> None:
         """Emite el anuncio de pose y lockea todo lo demás hasta que el
-        browser señalice que el utterance terminó (POST /announce-done)."""
+        browser señalice que el beep de pose terminó (POST /announce-done)."""
         global _announce_pending
         _announce_pending = True
         _emit_audio(_pose_announce(idx))
@@ -1456,7 +1433,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     # o la próxima pending después del restore con resume). Saltear
     # si no hay nada que capturar — pasa con --resume en una sesión
     # que ya está completa: el wizard va directo a processing, y un
-    # TTS "Pose 1, ..." cortado a la mitad del utterance es chocante.
+    # beep de pose suelto en esa transición es ruido sin contexto.
     has_pending = any(s == "pending" for s in state.pose_status)
     if has_pending:
         _emit_pose_announce(state.current_pose_idx)
@@ -1644,23 +1621,23 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             stable = stability.is_stable() if aligned else False
 
             now = time.time()
-            # Gatear todo contra la señal precisa "announcement
-            # finished" del browser (POST /announce-done en
-            # SpeechSynthesisUtterance.onend). De esta forma el bloque
-            # tres-piezas "número / label / distancia" tiene garantizado
-            # reproducirse end-to-end sin importar la velocidad de la
-            # voz — las capturas y otros audio hints quedan bloqueados
-            # hasta que el operador realmente lo haya escuchado entero.
-            # Solo el Skip manual puede interrumpir.
+            # Gatear todo contra la señal "announcement finished" del
+            # browser (POST /announce-done que dispara el setTimeout
+            # del beep de pose-announce). De esta forma el bloque
+            # "número / label / distancia" del banner tiene garantizado
+            # estar visible un mínimo de tiempo antes de que cambie —
+            # las capturas y otros hints quedan bloqueados hasta que el
+            # operador haya tenido oportunidad de leerlo. Solo el Skip
+            # manual puede interrumpir.
             announce_settling = _announce_pending
             announce_audio_lockout = _announce_pending
             if aligned and stable and not announce_settling:
                 if hold_started_at is None:
                     hold_started_at = now
-                    # Solo decir "Mantené quieto" una vez que el nombre
-                    # de la pose terminó de sonar. La captura igual
-                    # puede correr durante esa ventana — solo no se
-                    # anuncia.
+                    # Solo emitir el hint "Mantené quieto" una vez que
+                    # el beep de pose-announce terminó. La captura
+                    # igual puede correr durante esa ventana — solo no
+                    # se promueve al banner.
                     if not announce_audio_lockout:
                         _emit_audio("Mantené quieto")
                 hold_progress = min(1.0, (now - hold_started_at) / STABILITY_HOLD_SEC)
@@ -1818,9 +1795,10 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                         "[%d/%d] Pose %s capturada — %s (common=%d, sync=%.1fms)",
                         count, len(poses), pose.id, pose.label, common_n, lr_delta_ms,
                     )
-                    # No TTS de "Capturada" — el beep de captura ya
-                    # lo confirma y una confirmación hablada solo
-                    # demora que se escuche la próxima pose announce.
+                    # El beep de captura cálido (660 Hz × 220ms) ya
+                    # confirma el evento — no emitimos ningún audio
+                    # adicional para no demorar el beep de la próxima
+                    # pose announce.
 
                     # Handoff de bootstrap: después de N capturas Y
                     # diversity de distancia entre las 3 bandas,
@@ -1897,7 +1875,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 banner_color = "#3498db"
                 audio_text = ""
             elif err is not None and err["matched"] >= 4:
-                # Convertir offsets de píxeles a cm para el hint de voz —
+                # Convertir offsets de píxeles a cm para el hint del banner —
                 # mucho más intuitivo para el operador que "movelo 47 píxeles".
                 if state.fitted_K is not None:
                     f_px_for_hint = float(state.fitted_K[0, 0])
@@ -1923,9 +1901,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             # Refrescar el audio event solo cuando el banner cambia
             # SEMÁNTICAMENTE — strippear los dígitos así "movelo
             # izquierda 4cm" vs "movelo izquierda 3cm" cuentan como el
-            # mismo hint y no re-triggerean TTS. También saltearlo
+            # mismo hint y no flaggean otra emisión. También saltearlo
             # durante la grace window post-pose-announcement así el
-            # TTS del nombre de pose no es inmediatamente sobrescrito
+            # texto de la pose en el banner no se sobrescribe inmediatamente
             # por un movement hint (state.audio_event es un slot único
             # — gana el último write).
             import re as _re

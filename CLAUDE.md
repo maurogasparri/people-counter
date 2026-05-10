@@ -4,397 +4,194 @@
 
 Sistema de conteo de personas de bajo costo para locales comerciales. Visión estéreo + IA en el borde + detección pasiva de tráfico WiFi/BLE.
 
-**Este es un proyecto de producción real.** La calidad del código, el manejo de errores y la resiliencia son críticos. Los dispositivos operan desatendidos 12h/día, 363 días/año.
+**Proyecto de producción real**: dispositivos operan desatendidos 12h/día, 363 días/año. Calidad de código, manejo de errores y resiliencia son críticos.
 
 ## Arquitectura
 
 ```
 +---------------------------------------------+
 |        Dispositivo edge (por local)          |
-|  RPi5 4GB + Hailo-8L 13T + 2x IMX708       |
+|  RPi5 4GB + Hailo-8L 13T + 2x IMX708         |
 |                                              |
-|  +----------+  +----------+  +--------+     |
-|  |  Visión   |  | WiFi/BLE |  |  MQTT  |    |
-|  |           |  |          |  | Client |    |
-|  |           |  |          |  |        |    |
-|  | Stereo -> |  | Monitor  |  | QoS 1  |    |
-|  | YOLOv8n ->|  | Probe -> |  | Buffer |    |
-|  | Track ->  |  | Hash ->  |  | SQLite |    |
-|  | Count     |  | Dedup    |  |        |    |
-|  +----------+  +----------+  +--------+     |
+|  +----------+  +----------+  +--------+      |
+|  |  Visión  |  | WiFi/BLE |  |  MQTT  |      |
+|  | Stereo → |  | Monitor  |  | QoS 1  |      |
+|  | YOLOv8n →|  | Probe →  |  | Buffer |      |
+|  | Track →  |  | Hash →   |  | SQLite |      |
+|  | Count    |  | Dedup    |  |        |      |
+|  +----------+  +----------+  +--------+      |
 +------------------+---------------------------+
                    | MQTT (TLS + X.509)
                    v
 +---------------------------------------------+
 |              AWS Cloud                       |
-|                                              |
-|  IoT Core -> Timestream (series temporales)  |
-|           -> Lambda (WiFi/BLE dedup)         |
-|           -> DynamoDB (hashes dedup)         |
-|           -> API Gateway -> QuickSight       |
+|  IoT Core → Timestream (series temporales)   |
+|          → Lambda (WiFi/BLE dedup)           |
+|          → DynamoDB (hashes dedup)           |
+|          → API Gateway → QuickSight          |
 +---------------------------------------------+
 ```
 
 ## Hardware por unidad
 
-- Raspberry Pi 5 4GB — SBC principal
-- Raspberry Pi Active Cooler — fan PWM + disipador para gestión térmica
-- Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — acelerador neuronal
-- 2x Arducam IMX708 12MP HDR, lente M12 120 HFOV (B0310) vía CSI — par estéreo, baseline 14cm
-- Waveshare PoE HAT (H) 25.5W (802.3at) conectado por dupont (2× 5V + 2× GND para repartir corriente, no stackeado) — alimentación por Ethernet
-- LED RGB 3mm common cathode — status visual al operador, dupont 2x2 al header (R/G/B vía GPIO 17/18/27 con resistores 150/100/100Ω, cátodo a GND pin 14)
-- SanDisk Extreme 64GB microSD — boot + almacenamiento
+- Raspberry Pi 5 4GB + Active Cooler
+- Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — único HAT stackeado
+- 2× Arducam IMX708 12MP HDR M12 120° HFOV (B0310) vía CSI — par estéreo, baseline 14cm
+- Waveshare PoE HAT (H) 25.5W — alimentación, conectado por dupont (no stackeado)
+- LED RGB 3mm common cathode — GPIO 17/18/27 + GND pin 14, resistores 150/100/100Ω
+- SanDisk Extreme 64GB microSD
 
 ## Decisiones técnicas clave
 
 ### Pipeline de visión
-- **Calibración estéreo**: patrón ChArUco (A3 landscape, 9x6 squares, checker 45mm / marker 33mm, DICT_4X4_100, 40 esquinas internas), **modelo fisheye Kannala-Brandt** con `cv2.fisheye.calibrate` (4 coef angulares k1–k4), apropiado para el lens Arducam 120°×152° que opera en zona útil hasta ±40% horizontal del frame. El flag `--dict` en `calibrate.py` permite usar boards alternativos. R y T del par se derivan de los extrínsecos per-pose que devuelve `fisheye.calibrate` (promedio + proyección SO(3)), manejando counts de puntos variables entre poses. Intrínsecos/extrínsecos guardados como `.npz` por dispositivo. **Protocolo de lab (universal para toda la flota mount 2.0–3.5m)**: foco y calibración se hacen una sola vez en laboratorio con distancias fijas, mount-independent. Foco a 1.5m ±20cm — punto que peakea el DoF (0.59m a ∞ con M12 f/2.0 + IMX708 binned, CoC=4.2μm) sobre el rango operativo bbox completo (cabeza+pie) de 1.0–3.5m, simétrico en ambos extremos. Calibración con poses a 1.0/2.0/3.0m: el polinomio K-B es angular (depth-independent), las 3 distancias + tilts en grupos A–E muestrean distorsión en periferia. 3.0m es el límite práctico (markers de 33mm a esa distancia caen a ~11px, edge de detección ChArUco). Floor a 3.5m queda como extrapolación 17%, K-B la tolera bien. `mounting_height_m` en `config.yaml` es solo para runtime (SGBM auto-tune, head-height gating), NO entra en calibración ni en foco. Validar con `scripts/diagnose_depth.py` — chequea 5 zonas (centro + 4 esquinas), exige error centro <5% a 2m / <10% a 3m.
-- **Óptica de las cámaras**: Arducam B0310 con M12 120° HFOV (fisheye). Focal física 2.87mm / pixel pitch 1.4μm → pinhole-equivalente `f_px = 2050` a full-res 4608x2592 (`NOMINAL_FOCAL_PX` en `src/vision/calibration.py`). El FOV es fisheye real, no rectilíneo — la fórmula `f = (W/2)/tan(HFOV/2)` no aplica y daría valores erróneos.
-- **Sensor modes (IMX708)**: el modo canónico para este pipeline es **2304×1296 binned 2x2** (full FOV, 16:9, hasta 56 fps). `focus_assist.py` y `calibrate.py` lo pinean con `raw={"size": (2304, 1296)}`. Razones por las que es el modo elegido frente al full-res 4608×2592: ChArUco detection corre 4× más rápido (≥8 FPS vs <2 FPS en Pi 5 a full-res), el binning 2x2 mejora SNR, y la rectificación + SGBM cabe en el budget de 30+ FPS. Otros modos disponibles (`2304×1296 @ 30fps HDR`, `1536×864 @ 120fps` partial-FOV crop) quedan reservados para casos especiales. Para runtime de inferencia, `vision.resolution` puede ser una rescala lineal del modo de calibración (ej. 1152×648 vía `scripts/rescale_calibration.py`) — la calibración Kannala-Brandt es resolución-independiente en intrínsecos angulares, así que el K se reescala analíticamente.
-- **Rectificación**: mapas precomputados vía `cv2.fisheye.initUndistortRectifyMap` (balance=0.0 para cero bordes negros, que ensucian SGBM). Aplicados por par de frames con `cv2.remap`.
-- **Profundidad**: Semi-Global Block Matching (`cv2.StereoSGBM`) sobre par rectificado + matcher derecho + filtro WLS (`cv2.ximgproc.DisparityWLSFilter`). El config `vision.num_disparities` acepta `"auto"` — el pipeline deriva el rango de búsqueda de disparidades desde `mounting_height_m`, cubriendo exactamente las distancias donde van a aparecer cabezas + piso. Sites altos corren SGBM más rápido, sites bajos obtienen más rango automáticamente. Un int explícito override es posible si hace falta (`192`, `256`, etc.).
-- **Detección**: YOLOv8n fine-tuneado a geometría cenital, compilado a HEF para Hailo-8L. Corre en Hailo-8L a 30+ FPS. Usa API VStream de `hailo_platform` con activación persistente, VDevice compartido (`group_id="SHARED"`, scheduling `ROUND_ROBIN`), y NMS on-chip. **El YOLOv8n stock entrenado en COCO no sirve** — sus etiquetas `person` están aprendidas sobre vistas frontales/laterales de CrowdHuman, no top-down. La cabeza desde 2.5-3m es geometría que el modelo nunca vio. Phase A del training resuelve esto fine-tuneando sobre datasets de overhead-head detection (Roboflow Universe). Pipeline detallado en `scripts/training/README.md`.
-- **Tracking**: tracker por distancia euclidiana en espacio 3D (x, y, profundidad). ID único por trayectoria.
-- **Conteo**: línea virtual en coordenadas de profundidad. Dirección de cruce = evento ingreso/egreso. Publicación inmediata vía MQTT.
+
+- **Calibración estéreo**: ChArUco A3 (9×6 / 45mm / 33mm / DICT_4X4_100), modelo fisheye Kannala-Brandt (`cv2.fisheye.calibrate`). Lab universal (mount 2.0-3.5m): foco a 1.5m, calibración a 1.0/2.0/3.0m. Validar con `scripts/diagnose_depth.py` (error centro <5% a 2m, <10% a 3m).
+- **Óptica**: Arducam B0310 fisheye real, no rectilíneo. Focal pinhole-equivalente `f_px = 2050` a full-res 4608×2592. La fórmula `f = (W/2)/tan(HFOV/2)` NO aplica.
+- **Sensor mode canónico**: 2304×1296 binned 2×2, full FOV, 16:9, hasta 56 fps. Runtime puede usar rescale lineal (ej. 1152×648 vía `scripts/rescale_calibration.py`) — K-B es resolución-independiente en intrínsecos angulares.
+- **Rectificación**: `cv2.fisheye.initUndistortRectifyMap` (balance=0.0) + `cv2.remap`.
+- **Profundidad**: SGBM + matcher derecho + WLS filter. `vision.num_disparities: auto` deriva el rango desde `mounting_height_m`.
+- **Detección**: YOLOv8n fine-tuneado (cenital), HEF para Hailo-8L. NMS on-chip. VStream API con scheduler ROUND_ROBIN. Modelo activo: `people-counter-detector`. Pipeline detallado en `scripts/training/README.md`.
+- **Tracking**: euclidiano 3D (x, y, profundidad) con Kalman per-track + state machine corta (CANDIDATE → CONFIRMED → PENDING → LOST).
+- **Conteo**: línea virtual + ROI rectangular. Track entra al ROI → cruza línea → sale del ROI = evento ingress/egress. Publicación inmediata vía MQTT.
 
 ### Captura WiFi/BLE
-- **WiFi**: CYW43455 en monitor mode vía nexmon (firmware-nexmon + brcmfmac-nexmon-dkms de paquetes Kali) + airmon-ng. Captura probe requests en 2.4 Y 5 GHz. **WiFi es EXCLUSIVO para probing — la conectividad de red es solo por Ethernet.**
-- **BLE**: Mismo CYW43455 vía bleak (API D-Bus de BlueZ). Escaneo pasivo de advertising.
-- **Hashing**: SHA-256 truncado a 16 bytes sobre cada MAC antes de almacenar. Nunca se guardan MACs crudas.
-- **Dedup L1 (intra-protocolo)**: set SQLite de hashes por día por protocolo. Reset al inicio del día comercial.
-- **Dedup L2 (cross-protocolo)**: WiFi + BLE dentro de ventana de 2s Y delta RSSI <= 5dBm -> hash unificado.
-- **Dedup L3 (inter-cámara)**: Cloud Lambda + DynamoDB por store_id + fecha.
+
+- **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**.
+- **BLE**: bleak (D-Bus de BlueZ), escaneo pasivo.
+- **Hashing**: SHA-256 truncado a 16 bytes. **Nunca MACs crudas**.
+- **Dedup**: L1 intra-protocolo (SQLite por día), L2 cross-protocolo (ventana 2s + ΔRSSI ≤5dBm), L3 inter-cámara (Lambda + DynamoDB).
 
 ### Comunicación
-- **MQTT**: protocolo 3.1.1 sobre AWS IoT Core, certificados cliente X.509, QoS 1.
-- **Eventos de conteo**: en tiempo real en cada cruce.
-- **Resúmenes WiFi/BLE**: cada 15 min.
-- **Telemetría**: cada 5 min (temp CPU, temp Hailo, RAM, disco, uptime).
-- **Buffer SQLite**: todos los eventos se almacenan localmente. Replay al reconectar. Se marca enviado solo después de PUBACK.
+
+- **MQTT** 3.1.1 sobre AWS IoT Core, X.509, QoS 1.
+- Eventos de conteo en tiempo real, resúmenes WiFi/BLE cada 15min, telemetría cada 5min.
+- **Buffer SQLite local**: replay al reconectar, marca enviado solo tras PUBACK.
 
 ### Status LED
-- **Hardware**: RGB 3mm common cathode en GPIO 17 (R, 150Ω) / 18 (G, 100Ω) / 27 (B, 100Ω) + GND pin 14, dupont 2x2. Resistencias asimétricas porque G y B (InGaN, Vf≈3.1V) tienen apenas 0.2V de headroom contra los 3.3V del GPIO mientras que R (AlGaInP, Vf≈2.1V) tiene 1.2V — los valores apuntan a brillo perceptualmente parejo entre canales, no a corrientes iguales. Sin esa asimetría las mezclas tiran al verde por la mayor eficiencia luminosa del eye response.
-- **Esquema**: 8 estados (apagado / rojo fijo / amarillo fijo / amarillo parpadeante / verde parpadeante / verde fijo / azul fijo / azul parpadeante) — el operador del local interpreta sin SSH. Cascada de prioridad worst-first: HW > pipeline > internet > cloud > OK.
-- **Health checks** (`src/status/health.py`): CPU temp <80°C, Hailo temp <85°C, disco free >10%, calibración cargable, captura/inferencia OK, pipeline watchdog (`last_loop_ts` <5s), internet TCP a 1.1.1.1:53 (cacheado 30s), MQTT `connected` flag.
-- **Monitor en thread separado** (`src/status/monitor.py`): probes blocking (socket connect 3s timeout) no estresan el hot path del pipeline. `HealthSignals` es shared state mutable; el pipeline escribe, el monitor lee — atomicidad garantizada por el GIL para tipos primitivos.
-- **Fail-safe**: si `gpiozero` no está disponible o los pines no se pueden abrir, `StatusLED` cae a no-op + log INFO. Permite correr el servicio en bench sin LED conectado y los tests sin GPIO real.
-- **Bajo consumo asociado**: LEDs onboard ACT/power (vía `dtparam=*_led_trigger=none` + `*_led_activelow=off`) + LEDs del jack Ethernet (`eth_led0=4`, `eth_led1=4`) + audio PWM (`dtparam=audio=off`) apagados — el RGB externo es la única fuente visual de estado.
+
+- 8 estados (apagado / rojo / amarillo / amarillo blink / verde blink / verde / azul / azul blink) en cascada worst-first: HW > pipeline > internet > cloud > OK.
+- Health probes: CPU/Hailo temp, disco, calibración, captura/inferencia, watchdog (`last_loop_ts` <5s), internet TCP a 1.1.1.1:53, MQTT connected.
+- Monitor en thread separado (probes blocking no estresan el hot path). Fail-safe: sin GPIO → no-op + log INFO.
+- LEDs onboard ACT/power/Ethernet/audio apagados via dtparam — el RGB externo es la única fuente visual.
 
 ### Cloud (AWS)
-- IoT Core: broker MQTT + rules engine.
-- Timestream: series temporales de conteo. 7 días en memoria, magnético para historial.
-- Lambda: dedup WiFi/BLE entre cámaras por local.
-- DynamoDB: tabla de hashes de dedup, particionada por store_id + fecha.
-- API Gateway: API REST para consultas.
-- QuickSight: dashboards.
+
+- IoT Core (broker + rules) → Timestream (conteo) + Lambda (dedup L3) + DynamoDB (hashes) + API Gateway → QuickSight.
 
 ## Convenciones de código
 
-- **Lenguaje**: Python 3.13 (RPi OS Trixie)
-- **Formatter**: Black, 88 chars
-- **Linter**: Ruff
-- **Type hints**: requeridos en todas las firmas de funciones
-- **Logging**: módulo `logging`, JSON estructurado. DEBUG para dev, INFO para prod.
-- **Config**: un único archivo per-device.
-  - `config/config.example.yaml` (en repo): la referencia canónica con todos los defaults de la flota. `load_config()` la lee como base y deep-mergea encima `/etc/people-counter/config.yaml` (per-device override). Cualquier key ausente en el per-device cae al default del example.
-  - `/etc/people-counter/config.yaml` (per-device, mutable): identidad del dispositivo + cosas que cambian con el sitio (mounting_height_m, ROI/lines, certs, endpoint MQTT). Puede ser tan minimal como device.id + mqtt.endpoint — los defaults llenan el resto.
-  - **No hay separación fleet vs site**. Si una key debería cambiar para todos los devices, se cambia en el example y se redeploya o se pushea via cloud shadow (RUNTIME_SAFE_KEYS en `src/config/loader.py`).
-- **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. Nunca commitear.
+- **Lenguaje**: Python 3.13 (RPi OS Trixie). Black 88 chars, Ruff, type hints obligatorios.
+- **Logging**: módulo `logging` JSON estructurado. DEBUG dev / INFO prod.
+- **Config**: archivo único per-device.
+  - `config/config.example.yaml` (en repo): defaults canónicos de la flota. `load_config()` lo lee como base y deep-mergea encima `/etc/people-counter/config.yaml` (per-device override).
+  - **No hay separación fleet vs site**. Cambios fleet-wide se hacen en el example o se pushean por shadow (RUNTIME_SAFE_KEYS en `src/config/loader.py`).
+- **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. **Nunca commitear**.
 - **Tests**: pytest, estructura espejo de src.
-- **No usar clases salvo que haya estado.** Tracker y MQTTClient justifican clases. Preferir funciones en el resto.
-- **Todo I/O debe tener manejo de errores.** Lectura de cámara, publicación MQTT, escritura de archivo — todo wrapeado.
+- **No usar clases salvo que haya estado.** Tracker, MQTTClient justifican clases. Resto = funciones.
+- **Todo I/O wrapeado** con manejo de errores.
 
 ## Estructura del directorio
 
 ```
 people-counter/
-├── CLAUDE.md
-├── README.md
-├── pyproject.toml
+├── CLAUDE.md, README.md, pyproject.toml, .gitignore
 ├── src/
-│   ├── vision/
-│   │   ├── capture.py     <- adquisición de frames estéreo (CSI en vivo + replay de archivos)
-│   │   ├── calibration.py <- calibración ChArUco + rectificación
-│   │   ├── depth.py       <- disparidad SGBM + conversión a profundidad
-│   │   └── detect.py      <- inferencia YOLOv8n (backends Hailo + OpenCV)
-│   ├── tracking/
-│   │   ├── tracker.py     <- tracker euclidiano 3D
-│   │   └── counter.py     <- lógica de cruce de línea virtual
-│   ├── wifi_ble/
-│   │   ├── wifi_probe.py  <- captura nexmon/airmon-ng de probes
-│   │   ├── ble_scan.py    <- captura de advertising BLE vía bleak
-│   │   ├── hasher.py      <- hashing SHA-256 truncado
-│   │   └── dedup.py       <- dedup intra + cross-protocolo
-│   ├── mqtt/
-│   │   ├── client.py      <- cliente MQTT AWS IoT Core
-│   │   └── buffer.py      <- buffer local SQLite
-│   ├── cloud/
-│   │   └── lambda_dedup.py <- dedup inter-cámara L3
-│   ├── status/
-│   │   ├── led.py         <- driver RGB LED + state machine + blink thread
-│   │   ├── health.py      <- probes (CPU/Hailo temp, disco, internet, cloud) + decide_state
-│   │   └── monitor.py     <- thread background que mapea HealthSignals -> LedState
-│   ├── config/
-│   │   └── loader.py      <- carga y validación de config YAML
-│   └── main.py            <- orquestador del pipeline completo
-├── tests/                 <- 699 tests en todos los módulos
+│   ├── vision/         <- capture, calibration, depth, detect, static_suppressor, world_coords, best_frame
+│   ├── tracking/       <- tracker (Kalman + state machine), counter (ROI + line crossings)
+│   ├── wifi_ble/       <- wifi_probe, ble_scan, hasher, dedup
+│   ├── mqtt/           <- client (AWS IoT), buffer (SQLite outbox)
+│   ├── cloud/          <- lambda_dedup (L3 inter-cam)
+│   ├── status/         <- led, health, monitor (background thread)
+│   ├── config/         <- loader (deep-merge example + per-device)
+│   └── main.py         <- orquestador del pipeline
+├── tests/              <- 716 tests, estructura espejo de src
 ├── scripts/
-│   ├── calibrate.py       <- herramienta CLI (generate-board, capture, calibrate, verify, wizard, reset).
-│   │                         wizard es el flujo end-to-end con UI web: start overlay,
-│   │                         captura guiada con ghost silueta + audio TTS,
-│   │                         bootstrap de intrínsecos, residuales por par,
-│   │                         ground-truth check, reporte auto-open.
-│   │                         Tolerance presets loose/normal/strict, --dict configurable.
-│   │                         Default 2304×1296 binned (modo canónico de la flota).
-│   │                         Pre-calibration sanity gate: re-detecta los pares
-│   │                         capturados y aborta si <70% pasan detección en
-│   │                         ambas cámaras. Coverage critical block: si falta
-│   │                         banda completa (near/mid/far) o grupo de poses
-│   │                         (A/B/C/D), bloquea — pasar --force-degenerate-coverage
-│   │                         para overridear. UI panel muestra L/R corner counts
-│   │                         con highlight ámbar cuando una cámara silenciosamente
-│   │                         falla detección. Subcomando `reset --yes` limpia
-│   │                         captures + session.json + .npz para restart limpio.
-│   │                         --low-light: preset PoC que afloja los gates de
-│   │                         assess_frame_quality (exposure/blur/corner-sharp/
-│   │                         L-R balance) — el .npz resultante NO es válido
-│   │                         para producción, solo valida que el wizard corra.
-│   │                         Preview L durante captura guiada NO dibuja overlay
-│   │                         de ChArUco (badge "N esquinas" en su lugar) para
-│   │                         no tapar el área del ghost; R sí lo dibuja como
-│   │                         diagnóstico de la cámara derecha.
-│   │                         Flags AE: --meter matrix|centre|spot expone para
-│   │                         centro cuando hay zonas brillantes en la periferia
-│   │                         (ventanas, lámparas) que descompensan el AE
-│   │                         matrix-default. --lock-ae lockea exposición tras
-│   │                         settle de 1s (default off — AE auto durante toda
-│   │                         la sesión). Bootstrap diferido hasta tener al
-│   │                         menos una captura en cada banda (near/mid/far)
-│   │                         para evitar fitted_K erróneo cuando las primeras
-│   │                         poses están concentradas en una sola distancia.
-│   ├── focus_assist.py    <- asistente de foco guiado, UI web: start overlay,
-│   │                         barras de nitidez central + corners (absoluto) + simetría L/R,
-│   │                         peak tracker, masking de zonas de bajo contraste,
-│   │                         audio TTS, reporte auto-open. Captura a 2304×1296 (binned).
-│   │                         Auto-detecta "escena compacta" (bbox del board >25% del frame)
-│   │                         y omite el check de corners en esa geometría. --scene=
-│   │                         auto|compact|full override, --min-corner-score N ajusta umbral.
-│   │                         L/R parity check: mide la disparidad horizontal del
-│   │                         centroide del board entre cámaras y la compara contra
-│   │                         la disparidad esperada por baseline+depth — pill verde
-│   │                         "L/R OK", roja "INVERTIDO" o ámbar "magnitud rara"
-│   │                         (sign correcto pero off por >2.5× respecto del esperado).
-│   │                         --low-light: preset PoC que afloja todos los gates
-│   │                         (centro/corners/L-R/distancia) y fuerza scene=compact
-│   │                         para validar el flujo en cuarto chico/oscuro.
-│   │                         Flag AE: --meter matrix|centre|spot expone para
-│   │                         centro cuando hay zonas brillantes en periferia.
-│   ├── diagnose_depth.py  <- diagnóstico de estimación de profundidad. 5 zonas
-│   │                         (centro + 4 esquinas) con clasificación de
-│   │                         confianza por zona (std + fill rate): ✓ Coincide /
-│   │                         ● Otro plano / ⚠ SGBM falló. Verdict basado solo en
-│   │                         centro (única zona con distancia medida con
-│   │                         cinta/láser); ratio borde/centro mostrado pero
-│   │                         informativo, gate solo en escenas con target plano.
-│   │                         Lee camera CSI defaults desde `config/config.example.yaml`
-│   │                         (bracket.camera_left_csi/camera_right_csi).
-│   │                         Flags: --meter centre/spot, --lock-ae.
-│   ├── preview.py         <- preview en vivo browser-driven, mismo UX que
-│   │                         focus_assist + calibrate (start overlay, header).
-│   │                         MJPEG side-by-side L|R con grid de tercios +
-│   │                         crosshair central. Para apuntar el bracket o
-│   │                         verificar oclusión / centrado / wiring antes de
-│   │                         correr foco o calibración. Sin detección, sin
-│   │                         análisis. Flag --meter centre/spot para luz baja.
-│   ├── download_model.py  <- descarga YOLOv8n: HEF pre-compilado del Hailo
-│   │                         Model Zoo (subcomando `hef`) o exportación ONNX
-│   │                         vía ultralytics (subcomando `onnx`). Para
-│   │                         producción usar el HEF fine-tuneado del pipeline
-│   │                         de `scripts/training/`, no el stock COCO.
-│   ├── capture_baseline_frames.py <- captura frames rectificados (cam izq.)
-│   │                         de la Pi para el bench de validación. Mismo
-│   │                         path que main.py (StereoCapture + rectify_pair),
-│   │                         pero guarda a JPG en lugar de detectar. Solo
-│   │                         para validación (inferencia), nunca training.
-│   ├── training/          <- infraestructura del lado del workstation
-│   │   │                     para el pipeline de training del detector
-│   │   │                     cenital. El notebook específico se materializa
-│   │   │                     cuando se decide el dataset; las herramientas
-│   │   │                     de abajo son reutilizables a través de
-│   │   │                     iteraciones.
-│   │   ├── README.md      <- estado actual del pipeline + workflow del bench
-│   │   │                     + workflow Kaggle (Save & Run All) + setup
-│   │   │                     WSL2/Hailo y deploy a la Pi.
-│   │   ├── download_roboflow.py <- pull de dataset Roboflow Universe a
-│   │   │                     dataset/, formato YOLOv8 (data.yaml + train/
-│   │   │                     valid/test). API key vía env var. Pasa
-│   │   │                     overwrite=True por default — el SDK no-opea
-│   │   │                     silencioso si la dir existe.
-│   │   ├── bench_detector.py <- bench de inferencia (cualquier .pt o .onnx)
-│   │   │                     sobre folder de frames. Reporta detection rate
-│   │   │                     + per-zone counts (centro+4 esquinas) + stats
-│   │   │                     de confidence. Subcommands `bench` y `diff`
-│   │   │                     para comparar dos modelos.
-│   │   ├── bench_roboflow_api.py <- triage de modelos publicados en Roboflow
-│   │   │                     Universe via inference REST. Compara detection
-│   │   │                     rate / mean conf / FP rate sin descargar pesos.
-│   │   │                     Soporta endpoints `detect.*` y `serverless.*`.
-│   │   ├── capture_mjpeg.py <- capturador multi-site de streams MJPEG
-│   │   │                     HTTP. Sites configurables vía YAML. Modos:
-│   │   │                     random-interval (cobertura temporal uniforme)
-│   │   │                     o motion-trigger (cv2.absdiff entre frames
-│   │   │                     consecutivos, multiplica × 10-50 la fracción
-│   │   │                     útil para validation). --background-interval:
-│   │   │                     en motion mode guarda también un frame "bg"
-│   │   │                     cada N seg independiente del motion (control
-│   │   │                     para medir FP rate del detector después).
-│   │   │                     --operating-hours START:END filtra por horario
-│   │   │                     local. Filenames distinguen `_motion_` vs `_bg_`.
-│   │   └── .env.example   <- convención del env-var ROBOFLOW_API_KEY
-│   ├── provision.py       <- provisioning + disaster recovery (create/deploy/harvest/reprovision/list)
-│   ├── verify_hardware.py <- verificación de hardware
-│   └── setup_device.sh    <- setup automático del dispositivo (pasos 4-10)
-├── dataset/               <- gitignoreado salvo el README. Datasets de
-│                              training (zips o folders descargados) van
-│                              acá. Tracked: solo el README.
-├── calibration/
-│   └── calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf <- board ChArUco (PDF vectorial calib.io, A3 landscape)
-├── infra/
-│   └── cloudformation/
-│       └── people-counter.yaml <- stack completo (IoT, Timestream, DynamoDB, Lambda)
-├── docs/
-│   ├── setup-guide.md          <- guía de ensamblaje + setup RPi (13 pasos)
-│   ├── lab-calibration-guide.md <- protocolo de foco + calibración en lab (universal)
-│   └── pilot-operator-guide.md <- guía del operador en sitio
-└── config/
-    ├── config.example.yaml
-    └── people-counter.service <- servicio systemd
+│   ├── calibrate.py    <- CLI con wizard end-to-end (browser-driven, ChArUco, ground-truth check)
+│   ├── focus_assist.py <- asistente de foco guiado (browser-driven)
+│   ├── diagnose_depth.py <- valida calibración (5 zonas, error centro <5% a 2m)
+│   ├── preview.py      <- preview live MJPEG L|R (browser-driven)
+│   ├── download_model.py, capture_baseline_frames.py, rescale_calibration.py
+│   ├── provision.py    <- create/deploy/harvest/reprovision/list (disaster recovery)
+│   ├── verify_hardware.py, setup_device.sh
+│   └── training/       <- train_head_detector.ipynb, download_roboflow.py, bench_detector.py,
+│                          bench_roboflow_api.py, capture_mjpeg.py, sample_for_roboflow.py,
+│                          polys_to_bboxes.py, eval_yolo.py
+├── dataset/            <- gitignoreado salvo README. Datasets descargados de Roboflow.
+├── calibration/        <- board ChArUco A3 PDF (calib.io)
+├── infra/cloudformation/ <- people-counter.yaml (stack completo)
+├── docs/               <- setup-guide, lab-calibration-guide, pilot-operator-guide
+└── config/             <- config.example.yaml + people-counter.service (systemd)
 ```
 
-## Plan de sprints (tareas de desarrollo)
+## Plan de sprints
 
-| Sprint | Foco | Entregable | Estado |
-|--------|------|-----------|--------|
-| S3 | PoC | Captura estéreo + YOLOv8n en RPi5. Probar que funciona. | **HARDWARE VALIDADO** — capture.py adaptado a picamera2, captura estéreo verificada en RPi5. detect.py (backends Hailo + OpenCV). |
-| S4 | Calibración | Pipeline ChArUco. Rectificación. Mapa de profundidad. | **DONE** — calibration.py modelo fisheye Kannala-Brandt (`cv2.fisheye.*`). Board: 9x6 / 45mm / 33mm / DICT_4X4_100 (A3, en `calibration/`). Baseline 140mm por diseño. diagnose_depth.py valida 5 zonas con umbrales PASS/FAIL. |
-| S5 | Detección | Compilación HEF. Integración Hailo SDK. 30+ FPS. | **EN PROGRESO** — detect.py con backends Hailo + OpenCV, pre/postproceso testeado (16 tests). Hailo-8L verificado (fw 4.23.0, PCIe Gen 3). Modelo elegido: RAPiD pretrained MWHB1024 (rotation-aware, 80% recall sobre baseline frames out-of-the-box). Postproceso: filter geométrico + ROI mask. Pipeline `.ckpt` → ONNX → HEF vía `hailomz compile` en WSL2/Docker. |
-| S6 | Tracking | Tracker 3D. Línea virtual. Eventos ingreso/egreso. | **DONE** — tracker.py (13 tests) + counter.py (24 tests). main.py conectado E2E (21 tests). |
-| S7 | WiFi/BLE | nexmon + captura BLE. Hashing. Dedup L1+L2. | **HARDWARE VALIDADO** — wifi_probe.py (nexmon + airmon-ng + scapy, probes capturadas, 13 tests), ble_scan.py (bleak, 343 adverts/8 dispositivos únicos, 11 tests). hasher.py (5 tests) + dedup.py (12 tests). |
-| S8 | MQTT | Cliente IoT Core. Buffer SQLite. Reconexión. | **DONE** — client.py con TLS, replay de buffer, backoff (15 tests) + buffer.py SQLite (3 tests). |
-| S9 | Cloud | Lambda dedup L3. CloudFormation. | **DONE** — lambda_dedup.py (9 tests). Template CloudFormation con IoT Core, Timestream, DynamoDB, Lambda, IAM. |
-| S10 | Integración | End-to-end. Todos los módulos juntos. | **E2E VALIDADO** — pipeline testeado en RPi5: capture -> rectify -> depth (SGBM) -> detect (Hailo) -> depth por persona. |
-| S11 | Piloto | Deploy en 3 locales. Monitorear. Corregir. | PENDIENTE |
-| S12 | Estabilización | Correcciones post-piloto. | PENDIENTE |
-
-## Estado de implementación
-
-**699 tests pasando.** Módulos por estado:
-
-- COMPLETO + VALIDADO: capture (picamera2), detect (Hailo-8L HEF), wifi_probe (nexmon), ble_scan (bleak), calibration, depth, tracker, counter, hasher, dedup, buffer, client, lambda_dedup, loader, main, status (led + health + monitor)
-- INFRA READY: template CloudFormation, servicio systemd, provision.py, logrotate, timer de reset diario
-- DETECCIÓN: el modelo es **RAPiD pretrained** (Boston VIP COSSY, weights `pL1_MWHB1024_Mar11_4000`, license non-commercial — uso en TFG). Detección rotated-bbox sobre raw fisheye. Sobre nuestros baseline frames generaliza a 80% detection rate sin training. Postproceso: filter geométrico (size + aspect ratio) + ROI mask configurable per-deployment. Pipeline detect → ONNX → HEF.
-- TRAINING / VALIDACIÓN TOOLING: scripts/training/ con download_roboflow, bench_detector (modelos locales `.pt`/`.onnx`), bench_roboflow_api (modelos publicados en Roboflow Universe via REST), y un capturador multi-site de streams MJPEG con motion-trigger + background sampling para armar set de validación. 22 tests sobre las herramientas.
-- POR VALIDAR EN PILOTO: detección cenital con people counting real en los 3 locales del S11.
-
-## Alcance del diseño
-
-- **Tracker**: matching greedy por distancia de píxeles 2D + gating por profundidad. Diseñado para montaje cenital en puerta simple — el caso de uso objetivo para esta generación del producto.
-- **Shadow config**: bootstrap con caché local desde archivo `.shadow.json`. Lee el estado al inicio, sin suscripción delta en vivo — los cambios de config se aplican en el próximo boot del servicio.
-- **Horario operativo fail-open**: si el formato del horario es inválido, el conteo continúa (prefiere falsos positivos a pérdida de datos).
-- **Sync L/R**: picamera2 con dos instancias independientes tiene offset típico ~60ms (1 frame a 15fps). Irrelevante para calibración (board quieto) y dentro de tolerancia para tracking humano (±60ms = ±6cm a 1m/s).
-- **Clasificador adulto/niño**: threshold único 1.55m (`adult_min_m`), cerca del P25 de mujeres adultas en Argentina. La métrica agregada prioriza estabilidad de totales diarios sobre precisión per-evento.
-- **Backup / disaster recovery**: config y `calibration.npz` se preservan en el workstation (`provisioned/<id>/`) — config queda durante `create`, calibration se trae con `harvest` post-calibración. Los certs **no se respaldan**: ante restore (SD muerta) `provision.py reprovision` revoca el cert viejo en IoT Core y emite uno nuevo asociado a la misma thing. Trade-off elegido: rotación efectiva del cert vale el ~30s extra de AWS API; las credenciales admin de AWS nunca tocan la Pi.
+| Sprint | Foco | Estado |
+|--------|------|--------|
+| S3 | PoC visión | **DONE** — capture (picamera2), detect (Hailo) |
+| S4 | Calibración | **DONE** — fisheye K-B, board en `calibration/`, diagnose_depth |
+| S5 | Detección | **DONE** — YOLOv8n single-class cenital, HEF compilado, deployable. Modelo activo: `people-counter-detector` (multi-site, ~945 imgs, hard negatives explícitos vía SAM3 pre-label) |
+| S6 | Tracking + counting | **DONE** — tracker Kalman + counter ROI/línea (E2E validado) |
+| S7 | WiFi/BLE | **DONE** — nexmon + bleak, hashing + dedup L1/L2 |
+| S8 | MQTT | **DONE** — IoT Core + buffer SQLite + replay |
+| S9 | Cloud | **DONE** — CloudFormation + Lambda dedup L3 |
+| S10 | Integración | **DONE** — pipeline E2E en RPi5 |
+| S11 | Piloto | PENDIENTE — deploy 3 locales |
+| S12 | Estabilización | PENDIENTE — post-piloto |
 
 ## Reglas duras
 
 - **No transmitir video/imágenes.** Solo metadatos.
 - **No almacenar MACs crudas.** Hashear primero, siempre.
 - **WiFi = solo probing.** Red = Ethernet.
-- **Stack de HATs**: AI HAT+ es el único HAT stackeado. PoE HAT (H) se conecta por dupont.
+- **Stack de HATs**: AI HAT+ es el único stackeado. PoE HAT por dupont.
 - **No hardcodear config.** Todo en YAML.
-- **Siempre buffear localmente.** Asumir que la conectividad va a fallar.
+- **Siempre buffear localmente.** Conectividad puede fallar.
 
 ## Entorno
 
 - Raspberry Pi OS Trixie 64-bit, Python 3.13
-- Hailo SDK: hailo_platform 4.23+
-- Picamera2: para captura de cámaras CSI (herramientas CLI rpicam-*)
-- OpenCV: 4.10+ (con contrib para ArUco/ChArUco; `CharucoParameters` requiere 4.8+)
-- MQTT: paho-mqtt 2.1+
-- SciPy: 1.13+ (residuales de calibración)
-- DB: sqlite3 (stdlib)
+- Hailo SDK 4.23+ (`hailo_platform`)
+- Picamera2 (rpicam-* CLI tools)
+- OpenCV 4.10+ (contrib para ArUco/ChArUco)
+- paho-mqtt 2.1+, SciPy 1.13+, sqlite3 (stdlib)
 
-## Convenciones para setup tools
+## Pipeline runtime — knobs
 
-- `focus_assist.py` y `calibrate.py` son **standalone** — no leen `config.yaml`. Todo se pasa por CLI porque tienen que correr durante la instalación inicial, antes de que exista config.
-- **Ambos son 100% browser-driven**. No hay `input()` blocking ni prompts de terminal — la consola solo muestra logs. Cualquier interacción operativa (comenzar, confirmar diversidad, ingresar distancia ground-truth, finalizar) sucede en el UI.
-- Ambos comparten el mismo flujo de UI web: pantalla "Comenzar" al abrir, AudioContext unlocked on click, audio TTS opcional, barras verdes, reporte HTML auto-abierto en pestaña nueva al finalizar.
-- **TTS deduplicado por semántica**: los hints de voz comparan la frase sin dígitos, así fluctuaciones menores (ej. `315<200` vs `318<200`) no re-triggereean el mismo mensaje.
-- **Pose announcement = bloque atómico**: `Pose N. <label>. A Xcm de la cámara` se reproduce entero. El capture y otros audios están gateados por una flag server-side `_announce_pending` que se limpia solo cuando el browser confirma el fin del utterance via `SpeechSynthesisUtterance.onend` → POST `/announce-done`. Timing basado en señal, no en timer estimado.
-- **Banner sincronizado con audio**: la cadena visible del hint de movimiento se pinea al texto del último audio dicho (`state.locked_alignment_text`) — evita drift de 1cm entre lo que se escucha y lo que aparece en pantalla cuando la medición del offset fluctúa entre frames.
-- **Prompts interactivos del wizard** via threading.Event: `_ask_operator_ui()` emite un estado `data-phase="prompt"` con `data-prompt-type`, el JS renderiza los controles apropiados (botones para confirmación binaria, input numérico para valores) y deja el spinner mientras el backend procesa. El POST a `/wizard-input` signal-ea el event y el wizard continúa.
-- **Acciones que pueden interrumpir el audio** (flush queue + POST `/announce-done`): Saltar pose, Deshacer última, Finalizar. Todo lo demás espera al onend.
-- **Puerto HTTP con SO_REUSEADDR** y Ctrl+C limpio en ambos tools (server.shutdown() en el cleanup path) — no quedan TIME_WAITs entre runs.
-- **focus_assist: corner sharpness absoluta + escena compacta**. La métrica de uniformidad es la varianza Laplaciana media de los 4 corners válidos (umbral absoluto `MIN_CORNER_SCORE = 100`), no el ratio bordes/centro. Auto-detecta "escena compacta" cuando el bbox del ChArUco cubre >25% del frame (ambiente chico donde el board domina la vista) y omite el check porque en esa geometría los corners ven paredes a distancia no relacionada con el board y el ratio fallaría por razón física, no óptica. `--scene=auto|compact|full` override manual; `--min-corner-score N` ajusta el umbral.
-- **Lens locking en lab**: el holder M12 del Arducam B0310 no tiene set screw — el lens se fija químicamente con **Trabasil AM3** (pasta anaeróbica con PTFE) **+ activador anaeróbico**, y se gira con una **llave dedicada** que encastra en el barrel. El activador es lo que viabiliza el flujo same-day: cura parcial a ~15min (suficiente para calibrar sin drift), cura total al cabo de horas. Sin activador, el Trabasil solo da 100min de working time + 36h de cura total — incompatible con un solo día de lab. La llave queda puesta durante foco y calibración, y se retira recién después del curado total. Procedimiento completo en `docs/lab-calibration-guide.md`.
-- **Wizard guardrails**: salvaguardas que el wizard aplica para evitar calibraciones que pasen RMS estéreo pero fallen ground-truth (un solver puede converger a parámetros geométricamente incorrectos si la data de entrada es pobre — pocas poses, marcadores inestables, coverage degenerado):
-  - `wizard --resolution` default `2304 1296` (binned, full FOV) — modo canónico para foco + calibración.
-  - **Pre-calibration sanity gate** (`--min-detect-rate`, default 0.7): re-detecta los pares capturados con el mismo modo lenient que va a usar `calibrate_stereo`, y aborta si <70% pasan en ambas cámaras. Evita correr el solver sobre data que no va a fittear.
-  - **Coverage critical block**: `analyze_pose_coverage` separa `warnings` (soft) de `critical` (banda completa o grupo entero faltante). El wizard bloquea hard en críticos — bypass con `--force-degenerate-coverage`.
-  - **L/R asymmetric detection alert**: si una cámara devuelve 0 corners 20+ frames seguidos mientras la otra detecta, el panel muestra una alerta naranja pidiendo limpiar lens / chequear foco / verificar FOV — distingue el problema concreto en lugar de un genérico "captura rechazada".
-  - **`--resume` valida resolución**: `_session_params` incluye `resolution`, abortando si el operador retoma con una resolución distinta — mezclar resoluciones distintas corrompe los intrínsecos silenciosamente.
-  - **Subcomando `reset`**: `python scripts/calibrate.py reset --yes` borra captures + session.json + .npz para restart limpio sin `rm -rf` manual.
-  - **Preflight error útil para puerto ocupado**: walks `/proc/net/tcp` + `/proc/*/fd` para identificar PID + cmd que ocupa el puerto y sugerir `kill <PID>` directo, en lugar de "puerto ocupado, andá a buscarlo".
-- **focus_assist L/R parity check**: mide la disparidad horizontal del centroide del board entre cámaras (mediana sobre 30 frames) y la compara contra la esperada por `baseline * f_px / depth`. Tres estados: verde "OK", rojo "INVERTIDO" (sign opuesto al esperado), ámbar "magnitud rara" (sign correcto pero off por >2.5× del valor predicho — hint de baseline mal en código, lente flojo, o detección espuria). Detecta el problema antes de calibrar contra un par invertido (que produciría extrínsecos sign-flipped silenciosos).
-- El directorio `debug/` en la raíz del repo está gitignoreado — sirve para dumpear reportes, screenshots, logs de sesiones de test sin ensuciar git status.
+`src/main.py` orquestra capture → rectify → SGBM → detect (Hailo) → track → count → MQTT.
 
-## Interpretación del reporte de calibración
-
-- **RMS estéreo <0.5px** es condición necesaria pero NO suficiente. Mide self-consistency: si el solver encuentra parámetros que fitean bien los datos. Con capturas degeneradas (pocas poses, similares entre sí) hay infinitos sets de parámetros que fitean igual — el solver elige uno, pero puede ser geométricamente incorrecto.
-- **Baseline estimada** (se calcula del set, no se mide): con 20 poses diversas sobre trípode debe caer a ±1-2mm del diseño 140mm. Si cae ±5-70mm, el problema es capturas insuficientes / poco diversas, no el bracket. El warning del reporte y del log lo explica en ese orden.
-- **Validación ground-truth** (depth check contra distancia conocida) es el test real: error centro <5% a 2m, <10% a 3m. **El verdict depende solo del centro** — es la única zona cuya distancia se mide con cinta/láser. Las 4 zonas perimetrales miden cualquier cosa que esté en esa parte del frame (otros objetos, paredes a distintas profundidades), no necesariamente al mismo plano que el centro. El ratio borde/centro se calcula y muestra como dato de diagnóstico, pero **no gate el verdict** — solo es significativo si el target ocupa todo el FOV (pared plana). En escenas reales con profundidad variable el ratio se infla sin que eso refleje un problema de calibración.
-- **Tags de confianza por zona** en el reporte: cada zona perimetral se clasifica según `std × fill_rate`:
-  - **✓ Coincide**: SGBM matcheó limpio y la profundidad cae dentro del threshold del centro — la zona ve el mismo target.
-  - **● Otro plano**: SGBM matcheó limpio pero a otra distancia — está midiendo un objeto/pared distinto, no es error de calibración.
-  - **⚠ SGBM falló**: alta varianza o bajo fill — la medición no es significativa (escena oscura, superficie reflectante, sin textura). Los valores de profundidad/error se ocultan por irrelevantes.
-- Protocolo recomendado para el piloto: **20 poses estándar del wizard en todos los dispositivos** (el wizard las genera deterministically). Misma secuencia → números comparables entre unidades, outliers detectables por QA.
-
-## Pipeline runtime — knobs de operación
-
-`src/main.py` orquestra el pipeline completo (capture → rectify → SGBM → detect Hailo → track → count → MQTT). Settings clave:
-
-- **`vision.num_disparities: auto`** (default) deriva el rango de búsqueda de SGBM desde `mounting_height_m` cubriendo exactamente las profundidades donde aparecen cabezas + piso. Sites altos corren SGBM más rápido, sites bajos obtienen más rango automáticamente. Se puede override con un int explícito (ej. `192`, `256`).
-- **`vision.sgbm_downscale: 2`** (default): SGBM matchea a resolución reducida (1=full, 2=half, 4=quarter) y `compute_disparity` upscalea la disparidad de vuelta rescalando los valores para que el depth siga correcto. Calibración es resolución-independiente (K, D no cambian), así matchear a menor res es ~4× más rápido en Pi 5 con impacto despreciable a la escala de detección de cabezas. Default 2; para diagnósticos con depth fina, 1; para más FPS y depth coarser, 4.
-- **`--no-mqtt`** (CLI flag): skipea la conexión MQTT entera y reemplaza el cliente por un no-op que loggea publishes a stdout. Útil para correr pipeline localmente antes de provisionar AWS, validando detect/track/count sin transmitir nada. Mismo comportamiento end-to-end de capture → SGBM → detect → track → count, solo cambia el sink de eventos.
+- `vision.num_disparities: auto` — deriva rango SGBM desde `mounting_height_m`. Override con int múltiplo de 16.
+- `vision.sgbm_downscale: 2` — SGBM a resolución reducida (1=full, 2=half, 4=quarter), upscale del disparity post-match. 2 default; 4 para más FPS, 1 para diagnósticos.
+- `--no-mqtt` (CLI) — reemplaza MQTT con no-op que loguea a stdout. Para testing local sin AWS.
+- `detection.confidence_threshold` (0.20) / `new_track_threshold` (0.35) — ajustados para recall en pasadas rápidas con motion blur.
+- `detection.static_suppressor` — defense-in-depth contra clutter estructural (FPs persistentes en mismas celdas). Configurable cell/window/threshold.
+- `vision.max_exposure_us: 8000` — shutter cap 8ms para reducir motion blur. AE compensa con AnalogueGain.
+- `counter.foot_projection_enabled` — proyección parallax-corrected del foot pixel. Default off; activar solo después de validar calibración con diagnose_depth.
 
 ## Pipeline del detector
 
-El detector cenital es **RAPiD pretrained** (Rotation-Aware People Detection, Boston VIP COSSY). Backbone Darknet-53 con head custom rotated-bbox; output `[cx, cy, w, h, angle, conf]`. Funciona directo sobre raw fisheye sin necesitar undistortion. License non-commercial: uso autorizado en TFG; en eventual paso a producto comercial se entrenaría un sustituto sobre data real recolectada en pilotos.
+YOLOv8n fine-tuneado para detección cenital de cabezas. Pipeline ONNX → HEF compilado para Hailo-8L.
 
 ### Decisiones del pipeline
 
-- **Weights elegidos**: `pL1_MWHB1024_Mar11_4000.ckpt` (entrenado COCO + MW-R + HABBOF, input 1024×1024). Sobre nuestros baseline frames generaliza a 80% detection rate sin tocarlo. Las variantes con CEPDOF training (HBCP, MWCP) sobre-disparan en clutter (false positive rate alto en objetos blandos cenitales tipo ropa apilada), por eso elegimos MWHB.
-- **Conf threshold operativo**: 0.30 con MWHB. Subir a 0.50 mejora precision pero pierde TPs reales de baja confianza (motion blur, oclusión parcial).
-- **Bbox semantics**: RAPiD detecta personas, no cabezas; el bbox es person-full rotated. En geometría cenital extrema (lente 120° HFOV centrado, mounting 2.5-4m) el centroide del bbox cae aproximadamente sobre la cabeza, suficiente para nuestro pipeline. Para depth lookup robusto, en lugar del centroide se usa el argmax de disparity dentro del bbox (la cabeza es siempre la parte más cercana al techo, máxima disparity).
-- **Postprocesado geométrico** (cero costo, on-CPU post-NMS):
-  - `area in [8000, 120000]` px² (para frames 1152×648)
-  - `min(w, h) >= 60` px (filtra slivers)
-  - `max(w,h)/min(w,h) <= 3` (rechaza shapes elongadas no humanas)
-- **ROI mask** per-deployment: máscara binaria que excluye zonas de clutter conocidas (rack, escritorio, maniquíes). Aplicada antes de detect. Cero costo de inference, alta efectividad para FPs estructurales.
-- **Compilación a HEF**: `hailomz compile` corre solo en x86 Linux. WSL2 Ubuntu o Docker dentro de Windows. Hailo AI SW Suite (registro free en Developer Zone) es bloqueante para este paso. Para RAPiD el path es `.ckpt` → ONNX (con `export_onnx.py` del repo) → HEF compilado para `hailo8l`. Calibration set para int8 quantization = 200 imgs random representativas del deployment.
 - **Bench tooling**:
-  - `bench_detector.py` para modelos locales `.pt`/`.onnx` (ultralytics-compatible)
-  - `bench_roboflow_api.py` para evaluar cualquier modelo publicado en Roboflow Universe via REST sin descargar pesos. Útil para triage rápido de candidatos. Soporta endpoints `detect.*` y `serverless.*`.
-- **Validation set en construcción**: capturador multi-site de streams MJPEG (en `scripts/training/`) corre durante horario de operación con motion-trigger (guarda solo cuando hay cambio significativo entre frames consecutivos) más sampling de fondo para medir FP rate. Filenames con prefijo `_motion_` o `_bg_` permiten distinguir tipos al post-procesar.
+  - `bench_detector.py` para modelos locales `.pt`/`.onnx`
+  - `bench_roboflow_api.py` para triage de modelos publicados en Roboflow Universe via REST
+- **Capturador de validation set**: `capture_mjpeg.py` multi-site con motion-trigger + background sampling. Filenames `_motion_` / `_bg_`.
+- **Postproceso geométrico** post-NMS: cluster por centroide (`cluster_distance_px`), containment filter (bbox chico contenido en otro grande), static suppressor (celdas hot).
+- **Compilación HEF**: `hailomz compile` en WSL2/Docker (x86 only, Hailo no soporta Windows nativo). Calibration set = 200 imgs representativas.
+- **Training**: notebook `scripts/training/train_head_detector.ipynb` en Kaggle T4 (~20 min). Iteración: actualizar URL Roboflow + name del run.
 
-### Boundary fuerte que no romper
+### Boundary fuerte
 
-- **Compilación corre en WSL2/Linux x86.** La Pi es ARM, el compiler es x86-only, Windows nativo no es soportado por Hailo.
-- **Inferencia corre en la Pi.** El `.hef` se SCP-ea a `/usr/src/people-counter/models/` y `detection.model_path` en `config.yaml` apunta ahí.
+- **Compilación**: WSL2/Linux x86 only.
+- **Inferencia**: en la Pi. HEF en `/usr/src/people-counter/models/`, `detection.model_path` en config.
 
-## Convenciones de las tools de visión
+## Convenciones de tools de visión
 
-- **Compartido entre `focus_assist`, `calibrate`, `preview`, `diagnose_depth`**:
-  - **`--meter matrix|centre|spot`**: AE metering mode. `matrix` (default) pondera todo el frame; `centre` / `spot` exponen solo el área central, útiles cuando hay zonas brillantes en periferia (ventanas, lámparas) que descompensan el AE en luz baja.
-  - **`--lock-ae` (calibrate + diagnose_depth)**: lockea exposición tras 1s de settle. Default off — para condiciones estables (lab, indoor con luz constante) el AE auto produce capturas más representativas. Activar solo en escenas con luz variable (luz natural, puertas que abren).
-  - Los CLI tools standalone (foco, calib, preview, diagnose) usan los CSI defaults de `config/config.example.yaml` (`bracket.camera_left_csi=0`, `bracket.camera_right_csi=1`) sin necesidad de flags. Override con `--left` / `--right` solo si el wiring del bracket está al revés.
+- `focus_assist`, `calibrate`, `preview`, `diagnose_depth` son **standalone** — no leen `config.yaml`. Todo por CLI o defaults de `config/config.example.yaml`.
+- **Browser-driven**: nada de `input()` blocking. Pantalla "Comenzar", AudioContext unlocked on click, beeps cortos diferenciados (start / pose / captura / undo / fin) en lugar de TTS, reporte HTML auto-open al finalizar.
+- **AE flags compartidos**: `--meter matrix|centre|spot` (default matrix; centre/spot para periferia brillante), `--lock-ae` (calibrate + diagnose_depth, default off — AE auto típicamente mejor).
+- **Wizard guardrails**: pre-calibration sanity gate (re-detección de pares capturados), coverage critical block (banda/grupo faltante), L/R asymmetric alert, `--resume` valida resolución, `reset --yes` para restart limpio.
+- **Lens locking**: holder M12 sin set screw → fijado con Trabasil AM3 + activador anaeróbico (cura parcial 15min, total horas). Llave dedicada queda puesta durante foco + calibración. Ver `docs/lab-calibration-guide.md`.
+- **Interpretación reporte calibración**: RMS estéreo <0.5px es necesario pero no suficiente. **El verdict depende del ground-truth en centro** (cinta/láser). Baseline estimada debe caer ±1-2mm del diseño 140mm con 20 poses diversas; ratio borde/centro es informativo, no gate.
+- `debug/` está gitignoreado — para reportes, screenshots, logs de tests.

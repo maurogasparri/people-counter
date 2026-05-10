@@ -1,1 +1,1 @@
-"""Live HTTP debug viewer for the runtime pipeline."""
+"""Visor HTTP en vivo para diagnóstico del pipeline runtime."""

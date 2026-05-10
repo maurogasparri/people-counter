@@ -211,12 +211,12 @@ class TestProjectToFloor:
         assert (u, v) == head_pixel
 
     def test_periphery_magnitude_matches_documented_geometry(self):
-        """Sanity-check against the geometric numbers documented on the
-        bug report: 1.7 m person under 3.0 m mount, head pixel near the
-        frame border (~60° eccentricity from optical axis at this FOV).
-        The shift is not exactly 110 cm here because we are computing in
-        IMAGE space, not floor-plane metres — but the scale factor must
-        be exactly Z_head/H."""
+        """Sanity-check contra los números geométricos del caso canónico:
+        persona de 1.7 m bajo mount de 3.0 m, head pixel cerca del borde
+        del frame (~60° de excentricidad desde el eje óptico a este FOV).
+        El shift no es exactamente 110 cm acá porque computamos en
+        espacio de IMAGEN, no en metros de plano de piso — pero el factor
+        de escala tiene que ser exactamente Z_head/H."""
         # 500 px is roughly ~80% of the half-frame width on 1152×648,
         # i.e. nearly at the border.
         head_pixel = (self.CX + 500.0, self.CY)

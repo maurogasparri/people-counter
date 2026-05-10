@@ -127,8 +127,8 @@ class TestShippedDefaults:
         assert defaults["bracket"]["baseline_mm"] == 140
 
     def test_shipped_low_confidence_threshold_active(self):
-        """Two-stage matching ships activated at the FFC reference value
-        (0.10). Strict < confidence_threshold so the validator accepts it."""
+        """El matching two-stage embarca activado con un floor de 0.10.
+        Estricto < confidence_threshold para que el validator lo acepte."""
         defaults = load_defaults()
         low = defaults["detection"].get("low_confidence_threshold")
         high = defaults["detection"]["confidence_threshold"]

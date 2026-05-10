@@ -24,13 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Dump de debug de profundidad — diagnóstico para el triage del bug de height.
-# Cuando está habilitado, ``head_depth_in_bbox`` guarda hasta DEPTH_DEBUG_MAX_DUMPS
-# PNGs side-by-side (heatmap de profundidad + máscaras en capas) bajo
-# DEPTH_DEBUG_DIR y luego se auto-detiene. Barato cuando está apagado (un solo
-# check bool). Usarlo para confirmar qué hay en la slice de head-depth elegida
-# cuando el walk del histograma cae en algo que no debería (speckle SGBM sobre
-# piso de parquet, estructura vecina, etc.).
+# Dump de debug de profundidad — herramienta de inspección del slice de head-
+# depth elegido por el walk del histograma. Cuando está habilitado,
+# ``head_depth_in_bbox`` guarda hasta DEPTH_DEBUG_MAX_DUMPS PNGs side-by-side
+# (heatmap de profundidad + máscaras en capas) bajo DEPTH_DEBUG_DIR y luego se
+# auto-detiene. Barato cuando está apagado (un solo check bool). Sirve para
+# verificar qué superficie quedó dentro del slice cuando el walk cae en algo
+# que no debería (speckle SGBM sobre piso de parquet, estructura vecina, etc.).
 #
 # Toggle vía ``enable_depth_debug()`` — main.py lo wirea al flag CLI
 # ``--depth-debug``.

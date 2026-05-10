@@ -73,13 +73,13 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 699/699 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (download_roboflow + bench_detector) |
+| Tests | 716/716 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (download_roboflow + bench_detector), static suppressor |
 | Config | Defaults + Per-device + Cloud | Dos archivos + un cloud channel: `config/config.example.yaml` (en repo, defaults canónicos para toda la flota — bracket geometry, sensor, vision, detection, tracking, etc.), `/etc/people-counter/config.yaml` (per-device override — device.id, mounting_height_m, ROI/lines, certs, endpoint MQTT), AWS IoT Shadow (cloud, business-driven — schedule, scaling, toggles). El loader hace deep-merge defaults+per-device al boot. Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
-| Detección | Software validado, modelo en fine-tuning | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN. El detector se entrena específicamente para geometría cenital (no se usa el stock COCO porque CrowdHuman entrena vistas frontales/laterales). Phase A en marcha: fine-tune con dataset Roboflow `coding-compass-nmjfb/overhead-head-detection-cwetj v2` (15.4k imgs `head-top-view`), entreno en Kaggle T4 → ONNX → `hailomz compile` en WSL2 → HEF a la Pi. Pipeline en `scripts/training/` |
-| Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab universal (mount-independent, sirve para flota mount 2.0–3.5m): poses a 1.0/2.0/3.0m, foco único a 1.5m ±20cm. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, audio TTS con pose-announce atómico gateado por `SpeechSynthesisUtterance.onend`, tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
-| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, audio TTS opcional, auto-open del reporte. Target range lab protocol 1.30–1.70m (foco a 1.5m ±20cm) por default — universal para mount 2.0–3.5m. Lens locking con Trabasil AM3 + activador anaeróbico (cura parcial 15min) y llave dedicada en el barrel — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
+| Detección | Pipeline activo | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN. El detector se entrena específicamente para geometría cenital (no se usa el stock COCO porque CrowdHuman entrena vistas frontales/laterales). Modelo activo: `people-counter-detector` — fine-tune sobre dataset propio multi-site (~945 imgs sampleadas con `sample_for_roboflow.py`, ratio post-screening ~2:1 positivos:hard-negatives, pre-labeling con SAM3 vía Roboflow auto-label). Defense-in-depth runtime: containment filter post-NMS + `StaticSuppressor` por celda. Pipeline en `scripts/training/`: notebook único `train_head_detector.ipynb` para iteraciones, compile HEF en WSL2, deploy a la Pi |
+| Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab universal (mount-independent, sirve para flota mount 2.0–3.5m): poses a 1.0/2.0/3.0m, foco único a 1.5m ±20cm. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, beeps cortos diferenciados (start / pose nueva / tick de hold / captura / undo / fin) con pose-announce gateado (capture queda bloqueado hasta que el browser confirma fin del beep vía POST `/announce-done`), tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
+| Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, beeps en eventos (start / fin) + **pulso adaptativo tipo detector** (tap corto que acelera a medida que el score del centro se acerca al threshold de paso, lock holgado a >1.5×MIN_SCORE), auto-open del reporte. Target range lab protocol 1.30–1.70m (foco a 1.5m ±20cm) por default — universal para mount 2.0–3.5m. Lens locking con Trabasil AM3 + activador anaeróbico (cura parcial 15min) y llave dedicada en el barrel — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
 | Preview en vivo | Disponible | `preview.py` — tool minimal browser-driven con UX consistente con focus / calib (start overlay, header). MJPEG side-by-side L|R con grid de tercios + crosshair central. Para apuntar el bracket, verificar oclusiones, o sanity check del wiring antes de correr foco/calibración. Sin detección, sin análisis. Flag `--meter centre/spot` |
 | Validación de profundidad | Reformulada | `diagnose_depth.py` y la fase ground-truth del wizard reportan **verdict basado solo en error del centro** (única zona con distancia conocida). Las 4 zonas perimetrales se clasifican con tags: ✓ Coincide / ● Otro plano / ⚠ SGBM falló según `std × fill_rate` — distinción honesta entre "calibración errada" vs "está midiendo otro objeto" vs "SGBM no puede matchear esta superficie". Reporte HTML con verdict card prominente arriba + tabla por zonas con tags de confianza |
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
@@ -138,7 +138,7 @@ Abre UI en `http://people-counter.local:8080`. Flujo:
 2. Captura en vivo con barras de nitidez central + corners (absoluto) + simetría L/R
 3. Peak tracker para ajustar el M12 sin pasarse del óptimo
 4. Masking automático de zonas de bajo contraste
-5. Audio TTS lee los hints (opcional, toggle en la UI; OFF corta la voz al toque)
+5. Pulso de audio adaptativo (tipo detector — tap corto a 700 Hz que acelera de ~1.2s a ~130ms según mejora el score del centro; silencio cuando el board no está visible). Beeps separados de start y fin de sesión. Toggle en la UI.
 6. Finalizar → reporte HTML auto-abierto en nueva pestaña
 
 Target de foco: **1.30–1.70m** por default (lab protocol universal — focar a
@@ -174,8 +174,8 @@ sudo PYTHONPATH=. python3 scripts/calibrate.py wizard \
 Wizard de una sola corrida, **todo desde el browser** (terminal solo para logs):
 1. Pre-flight (puerto, disco, backup)
 2. Pantalla "Comenzar" (activa audio del browser, posicionar trípode)
-3. Captura guiada con ghost silueta (20 poses), audio TTS
-4. Cada pose se anuncia como un bloque atómico — `Pose N. <label>. A Xcm de la cámara` — y el capture queda bloqueado hasta que el browser confirma que el audio terminó (`SpeechSynthesisUtterance.onend` → POST `/announce-done`)
+3. Captura guiada con ghost silueta (20 poses), beeps cortos diferenciados por evento
+4. Cada pose se anuncia con un doble-tap agudo (1100 Hz × 2) y el texto `Pose N. <label>. A Xcm de la cámara` aparece en el banner — el capture queda bloqueado hasta que el browser confirma que el patrón de beep terminó (POST `/announce-done` vía `setTimeout`)
 5. Hints de movimiento en cm (`"movelo izquierda 4cm"`), texto en pantalla sincronizado con el último audio dicho para evitar drift de 1cm
 6. Bootstrap de intrínsecos tras las primeras 6 capturas
 7. Calibración estéreo con modelo fisheye Kannala-Brandt (`--min-captures` configurable)
@@ -230,7 +230,7 @@ scripts/
 │                          # ground-truth en UI, reporte HTML con viz embedded.
 │                          # Flags: --meter centre/spot, --lock-ae, --low-light
 ├── focus_assist.py        # Asistente de foco browser-driven: start overlay, barras
-│                          # visuales, peak tracker, masking, audio TTS, reporte auto-open.
+│                          # visuales, peak tracker, masking, beeps en start / fin, reporte auto-open.
 │                          # Corner sharpness absoluta + auto-detección de escena compacta
 │                          # (bbox board/frame >25% → omite check de corners). L/R parity
 │                          # check. Flags: --meter centre/spot, --low-light
@@ -248,14 +248,19 @@ scripts/
 ├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock
 ├── capture_baseline_frames.py  # Captura frames rectificados de la Pi para validation bench (no training)
 ├── training/
-│   ├── README.md          # Walkthrough Phase A → B end-to-end
+│   ├── README.md          # Walkthrough end-to-end del pipeline de detector
+│   ├── train_head_detector.ipynb  # Notebook Kaggle T4 (template para iteraciones del modelo)
 │   ├── download_roboflow.py    # Pull de dataset Roboflow Universe a dataset/
 │   ├── bench_detector.py       # Bench de inferencia + diff de reportes (baseline vs fine-tuned)
+│   ├── bench_roboflow_api.py   # Triage de modelos en Roboflow Universe vía REST sin descargar pesos
+│   ├── capture_mjpeg.py        # Captura multi-site de streams MJPEG (random-interval + motion-trigger)
+│   ├── record_clips.py         # Grabación continua de clips MP4 multi-site (validation E2E con tracker)
+│   ├── sample_for_roboflow.py  # Sampling estratificado de capturas para subir a Roboflow
+│   ├── polys_to_bboxes.py      # Conversión de polígonos SAM3 a bboxes YOLO
+│   ├── eval_yolo.py            # Corre un modelo YOLO sobre una carpeta de frames
 │   └── .env.example       # Convención del env var ROBOFLOW_API_KEY
 ├── verify_hardware.py     # Verificación de hardware
 └── setup_device.sh        # Setup automático del dispositivo (pasos 4-10)
-notebooks/
-└── train_yolov8n_heads.ipynb    # Notebook Kaggle T4 (training Phase A)
 config/
 ├── config.example.yaml           # Defaults canónicos para toda la flota (bracket, sensor, vision, detection, tracking, counter, mqtt, etc.). Cualquier key ausente del per-device cae a los valores de acá.
 ├── people-counter.service        # Servicio systemd principal

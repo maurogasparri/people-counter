@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture frames from N MJPEG HTTP streams concurrently.
+"""Capturador concurrente de N streams MJPEG HTTP.
 
 Pensado para acumular validation/bootstrap data desde cámaras en sitio
 (IP cameras, NVRs, embedded vendors que exponen un endpoint MJPEG). Cada
@@ -19,7 +19,7 @@ Si además se da ``calibration: <ruta a .npz>`` se rectifica on-the-fly
 usando los mapas precalculados — el output queda listo para training
 sin requerir post-processing.
 
-Resilient by design:
+Resiliente por diseño:
 - Si el stream se cae, reconecta solo
 - Si un frame está corrupto, lo skipea
 - Ctrl+C cierra todos los workers limpio
@@ -52,16 +52,16 @@ Config YAML format:
         url: http://192.168.2.11/mjpg/raw.mjpg
         sbs: true
 
-Output layout:
+Layout del output:
     <output>/
       site_a/
         20260506_103752_motion_22fda5.jpg
         20260506_104646_bg_db7865.jpg
         ...
       site_b/
-        20260507_120015_motion_L_a3f1c2.jpg   <- rectified left (or both)
+        20260507_120015_motion_L_a3f1c2.jpg   <- rectificado L (o ambos)
         ...
-      capture.log     <- per-site stats appended every 60s
+      capture.log     <- stats per-site appended cada 60s
 """
 
 from __future__ import annotations
@@ -86,28 +86,25 @@ import yaml
 
 logger = logging.getLogger("capture_mjpeg")
 
-# Calibration .npz layout: arrays are stored at the calibration resolution
-# (160×120 in the FFC dumps we have). When the runtime SBS half is bigger
-# (e.g. 960×720 = 1920÷2), we scale K and P_rect linearly. Distortion is
-# dimensionless.
+# Layout del .npz de calibración: los arrays están guardados a la resolución
+# de calibración (160×120 en los dumps que usamos). Cuando la mitad SBS del
+# runtime es más grande (ej. 960×720 = 1920÷2) escalamos K y P_rect
+# linealmente. La distorsión es adimensional.
 _CALIB_REF_SIZE = (160, 120)
 
 
 def _load_site_calibration(
     npz_path: Path, half_size: tuple[int, int],
 ) -> dict[str, tuple[Any, Any]]:
-    """Precompute fisheye-rectification maps for one stereo lens pair.
+    """Precomputa los maps de rectificación fisheye para un par de lentes.
 
-    Reads ``scaled_{left,right}_intrinsic_4`` (K) + ``{left,right}_distortion_4``
+    Lee ``scaled_{left,right}_intrinsic_4`` (K) + ``{left,right}_distortion_4``
     (D) + ``scaled_{left,right}_R_rect_4`` (R_rect) +
-    ``scaled_{left,right}_intrinsic_rect_4`` (P_rect) from the .npz, scales
-    K and P from the calibration resolution to ``half_size``, and returns a
-    dict with ``"left"`` and ``"right"`` mapping to ``(map1, map2)`` ready
-    for ``cv2.remap``.
-
-    Same recipe as the FFC binary uses internally before passing the frame
-    to its detector — i.e. produces the geometrically-correct rectified
-    image, not just an undistorted one.
+    ``scaled_{left,right}_intrinsic_rect_4`` (P_rect) del .npz, escala K y P
+    de la resolución de calibración a ``half_size`` y devuelve un dict con
+    ``"left"`` y ``"right"`` mapeando a ``(map1, map2)`` listos para
+    ``cv2.remap``. Produce la imagen rectificada (geometría epipolar
+    alineada), no solo la imagen sin distorsión.
     """
     cal = np.load(npz_path)
     out_w, out_h = half_size
@@ -136,7 +133,7 @@ def _load_site_calibration(
 
 
 def _split_sbs(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Split a side-by-side stereo frame in half horizontally."""
+    """Parte un frame estéreo side-by-side por la mitad horizontal."""
     h, w = frame.shape[:2]
     mid = w // 2
     return frame[:, :mid], frame[:, mid:]
@@ -148,11 +145,11 @@ def _process_frame(
     rect_maps: Optional[dict[str, tuple[Any, Any]]],
     save_side: str,
 ) -> list[tuple[str, np.ndarray]]:
-    """Apply SBS split + optional rectification, return saveable images.
+    """Aplica split SBS + rectificación opcional, devuelve imágenes guardables.
 
-    Returns a list of ``(side_label, image)`` tuples. ``side_label`` is
-    ``""`` for mono streams, ``"L"`` or ``"R"`` for stereo. The label
-    ends up in the saved filename so the dataset is self-describing.
+    Devuelve una lista de tuplas ``(side_label, image)``. ``side_label`` es
+    ``""`` para streams mono, ``"L"`` o ``"R"`` para estéreo. El label queda
+    en el filename para que el dataset sea autodescriptivo.
     """
     if sbs:
         left, right = _split_sbs(frame)
@@ -218,7 +215,7 @@ def _seconds_until_next_window(window: tuple[int, int]) -> float:
 
 @dataclass
 class SiteStats:
-    """Per-site running counters."""
+    """Contadores running per-site."""
 
     name: str
     frames_saved: int = 0
@@ -252,7 +249,7 @@ def _capture_site(
     background_interval: float = 0.0,
     save_side: str = "left",
 ) -> None:
-    """Run capture loop for one site until stop_event is set.
+    """Loop de captura para un site hasta que ``stop_event`` se setee.
 
     Dos modos de muestreo:
     - **Random interval** (default): guarda un frame cada
@@ -301,7 +298,7 @@ def _capture_site(
         cap = cv2.VideoCapture(url)
         if not cap.isOpened():
             stats.last_error = "VideoCapture failed to open"
-            logger.warning("[%s] could not open stream — retry in 5s", name)
+            logger.warning("[%s] no pude abrir el stream — reintento en 5s", name)
             stats.reconnects += 1
             for _ in range(5):
                 if stop_event.wait(1):
@@ -326,7 +323,7 @@ def _capture_site(
                 consecutive_failures += 1
                 if consecutive_failures > 30:
                     logger.warning(
-                        "[%s] %d consecutive read failures — reconnecting",
+                        "[%s] %d fallos consecutivos de read — reconectando",
                         name, consecutive_failures,
                     )
                     break
@@ -337,9 +334,9 @@ def _capture_site(
             stats.frames_read += 1
             now = time.time()
 
-            # Lazy-load rectification maps now that we know the frame
-            # size — half_size depends on SBS split, which depends on
-            # the actual stream resolution.
+            # Carga lazy de los maps de rectificación una vez que conocemos
+            # el tamaño del frame — half_size depende del split SBS, que
+            # depende de la resolución real del stream.
             if calib_pending:
                 fh, fw = frame.shape[:2]
                 half_size = (fw // 2, fh)
@@ -360,8 +357,9 @@ def _capture_site(
                     rect_maps = None
                 calib_pending = False
 
-            # Process the frame once (split + rectify) and reuse the
-            # output for both motion detection and the actual save.
+            # Procesamos el frame una sola vez (split + rectify) y reusamos
+            # el output tanto para la detección de movimiento como para el
+            # save efectivo.
             processed = _process_frame(frame, sbs, rect_maps, save_side)
 
             def _save_processed(kind: str = "") -> None:
@@ -369,8 +367,8 @@ def _capture_site(
                     _save_frame(img, site_dir, name, stats,
                                 kind=kind, side=side)
 
-            # Motion detection runs on the LEFT (or sole) processed image
-            # because that's the canonical view we'll feed to the detector.
+            # La detección de movimiento corre sobre la imagen LEFT (o única)
+            # ya procesada porque es la vista canónica que alimenta al detector.
             motion_view = processed[0][1] if processed else None
 
             if motion_trigger:
@@ -401,7 +399,7 @@ def _capture_site(
         cap.release()
         if not stop_event.is_set():
             stats.reconnects += 1
-            logger.info("[%s] reconnecting in 2s", name)
+            logger.info("[%s] reconectando en 2s", name)
             stop_event.wait(2)
 
 
@@ -409,7 +407,7 @@ def _save_frame(
     frame: Any, site_dir: Path, name: str, stats: SiteStats,
     kind: str = "", side: str = "",
 ) -> None:
-    """Encode + write a single JPEG. Filename: <ts>[_<kind>][_<side>]_<rand>.jpg.
+    """Codifica y escribe un JPEG. Filename: ``<ts>[_<kind>][_<side>]_<rand>.jpg``.
 
     ``kind`` (motion/bg/empty) marca el origen del save; ``side`` (L/R/
     empty) identifica el lente cuando el stream era estéreo. Ambos
@@ -421,8 +419,8 @@ def _save_frame(
     side_label = f"_{side}" if side else ""
     out_path = site_dir / f"{ts}{label}{side_label}_{suffix}.jpg"
     try:
-        # cv2.imwrite uses default JPEG quality (95). Tweak with
-        # [int(cv2.IMWRITE_JPEG_QUALITY), 92] in the params if needed.
+        # cv2.imwrite usa el JPEG quality default (95). Ajustable con
+        # [int(cv2.IMWRITE_JPEG_QUALITY), 92] en los params si hace falta.
         ok = cv2.imwrite(str(out_path), frame)
         if ok:
             stats.frames_saved += 1
@@ -430,10 +428,10 @@ def _save_frame(
             stats.bytes_written += out_path.stat().st_size
         else:
             stats.last_error = "imwrite returned False"
-            logger.warning("[%s] imwrite failed for %s", name, out_path)
+            logger.warning("[%s] imwrite falló para %s", name, out_path)
     except Exception as e:
         stats.last_error = repr(e)
-        logger.exception("[%s] error saving frame", name)
+        logger.exception("[%s] error guardando el frame", name)
 
 
 def _stats_reporter(
@@ -441,7 +439,7 @@ def _stats_reporter(
     stop_event: threading.Event,
     log_path: Path,
 ) -> None:
-    """Periodically dump per-site stats to log + file."""
+    """Vuelca stats per-site al log + archivo periódicamente."""
     while not stop_event.wait(60):
         line = f"\n=== stats @ {datetime.now():%H:%M:%S} ===\n"
         for s in all_stats:
@@ -608,7 +606,7 @@ def main() -> int:
     for t in workers:
         t.join(timeout=15)
 
-    # Final summary
+    # Resumen final
     logger.info("\n=== FINAL ===")
     total_saved = sum(s.frames_saved for s in all_stats)
     for s in all_stats:

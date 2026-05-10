@@ -29,6 +29,7 @@ class StereoCapture:
         fps: int = 15,
         meter_mode: str = "matrix",
         lock_ae: bool = False,
+        max_exposure_us: Optional[int] = None,
     ) -> None:
         """Inicializa la captura estéreo.
 
@@ -48,6 +49,17 @@ class StereoCapture:
                 el lock evita drift independiente de AE entre L/R mid-session.
                 Default False — para iluminación interior estable, AE auto es más
                 simple y produce imágenes representativas para el reporte de ground-truth.
+            max_exposure_us: Cap de exposure time en microsegundos. Cuando se setea,
+                se aplica vía FrameDurationLimits=(max_exposure_us, max_exposure_us),
+                que indirectamente cap-ea el shutter (ExposureTime ≤ FrameDuration).
+                AE sigue activo dentro de ese límite, compensando con AnalogueGain
+                cuando la luz baja. Default None (sin cap, usa FrameRate=fps con
+                shutter hasta el frame interval ~1/fps). Pensado para limitar motion
+                blur en runtime de detección — 16000us (16ms) reduce blur a ~5cm a
+                3 m/s, manteniendo distribución de blur del modelo entrenado.
+                Override fps efectivo: con max_exposure_us=16000 la cámara corre a
+                ~60 FPS internamente; el pipeline siempre consume el frame más
+                reciente (latest-only semantics del request loop).
         """
         self.cam_left_id = cam_left_id
         self.cam_right_id = cam_right_id
@@ -55,6 +67,7 @@ class StereoCapture:
         self.fps = fps
         self.meter_mode = meter_mode
         self.lock_ae = lock_ae
+        self.max_exposure_us = max_exposure_us
         self._cam_left = None
         self._cam_right = None
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -81,13 +94,25 @@ class StereoCapture:
             raise RuntimeError(f"Falló abrir las cámaras: {e}") from e
 
         w, h = self.resolution
+        # Si max_exposure_us está seteado, usamos FrameDurationLimits en lugar de
+        # FrameRate. El cap de FrameDuration indirectamente cap-ea ExposureTime
+        # (en libcamera, ExposureTime ≤ FrameDuration). AE sigue activo y
+        # compensa con AnalogueGain cuando la luz baja. Sin esto, AE puede
+        # subir el shutter hasta ~30ms en interior y generar motion blur OOD
+        # del training distribution para personas en movimiento rápido.
+        if self.max_exposure_us is not None:
+            initial_controls = {
+                "FrameDurationLimits": (self.max_exposure_us, self.max_exposure_us),
+            }
+        else:
+            initial_controls = {"FrameRate": self.fps}
         for cam, name in [
             (self._cam_left, "left"),
             (self._cam_right, "right"),
         ]:
             config = cam.create_still_configuration(
                 main={"size": (w, h), "format": "BGR888"},
-                controls={"FrameRate": self.fps},
+                controls=initial_controls,
             )
             cam.configure(config)
             cam.start()

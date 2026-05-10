@@ -70,7 +70,7 @@ def _infer(
     model_id: str, img_bytes: bytes, api_key: str,
     conf: float, iou: float, endpoint: str = ENDPOINT_DETECT,
 ) -> dict[str, Any]:
-    """Hit Roboflow inference API for one image. Returns parsed JSON.
+    """Llama a la inference API de Roboflow para una imagen. Devuelve JSON parseado.
 
     detect.roboflow.com espera ``<project>/<version>`` SIN el workspace.
     Si el caller pasa ``workspace/project/version`` (formato canónico

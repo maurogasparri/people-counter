@@ -53,7 +53,7 @@ logger = logging.getLogger("export_anonymized")
 
 
 def _ensure_odd(k: int) -> int:
-    """OpenCV Gaussian kernel size must be odd. Round up."""
+    """El kernel size del Gaussian de OpenCV tiene que ser impar. Redondea hacia arriba."""
     k = max(3, int(k))
     return k if k % 2 == 1 else k + 1
 
@@ -63,10 +63,10 @@ def blur_bbox(
     bbox: tuple[int, int, int, int],
     kernel: int = 31,
 ) -> np.ndarray:
-    """Apply Gaussian blur to a bbox region; keep the rest of the frame.
+    """Aplica Gaussian blur a la región del bbox; preserva el resto del frame.
 
-    Padding is clamped to the frame so an off-screen bbox doesn't crash
-    the slicing. Returns a *new* array — input is not mutated.
+    El padding queda clampeado al frame así que un bbox off-screen no
+    rompe el slicing. Devuelve un array *nuevo* — el input no se muta.
     """
     h, w = image.shape[:2]
     x1, y1, x2, y2 = bbox
@@ -90,11 +90,11 @@ def blur_full_with_edges(
     canny_low: int = 50,
     canny_high: int = 150,
 ) -> np.ndarray:
-    """Heavy blur of the full frame + Canny edges overlaid in white.
+    """Blur fuerte del frame completo + edges Canny overlaid en blanco.
 
-    Aggressive fallback for frames without a sidecar bbox: completely
-    obfuscates pixel values but preserves silhouettes for downstream
-    pose / shape labelling. Returns a 3-channel BGR image.
+    Fallback agresivo para frames sin sidecar bbox: ofusca completamente
+    los valores de pixel pero preserva las siluetas para labelling
+    downstream de pose / shape. Devuelve una imagen BGR de 3 canales.
     """
     h, w = image.shape[:2]
     if image.ndim == 3:
@@ -107,13 +107,13 @@ def blur_full_with_edges(
     if blurred.ndim == 2:
         blurred = cv2.cvtColor(blurred, cv2.COLOR_GRAY2BGR)
     edges = cv2.Canny(gray, int(canny_low), int(canny_high))
-    # Lay edges on top of the blurred frame in white. Single channel ->
-    # broadcast over BGR.
+    # Pintamos los edges arriba del frame blureado en blanco. Single-channel
+    # broadcasteado sobre BGR.
     mask = edges > 0
     out = blurred.copy()
     out[mask] = (255, 255, 255)
-    # Resize/clip safety: the operations above never change shape, but
-    # assert the invariant in case of refactors.
+    # Las operaciones de arriba nunca cambian el shape, pero asertamos
+    # el invariante por si algún refactor lo rompiera.
     assert out.shape[:2] == (h, w)
     return out
 
@@ -124,8 +124,8 @@ def blur_full_with_edges(
 
 
 def load_sidecar(jpg_path: Path) -> Optional[dict[str, Any]]:
-    """Look for ``<jpg>.json`` next to the image. Return the parsed dict
-    or ``None`` if missing / malformed.
+    """Busca ``<jpg>.json`` al lado de la imagen. Devuelve el dict parseado
+    o ``None`` si no existe o está corrupto.
     """
     sidecar = jpg_path.with_suffix(jpg_path.suffix + ".json")
     if not sidecar.exists():

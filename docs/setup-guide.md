@@ -23,7 +23,7 @@ Desde tu PC con Windows:
 
 Orden recomendado:
 
-1. **Raspberry Pi AI HAT+ 13 TOPS** → stackearlo sobre la Raspberry Pi 5 (GPIO + FFC al puerto PCIe)
+1. **Raspberry Pi AI HAT+ 13 TOPS** → stackearlo sobre la Raspberry Pi 5 (GPIO + cable plano PCIe)
 2. **Waveshare PoE HAT (H)** → conectar por dupont — no se stackea. Usar **2× 5V + 2× GND** para repartir corriente sin sobrecargar un solo contacto:
 
    | Header pin | RPi5 | PoE HAT |
@@ -494,7 +494,7 @@ sale del entorno controlado.
   insertados. El conector tiene un clip que se levanta, se inserta el
   flat y se baja el clip.
 - **Hailo no detectado**: verificar que el AI HAT+ está bien stackeado
-  sobre la Pi y que el cable FFC al puerto PCIe está firme.
+  sobre la Pi y que el cable plano del puerto PCIe está firme.
   Correr `lspci` y buscar Hailo.
 - **Boot loop**: sacar el HAT y bootear solo con la Pi para descartar
   problemas de alimentación. La fuente USB-C debe ser de 5V/5A.

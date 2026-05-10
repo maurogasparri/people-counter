@@ -585,6 +585,35 @@ class EuclideanTracker:
         if track.state == CONFIRMED:
             track.state = PENDING
 
+        # Empujar la predicción Kalman a `positions` durante PENDING
+        # así consumers downstream (counter line-cross, viewer) ven al
+        # track moverse en lugar de quedar clavado en su última
+        # observación. Sin este push, una persona que cruza la línea +
+        # sale del FOV antes del próximo match nunca dispara el exit
+        # branch del counter: la posición congelada queda IN-ROI, el
+        # track muere por max_disappeared / pending_max_frames, y el
+        # `last_label` se pierde sin emitir CountEvent. La magnitud del
+        # paso se capea a `max_distance` para evitar teleportaciones
+        # cuando Kalman extrapola con velocidad residual alta. `z`
+        # carry-forwardea — Kalman 2D no modela depth.
+        if track.kalman is not None and track.positions:
+            last = track.positions[-1]
+            xy_pred = track.kalman.position
+            dx = float(xy_pred[0]) - float(last[0])
+            dy = float(xy_pred[1]) - float(last[1])
+            step_mag = (dx * dx + dy * dy) ** 0.5
+            if step_mag > self.max_distance and step_mag > 0:
+                scale = self.max_distance / step_mag
+                dx *= scale
+                dy *= scale
+            z = float(last[2]) if len(last) > 2 else 0.0
+            track.positions.append(
+                np.array(
+                    [float(last[0]) + dx, float(last[1]) + dy, z],
+                    dtype=float,
+                )
+            )
+
         if track.state == PENDING and track.disappeared > self.pending_max_frames:
             track.state = LOST
             return

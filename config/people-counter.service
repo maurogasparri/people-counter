@@ -22,7 +22,10 @@ SyslogIdentifier=people-counter
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/people-counter /var/log/people-counter /etc/people-counter
+# /usr/src/people-counter incluido porque HailoRT escribe pyhailort.log y
+# hailort.log en CWD (que es WorkingDirectory). Sin este path la activación
+# del HEF falla con OSError errno=30 read-only filesystem.
+ReadWritePaths=/var/lib/people-counter /var/log/people-counter /etc/people-counter /usr/src/people-counter
 PrivateTmp=true
 
 # El web viewer en vivo bindea al puerto 80 por default (--web-viewer-port).
