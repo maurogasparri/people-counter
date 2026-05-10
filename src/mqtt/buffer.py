@@ -61,11 +61,25 @@ class MessageBuffer:
             return [(r[0], r[1], json.loads(r[2])) for r in rows]
 
     def purge_old(self) -> int:
-        """Borra mensajes más viejos que max_age_hours. Devuelve la cantidad borrada."""
+        """Borra mensajes más viejos que max_age_hours. Devuelve la cantidad borrada.
+
+        Defensivo ante errores de SQLite: el loop principal llama a esto cada
+        60s. Si el DB es read-only (smoke run como ``pi`` con el archivo
+        owned por ``root`` post-service-stop) o está corrupto, no queremos
+        que la rutina de mantenimiento mate el pipeline. Logueamos y
+        seguimos — el peor caso es que el buffer crezca un poco hasta el
+        próximo restart con permisos correctos.
+        """
         cutoff = time.time() - (self.max_age_hours * 3600)
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("DELETE FROM messages WHERE created_at < ?", (cutoff,))
-            return cursor.rowcount
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "DELETE FROM messages WHERE created_at < ?", (cutoff,)
+                )
+                return cursor.rowcount
+        except sqlite3.Error:
+            logger.exception("purge_old failed")
+            return 0
 
     def count_unsent(self) -> int:
         """Devuelve la cantidad de mensajes no enviados actualmente en el buffer.
