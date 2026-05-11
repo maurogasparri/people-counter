@@ -1569,7 +1569,35 @@ def main() -> None:
     if args.depth_debug:
         enable_depth_debug(True)
 
-    config = load_config(args.config)
+    # ``load_config`` raisea FileNotFoundError o ValueError cuando el config
+    # falta o está malformado (corrupto, sección requerida ausente, valor
+    # inválido). En vez de dejar burbujear el stack trace ante el operador,
+    # los pescamos acá y mostramos un mensaje claro con el path del archivo
+    # y la causa, después salimos con código de error no-cero.
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as e:
+        print(
+            f"\nERROR: archivo de config no encontrado en '{args.config}'.\n"
+            f"  Detalle: {e}\n"
+            f"  Aprovisioná el config per-device en /etc/people-counter/config.yaml\n"
+            f"  o pasá --config <path> apuntando al archivo correcto.\n",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    except ValueError as e:
+        print(
+            f"\nERROR: config inválido en '{args.config}'.\n"
+            f"  Detalle: {e}\n"
+            f"  El archivo existe pero le falta una sección/key requerida o\n"
+            f"  tiene un valor mal-formado. Comparalo contra\n"
+            f"  config/config.example.yaml en el repo para ver qué falta.\n"
+            f"  Si fue corrupción de un edit reciente, restaurá desde\n"
+            f"  /etc/people-counter/config.yaml.bak.* (los backups previos).\n",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     setup_logging(config)
 
     # --- Intenta mergear el cloud config desde el Shadow de IoT ---
