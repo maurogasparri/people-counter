@@ -498,6 +498,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         reid_gate_px=float(
             tracker_cfg.get("reid_gate_px", sm_cfg["reid_gate_px"])
         ),
+        # Default 0.5 = nueva semántica production-grade (track sin obs
+        # converge a quieto en ~3 frames). 1.0 desactiva (back-compat).
+        # tracker_cfg precedence permite override per-site vía shadow.
+        pending_velocity_decay=float(
+            tracker_cfg.get(
+                "pending_velocity_decay",
+                sm_cfg.get("pending_velocity_decay", 0.5),
+            )
+        ),
     )
 
     # Static FP suppressor: defense-in-depth contra detecciones que el

@@ -147,6 +147,7 @@ class EuclideanTracker:
         process_noise: float = DEFAULT_PROCESS_NOISE,
         measurement_noise: float = DEFAULT_MEASUREMENT_NOISE,
         initial_velocity_uncertainty: float = DEFAULT_INITIAL_VELOCITY_UNCERTAINTY,
+        pending_velocity_decay: float = 1.0,
     ) -> None:
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
@@ -157,6 +158,15 @@ class EuclideanTracker:
         self.process_noise = float(process_noise)
         self.measurement_noise = float(measurement_noise)
         self.initial_velocity_uncertainty = float(initial_velocity_uncertainty)
+        # Factor de decay (0-1] aplicado a (vx, vy) del Kalman cada vez que
+        # un track ENTRA al predict step ya en estado PENDING. Default 1.0
+        # = sin decay (back-compat: el predict sigue extrapolando con la
+        # última velocidad observada). Valores <1 simulan el prior
+        # bayesiano "humano sin obs tiende a quedarse quieto" y previenen
+        # el ghost-drift que dispara duplicados al re-identificar (track
+        # nuevo en vez de re-asociar al original cuando reaparece >1.5s
+        # después). Producción default 0.5 vía config.
+        self.pending_velocity_decay = float(pending_velocity_decay)
         self._next_id = 0
         self._tracks: OrderedDict[int, Track] = OrderedDict()
 
@@ -253,6 +263,18 @@ class EuclideanTracker:
         # correcta para el frame faltante.
         for track in self._tracks.values():
             if track.kalman is not None:
+                # Velocity decay para tracks que entran a este predict ya
+                # en PENDING (= venían de uno o más misses sin obs).
+                # Multiplicar (vx, vy) por pending_velocity_decay hace que
+                # la extrapolación converja exponencialmente hacia "track
+                # quieto" en vez de seguir empujando con la velocidad de
+                # cuando había detecciones. Skip cuando decay >= 1.0 (off)
+                # para evitar trabajo en el hot path del back-compat.
+                if (
+                    track.state == PENDING
+                    and self.pending_velocity_decay < 1.0
+                ):
+                    track.kalman.x[2:] *= self.pending_velocity_decay
                 track.kalman.predict()
 
         if len(self._tracks) == 0:

@@ -470,6 +470,24 @@ tracking:
                                     # track por varios frames entre
                                     # re-detecciones.
     depth_gate_m: 0.5               # Gate de |Δz| para re-id cross frames.
+    pending_velocity_decay: 0.5     # Factor multiplicativo aplicado a (vx, vy)
+                                    # del Kalman cada frame en estado PENDING.
+                                    # 0.5 → velocidad colapsa a <5% en 5 frames
+                                    # (~0.35s a 14 fps), efectivamente
+                                    # congelando la posición predicha. Sin esto,
+                                    # un track que pierde detecciones (oclusión,
+                                    # static_suppressor, motion blur) sigue
+                                    # extrapolando con la última velocidad
+                                    # observada → el predict drifta off-ROI →
+                                    # al re-aparecer la persona >1.5s después,
+                                    # cae fuera del reid_gate_px → nace un
+                                    # track NUEVO → doble conteo (1 in del
+                                    # track viejo + 1 in/out del nuevo).
+                                    # 1.0 = sin decay (comportamiento previo).
+                                    # 0.3-0.7 = razonable para retail.
+                                    # Implementación del prior bayesiano:
+                                    # humano sin obs tiende a quedarse quieto,
+                                    # no a acelerar indefinidamente.
     kalman:                         # Filtro Kalman de velocidad constante
                                     # sobre el estado [cx, cy, vx, vy] de
                                     # cada track. Reemplaza la extrapolación

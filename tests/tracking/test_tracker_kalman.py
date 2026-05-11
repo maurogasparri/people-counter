@@ -234,6 +234,76 @@ def test_tracker_single_obs_then_miss_does_not_diverge():
         assert abs(pred[1] - 300.0) < 2.0
 
 
+def test_pending_velocity_decay_bounds_drift_and_preserves_reid():
+    """Production-grade: con ``pending_velocity_decay < 1.0``, un track
+    que pierde detecciones converge a "track quieto" en pocos frames en
+    vez de seguir extrapolando con la velocidad de cuando había obs.
+
+    El bug que esto previene: persona entra caminando + el detector la
+    pierde (oclusión, static_suppressor, motion blur). Sin decay, el
+    Kalman sigue empujando la posición a la velocidad pre-miss → tras
+    1-2s el predict está a 1-3m del lugar real → al re-aparecer la
+    persona, queda fuera del ``reid_gate_px`` → nace un track NUEVO →
+    el track viejo muere por timeout sin emitir egress y el nuevo emite
+    un ingress → DOBLE CONTEO.
+
+    Con decay 0.5, después de N misses sin obs:
+        drift_total = v * (1 + 0.5 + 0.25 + ...) <= v * 2
+
+    Drift acotado independientemente de cuántos frames pasen, así el
+    re-id binding sigue cayendo dentro del gate.
+    """
+    # Setup: track confirmed con velocidad +20 px/frame.
+    tracker = EuclideanTracker(
+        max_distance=200,
+        confirm_frames=1,
+        pending_max_frames=50,
+        reid_gate_px=300,
+        pending_velocity_decay=0.5,
+    )
+    tracker.update([np.array([0.0, 100.0, 3000.0])])
+    tracker.update([np.array([20.0, 100.0, 3000.0])])
+    tid = list(tracker.tracks.keys())[0]
+    pos_at_last_obs = tracker.tracks[tid].last_position[0]
+    assert pos_at_last_obs == 20.0
+
+    # 20 frames sin observaciones — track pasa a PENDING y queda ahí.
+    for _ in range(20):
+        tracker.update([])
+    assert tracker.tracks[tid].state == PENDING
+
+    # Drift del Kalman: con decay 0.5, suma geométrica de v acotada.
+    # v inicial = 20 px/frame, post-decay después de N frames PENDING:
+    #     drift ≤ 20 * Σ (0.5^k for k=0..∞) = 40 px.
+    pos_after_20_misses = tracker.tracks[tid].kalman.position[0]
+    drift = pos_after_20_misses - pos_at_last_obs
+    assert drift < 50.0, (
+        f"Drift {drift:.1f}px excede el límite teórico geométrico (~40px). "
+        "Sin decay esto sería 20*20 = 400px — un track real saldría del FOV."
+    )
+
+    # Reaparición en una posición razonable matchea de nuevo (re-id intacto).
+    tracks = tracker.update([np.array([35.0, 100.0, 3000.0])])
+    assert tid in tracks, (
+        "Después del decay el predict queda cerca de la última obs y el "
+        "reaparición a 35px (dentro del rango decay-acotado) debe re-id."
+    )
+    assert tracks[tid].state == CONFIRMED
+
+
+def test_pending_velocity_decay_default_disabled_back_compat():
+    """El tracker construido sin ``pending_velocity_decay`` mantiene el
+    comportamiento previo (decay = 1.0 = sin decay). Garantiza que tests
+    y configs viejas no cambian semántica inadvertidamente.
+    """
+    tracker = EuclideanTracker(
+        max_distance=200,
+        confirm_frames=1,
+        pending_max_frames=20,
+    )
+    assert tracker.pending_velocity_decay == 1.0
+
+
 def test_tracker_kalman_params_propagated_to_filter():
     """Constructor kwargs should land on each track's filter."""
     tracker = EuclideanTracker(
