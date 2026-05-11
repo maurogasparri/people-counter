@@ -1612,17 +1612,34 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     scaled, ids_l, ghost["inner_corners"],
                 )
                 tol_loose, tol_tight = _resolve_tolerance(args)
+                # Permitir override del corner-gate via --align-min-corners.
+                # Default None mantiene el comportamiento canónico (tight=15,
+                # loose=12). Valores menores son útiles SOLO para setups con
+                # constraint físico que no permite cubrir bien el FOV (mount
+                # vertical en cuarto chico, FOV >120° con rectificación
+                # agresiva, etc) — el resultado es matemáticamente más
+                # subdeterminado y vale solo cuando la alternativa es no
+                # poder calibrar nada.
+                cli_min = getattr(args, "align_min_corners", None)
+                tight_min = (
+                    int(cli_min) if cli_min is not None
+                    else ALIGN_MATCHED_MIN_TIGHT
+                )
+                loose_min = (
+                    max(1, int(cli_min) - 3) if cli_min is not None
+                    else ALIGN_MATCHED_MIN_LOOSE
+                )
                 if state.bootstrap_done:
                     aligned = is_aligned_by_corners(
                         err,
                         mean_err_tol_px=tol_tight,
-                        min_matched=ALIGN_MATCHED_MIN_TIGHT,
+                        min_matched=tight_min,
                     )
                 else:
                     aligned = is_aligned_by_corners(
                         err,
                         mean_err_tol_px=tol_loose,
-                        min_matched=ALIGN_MATCHED_MIN_LOOSE,
+                        min_matched=loose_min,
                     )
 
             # Estabilidad — pasamos los IDs así el tracker tolera
@@ -3292,6 +3309,17 @@ def main() -> None:
                         help="Cantidad mínima de pares necesaria para correr "
                              "la calibración. Default 15 (estadísticamente "
                              "robusto). Bajar solo para dry-runs / debugging.")
+    p_wiz.add_argument("--align-min-corners", type=int, default=None,
+                        help="Override del corner-gate de captura. Default "
+                             "None usa los thresholds canónicos (tight=15 "
+                             "post-bootstrap, loose=12 durante bootstrap). "
+                             "Valores menores aceptan capturas con menos "
+                             "esquinas decodificadas — usar SOLO cuando un "
+                             "setup físico (mount vertical en cuarto chico, "
+                             "rectificación fisheye agresiva en periferia) "
+                             "impide alcanzar los thresholds default. El "
+                             "resultado es una calibración más subdeterminada "
+                             "matemáticamente, pero preferible a no calibrar.")
     p_wiz.add_argument("--pose-timeout-sec", type=float,
                         default=SKIP_POSE_TIMEOUT_SEC,
                         help=f"Segundos antes de que una pose no capturada sea "
