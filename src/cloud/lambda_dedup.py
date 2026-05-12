@@ -18,7 +18,6 @@ Variables de entorno:
     DEDUP_TTL_DAYS: Días después de los cuales los hashes auto-expiran (default: 7).
 """
 
-import json
 import logging
 import os
 import time

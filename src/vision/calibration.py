@@ -16,7 +16,7 @@ Compatible con OpenCV 4.8+ (contrib) que usa la API refactoreada de ArUco.
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 

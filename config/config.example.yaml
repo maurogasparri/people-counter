@@ -67,15 +67,12 @@ vision:
                                     # binned full-FOV. El .npz de calibración
                                     # tiene que ser reescalado para matchear via
                                     # scripts/rescale_calibration.py.
-  sensor_raw_size: [2304, 1296]     # Sensor mode canónico del IMX708 — Mode 1
-                                    # (full-FOV binned 2×2, HFOV 120°, 56fps).
-                                    # CRITICAL: sin este override, picamera2
-                                    # elige Mode 0 (1536×864 cropeado) que
-                                    # reduce el HFOV efectivo a ~80° y la
-                                    # cobertura de piso a ~50% del diseño. Se
-                                    # pasa como raw={"size": ...} en el config
-                                    # de picamera2. Cambiar este valor invalida
-                                    # toda calibración previa.
+                                    # El sensor raw mode usado por picamera2
+                                    # viene de sensor.default_res (sección
+                                    # avanzada) — anclar ese override es lo
+                                    # que evita que picamera2 elija Mode 0
+                                    # cropeado del IMX708 (HFOV efectivo ~80°
+                                    # en vez de 120°).
   fps: 30                           # Frame rate de captura a la resolución runtime.
   max_exposure_us: 16000            # Cap de shutter time en microsegundos.
                                     # Limita motion blur para que la distribución
@@ -112,6 +109,40 @@ vision:
                                     # (~4× el de downscale=8) cabe holgado
                                     # en el budget runtime de la Pi 5.
 
+  # --- AE lock timings (compartidos entre runtime + setup tools) ---
+  ae_lock:
+    initial_settle_seconds: 2.0     # Segundos de settle antes del lock
+                                    # provisional cuando se abre la captura.
+                                    # En sites con luz fluctuante (vidrieras,
+                                    # mixed lighting, HVAC) puede necesitar
+                                    # más (3-4s) para que AE converja antes
+                                    # de lockear.
+    resettle_seconds: 1.5           # Segundos de re-settle entre la
+                                    # re-habilitación de AE y el re-lock
+                                    # final, cuando el operador apreta
+                                    # "Comenzar" con la escena armada
+                                    # (focus_assist, calibrate wizard,
+                                    # diagnose_bracket).
+
+  # --- ChArUco board + dual-pass detection ---
+  charuco:
+    board_cols: 9                   # Columnas (cuadrados) del board.
+    board_rows: 6                   # Filas (cuadrados) del board.
+    square_mm: 45.0                 # Lado del cuadrado, en milímetros.
+    marker_mm: 33.0                 # Lado del marker ArUco interno, en
+                                    # milímetros (típicamente 73% del cuadro).
+    dict: "DICT_4X4_100"            # Nombre del dict ArUco (cv2.aruco.<dict>).
+    legacy_pattern: true            # Enumeración de markers pre-OpenCV-4.6.
+                                    # True matchea el layout de calib.io.
+                                    # Pasar a false solo si generaste un
+                                    # board con un OpenCV post-4.6.
+    dual_pass_accept_threshold: 8   # Si detect_charuco_dual_pass detecta
+                                    # <= este número de corners en el frame
+                                    # original, reintenta con sharpen 3×3.
+                                    # Subir (ej. 12) en sites con foco
+                                    # marginal o iluminación pobre para
+                                    # agresivar la recovery via sharpen.
+
 
 # =============================================================================
 # DETECTION — modelo + thresholds (model-specific, fleet-uniform tras lab tune)
@@ -132,7 +163,7 @@ detection:
   confidence_threshold: 0.30        # Piso del score de detección de person/head.
                                     # Tuneado para people-counter-detector — corta
                                     # FPs del modelo (alucinaciones en piso vacío).
-  low_confidence_threshold: 0.10    # Two-stage matching (estilo ByteTrack).
+  low_confidence_threshold: 0.15    # Two-stage matching (estilo ByteTrack).
                                     # Detecciones en [low, confidence) entran
                                     # al tracker SOLO para re-asociar tracks
                                     # existentes que high-conf no matcheó.
@@ -141,7 +172,11 @@ detection:
                                     # Evita perder ID cuando una persona en
                                     # movimiento tiene un frame de motion blur
                                     # bajo el threshold y reaparece a alta
-                                    # conf unos frames después. Debe ser
+                                    # conf unos frames después. 0.15 deja
+                                    # entrar detecciones de motion-blur reales
+                                    # pero corta el ruido sub-0.15 del
+                                    # detector (donde FPs y match bonafide se
+                                    # vuelven indistinguibles). Debe ser
                                     # estricto < confidence_threshold. null
                                     # para volver al comportamiento single-stage.
   new_track_threshold: 0.50         # Spawn floor. Detecciones en
@@ -182,15 +217,22 @@ detection:
     cell_size_px: 30                # Resolución espacial del filtro.
                                     # 30px funciona para 1152×648 con cabezas
                                     # ~50-80px (cada cabeza ocupa ~2-3 celdas).
-    window_seconds: 3.0             # Ventana del análisis. 3s da tiempo
-                                    # a un FP estable para acumular hit rate
-                                    # alto sin penalizar a una persona quieta.
+    window_seconds: 3.0             # Ventana del análisis en segundos reales
+                                    # (no en frames). El supresor mide la
+                                    # ventana con timestamps internos, así
+                                    # que el comportamiento es consistente
+                                    # sea cual sea el FPS instantáneo del
+                                    # pipeline. 3s da tiempo a un FP estable
+                                    # para acumular hit rate alto sin
+                                    # penalizar a una persona quieta.
     hit_rate_threshold: 0.7         # Fracción mínima para considerar la
                                     # celda hot. 0.7 separa FP estable (~1.0)
                                     # de presencia ocasional (~0.3-0.5).
-    approx_fps: 17                  # Estimación FPS efectivo del pipeline,
-                                    # usado para convertir window_seconds
-                                    # a frames. No tiene que ser exacto.
+    min_samples_for_judgment: 8     # Mínimo de frames con detecciones antes
+                                    # de empezar a filtrar (ortogonal al gate
+                                    # de tiempo). Evita decisiones con
+                                    # estadística pobre en escenarios de FPS
+                                    # bajísimo (ej. <3 fps, 3s window).
 
 
 # =============================================================================
@@ -463,8 +505,8 @@ height:
 
 # --- Tracker + state machine (tuning de algo, fleet-uniform tras piloto) ----
 tracking:
-  max_disappeared: 30               # Frames que un track puede miss antes de drop.
-  max_distance: 50                  # Distancia max en px para asociación
+  max_disappeared_frames: 30        # Frames que un track puede miss antes de drop.
+  max_distance_px: 50               # Distancia max en px para asociación
                                     # frame-a-frame. Escalar linealmente con
                                     # la resolución runtime si la cambiás.
   state_machine:

@@ -79,7 +79,7 @@ def main() -> None:
                         help="Tamaño de zona como fracción de min(H,W). Default 0.15 = ~15%% por lado")
     parser.add_argument("--edge-margin", type=float, default=0.10,
                         help="Offset de zona borde desde la esquina, fracción de min(H,W). Default 0.10")
-    parser.add_argument("--delay", type=int, default=0,
+    parser.add_argument("--delay-seconds", "--delay", type=int, dest="delay_seconds", default=0,
                         help="Cuenta regresiva en segundos antes de capturar")
     parser.add_argument("--meter", choices=("matrix", "centre", "spot"),
                         default="matrix",
@@ -170,8 +170,7 @@ def main() -> None:
     _emit("=" * 70)
     _emit("PARÁMETROS DE CALIBRACIÓN")
     _emit("=" * 70)
-    K_l, K_r = cal["camera_matrix_l"], cal["camera_matrix_r"]
-    P1, P2, T, Q = cal["P1"], cal["P2"], cal["T"], cal["Q"]
+    P1, P2, T = cal["P1"], cal["P2"], cal["T"]
     fx_p1 = float(P1[0, 0])
     baseline_T = float(np.linalg.norm(T))
     baseline_P2 = abs(float(P2[0, 3])) / fx_p1 if fx_p1 != 0 else 0.0
@@ -180,13 +179,15 @@ def main() -> None:
     _emit(f"Baseline ||T|| = {baseline_T:.1f} mm  /  P2[0,3]/fx = {baseline_P2:.1f} mm")
 
     if abs(baseline_T - baseline_P2) > 5:
-        print(f"  ATENCIÓN: discrepancia de baseline (>5mm)")
+        print("  ATENCIÓN: discrepancia de baseline (>5mm)")
 
     # --- Captura ---
     _emit(f"\n{'=' * 70}")
     _emit("CAPTURANDO...")
     _emit("=" * 70)
 
+    from src.config.hardware import load_hardware_params
+    hw = load_hardware_params()
     cap = StereoCapture(
         cam_left_id=cam_left, cam_right_id=cam_right,
         resolution=resolution, fps=5,
@@ -194,12 +195,15 @@ def main() -> None:
         max_exposure_us=(
             args.max_exposure_us if args.max_exposure_us > 0 else None
         ),
+        sensor_raw_size=hw.default_res,
+        initial_settle_seconds=hw.ae_initial_settle_seconds,
+        resettle_seconds=hw.ae_resettle_seconds,
     )
     cap.open()
 
-    if args.delay > 0:
+    if args.delay_seconds > 0:
         import time
-        for i in range(args.delay, 0, -1):
+        for i in range(args.delay_seconds, 0, -1):
             print(f"  Capturando en {i}...", end="\r", flush=True)
             time.sleep(1)
         print()

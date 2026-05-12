@@ -30,6 +30,11 @@ import numpy as np
 # Agregar la raíz del proyecto al path para los imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.config.hardware import (
+    FLEET_DEFAULTS as _FALLBACK_HW,
+    HardwareParams,
+    load_hardware_params,
+)
 import src.vision.calibration as _calib_mod
 from src.vision.calibration import (
     ALIGN_CENTER_TOL_PX,
@@ -37,14 +42,9 @@ from src.vision.calibration import (
     ALIGN_MEAN_ERR_TOL_PX_TIGHT,
     ALIGN_MATCHED_MIN_LOOSE,
     ALIGN_MATCHED_MIN_TIGHT,
-    NOMINAL_FOCAL_PX,
-    NOMINAL_FULL_RES,
-    DEFAULT_BOARD_SIZE,
     DEFAULT_DIST_FAR_MM,
     DEFAULT_DIST_MID_MM,
     DEFAULT_DIST_NEAR_MM,
-    DEFAULT_MARKER_LENGTH,
-    DEFAULT_SQUARE_LENGTH,
     StabilityTracker,
     alignment_hint_by_corners,
     analyze_pose_coverage,
@@ -80,6 +80,12 @@ def _resolve_aruco_dict(name: str) -> int:
     if not hasattr(cv2.aruco, dict_attr):
         raise SystemExit(f"ArUco dict desconocido: {name}")
     return getattr(cv2.aruco, dict_attr)
+
+
+# Hardware params canónicos del device — leídos al main(). Inicializado
+# con fleet defaults para que las funciones top-level + argparse defaults
+# tengan valores razonables durante import.
+HW: HardwareParams = _FALLBACK_HW
 
 
 _TOLERANCE_PRESETS = {
@@ -1210,6 +1216,9 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         meter_mode=getattr(args, "meter", "matrix"),
         lock_ae=getattr(args, "lock_ae", False),
         max_exposure_us=max_exp if max_exp and max_exp > 0 else None,
+        sensor_raw_size=HW.default_res,
+        initial_settle_seconds=HW.ae_initial_settle_seconds,
+        resettle_seconds=HW.ae_resettle_seconds,
     )
     cap.open()
 
@@ -1390,6 +1399,17 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         except Exception:
             pass
         sys.exit(0)
+
+    # Re-settle AE con el board ya posicionado (no-op si lock_ae=False).
+    # El lock provisional del open() ocurrió cuando el operador acababa de
+    # lanzar el script; ahora con todo armado, refresca el lock para que
+    # los valores reflejen la escena real de medición. Mismo patrón que
+    # focus_assist y diagnose_bracket.
+    try:
+        cap.resettle_and_lock()
+    except Exception as e:
+        logger.warning("resettle_and_lock no aplicado: %s", e)
+
     logger.info("Ctrl+C para cancelar, o usá el botón Finalizar en la UI.\n")
 
     stability = StabilityTracker()
@@ -1590,16 +1610,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
             # Proyectar ghost — usa fitted_K después del bootstrap.
             # Pasamos la resolución de captura REAL así project_pose escala
-            # fitted_K (que vive a esa res, no a NOMINAL_FULL_RES 4608x2592)
+            # fitted_K (que vive a esa res, no a HW.full_res 4608x2592)
             # correctamente al preview. focal_full_px también escalado a la
-            # res de captura para el path de bootstrap (fitted_K=None). Sin
-            # esto el ghost se proyectaba ~2× más chico de lo que debería en
-            # captura binned 2304x1296, dando la impresión de que la pose
-            # target estaba al doble de profundidad — los overrides de
-            # --dist-*-mm parecían ignorarse cuando en realidad la
-            # proyección visual estaba mal escalada.
+            # res de captura para el path de bootstrap (fitted_K=None) — los
+            # nominales escalan linealmente con la resolución de captura
+            # binned (Mode 1 IMX708 = 2304×1296 = full_res / 2).
             capture_res = (frame_l.shape[1], frame_l.shape[0])
-            focal_capture = NOMINAL_FOCAL_PX * capture_res[0] / NOMINAL_FULL_RES[0]
+            focal_capture = HW.nominal_focal_full_px * capture_res[0] / HW.full_res[0]
             ghost = project_pose(
                 pose, board_size, args.square_length, GUIDED_HALF,
                 focal_full_px=focal_capture,
@@ -1935,7 +1952,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                 if state.fitted_K is not None:
                     f_px_for_hint = float(state.fitted_K[0, 0])
                 else:
-                    f_px_for_hint = NOMINAL_FOCAL_PX
+                    f_px_for_hint = HW.nominal_focal_full_px
                 # Los offsets en err están en el píxel space del PREVIEW
                 # (GUIDED_HALF, ~648 de ancho después de la
                 # multiplicación scale_x de antes). El fitted_K / f_px
@@ -1970,14 +1987,12 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             # lockout termine y el hint todavía esté vigente, la
             # comparación con _key piensa que ya lo entregamos y queda
             # en silencio para siempre.
-            spoke_audio = False
             if (audio_text
                     and not announce_audio_lockout
                     and _key(audio_text) != state.last_spoken_key):
                 _emit_audio(audio_text)
                 state.last_spoken_key = _key(audio_text)
                 state.locked_alignment_text = audio_text
-                spoke_audio = True
 
             # Cuando el hint de alineación tiene la misma key semántica
             # que lo que el operador acaba de escuchar, mantener el
@@ -2143,6 +2158,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
         resolution=tuple(args.resolution),
         fps=args.fps,
         max_exposure_us=max_exp if max_exp and max_exp > 0 else None,
+        sensor_raw_size=HW.default_res,
+        initial_settle_seconds=HW.ae_initial_settle_seconds,
+        resettle_seconds=HW.ae_resettle_seconds,
     )
     cap.open()
 
@@ -2393,7 +2411,6 @@ def _wizard_preflight(args: argparse.Namespace) -> tuple[bool, list[str]]:
     """
     import shutil
     import socket
-    import stat
 
     messages: list[str] = []
     hard_fail = False
@@ -2580,6 +2597,9 @@ def _run_ground_truth_phase(
         cam_left_id=args.left, cam_right_id=args.right,
         resolution=tuple(args.resolution), fps=args.fps,
         max_exposure_us=max_exp if max_exp and max_exp > 0 else None,
+        sensor_raw_size=HW.default_res,
+        initial_settle_seconds=HW.ae_initial_settle_seconds,
+        resettle_seconds=HW.ae_resettle_seconds,
     )
     try:
         cap.open()
@@ -3222,6 +3242,9 @@ def cmd_reset(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    global HW
+    HW = load_hardware_params()
+
     parser = argparse.ArgumentParser(
         description="Tool de calibración estéreo para People Counter"
     )
@@ -3230,10 +3253,10 @@ def main() -> None:
     # --- generate-board ---
     p_board = sub.add_parser("generate-board", help="Genera el board ChArUco imprimible")
     p_board.add_argument("--output", default="calibration/charuco_board.png")
-    p_board.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
-    p_board.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
-    p_board.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_board.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
+    p_board.add_argument("--board-cols", "--columns", type=int, dest="columns", default=HW.board_cols, help="Columnas del board. Default desde vision.charuco.board_cols.")
+    p_board.add_argument("--board-rows", "--rows", type=int, dest="rows", default=HW.board_rows, help="Filas del board. Default desde vision.charuco.board_rows.")
+    p_board.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=HW.square_mm, help="Lado del cuadrado en mm. Default desde vision.charuco.square_mm.")
+    p_board.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=HW.marker_mm, help="Lado del marker en mm. Default desde vision.charuco.marker_mm.")
     p_board.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco (ej. DICT_4X4_100, DICT_5X5_100). Default DICT_4X4_100")
     p_board.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3257,17 +3280,17 @@ def main() -> None:
     p_cap.add_argument("--count", type=int, default=30, help="Número mínimo de pares")
     p_cap.add_argument("--per-cell", type=int, default=0,
                         help="Máximo de capturas por celda del grid (0=ilimitado). Para la celda al alcanzarlo.")
-    p_cap.add_argument("--cooldown", type=float, default=1.5,
+    p_cap.add_argument("--cooldown-seconds", "--cooldown", type=float, dest="cooldown", default=1.5,
                         help="Segundos a esperar después de cada captura antes de la próxima")
-    p_cap.add_argument("--pose-timeout-sec", type=float,
-                        default=SKIP_POSE_TIMEOUT_SEC,
+    p_cap.add_argument("--pose-timeout-seconds", "--pose-timeout-sec", type=float,
+                        dest="pose_timeout_sec", default=SKIP_POSE_TIMEOUT_SEC,
                         help=f"Segundos antes de que una pose no capturada sea "
                              f"auto-skippeada (default {SKIP_POSE_TIMEOUT_SEC:.0f}).")
     p_cap.add_argument("--port", type=int, default=8080, help="Puerto del preview HTTP")
-    p_cap.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
-    p_cap.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
-    p_cap.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_cap.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
+    p_cap.add_argument("--board-cols", "--columns", type=int, dest="columns", default=HW.board_cols, help="Columnas del board. Default desde vision.charuco.board_cols.")
+    p_cap.add_argument("--board-rows", "--rows", type=int, dest="rows", default=HW.board_rows, help="Filas del board. Default desde vision.charuco.board_rows.")
+    p_cap.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=HW.square_mm, help="Lado del cuadrado en mm. Default desde vision.charuco.square_mm.")
+    p_cap.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=HW.marker_mm, help="Lado del marker en mm. Default desde vision.charuco.marker_mm.")
     p_cap.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco. Default DICT_4X4_100 (el board final)")
     p_cap.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3295,10 +3318,10 @@ def main() -> None:
     p_cal = sub.add_parser("calibrate", help="Corre la calibración estéreo")
     p_cal.add_argument("--input-dir", required=True, help="Directorio con imágenes left_/right_")
     p_cal.add_argument("--output", default="calibration.npz")
-    p_cal.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
-    p_cal.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
-    p_cal.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_cal.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
+    p_cal.add_argument("--board-cols", "--columns", type=int, dest="columns", default=HW.board_cols, help="Columnas del board. Default desde vision.charuco.board_cols.")
+    p_cal.add_argument("--board-rows", "--rows", type=int, dest="rows", default=HW.board_rows, help="Filas del board. Default desde vision.charuco.board_rows.")
+    p_cal.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=HW.square_mm, help="Lado del cuadrado en mm. Default desde vision.charuco.square_mm.")
+    p_cal.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=HW.marker_mm, help="Lado del marker en mm. Default desde vision.charuco.marker_mm.")
     p_cal.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco. Default DICT_4X4_100")
     p_cal.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3327,10 +3350,10 @@ def main() -> None:
                              "tests / dev workstation donde no hay config per-device.")
     p_wiz.add_argument("--fps", type=int, default=5)
     p_wiz.add_argument("--port", type=int, default=8080)
-    p_wiz.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0])
-    p_wiz.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1])
-    p_wiz.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH)
-    p_wiz.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH)
+    p_wiz.add_argument("--board-cols", "--columns", type=int, dest="columns", default=HW.board_cols)
+    p_wiz.add_argument("--board-rows", "--rows", type=int, dest="rows", default=HW.board_rows)
+    p_wiz.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=HW.square_mm)
+    p_wiz.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=HW.marker_mm)
     p_wiz.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco. Default DICT_4X4_100 (el board final)")
     p_wiz.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3363,8 +3386,8 @@ def main() -> None:
                              "pixel es físicamente imposible. La captura "
                              "queda atribuida a la pose más cercana del ghost "
                              "secuencial, pero el solver no se afecta.")
-    p_wiz.add_argument("--pose-timeout-sec", type=float,
-                        default=SKIP_POSE_TIMEOUT_SEC,
+    p_wiz.add_argument("--pose-timeout-seconds", "--pose-timeout-sec", type=float,
+                        dest="pose_timeout_sec", default=SKIP_POSE_TIMEOUT_SEC,
                         help=f"Segundos antes de que una pose no capturada sea "
                              f"auto-skippeada (default {SKIP_POSE_TIMEOUT_SEC:.0f}). "
                              f"Subir a 180+ cuando el board está montado en "
@@ -3494,7 +3517,7 @@ def _resolve_resolution_from_device_config(
     )
     try:
         cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         parser.error(
             f"--resolution no provisto y {DEFAULT_DEVICE_CONFIG_PATH} no existe. "
             "Pasá --resolution explícito o aprovisioná el config per-device."

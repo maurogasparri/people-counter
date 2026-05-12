@@ -73,7 +73,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 716/716 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (download_roboflow + bench_detector), static suppressor |
+| Tests | 718/718 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (download_roboflow + bench_detector), static suppressor |
 | Config | Defaults + Per-device + Cloud | Dos archivos + un cloud channel: `config/config.example.yaml` (en repo, defaults canónicos para toda la flota — bracket geometry, sensor, vision, detection, tracking, etc.), `/etc/people-counter/config.yaml` (per-device override — device.id, mounting_height_m, ROI/lines, certs, endpoint MQTT), AWS IoT Shadow (cloud, business-driven — schedule, scaling, toggles). El loader hace deep-merge defaults+per-device al boot. Runtime-safe prefixes para cambios cloud-pusheados sin reinicio |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
@@ -123,9 +123,22 @@ El sistema usa **defaults canónicos + override per-device + cloud channel**:
 
 ## Instalación en sitio
 
-Los tools de setup (`focus_assist.py`, `calibrate.py`) son **standalone** — no leen
-`config.yaml`, todo se pasa por CLI. Esto permite correrlos durante la
-instalación inicial antes de que exista config.
+Los tools de setup (`focus_assist.py`, `calibrate.py`, `preview.py`, `diagnose_depth.py`)
+leen `/etc/people-counter/config.yaml` para `vision.resolution` y
+`vision.mounting_height_m` (focus_assist deriva el target distance de ahí).
+Pasar `--resolution` / `--mount-height-m` explícitos solo en dev workstation
+sin config per-device. `diagnose_bracket.py` corre sin config porque hace QC
+de ensamble pre-calibración.
+
+Todos los setup tools comparten:
+
+- `--max-exposure-us 16000` (default) — mismo cap que el runtime, freezea
+  micro-vibración que rompe el decoder ArUco asimétricamente entre L/R.
+- `--lock-ae` con patrón canónico: settle 2s → lock provisional → re-settle
+  1.5s on click → re-lock final.
+- `--meter matrix|centre|spot` (default matrix; usar centre/spot cuando la
+  periferia es brillante).
+- Browser-driven (Comenzar → trabajo → Finalizar) + reporte HTML auto-open + exit.
 
 ### 1. Ajuste de foco
 
@@ -209,6 +222,88 @@ python scripts/calibrate.py reset --yes   # borra captures + session.json + .npz
 (el wizard las genera deterministically). Comparabilidad entre unidades para QA,
 mismo procedimiento para entrenar operadores, detección de outliers entre locales.
 
+### 3. QC de ensamble del bracket (opcional)
+
+```bash
+sudo PYTHONPATH=. python3 scripts/diagnose_bracket.py
+```
+
+Tool factory para validar el ensamble físico del bracket estéreo
+**antes** de la calibración óptica. Mide pitch / yaw / roll / offset Y /
+offset Z entre L y R usando solvePnP con K nominal del IMX708 (no
+necesita `.npz` previo). Thresholds factory: pitch ±0.5° / yaw ±1.0° /
+roll ±0.5° / offsets ±2mm. Browser-driven igual que focus/calib, ghost
+del board para alineación, reporte HTML auto-open. Útil para detectar
+brackets mal cortados / cámaras flojas antes de meterlas al wizard.
+
+## Entrenamiento del detector
+
+El modelo activo es `people-counter-detector`: YOLOv8n single-class
+fine-tuneado para geometría cenital, compilado a HEF para Hailo-8L.
+**No se usa el HEF stock del Hailo Model Zoo** — está entrenado en
+COCO/CrowdHuman con vistas frontales que no transfieren a top-down.
+
+Pipeline end-to-end (todo en `scripts/training/` — ver
+[`scripts/training/README.md`](scripts/training/README.md) para el
+walkthrough completo):
+
+```
+captura multi-site (motion-trigger)  →  sampling estratificado a Roboflow
+                                    →  pre-label con SAM3 + revisión
+                                    →  Generate Version (incluir nulls)
+                                    →  Notebook Kaggle T4 (~20 min)
+                                    →  best.onnx  →  hailomz compile (Docker x86)
+                                    →  HEF en la Pi
+```
+
+Pasos resumidos:
+
+1. **Captura de validation set**: `capture_mjpeg.py` multi-site con
+   motion-trigger + background sampling. Filenames `_motion_` / `_bg_`
+   para sampling balanceado downstream.
+2. **Sampling para Roboflow**: `sample_for_roboflow.py` arma un subset
+   estratificado por site (~75 motion + ~65 bg por site, capeando
+   sites con bias como vidrieras).
+3. **Pre-label con SAM3** en Roboflow Universe (project type =
+   **Object Detection** así los polys se auto-convierten a bboxes).
+   Revisión manual: promover bg con persona a positivo, dejar el
+   resto como hard negatives.
+4. **Generate Version**: confirmar `Filter Null = Use / Include Null
+   Images` (Roboflow descarta sin labels por default). Augmentations:
+   flip H, rotate ±10°, brightness ±20%, blur ligero.
+5. **Training en Kaggle T4**: `train_head_detector.ipynb` (notebook
+   único — para iterar a v3/v4/... basta cambiar la URL de Roboflow
+   en Cell 2 y el `name` del run en Cell 3). ~20 min por iteración.
+   Descarga vía Kaggle CLI con Save & Run All.
+6. **Compilación HEF**: `hailomz compile` en Docker x86 Linux
+   (WSL2 desde Windows). Receta exacta en
+   `scripts/training/README.md` — flags críticos: `--classes 1` y
+   `--end-node-names` obligatorio. Calibration set = 200 imgs
+   muestreadas con `sample_for_calib.py` (sin leak del train).
+7. **Deploy**: `scp` del `.hef` a `/usr/src/people-counter/models/`
+   en la Pi + edición de `detection.model_path` en
+   `/etc/people-counter/config.yaml`.
+
+Bench tooling:
+
+- `bench_detector.py` — inferencia + diff de reportes (baseline vs
+  fine-tuned) sobre carpeta de frames. Subcomandos `bench` y `diff`.
+- `bench_roboflow_api.py` — triage de modelos publicados en Roboflow
+  Universe vía REST, sin descargar pesos. Útil para evaluar
+  candidatos antes de fine-tunear.
+- `eval_yolo.py` — corre un modelo sobre una carpeta y dumpea
+  bboxes + summary para sanity-check rápido.
+
+Defense-in-depth runtime (independiente del modelo):
+- **Containment filter** post-NMS: descarta bbox chico contenido
+  >50% en otro con mayor confidence (NMS por IoU no agarra esto en
+  geometría cenital).
+- **Cluster por centroide** (`cluster_distance_px: 120`): mergea
+  detecciones multi-firing (cabeza + hombro como cajas distintas).
+- **`StaticSuppressor`** (`cell_size_px: 30`, `window_seconds: 3`):
+  suprime detecciones en celdas hot ≥70% de los últimos 3s — clutter
+  estructural (maniquíes, ropa colgada, sombras) que sobrevive NMS.
+
 ## Estructura del repo
 
 ```
@@ -222,7 +317,7 @@ src/
 ├── config/          # Loader: deep-merge config.example.yaml (defaults) + /etc/people-counter/config.yaml (per-device) + IoT Shadow runtime-safe prefixes
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
-tests/               # 699 tests espejando src/ + tests/scripts/ para el wizard
+tests/               # 718 tests espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,
@@ -240,6 +335,9 @@ scripts/
 ├── diagnose_depth.py      # Validación de profundidad: 5 zonas con tags de confianza
 │                          # (✓ Coincide / ● Otro plano / ⚠ SGBM falló). Verdict solo
 │                          # por error del centro. Flags: --meter, --lock-ae
+├── diagnose_bracket.py    # QC factory del ensamble del bracket estéreo (pitch/yaw/
+│                          # roll/offset L↔R), browser-driven, no necesita .npz previo.
+│                          # Thresholds factory: ±0.5°/1.0°/0.5°/2mm/2mm.
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── roi_picker.py          # Seleccionador de ROI + línea virtual
 ├── export_events.py       # Export de eventos desde el buffer local

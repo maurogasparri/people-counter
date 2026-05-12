@@ -157,10 +157,13 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
         # corre con el cap correcto. Setear explícitamente null para
         # deshabilitar.
         max_exposure_us = vision_cfg.get("max_exposure_us", 16000)
-        # sensor_raw_size forza el sensor mode del IMX708 a Mode 1 (2304×1296
-        # full-FOV binned). Sin él, picamera2 elige Mode 0 cropeado y se
-        # pierde el HFOV de 120° diseñado. Ver capture.py CANONICAL_RAW_SIZE.
-        raw_size = vision_cfg.get("sensor_raw_size")
+        # Sensor raw size = sensor.default_res. Anclar el sensor mode del
+        # IMX708 a Mode 1 (2304×1296 full-FOV binned); sin esto picamera2
+        # elige Mode 0 cropeado y se pierde el HFOV de 120° diseñado.
+        sensor_cfg = config.get("sensor", {})
+        raw_size = sensor_cfg.get("default_res")
+        # AE settle timings, opcional — fall back a defaults de StereoCapture.
+        ae_lock_cfg = vision_cfg.get("ae_lock", {}) or {}
         capture_kwargs = dict(
             cam_left_id=config["bracket"]["camera_left_csi"],
             cam_right_id=config["bracket"]["camera_right_csi"],
@@ -170,6 +173,14 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
         )
         if raw_size is not None:
             capture_kwargs["sensor_raw_size"] = tuple(raw_size)
+        if "initial_settle_seconds" in ae_lock_cfg:
+            capture_kwargs["initial_settle_seconds"] = float(
+                ae_lock_cfg["initial_settle_seconds"]
+            )
+        if "resettle_seconds" in ae_lock_cfg:
+            capture_kwargs["resettle_seconds"] = float(
+                ae_lock_cfg["resettle_seconds"]
+            )
         cap = StereoCapture(**capture_kwargs)
     return cap
 
@@ -494,10 +505,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     tracker_cfg = counter_cfg.get("tracker", {})
     tracker = EuclideanTracker(
         max_disappeared=int(
-            tracker_cfg.get("max_disappeared", track_cfg["max_disappeared"])
+            tracker_cfg.get(
+                "max_disappeared_frames", track_cfg["max_disappeared_frames"]
+            )
         ),
         max_distance=float(
-            tracker_cfg.get("max_distance", track_cfg["max_distance"])
+            tracker_cfg.get("max_distance_px", track_cfg["max_distance_px"])
         ),
         max_depth_delta=float(
             tracker_cfg.get("depth_gate_m", sm_cfg["depth_gate_m"])
@@ -536,20 +549,21 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             cell_size_px=int(ss_cfg.get("cell_size_px", 30)),
             window_seconds=float(ss_cfg.get("window_seconds", 3.0)),
             hit_rate_threshold=float(ss_cfg.get("hit_rate_threshold", 0.7)),
-            approx_fps=int(ss_cfg.get("approx_fps", 17)),
+            min_samples_for_judgment=int(
+                ss_cfg.get("min_samples_for_judgment", 8)
+            ),
         )
         logger.info(
             "static_suppressor_enabled cell=%dpx window=%.1fs threshold=%.2f",
             static_suppressor.cell_size_px,
-            float(ss_cfg.get("window_seconds", 3.0)),
+            static_suppressor.window_seconds,
             static_suppressor.hit_rate_threshold,
         )
     else:
         static_suppressor = None
 
-    line_y = vision_cfg.get("counting_line_y", 0.5)
     # Counter construido lazy una vez que se conoce la altura del frame
-    # (necesario para los valores relativos legacy de line_y)
+    # del primer par capturado.
     counter: Counter | None = None
 
     # Height bounds (head_depth gate + sanity filter). Cualquier knob

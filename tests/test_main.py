@@ -309,8 +309,8 @@ def _make_pipeline_config(tmpdir: str) -> dict:
             "cluster_distance_px": 0,
         },
         "tracking": {
-            "max_disappeared": 30,
-            "max_distance": 50,
+            "max_disappeared_frames": 30,
+            "max_distance_px": 50,
             "state_machine": {
                 "confirm_frames": 3,
                 "pending_max_frames": 5,

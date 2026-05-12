@@ -9,9 +9,16 @@ y containment filter.
 
 Algoritmo: cuadriculado del frame en celdas de tamaño fijo. Para cada
 detección, su centroide cae en una celda. Mantiene buffer rolling de qué
-celdas tuvieron al menos una detección en cada frame de los últimos N
-segundos. Las celdas con hit rate >= threshold se marcan "hot" y las
-detecciones cuyos centroides caen en ellas se descartan.
+celdas tuvieron al menos una detección en cada frame de los últimos
+``window_seconds`` reales (no frames). Las celdas con hit rate >=
+``hit_rate_threshold`` se marcan "hot" y las detecciones cuyos centroides
+caen en ellas se descartan.
+
+La ventana se mide en tiempo real (timestamps) y no depende del FPS
+del pipeline — el FPS efectivo cambia con la carga, y un buffer fixed-
+length lo traduciría a una ventana temporal que oscila con la
+performance. Acá la semántica del operador ("3 segundos de historia")
+se respeta exactamente sea cual sea el FPS instantáneo.
 
 Una persona que se queda parada cubre la celda por una fracción de la
 ventana (típicamente <50% si pasa por el FOV en una visita normal); un
@@ -20,13 +27,14 @@ separa esos casos sin sacrificar detección legítima de personas
 ocasionalmente quietas.
 
 Diseñado como defense-in-depth tras los filtros del detector. Inactivo
-durante el "warm-up" inicial (buffer no lleno) — no filtra hasta tener
-data suficiente para distinguir.
+durante el "warm-up" inicial — no filtra hasta que el buffer cubre la
+ventana completa (al menos ``window_seconds`` reales de historia).
 """
 from __future__ import annotations
 
+import time
 from collections import Counter, deque
-from typing import Iterable, Protocol
+from typing import Callable, Iterable, Protocol
 
 
 class _HasCentroid(Protocol):
@@ -46,17 +54,20 @@ class StaticSuppressor:
             localizados, más grande captura patrones esparcidos. 30 es
             razonable para frames 1152×648 con cabezas de ~50-80px de
             ancho (cada cabeza ocupa ~2-3 celdas).
-        window_seconds: Ventana del análisis temporal. 3s es buen
-            sweet spot — suficiente para que un FP estable se acumule,
-            corto para que una persona parada por reasons legítimos
-            (atención al mostrador) no quede suprimida.
+        window_seconds: Ventana del análisis temporal en segundos reales.
+            3s es buen sweet spot — suficiente para que un FP estable se
+            acumule, corto para que una persona parada por reasons
+            legítimos (atención al mostrador) no quede suprimida.
         hit_rate_threshold: Fracción mínima de la ventana en que la
             celda debe estar activa para suprimirse. 0.7 distingue
             FP estructural (≈1.0) de presencia humana ocasional (~0.3-0.5).
-        approx_fps: Estimación de cuántos frames procesa el pipeline
-            por segundo, para convertir ``window_seconds`` a frames.
-            No tiene que ser exacto — usar un conservative estimate
-            (ej. 17 si el pipeline anda entre 16-26fps) es bien.
+        min_samples_for_judgment: Mínimo de muestras requeridas antes de
+            empezar a filtrar, ortogonal al gate de tiempo. Evita que un
+            buffer chico pero con ventana ya cubierta filtre con
+            estadística pobre (ej. 3 samples en 3s a 1 fps).
+        time_fn: Callable que devuelve el tiempo en segundos (monotonic).
+            Inyectable para tests determinísticos. Default
+            ``time.monotonic`` para uso en runtime.
     """
 
     def __init__(
@@ -64,7 +75,8 @@ class StaticSuppressor:
         cell_size_px: int = 30,
         window_seconds: float = 3.0,
         hit_rate_threshold: float = 0.7,
-        approx_fps: int = 17,
+        min_samples_for_judgment: int = 8,
+        time_fn: Callable[[], float] = time.monotonic,
     ) -> None:
         if cell_size_px <= 0:
             raise ValueError(f"cell_size_px must be > 0, got {cell_size_px}")
@@ -72,15 +84,41 @@ class StaticSuppressor:
             raise ValueError(
                 f"hit_rate_threshold must be in (0, 1], got {hit_rate_threshold}"
             )
+        if window_seconds < 0:
+            raise ValueError(
+                f"window_seconds must be >= 0, got {window_seconds}"
+            )
         self.cell_size_px = int(cell_size_px)
+        self.window_seconds = float(window_seconds)
         self.hit_rate_threshold = float(hit_rate_threshold)
-        self._window_frames = max(1, int(window_seconds * approx_fps))
-        self._buffer: deque[set[tuple[int, int]]] = deque(
-            maxlen=self._window_frames
-        )
+        self.min_samples_for_judgment = max(1, int(min_samples_for_judgment))
+        self._time_fn = time_fn
+        # Cada entry es (timestamp_seconds, set_of_active_cells).
+        self._buffer: deque[tuple[float, set[tuple[int, int]]]] = deque()
 
     def _cell_of(self, x: float, y: float) -> tuple[int, int]:
         return (int(x) // self.cell_size_px, int(y) // self.cell_size_px)
+
+    def _evict_expired(self, now: float) -> None:
+        """Saca del buffer todas las entries más viejas que la ventana."""
+        while self._buffer and now - self._buffer[0][0] > self.window_seconds:
+            self._buffer.popleft()
+
+    def _is_warm(self, now: float) -> bool:
+        """True si tenemos suficiente historia para juzgar.
+
+        Necesitamos dos cosas:
+        1. Mínimo de samples (anti-estadística-pobre).
+        2. La muestra más vieja en el buffer cubre la ventana — i.e. el
+           buffer abarca al menos ``window_seconds`` de tiempo real. Si
+           el buffer todavía no llegó a llenar la ventana, cualquier
+           hit rate es transitorio.
+        """
+        if len(self._buffer) < self.min_samples_for_judgment:
+            return False
+        if self.window_seconds <= 0:
+            return True
+        return now - self._buffer[0][0] >= self.window_seconds * 0.95
 
     def update_and_filter(
         self, detections: Iterable[_HasCentroid]
@@ -88,25 +126,27 @@ class StaticSuppressor:
         """Registra el frame actual y devuelve detections sin las que
         caen en celdas hot.
 
-        Hasta que el buffer esté lleno (warm-up), nunca filtra — sin
-        suficiente historia no se puede distinguir FP estable de
-        presencia legítima.
+        Hasta que el buffer cubra la ventana temporal completa (warm-up),
+        nunca filtra — sin historia suficiente no se puede distinguir
+        FP estable de presencia legítima.
         """
+        now = self._time_fn()
+        self._evict_expired(now)
+
         det_list = list(detections)
         # Snapshot de celdas activas este frame (set para deduplicar
         # múltiples detecciones que caen en la misma celda).
         current_cells = {
             self._cell_of(d.centroid[0], d.centroid[1]) for d in det_list
         }
-        self._buffer.append(current_cells)
+        self._buffer.append((now, current_cells))
 
-        # Warm-up: hasta tener data suficiente, no filtramos.
-        if len(self._buffer) < self._window_frames:
+        if not self._is_warm(now):
             return det_list
 
         # Acumular hits por celda a lo largo de la ventana.
         cell_hits: Counter[tuple[int, int]] = Counter()
-        for frame_cells in self._buffer:
+        for _ts, frame_cells in self._buffer:
             cell_hits.update(frame_cells)
 
         threshold_count = int(self.hit_rate_threshold * len(self._buffer))
@@ -129,10 +169,29 @@ class StaticSuppressor:
         el invariante: hot_cells siempre refleja el estado consistente
         con la última llamada a update_and_filter().
         """
-        if len(self._buffer) < self._window_frames:
+        now = self._time_fn()
+        if not self._is_warm(now):
             return set()
         cell_hits: Counter[tuple[int, int]] = Counter()
-        for frame_cells in self._buffer:
+        for _ts, frame_cells in self._buffer:
             cell_hits.update(frame_cells)
         threshold_count = int(self.hit_rate_threshold * len(self._buffer))
         return {c for c, n in cell_hits.items() if n >= threshold_count}
+
+    @property
+    def effective_fps(self) -> float:
+        """FPS efectivo observado durante la ventana actual.
+
+        Útil para observabilidad: confirma si el pipeline corre cerca de
+        lo nominal o si hay degradación. Devuelve 0.0 si el buffer
+        todavía no tiene suficiente historia para estimar.
+        """
+        if len(self._buffer) < 2:
+            return 0.0
+        oldest = self._buffer[0][0]
+        newest = self._buffer[-1][0]
+        span = newest - oldest
+        if span <= 0:
+            return 0.0
+        # len-1 intervals entre len timestamps
+        return (len(self._buffer) - 1) / span

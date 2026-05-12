@@ -13,7 +13,7 @@ Captura ``--frames`` pares L/R con AE lockeado tras un click de start.
 Por cada par:
   - Detecta esquinas ChArUco en ambas cámaras (sub-pixel).
   - solvePnP en cada cámara con K nominal del IMX708 (focal calculada
-    desde NOMINAL_FOCAL_PX escalada a la resolución de captura), sin
+    desde HW.nominal_focal_full_px escalada a la resolución de captura), sin
     distorsión — para markers cerca del centro óptico la distorsión
     fisheye es despreciable (<2% error en proyección a ±10°).
   - Compone la pose relativa L→R y descompone en pitch / yaw / roll +
@@ -51,7 +51,6 @@ import base64
 import datetime as _dt
 import json
 import logging
-import math
 import sys
 import threading
 import time
@@ -64,16 +63,23 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.config.hardware import (
+    FLEET_DEFAULTS as _FALLBACK_HW,
+    HardwareParams,
+    load_hardware_params,
+)
 from src.vision.calibration import (
-    NOMINAL_FOCAL_PX,
-    NOMINAL_FULL_RES,
     PoseTarget,
     create_charuco_board,
     detect_charuco_dual_pass,
     lens_alignment_metrics,
     project_pose,
 )
-from src.vision.capture import CANONICAL_RAW_SIZE
+
+# Hardware params canónicos del device — leídos al main(). Inicializado
+# con fleet defaults para que funciones top-level tengan valores razonables
+# durante import / tests.
+HW: HardwareParams = _FALLBACK_HW
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("diagnose_bracket")
@@ -92,14 +98,14 @@ THR_OFFSET_Z_MM = 2.0
 
 
 def _build_nominal_k(width: int, height: int) -> np.ndarray:
-    """K matrix nominal del IMX708 escalada a la resolución de captura.
+    """K matrix nominal del sensor escalada a la resolución de captura.
 
     Principal point asumido centrado. Fallback cuando no hay calibration
     disponible — accuracy del diagnose se degrada significativamente sin
     K-B distortion (ver _solve_board_pose).
     """
-    fx = NOMINAL_FOCAL_PX * width / NOMINAL_FULL_RES[0]
-    fy = NOMINAL_FOCAL_PX * height / NOMINAL_FULL_RES[1]
+    fx = HW.nominal_focal_full_px * width / HW.full_res[0]
+    fy = HW.nominal_focal_full_px * height / HW.full_res[1]
     return np.array(
         [[fx, 0, width / 2], [0, fy, height / 2], [0, 0, 1]],
         dtype=np.float64,
@@ -606,7 +612,7 @@ def _capture_loop(
         board_size=(args.board_cols, args.board_rows),
         square_length=args.square_mm,
         preview_size=preview_size,
-        focal_full_px=NOMINAL_FOCAL_PX * w / NOMINAL_FULL_RES[0],
+        focal_full_px=HW.nominal_focal_full_px * w / HW.full_res[0],
         full_res=(w, h),
     )
 
@@ -629,7 +635,7 @@ def _capture_loop(
     for cam in [cam_l, cam_r]:
         cfg = cam.create_still_configuration(
             main={"size": (w, h), "format": "BGR888"},
-            raw={"size": CANONICAL_RAW_SIZE},
+            raw={"size": HW.default_res},
             controls=initial_controls,
         )
         cam.configure(cfg)
@@ -642,7 +648,7 @@ def _capture_loop(
     # lockeamos para la captura — así los valores lockeados reflejan
     # la escena REAL de medición (recomendación: settle con board en
     # posición, después lock).
-    time.sleep(2.0)
+    time.sleep(HW.ae_initial_settle_seconds)
     for cam in [cam_l, cam_r]:
         m = cam.capture_metadata()
         cam.set_controls({
@@ -652,9 +658,9 @@ def _capture_loop(
             "ColourGains": m.get("ColourGains", (1.0, 1.0)),
         })
     time.sleep(0.3)
-    ae_locked = True
     logger.info(
-        "Lock provisional tras 2s settle. L: exp=%dus gain=%.2f | R: exp=%dus gain=%.2f",
+        "Lock provisional tras %.1fs settle. L: exp=%dus gain=%.2f | R: exp=%dus gain=%.2f",
+        HW.ae_initial_settle_seconds,
         cam_l.capture_metadata().get("ExposureTime", 0),
         cam_l.capture_metadata().get("AnalogueGain", 0),
         cam_r.capture_metadata().get("ExposureTime", 0),
@@ -791,7 +797,7 @@ def _capture_loop(
                 _state.message = "Re-settle AE con board en escena..."
                 for cam in [cam_l, cam_r]:
                     cam.set_controls({"AeEnable": True, "AwbEnable": True})
-                time.sleep(1.5)
+                time.sleep(HW.ae_resettle_seconds)
                 for cam in [cam_l, cam_r]:
                     m = cam.capture_metadata()
                     cam.set_controls({
@@ -900,6 +906,9 @@ def _render_preview(
 
 
 def main() -> None:
+    global HW
+    HW = load_hardware_params()
+
     parser = argparse.ArgumentParser(
         description="Diagnóstico de bracket estéreo (browser-driven). "
                     "Mide pitch/yaw/roll + offsets Y/Z entre cámaras sin "
@@ -908,21 +917,27 @@ def main() -> None:
                     "completa.",
     )
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--left", type=int, default=0)
-    parser.add_argument("--right", type=int, default=1)
+    parser.add_argument("--left", type=int, default=HW.camera_left_csi)
+    parser.add_argument("--right", type=int, default=HW.camera_right_csi)
     parser.add_argument("--resolution", type=int, nargs=2, default=None,
                         help="Resolución de captura. Default: lee "
                              "vision.resolution de /etc/people-counter/"
                              "config.yaml.")
     parser.add_argument("--frames", type=int, default=30,
                         help="Frames a agregar tras Comenzar. Default 30.")
-    parser.add_argument("--board-cols", type=int, default=9)
-    parser.add_argument("--board-rows", type=int, default=6)
-    parser.add_argument("--square-mm", type=float, default=45.0)
-    parser.add_argument("--marker-mm", type=float, default=33.0)
-    parser.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100")
+    parser.add_argument("--board-cols", type=int, default=HW.board_cols,
+                        help="Default desde vision.charuco.board_cols.")
+    parser.add_argument("--board-rows", type=int, default=HW.board_rows,
+                        help="Default desde vision.charuco.board_rows.")
+    parser.add_argument("--square-mm", type=float, default=HW.square_mm,
+                        help="Default desde vision.charuco.square_mm.")
+    parser.add_argument("--marker-mm", type=float, default=HW.marker_mm,
+                        help="Default desde vision.charuco.marker_mm.")
+    parser.add_argument("--dict", dest="aruco_dict", default=HW.aruco_dict,
+                        help="Default desde vision.charuco.dict.")
     parser.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
-                        default=True)
+                        default=HW.legacy_pattern,
+                        help="Default desde vision.charuco.legacy_pattern.")
     parser.add_argument("--board-distance-mm", type=float, default=1000.0,
                         help="Distancia objetivo del board para el ghost del "
                              "preview (mm). Default 1000 (1m). Subir/bajar "
@@ -973,7 +988,7 @@ def main() -> None:
 
     w, h = int(args.resolution[0]), int(args.resolution[1])
 
-    # K nominal del IMX708 (focal escalada desde NOMINAL_FOCAL_PX al
+    # K nominal del sensor (focal escalada desde HW.nominal_focal_full_px al
     # res de captura, principal point centrado). D=0 implícito en
     # _solve_board_pose — sobre fisheye introduce bias en magnitudes
     # absolutas (por eso no reportamos baseline) pero los biases son

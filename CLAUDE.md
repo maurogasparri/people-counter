@@ -45,9 +45,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Pipeline de visión
 
-- **Calibración estéreo**: ChArUco A3 (9×6 / 45mm / 33mm / DICT_4X4_100), modelo fisheye Kannala-Brandt (`cv2.fisheye.calibrate`). Lab universal (mount 2.0-3.5m): foco a 1.5m, calibración a 1.0/2.0/3.0m. Validar con `scripts/diagnose_depth.py` (error centro <5% a 2m, <10% a 3m).
+- **Calibración estéreo**: ChArUco A3 (9×6 / 45mm / 33mm / DICT_4X4_100), modelo fisheye Kannala-Brandt (`cv2.fisheye.calibrate`). Lab universal (mount 2.0-3.5m): foco a 1.5m, calibración a 1.0/2.0/3.0m. Validar con `scripts/diagnose_depth.py` (error centro <5% a 2m, <10% a 3m). `detect_charuco_dual_pass` (en `src/vision/calibration.py`) intenta primero el frame original y, si quedó por debajo de 8 corners, retry con sharpen 3×3 — recovery transparente para feedback live y gates de captura del wizard. QC de ensamble del bracket: `scripts/diagnose_bracket.py` mide pitch/yaw/roll/offset entre L y R sin requerir calibración previa.
 - **Óptica**: Arducam B0310 fisheye real, no rectilíneo. Focal pinhole-equivalente `f_px = 2050` a full-res 4608×2592. La fórmula `f = (W/2)/tan(HFOV/2)` NO aplica.
-- **Sensor mode canónico**: 2304×1296 binned 2×2, full FOV, 16:9, hasta 56 fps. Runtime puede usar rescale lineal (ej. 1152×648 vía `scripts/rescale_calibration.py`) — K-B es resolución-independiente en intrínsecos angulares.
+- **Sensor mode canónico**: 2304×1296 binned 2×2, full FOV, 16:9, hasta 56 fps. Runtime puede usar rescale lineal (ej. 1152×648 vía `scripts/rescale_calibration.py`) — K-B es resolución-independiente en intrínsecos angulares. **CRITICAL**: en TODO call site de picamera2 hay que pasar `raw={"size": CANONICAL_RAW_SIZE}` (importar desde `src.vision.capture`) para seleccionar Mode 1 (2304×1296, HFOV 120°); sin ese hint picamera2 elige Mode 0 (1536×864 cropeado, HFOV ~80°) que reduce la cobertura a la mitad. Overrideable per-device vía `vision.sensor_raw_size` del config.
 - **Rectificación**: `cv2.fisheye.initUndistortRectifyMap` (balance=0.0) + `cv2.remap`.
 - **Profundidad**: SGBM + matcher derecho + WLS filter. `vision.num_disparities: auto` deriva el rango desde `mounting_height_m`.
 - **Detección**: YOLOv8n fine-tuneado (cenital), HEF para Hailo-8L. NMS on-chip. VStream API con scheduler ROUND_ROBIN. Modelo activo: `people-counter-detector`. Pipeline detallado en `scripts/training/README.md`.
@@ -104,11 +104,12 @@ people-counter/
 │   ├── status/         <- led, health, monitor (background thread)
 │   ├── config/         <- loader (deep-merge example + per-device)
 │   └── main.py         <- orquestador del pipeline
-├── tests/              <- 716 tests, estructura espejo de src
+├── tests/              <- 718 tests, estructura espejo de src
 ├── scripts/
 │   ├── calibrate.py    <- CLI con wizard end-to-end (browser-driven, ChArUco, ground-truth check)
 │   ├── focus_assist.py <- asistente de foco guiado (browser-driven)
 │   ├── diagnose_depth.py <- valida calibración (5 zonas, error centro <5% a 2m)
+│   ├── diagnose_bracket.py <- QC de ensamble del bracket (pitch/yaw/roll/offset L↔R sin calib previa)
 │   ├── preview.py      <- preview live MJPEG L|R (browser-driven)
 │   ├── download_model.py, capture_baseline_frames.py, rescale_calibration.py
 │   ├── provision.py    <- create/deploy/harvest/reprovision/list (disaster recovery)
@@ -160,11 +161,14 @@ people-counter/
 `src/main.py` orquestra capture → rectify → SGBM → detect (Hailo) → track → count → MQTT.
 
 - `vision.num_disparities: auto` — deriva rango SGBM desde `mounting_height_m`. Override con int múltiplo de 16.
-- `vision.sgbm_downscale: 2` — SGBM a resolución reducida (1=full, 2=half, 4=quarter), upscale del disparity post-match. 2 default; 4 para más FPS, 1 para diagnósticos.
+- `vision.sgbm.downscale: 4` — SGBM a resolución reducida (1=full, 2=half, 4=quarter), upscale del disparity post-match. 4 default (~4× costo de 8 pero remueve speckle que infla head-height); 1 solo para diagnósticos.
 - `--no-mqtt` (CLI) — reemplaza MQTT con no-op que loguea a stdout. Para testing local sin AWS.
-- `detection.confidence_threshold` (0.20) / `new_track_threshold` (0.35) — ajustados para recall en pasadas rápidas con motion blur.
+- `detection.confidence_threshold` (0.30) / `new_track_threshold` (0.50) / `low_confidence_threshold` (0.10) — banda triple del detector: <low descartado, [low, conf) re-asocia tracks existentes (ByteTrack-style), [conf, new_track) re-asocia + display, ≥new_track spawnea tracks nuevos. Tuneado para `people-counter-detector` (YOLOv8n fine-tuneado).
+- `detection.cluster_distance_px: 120` — mergea bboxes post-NMS por centroide. 120px en 1152×648 deja cabezas de 50-80px holgadas; dos personas adyacentes (~130-150px) NO se mergean.
 - `detection.static_suppressor` — defense-in-depth contra clutter estructural (FPs persistentes en mismas celdas). Configurable cell/window/threshold.
-- `vision.max_exposure_us: 8000` — shutter cap 8ms para reducir motion blur. AE compensa con AnalogueGain.
+- `vision.max_exposure_us: 16000` — shutter cap 16ms para reducir motion blur a ~5cm a 3 m/s. AE compensa con AnalogueGain. Default 16000us si la key falta del config. Mismo cap en TODOS los setup tools (`focus_assist`, `calibrate`, `preview`, `diagnose_depth`, `diagnose_bracket`).
+- `tracking.state_machine.confirm_frames: 3` — frames hasta promover CANDIDATE→CONFIRMED. 3 filtra FPs efímeros sobre el detector fine-tuneado. Bajar a 1 para detectores con dropeos frame-a-frame.
+- `tracking.state_machine.reid_gate_px: 180` — gate de distancia para re-id en PENDING. Pareado con `pending_velocity_decay: 0.5` que congela el predict del Kalman cerca de la última observación, así el gate cubre gaps de ~1s a velocidad de caminata sin necesidad de ser más ancho.
 - `counter.foot_projection_enabled` — proyección parallax-corrected del foot pixel. Default off; activar solo después de validar calibración con diagnose_depth.
 
 ## Pipeline del detector
@@ -188,9 +192,12 @@ YOLOv8n fine-tuneado para detección cenital de cabezas. Pipeline ONNX → HEF c
 
 ## Convenciones de tools de visión
 
-- `focus_assist`, `calibrate`, `preview`, `diagnose_depth` son **standalone** — no leen `config.yaml`. Todo por CLI o defaults de `config/config.example.yaml`.
-- **Browser-driven**: nada de `input()` blocking. Pantalla "Comenzar", AudioContext unlocked on click, beeps cortos diferenciados (start / pose / captura / undo / fin) en lugar de TTS, reporte HTML auto-open al finalizar.
-- **AE flags compartidos**: `--meter matrix|centre|spot` (default matrix; centre/spot para periferia brillante), `--lock-ae` (calibrate + diagnose_depth, default off — AE auto típicamente mejor).
+- **Config reading**: `focus_assist`, `calibrate`, `preview`, `diagnose_depth` leen `/etc/people-counter/config.yaml` para resolver `vision.resolution` (todos) y `vision.mounting_height_m` (focus_assist deriva el target distance de ahí). Pasar `--resolution` explícito solo en dev workstation sin config per-device. `diagnose_bracket` corre sin config porque hace QC de ensamble pre-calibración.
+- **Browser-driven**: nada de `input()` blocking. Pantalla "Comenzar", AudioContext unlocked on click, beeps cortos diferenciados (start / pose / captura / undo / fin) en lugar de TTS, reporte HTML auto-open al finalizar + cierre del servidor.
+- **AE flags compartidos**: `--meter matrix|centre|spot` (default matrix; centre/spot para periferia brillante), `--lock-ae` (uniforme en todos los setup tools). Patrón canónico: settle 2s → lock provisional → re-settle 1.5s on click → re-lock final con la escena real de medición.
+- **Exposure cap uniforme**: `--max-exposure-us 16000` default en todos los setup tools, mismo cap que el runtime — freezea micro-vibración del bracket que rompe ArUco asimétricamente entre L/R. Pasar 0 para deshabilitar.
+- **Dual-pass ChArUco**: `detect_charuco_dual_pass` (en `src/vision/calibration.py`) intenta primero el frame original; si quedó <8 corners reintenta con sharpen y se queda con el mejor. Aplicado en los live loops de calibrate, focus_assist y diagnose_bracket. El fit downstream (`_detect_all_pairs` → `calibrate_stereo`) sigue single-pass para no introducir sub-pixel noise en el solve.
+- **CLI args homogéneos**: `--board-cols/--board-rows/--square-mm/--marker-mm` son los nombres canónicos en todos los scripts. `calibrate.py` también acepta `--columns/--rows/--square-length/--marker-length` como alias para back-compat con docs viejas.
 - **Wizard guardrails**: pre-calibration sanity gate (re-detección de pares capturados), coverage critical block (banda/grupo faltante), L/R asymmetric alert, `--resume` valida resolución, `reset --yes` para restart limpio.
 - **Lens locking**: holder M12 sin set screw → fijado con Trabasil AM3 + activador anaeróbico (cura parcial 15min, total horas). Llave dedicada queda puesta durante foco + calibración. Ver `docs/lab-calibration-guide.md`.
 - **Interpretación reporte calibración**: RMS estéreo <0.5px es necesario pero no suficiente. **El verdict depende del ground-truth en centro** (cinta/láser). Baseline estimada debe caer ±1-2mm del diseño 140mm con 20 poses diversas; ratio borde/centro es informativo, no gate.

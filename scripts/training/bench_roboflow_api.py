@@ -44,7 +44,6 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 import cv2
-import numpy as np
 
 logger = logging.getLogger("bench_roboflow_api")
 

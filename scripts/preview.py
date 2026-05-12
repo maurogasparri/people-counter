@@ -347,7 +347,8 @@ def main() -> None:
     from picamera2 import Picamera2
     from libcamera import controls as _libcam_controls
 
-    from src.vision.capture import CANONICAL_RAW_SIZE
+    from src.config.hardware import load_hardware_params
+    hw = load_hardware_params()
 
     cam_l = Picamera2(args.left)
     cam_r = Picamera2(args.right)
@@ -357,12 +358,12 @@ def main() -> None:
         {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
     )
     for cam in [cam_l, cam_r]:
-        # raw FIJO en el sensor mode canónico (full-FOV 120°). Sin esto,
-        # picamera2 elige Mode 0 cropeado (1536×864, HFOV ~80°). Ver
-        # capture.py CANONICAL_RAW_SIZE.
+        # raw FIJO en el sensor mode canónico del device (sensor.default_res
+        # del config). Anclar el mode evita que picamera2 elija Mode 0
+        # cropeado del IMX708 (HFOV efectivo ~80° en lugar de 120°).
         config = cam.create_still_configuration(
             main={"size": (w, h), "format": "BGR888"},
-            raw={"size": CANONICAL_RAW_SIZE},
+            raw={"size": hw.default_res},
             controls=initial_controls,
         )
         cam.configure(config)
@@ -376,7 +377,7 @@ def main() -> None:
         for cam in [cam_l, cam_r]:
             cam.set_controls({"AeMeteringMode": meter_map[args.meter]})
 
-    time.sleep(1)
+    time.sleep(hw.ae_initial_settle_seconds)
 
     # Mirror the lock-ae behaviour of capture.py / focus_assist / calibrate.
     if args.lock_ae:

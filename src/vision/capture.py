@@ -40,6 +40,8 @@ class StereoCapture:
         lock_ae: bool = False,
         max_exposure_us: Optional[int] = None,
         sensor_raw_size: tuple[int, int] = CANONICAL_RAW_SIZE,
+        initial_settle_seconds: float = 2.0,
+        resettle_seconds: float = 1.5,
     ) -> None:
         """Inicializa la captura estéreo.
 
@@ -75,6 +77,14 @@ class StereoCapture:
                 (2304, 1296) = Mode 1 IMX708, full-FOV binned 2×2 (120° HFOV).
                 Sin override, picamera2 elige Mode 0 (1536×864 cropeado) que
                 reduce el FOV a ~80°. Cambiar invalida la calibración existente.
+            initial_settle_seconds: Segundos de espera entre ``cam.start()``
+                y el lock provisional de AE (cuando ``lock_ae=True``). En
+                sites con luz fluctuante puede necesitar 3-4s para
+                convergencia.
+            resettle_seconds: Segundos de espera entre re-habilitar AE y
+                re-lockear en ``resettle_and_lock()``. Patrón del wizard:
+                lock inicial → operador apreta Comenzar → re-settle →
+                re-lock.
         """
         self.cam_left_id = cam_left_id
         self.cam_right_id = cam_right_id
@@ -84,6 +94,8 @@ class StereoCapture:
         self.lock_ae = lock_ae
         self.max_exposure_us = max_exposure_us
         self.sensor_raw_size = sensor_raw_size
+        self.initial_settle_seconds = float(initial_settle_seconds)
+        self.resettle_seconds = float(resettle_seconds)
         self._cam_left = None
         self._cam_right = None
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -156,36 +168,17 @@ class StereoCapture:
                     extra={"mode": self.meter_mode, "error": str(e)},
                 )
 
-        # Opcionalmente lockea exposición, gain y white balance tras 1s de settle.
-        # El comportamiento default (lock_ae=False) mantiene AE auto durante toda
-        # la sesión — más simple, produce imágenes ground-truth representativas
-        # y anda bien para iluminación interior estable. Activar lock_ae=True
-        # cuando la escena tiene luz fluctuante (luz natural, puertas que abren,
-        # iluminación mixta) — el lock evita drift de AE independiente entre L/R
-        # mid-session.
+        # Opcionalmente lockea exposición, gain y white balance tras un settle
+        # provisional de 2s. El comportamiento default (lock_ae=False) mantiene
+        # AE auto durante toda la sesión — más simple, produce imágenes
+        # ground-truth representativas y anda bien para iluminación interior
+        # estable. Activar lock_ae=True cuando la escena tiene luz fluctuante
+        # (luz natural, puertas que abren, iluminación mixta) — el lock evita
+        # AE independiente entre L/R durante la sesión.
         if self.lock_ae:
             import time as _time
-            _time.sleep(1.0)
-            for cam, name in [
-                (self._cam_left, "left"),
-                (self._cam_right, "right"),
-            ]:
-                metadata = cam.capture_metadata()
-                cam.set_controls({
-                    "AeEnable": False,
-                    "AwbEnable": False,
-                    "ExposureTime": metadata.get("ExposureTime", 30000),
-                    "AnalogueGain": metadata.get("AnalogueGain", 1.0),
-                    "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
-                })
-                logger.info(
-                    "camera_controls_locked",
-                    extra={
-                        "camera": name,
-                        "exposure_us": metadata.get("ExposureTime", 0),
-                        "analogue_gain": metadata.get("AnalogueGain", 0),
-                    },
-                )
+            _time.sleep(self.initial_settle_seconds)
+            self._lock_ae_to_current_metadata(event="initial")
 
         self._executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="stereo-cap"
@@ -200,6 +193,72 @@ class StereoCapture:
                 "fps": self.fps,
             },
         )
+
+    def _lock_ae_to_current_metadata(self, event: str = "lock") -> None:
+        """Lockea AE/AWB en cada cámara con el snapshot actual de metadata.
+
+        Asume que las cámaras ya están abiertas y settleadas. Idempotente —
+        si las cámaras ya están lockeadas, capture_metadata devuelve los
+        valores actuales y los re-aplica, sin side effect.
+        """
+        if self._cam_left is None or self._cam_right is None:
+            raise RuntimeError("Cámaras no abiertas. Llamar open() primero.")
+        for cam, name in [
+            (self._cam_left, "left"),
+            (self._cam_right, "right"),
+        ]:
+            metadata = cam.capture_metadata()
+            cam.set_controls({
+                "AeEnable": False,
+                "AwbEnable": False,
+                "ExposureTime": metadata.get("ExposureTime", 30000),
+                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+            })
+            logger.info(
+                "camera_controls_locked",
+                extra={
+                    "camera": name,
+                    "event": event,
+                    "exposure_us": metadata.get("ExposureTime", 0),
+                    "analogue_gain": metadata.get("AnalogueGain", 0),
+                },
+            )
+
+    def resettle_and_lock(
+        self, settle_seconds: Optional[float] = None,
+    ) -> None:
+        """Re-habilita AE/AWB, espera ``settle_seconds`` para que reconverja
+        a la escena actual, y vuelve a lockear con el snapshot fresco.
+
+        Patrón canónico para setup tools browser-driven: el lock inicial
+        del ``open()`` ocurre cuando el operador acaba de lanzar el script
+        (escena todavía sin board en posición); cuando el operador apreta
+        "Comenzar" con todo armado, este método refresca el lock con la
+        escena real de medición.
+
+        No-op si ``lock_ae=False`` en el constructor — la sesión corre con
+        AE auto a propósito.
+
+        Args:
+            settle_seconds: Override del settle por llamada. Si es None,
+                usa ``self.resettle_seconds`` (default del constructor /
+                config).
+        """
+        if not self.lock_ae:
+            return
+        if self._cam_left is None or self._cam_right is None:
+            raise RuntimeError("Cámaras no abiertas. Llamar open() primero.")
+        import time as _time
+        dt = (
+            float(settle_seconds)
+            if settle_seconds is not None
+            else self.resettle_seconds
+        )
+        for cam in [self._cam_left, self._cam_right]:
+            cam.set_controls({"AeEnable": True, "AwbEnable": True})
+        _time.sleep(dt)
+        self._lock_ae_to_current_metadata(event="resettle")
 
     def read(self) -> tuple[np.ndarray, np.ndarray]:
         """Lee un par de frames.

@@ -85,8 +85,8 @@ def _make_config(tmpdir: str) -> dict[str, Any]:
             "cluster_distance_px": 0,
         },
         "tracking": {
-            "max_disappeared": 30,
-            "max_distance": 120.0,
+            "max_disappeared_frames": 30,
+            "max_distance_px": 120.0,
             "state_machine": {
                 "confirm_frames": 3,
                 "pending_max_frames": 5,

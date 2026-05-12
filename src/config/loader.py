@@ -215,7 +215,9 @@ def _validate(config: dict[str, Any]) -> None:
             "nms_threshold",
             "cluster_distance_px",
         ),
-        "tracking": ("max_disappeared", "max_distance", "state_machine"),
+        "tracking": (
+            "max_disappeared_frames", "max_distance_px", "state_machine",
+        ),
         "counter": ("foot_projection_enabled",),
         "wifi_ble": (
             "wifi_interface",

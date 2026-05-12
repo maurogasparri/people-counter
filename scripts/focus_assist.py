@@ -36,13 +36,18 @@ import numpy as np
 # Agregar la raíz del proyecto al path para los imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.config.hardware import HardwareParams, load_hardware_params
 from src.vision.calibration import (
-    NOMINAL_FOCAL_PX,
-    NOMINAL_FULL_RES,
     create_charuco_board,
     detect_charuco_dual_pass,
     live_lighting_warnings,
 )
+
+# Hardware params canónicos del device — leídos al main(). Inicializado
+# con fleet defaults para que las funciones top-level (estimate_charuco_distance_mm)
+# tengan algo razonable durante import / tests.
+from src.config.hardware import FLEET_DEFAULTS as _FALLBACK_HW
+HW: HardwareParams = _FALLBACK_HW
 
 latest_jpeg: bytes = b""
 jpeg_lock = threading.Lock()
@@ -241,10 +246,10 @@ def estimate_charuco_distance_mm(
     if focal_px_override is not None:
         fx = fy = focal_px_override
     else:
-        scale_x = w / NOMINAL_FULL_RES[0]
-        scale_y = h / NOMINAL_FULL_RES[1]
-        fx = NOMINAL_FOCAL_PX * scale_x
-        fy = NOMINAL_FOCAL_PX * scale_y
+        scale_x = w / HW.full_res[0]
+        scale_y = h / HW.full_res[1]
+        fx = HW.nominal_focal_full_px * scale_x
+        fy = HW.nominal_focal_full_px * scale_y
     K = np.array([[fx, 0, w / 2], [0, fy, h / 2], [0, 0, 1]], dtype=np.float64)
     dist = np.zeros(5)
 
@@ -442,21 +447,20 @@ def _ascii(text: str) -> str:
 
 LR_DISPARITY_OK_MIN_PX = 8.0  # Por debajo de esto no confiamos en el signo —
                               # podría ser ruido de parallax en un board chico.
-LR_BASELINE_MM = 140.0        # Baseline de diseño (matchea CLAUDE.md / README)
 
 
 def _expected_disparity_px(distance_mm: float, frame_width_px: int) -> float:
     """Predice la disparity L/R del centroide para un objeto a `distance_mm`.
 
     disparity_px = baseline * focal_px / depth, donde focal_px escala
-    con la resolución de captura (NOMINAL_FOCAL_PX está referenciada
-    a NOMINAL_FULL_RES).
+    con la resolución de captura (HW.nominal_focal_full_px está referenciada
+    a HW.full_res).
     """
     if distance_mm <= 0:
         return 0.0
-    scale = frame_width_px / NOMINAL_FULL_RES[0]
-    f_px = NOMINAL_FOCAL_PX * scale
-    return LR_BASELINE_MM * f_px / distance_mm
+    scale = frame_width_px / HW.full_res[0]
+    f_px = HW.nominal_focal_full_px * scale
+    return HW.baseline_mm * f_px / distance_mm
 
 
 def _classify_lr(
@@ -1132,7 +1136,13 @@ def _resolve_mount_height_from_device_config(
 
 def main() -> None:
     global latest_jpeg, shutting_down, _status_html, finish_requested
-    global _report_path_global
+    global _report_path_global, HW
+
+    # Carga parámetros de hardware del config per-device (fallback a fleet
+    # defaults si no hay config). Después de esto, todos los usos de
+    # HW.full_res / HW.nominal_focal_full_px / HW.default_res / etc.
+    # respetan el config del device.
+    HW = load_hardware_params()
 
     parser = argparse.ArgumentParser(description="Asistente de foco guiado para cámaras estéreo")
     parser.add_argument("--port", type=int, default=8080)
@@ -1221,25 +1231,26 @@ def main() -> None:
                              f"de foco. Default {TARGET_DISTANCE_MAX_MM:.0f}mm "
                              f"(protocolo lab universal). 5000mm con "
                              f"--low-light.")
-    parser.add_argument("--board-cols", type=int, default=9,
-                        help="Columnas (cuadrados) del ChArUco. Default 9 (board canónico)")
-    parser.add_argument("--board-rows", type=int, default=6,
-                        help="Filas (cuadrados) del ChArUco. Default 6 (board canónico)")
-    parser.add_argument("--square-mm", type=float, default=45.0,
-                        help="Tamaño del cuadrado ChArUco en mm. Default 45")
-    parser.add_argument("--marker-mm", type=float, default=33.0,
-                        help="Tamaño del marker ChArUco en mm. Default 33")
-    parser.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
-                        help="Nombre del dict ArUco (ej. DICT_4X4_100, "
-                             "DICT_5X5_100). Default DICT_4X4_100 (board canónico)")
+    parser.add_argument("--board-cols", type=int, default=HW.board_cols,
+                        help="Columnas (cuadrados) del ChArUco. "
+                             "Default desde vision.charuco.board_cols.")
+    parser.add_argument("--board-rows", type=int, default=HW.board_rows,
+                        help="Filas (cuadrados) del ChArUco. "
+                             "Default desde vision.charuco.board_rows.")
+    parser.add_argument("--square-mm", type=float, default=HW.square_mm,
+                        help="Tamaño del cuadrado ChArUco en mm. "
+                             "Default desde vision.charuco.square_mm.")
+    parser.add_argument("--marker-mm", type=float, default=HW.marker_mm,
+                        help="Tamaño del marker ChArUco en mm. "
+                             "Default desde vision.charuco.marker_mm.")
+    parser.add_argument("--dict", dest="aruco_dict", default=HW.aruco_dict,
+                        help="Nombre del dict ArUco. Default desde "
+                             "vision.charuco.dict.")
     parser.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
-                        default=True,
+                        default=HW.legacy_pattern,
                         help="Usar enumeración de markers ChArUco pre-4.6 "
-                             "de OpenCV. Default True matchea el layout "
-                             "del board canónico de calib.io. Pasar "
-                             "--no-legacy-pattern solo si generaste un "
-                             "board con un OpenCV post-4.6 CharucoBoard "
-                             "sin llamar a setLegacyPattern(True).")
+                             "de OpenCV. Default desde vision.charuco."
+                             "legacy_pattern (True matchea calib.io).")
     parser.add_argument("--focal-px", type=float, default=None,
                         help="Overridea el focal length en píxeles para "
                              "la estimación de distancia. Usar si la f "
@@ -1279,8 +1290,6 @@ def main() -> None:
     from picamera2 import Picamera2
     from libcamera import controls as _libcam_controls
 
-    from src.vision.capture import CANONICAL_RAW_SIZE
-
     cam_l = Picamera2(args.left)
     cam_r = Picamera2(args.right)
     res = (int(args.resolution[0]), int(args.resolution[1]))
@@ -1290,15 +1299,14 @@ def main() -> None:
     initial_controls = (
         {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
     )
+    # Sensor raw mode desde el config per-device (sensor.default_res).
+    # Anclar el mode evita que picamera2 caiga al Mode 0 cropeado del
+    # IMX708 que reduce el HFOV a ~80°.
+    raw_size = HW.default_res
     for cam in [cam_l, cam_r]:
-        # Resolución main desde vision.resolution del config per-device.
-        # raw size FIJO en el sensor mode canónico (Mode 1 IMX708 = 2304×1296
-        # binned, full-FOV 120° HFOV). Pasar res chica (ej. 1152×648) como
-        # raw hace que picamera2 caiga al Mode 0 cropeado (1536×864, HFOV
-        # ~80°) y todas las distancias salen ~35% más cerca de la realidad.
         config = cam.create_still_configuration(
             main={"size": res, "format": "BGR888"},
-            raw={"size": CANONICAL_RAW_SIZE},
+            raw={"size": raw_size},
             controls=initial_controls,
         )
         cam.configure(config)
@@ -1321,13 +1329,12 @@ def main() -> None:
         print(f"[meter] AE metering = {args.meter} (centre/spot ignora "
               "los bordes del frame, útil cuando hay zonas brillantes "
               "rodeando el board)", flush=True)
-    # Lock provisional tras 2s de settle. La escena puede no tener
-    # el board todavía (operador acaba de lanzar el script), pero un
-    # lock estable evita la oscilación de AE auto durante el waiting.
-    # Cuando el operador apreta Comenzar re-habilitamos AE con el board
-    # ya posicionado, esperamos otro settle, y re-lockeamos — así los
-    # valores reflejan la escena REAL de medición.
-    time.sleep(2.0)
+    # Lock provisional tras un settle inicial (vision.ae_lock.initial_settle_s
+    # del config). La escena puede no tener el board todavía, pero un lock
+    # estable evita la oscilación de AE auto durante el waiting. Cuando el
+    # operador apreta Comenzar se re-settlea y re-lockea para que los valores
+    # reflejen la escena real de medición.
+    time.sleep(HW.ae_initial_settle_seconds)
     if args.lock_ae:
         for cam, name in [(cam_l, "left"), (cam_r, "right")]:
             metadata = cam.capture_metadata()
@@ -1338,7 +1345,7 @@ def main() -> None:
                 "AnalogueGain": metadata.get("AnalogueGain", 1.0),
                 "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
             })
-        print(f"[lock-ae] Lock provisional tras 2s settle "
+        print(f"[lock-ae] Lock provisional tras {HW.ae_initial_settle_seconds:.1f}s settle "
               f"(L: exp={cam_l.capture_metadata().get('ExposureTime',0)}us "
               f"R: exp={cam_r.capture_metadata().get('ExposureTime',0)}us)",
               flush=True)
@@ -1400,10 +1407,11 @@ def main() -> None:
     # provisionales del startup pudieron diferir de la escena real de
     # medición. Solo si --lock-ae está activo (matchea diagnose_bracket).
     if args.lock_ae:
-        print("[lock-ae] Re-settle con board en escena (1.5s)...", flush=True)
+        print(f"[lock-ae] Re-settle con board en escena ({HW.ae_resettle_seconds:.1f}s)...",
+              flush=True)
         for cam in [cam_l, cam_r]:
             cam.set_controls({"AeEnable": True, "AwbEnable": True})
-        time.sleep(1.5)
+        time.sleep(HW.ae_resettle_seconds)
         for cam, name in [(cam_l, "left"), (cam_r, "right")]:
             metadata = cam.capture_metadata()
             cam.set_controls({
