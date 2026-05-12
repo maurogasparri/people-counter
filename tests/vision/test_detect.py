@@ -4,7 +4,6 @@ Testea el preproceso, postproceso, y la dataclass Detection.
 Does NOT test actual model inference (requires HEF or ONNX model file).
 """
 
-import cv2
 import numpy as np
 import pytest
 

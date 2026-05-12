@@ -1,7 +1,7 @@
 """Tests para el módulo de captura de probe requests WiFi."""
 import threading
 import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -9,7 +9,6 @@ from src.wifi_ble.wifi_probe import (
     CHANNELS_24GHZ,
     CHANNELS_5GHZ,
     DEFAULT_HOP_INTERVAL,
-    PROBE_REQUEST_SUBTYPE,
     ProbeEvent,
     WiFiProbeCapture,
 )

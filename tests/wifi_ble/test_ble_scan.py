@@ -3,7 +3,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from src.wifi_ble.ble_scan import BLEAdvertisement, BLEScanner
 

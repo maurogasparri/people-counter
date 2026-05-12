@@ -5,7 +5,6 @@ Usa una tabla DynamoDB mockeada para testear la lógica de dedup sin AWS.
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from src.cloud.lambda_dedup import deduplicate_hashes, handler
 

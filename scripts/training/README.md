@@ -41,7 +41,9 @@ Roboflow project: `people-counter-detector`, tipo Object Detection
 
 - **Volumen**: ~945 imgs sampleadas con `sample_for_roboflow.py` (490 motion + 455 bg) desde el pool multi-site `training_data/captures/`. Manifest exacto de los frames subidos en `training_data/roboflow_uploaded_manifest.txt`.
 - **Labeling**: AI-Assisted Labeling con **Smart Polygon** (la "varita mágica" de Roboflow, basada en SAM). Click-por-objeto en cada imagen — mucho más barato en credits que una pasada batch sobre todo el dataset. Revisión manual sobre las labels generadas para fix de bordes y descartar falsos.
+- **Sites**: 5 sites en paralelo (workers concurrentes de `capture_mjpeg.py`, no secuencial).
 - **Stratificación por site**: per-site uniforme (motion + bg balanceados), con override por site (`--site-cap`) para los que tengan sesgo conocido — sites con vidriera, reflejos fuertes o escena pobre se capean para no sobre-representarlos.
+- **Labeling**: 1h 45min totales con Smart Polygon (~6-7s/img incluyendo click + ajuste + next).
 - **Hard negatives explícitos**: bg captures del `--background-interval` cubren clutter persistente (ropa colgada, sombras, estructura). En la revisión, las bg que terminan teniendo persona se promueven a positivo; las que quedan limpias entran como "null examples" en Roboflow.
 - **Ratio target post-screening**: ~2:1 positivos:negativos. Cargado a positivos para favorecer recall.
 - **Defense-in-depth runtime** (independiente del modelo): post-NMS el pipeline aplica containment filter (descarta bbox chico contenido >50% en otro de mayor confianza) + `StaticSuppressor` (cuadricula el frame en celdas de 30px y suprime detecciones sobre celdas con hit-rate ≥70% en una ventana rolling de 3s).

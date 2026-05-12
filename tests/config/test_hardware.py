@@ -8,7 +8,6 @@ import yaml
 
 from src.config.hardware import (
     FLEET_DEFAULTS,
-    HardwareParams,
     load_hardware_params,
 )
 

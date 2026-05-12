@@ -6,7 +6,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pytest
 
 from src.vision.report import (
     BASELINE_WARN_TOL_MM,

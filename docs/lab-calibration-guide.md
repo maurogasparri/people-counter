@@ -18,7 +18,7 @@ parámetros por sitio (`mounting_height_m`, etc.) se definen después en
 | Trípode del board | Rango ~[70cm, 210cm], cabeza con 1/4" |
 | Board ChArUco | A3 landscape, 9×6 cuadrados, checker 45mm, marker 33mm, DICT_4X4 legacy pattern (PDF: `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`). Los scripts usan `--legacy-pattern` por default para matchear la enumeración de calib.io. |
 | Montaje del board | Sustrato rígido (3mm PVC o equivalente) + rosca 1/4" (idealmente centrada; si está al borde inferior del board, contar 148mm de offset del thread al centro óptico) |
-| Threadlocker para lens | **Trabasil AM3** (pasta anaeróbica con PTFE) + **activador anaeróbico**. El activador acelera la cura de las ~36h del Trabasil solo a ~15min de cura parcial (suficiente para calibrar sin que el lens se mueva). Torque de quiebre 4-10 N·m, fill de holgura hasta 0.5mm. |
+| Fijador del lens | **Esmalte de uñas transparente** aplicado al seam entre el barrel y el holder M12. Cura al aire en ~5-10 min (touch dry) y ~30-60 min (full). Mecánicamente débil comparado con un anaeróbico industrial, pero más que suficiente para fijar un lens M12 que no va a ser tocado más después del foco. Sin solvente fuerte = no migra a la óptica. |
 | Llave de barrel | Llave diseñada para encastrar en el barrel del lens M12, permite girar el lens con dedos sobre un mango más grande — facilita ajustes finos durante el foco. Queda puesta durante calib y se retira después del curado total. |
 
 ### Espacio
@@ -95,9 +95,9 @@ Con cámara stud a 1.36m (eje óptico 1.40m), board con rosca centrada (offset 0
 
 Todas las poses entran con 4cm de margen simétrico en los extremos. Si necesitás más holgura (trípode con stops imprecisos cerca de los límites), bajar a `--dist-far-mm 2800` para ganar ~4cm extra a cada extremo.
 
-## Paso 2 — Foco + Lens locking con Trabasil AM3 + activador
+## Paso 2 — Foco + Lens locking con esmalte
 
-Objetivo: enfocar ambos lens a una distancia tal que el DoF cubra todo el rango operativo del bbox de detección (cabeza + pie) en la flota.
+Objetivo: enfocar ambos lens a una distancia tal que el DoF cubra todo el rango operativo del bbox de detección (cabeza + pie) del dispositivo.
 
 **Target universal: foco a 1.5m ±20cm**. Sirve para todo el rango de mount 2.0–3.5m sin re-foco per-device.
 
@@ -113,21 +113,19 @@ Con foco a 1.5m: DoF = 0.59m a ∞. El blur en los extremos del rango operativo 
 
 **Por qué 1.5m y no 2.0m**: foco a 2.0m peakea la sharpness en el piso del mount máximo (3.5m), donde SGBM ya tiene textura de sobra. Penaliza la cabeza a 1.0m (extremo near del rango), donde el detector necesita más sharpness para preservar recall sobre adultos altos en mounts bajos.
 
-El holder M12 del Arducam B0310 **no tiene set screw**, así que el lens se fija químicamente con **Trabasil AM3** (pasta anaeróbica con PTFE) **acelerado con activador anaeróbico**. El activador es lo que hace viable el flujo same-day: cura parcial a ~15min (suficiente para calibrar sin drift), cura total al cabo de horas. Sin activador, el Trabasil solo da ~100min de working time + 36h de cura total — incompatible con un solo día de lab.
+El holder M12 del Arducam B0310 **no tiene set screw**, así que el lens se fija con **esmalte de uñas transparente** aplicado al seam entre el barrel y el holder una vez logrado el foco. Cura al aire (no necesita activador). Mecánicamente es débil comparado con un anaeróbico industrial (Trabasil AM3 o similar), pero suficiente para un lens M12 que no va a ser tocado más después del foco y que opera sin vibración constante en una cámara fija de techo.
 
-El barrel del lens M12 se gira con una **llave dedicada** que encastra en sus ranuras y da más palanca que los dedos sobre el barrel pelado. La llave queda puesta durante foco y calibración, y se retira recién después del curado total.
+El barrel del lens M12 se gira con una **llave dedicada** que encastra en sus ranuras y da más palanca que los dedos sobre el barrel pelado. La llave se usa durante el foco y se retira antes de aplicar el esmalte.
 
-### Paso 2A — Colocar activador + AM3
+> **Para producción / flota / vibración alta**: evaluar un threadlocker
+> anaeróbico industrial (Trabasil AM3 + activador anaeróbico, o
+> equivalente Loctite) para torque de quiebre más alto y cure químico
+> con PTFE filling de holguras. Esmalte fue suficiente para el PoC
+> validado.
 
-1. **Dry-run previo (sin pasta)**: primero corré `focus_assist.py` y rotá el lens aproximadamente hasta que las barras entren al verde. Esto es para confirmar que el rango de foco del lens efectivamente alcanza 1.5m (pre-screening). Marcá con fibrita la posición tentativa del lens vs el holder.
-2. **Desenroscar el lens completo** del holder. Limpiar ambos hilos (macho del lens, hembra del holder) con un trapo de microfibra limpio — nada de solventes fuertes que puedan migrar a la óptica.
-3. **Aplicar activador** sobre una de las dos roscas según la especificación del fabricante (típicamente la rosca macho del lens). Dejar evaporar el solvente del activador antes del paso siguiente.
-4. **Aplicar AM3** sobre la otra rosca: con un palillo de dientes o una jeringa de insulina sin aguja, depositar **una gota del tamaño de una cabeza de alfiler** (≈15 μL) alrededor del perímetro. Evitar la zona cercana al sensor — solo los primeros 2-3 mm de rosca desde la boca del holder.
-5. **Encastrar la llave en el barrel del lens** y enroscar hasta la posición aproximada de la marca tentativa del dry-run. No forzar — dejar que agarre natural. La pasta se va a distribuir por los hilos al rotar.
+### Paso 2A — Hacer foco
 
-Con activador, la cura empieza apenas las dos roscas se tocan. Working time efectivo de unos pocos minutos antes de que el barrel se ponga rígido — proceder al foco sin demora.
-
-### Paso 2B — Hacer foco
+Primero foco, después se fija. El esmalte se aplica al final, una vez confirmado que ambos lens quedaron en el target range.
 
 ```bash
 sudo PYTHONPATH=. python3 scripts/focus_assist.py
@@ -141,19 +139,19 @@ Defaults aplicados: target range 1.30–1.70m (lab protocol universal), board de
 4. **Ajustar el lens izquierdo** girando la llave del barrel hasta que las barras de nitidez central y corners pasen (verde). La llave da palanca para movimientos finos — giros de 2-5° (1-3μm axial) permiten encontrar el peak con precisión.
 5. **Repetir para el lens derecho**. La barra de simetría L/R debe quedar por debajo del umbral.
 6. Cuando ambos lens están en verde y el banner dice "LISTO", click "Finalizar". Guardar el reporte HTML.
-7. **Limpiar excedente**: si la pasta asomó por el seam exterior donde el barrel se encuentra con el holder, limpiarla ahora con hisopo + isopropílico, antes de que termine de curar.
+7. **Retirar la llave del barrel** ahora que el foco está logrado.
 
-**Importante**: después de este punto, **no volver a rotar los lens**. Cualquier rotación posterior desacomoda el foco y puede interrumpir la cura en progreso.
+### Paso 2B — Aplicar esmalte y dejar curar
 
-### Paso 2C — Cura parcial (15 min)
-
-1. Esperar **15 minutos** desde el final del foco. El activador hace que en ese tiempo la cura parcial sea suficiente para que los lens queden inmóviles bajo las cargas vibratorias del manejo de calibración.
-2. **No tocar el barrel ni la llave** durante esta espera. La llave queda encastrada — la sacamos recién después del curado total (Paso 4).
-3. Una vez pasados los 15min, proceder al Paso 3 (calibración).
+1. Con un pincelito fino (el del propio frasco de esmalte sirve si no chorrea, o un palillo de dientes para más control), **pintar el seam exterior** donde el barrel del lens se encuentra con la boca del holder. Una pasada delgada — el esmalte solo necesita "pegar" las dos piezas, no rellenar nada.
+2. **Aplicar a ambos lens (izquierdo y derecho)** antes de que el primero termine de secar — el touch-dry tarda 5-10 min, hay tiempo de sobra.
+3. Verificar que **no haya esmalte sobre la óptica**: si una gota cayó al cristal frontal del lens, limpiarla AHORA con hisopo + isopropílico antes de que cure.
+4. **Esperar 15-20 min** desde la última pasada. En ese tiempo el touch-dry es completo: los lens quedan inmóviles bajo cargas vibratorias normales del manejo de calibración, aunque la cura full demore 30-60 min más.
+5. **No rotar los lens después de este punto**. Cualquier giro rompe el sello del esmalte y desacomoda el foco logrado.
 
 **Planning del cronograma**:
 
-Con activador, todo el ciclo (foco + 15min de espera + calibración + ground-truth) entra en una sola sesión de lab de ~1-1.5h. La cura total sigue su curso después y se completa en horas; la llave del barrel se retira al final, cuando el set ya está rígido.
+Todo el ciclo (foco + aplicar esmalte + 15min de espera + calibración + ground-truth) entra en una sola sesión de lab de ~1-1.5h. La cura full del esmalte continúa en background mientras se hace la calibración; al cabo de ~1h el set está completamente rígido.
 
 ## Paso 3 — Calibración estéreo
 
@@ -247,8 +245,8 @@ En `--output` (default `./calibration.npz`):
 
 ## Paso 4 — Fin del ciclo
 
-1. **Esperar el curado total** según especificación del activador (típicamente unas horas). El dispositivo puede quedar en cualquier orientación durante este tiempo, pero sin manipular los lens.
-2. **Retirar la llave del barrel** una vez completada la cura. El lens debe quedar firme y no rotar al intentar moverlo a mano.
+1. **Esperar la cura full del esmalte** (~30-60 min desde la aplicación). El dispositivo puede quedar en cualquier orientación durante este tiempo, pero sin manipular los lens.
+2. **Verificar que los lens estén firmes**: intentar girarlos suavemente a mano (sin la llave). Deben resistir. Si se mueven, el esmalte no curó bien o la pasada fue demasiado fina — aplicar otra capa y esperar nuevamente.
 3. **No desarmar el bracket L/R**. La calibración viaja con el par físico, no con el dispositivo RPi. Si separás los lens, la extrínseca cambia y la calibración se invalida.
 4. **Etiquetar el bracket** con el device-id del reporte.
 5. **Guardar el `.npz`** en la estructura del provisioning (ver `scripts/provision.py`) asociado al device-id.

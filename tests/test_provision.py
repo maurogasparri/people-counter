@@ -3,7 +3,7 @@ import argparse
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -12,7 +12,6 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from provision import (
-    PROVISION_DIR,
     _build_config,
     cmd_create,
     cmd_deploy,

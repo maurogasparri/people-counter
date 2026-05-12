@@ -15,7 +15,6 @@ import logging
 from pathlib import Path
 
 import pytest
-import yaml
 
 from src.config.loader import load_config
 
