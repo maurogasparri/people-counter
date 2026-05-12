@@ -56,6 +56,7 @@ from src.vision.calibration import (
     create_charuco_board,
     default_pose_sequence,
     detect_charuco_corners,
+    detect_charuco_dual_pass,
     fit_single_camera_intrinsics,
     generate_board_image,
     is_aligned_by_corners,
@@ -1202,11 +1203,13 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
 
     from src.vision.capture import StereoCapture
 
+    max_exp = getattr(args, "max_exposure_us", 0)
     cap = StereoCapture(
         cam_left_id=args.left, cam_right_id=args.right,
         resolution=tuple(args.resolution), fps=args.fps,
         meter_mode=getattr(args, "meter", "matrix"),
         lock_ae=getattr(args, "lock_ae", False),
+        max_exposure_us=max_exp if max_exp and max_exp > 0 else None,
     )
     cap.open()
 
@@ -1551,11 +1554,16 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             # esquinas" y "7 esquinas" frame a frame y el wizard flipea
             # entre Alineado y "board no visible", sin holdear estable
             # el tiempo suficiente para capturar.
-            corners_l, ids_l = detect_charuco_corners(
-                frame_l, board, lenient=True, min_corners=4,
+            # Dual-pass: si el frame original detecta <8 corners,
+            # reintenta con sharpen. Recupera markers cuando un copy
+            # tiene foco marginal a esa distancia, sin cambiar el
+            # comportamiento del calibrate_stereo downstream (que sigue
+            # leyendo single-pass via _detect_all_pairs).
+            corners_l, ids_l = detect_charuco_dual_pass(
+                frame_l, board, min_corners=4,
             )
-            corners_r, ids_r = detect_charuco_corners(
-                frame_r, board, lenient=True, min_corners=4,
+            corners_r, ids_r = detect_charuco_dual_pass(
+                frame_r, board, min_corners=4,
             )
 
             # Trackear detección asimétrica — una cámara fallando
@@ -1629,16 +1637,32 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     max(1, int(cli_min) - 3) if cli_min is not None
                     else ALIGN_MATCHED_MIN_LOOSE
                 )
+                # --align-loose-px override de la tolerancia del centroid
+                # offset contra el ghost target. Default None usa los
+                # thresholds canónicos (tight=12px, loose=25px). Valores más
+                # altos relajan el requisito de "matchear la posición del
+                # ghost" — útil cuando los ghosts del wizard fueron generados
+                # para una geometría distinta a la del operativo (setup
+                # vertical en cuarto chico) y matchear-al-pixel es imposible.
+                cli_mean_err = getattr(args, "align_loose_px", None)
+                eff_tol_tight = (
+                    float(cli_mean_err) if cli_mean_err is not None
+                    else tol_tight
+                )
+                eff_tol_loose = (
+                    float(cli_mean_err) if cli_mean_err is not None
+                    else tol_loose
+                )
                 if state.bootstrap_done:
                     aligned = is_aligned_by_corners(
                         err,
-                        mean_err_tol_px=tol_tight,
+                        mean_err_tol_px=eff_tol_tight,
                         min_matched=tight_min,
                     )
                 else:
                     aligned = is_aligned_by_corners(
                         err,
-                        mean_err_tol_px=tol_loose,
+                        mean_err_tol_px=eff_tol_loose,
                         min_matched=loose_min,
                     )
 
@@ -2112,11 +2136,13 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
     from src.vision.capture import StereoCapture
 
+    max_exp = getattr(args, "max_exposure_us", 0)
     cap = StereoCapture(
         cam_left_id=args.left,
         cam_right_id=args.right,
         resolution=tuple(args.resolution),
         fps=args.fps,
+        max_exposure_us=max_exp if max_exp and max_exp > 0 else None,
     )
     cap.open()
 
@@ -2197,9 +2223,11 @@ def cmd_capture(args: argparse.Namespace) -> None:
                 break
             frame_l, frame_r = cap.read()
 
-            # Detectar corners (lenient: ver comentario del loop del wizard)
-            corners_l, ids_l = detect_charuco_corners(frame_l, board, lenient=True)
-            corners_r, ids_r = detect_charuco_corners(frame_r, board, lenient=True)
+            # Detectar corners con dual-pass (sharpen fallback recupera
+            # detecciones marginales para el feedback visual; el fit
+            # downstream sigue siendo single-pass).
+            corners_l, ids_l = detect_charuco_dual_pass(frame_l, board)
+            corners_r, ids_r = detect_charuco_dual_pass(frame_r, board)
 
             # Armar preview (resize para HTTP)
             vis_l = cv2.resize(frame_l, (648, 486))
@@ -2547,9 +2575,11 @@ def _run_ground_truth_phase(
         logger.warning("No pude importar módulos de depth: %s", e)
         return None
 
+    max_exp = getattr(args, "max_exposure_us", 0)
     cap = StereoCapture(
         cam_left_id=args.left, cam_right_id=args.right,
         resolution=tuple(args.resolution), fps=args.fps,
+        max_exposure_us=max_exp if max_exp and max_exp > 0 else None,
     )
     try:
         cap.open()
@@ -2986,6 +3016,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         per_pair_residuals=per_pair,
         epipolar_image=epi_path,
         ground_truth_image=gt_image,
+        baseline_tol_mm=getattr(args, "baseline_tol_mm", 5.0),
     )
     report_name = f"calibration_report_{args.device_id}_{ts:%Y%m%d_%H%M%S}.html"
     report_path = save_report(html, calib_out.parent / report_name)
@@ -3199,10 +3230,10 @@ def main() -> None:
     # --- generate-board ---
     p_board = sub.add_parser("generate-board", help="Genera el board ChArUco imprimible")
     p_board.add_argument("--output", default="calibration/charuco_board.png")
-    p_board.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
-    p_board.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
-    p_board.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_board.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
+    p_board.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
+    p_board.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
+    p_board.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
+    p_board.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
     p_board.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco (ej. DICT_4X4_100, DICT_5X5_100). Default DICT_4X4_100")
     p_board.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3233,10 +3264,10 @@ def main() -> None:
                         help=f"Segundos antes de que una pose no capturada sea "
                              f"auto-skippeada (default {SKIP_POSE_TIMEOUT_SEC:.0f}).")
     p_cap.add_argument("--port", type=int, default=8080, help="Puerto del preview HTTP")
-    p_cap.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
-    p_cap.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
-    p_cap.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_cap.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
+    p_cap.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
+    p_cap.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
+    p_cap.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
+    p_cap.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
     p_cap.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco. Default DICT_4X4_100 (el board final)")
     p_cap.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3264,10 +3295,10 @@ def main() -> None:
     p_cal = sub.add_parser("calibrate", help="Corre la calibración estéreo")
     p_cal.add_argument("--input-dir", required=True, help="Directorio con imágenes left_/right_")
     p_cal.add_argument("--output", default="calibration.npz")
-    p_cal.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
-    p_cal.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
-    p_cal.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
-    p_cal.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
+    p_cal.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0], help=f"Columnas del board (default {DEFAULT_BOARD_SIZE[0]})")
+    p_cal.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1], help=f"Filas del board (default {DEFAULT_BOARD_SIZE[1]})")
+    p_cal.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH, help=f"Lado del cuadrado en mm (default {DEFAULT_SQUARE_LENGTH})")
+    p_cal.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH, help=f"Lado del marker en mm (default {DEFAULT_MARKER_LENGTH})")
     p_cal.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco. Default DICT_4X4_100")
     p_cal.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3296,10 +3327,10 @@ def main() -> None:
                              "tests / dev workstation donde no hay config per-device.")
     p_wiz.add_argument("--fps", type=int, default=5)
     p_wiz.add_argument("--port", type=int, default=8080)
-    p_wiz.add_argument("--columns", type=int, default=DEFAULT_BOARD_SIZE[0])
-    p_wiz.add_argument("--rows", type=int, default=DEFAULT_BOARD_SIZE[1])
-    p_wiz.add_argument("--square-length", type=float, default=DEFAULT_SQUARE_LENGTH)
-    p_wiz.add_argument("--marker-length", type=float, default=DEFAULT_MARKER_LENGTH)
+    p_wiz.add_argument("--board-cols", "--columns", type=int, dest="columns", default=DEFAULT_BOARD_SIZE[0])
+    p_wiz.add_argument("--board-rows", "--rows", type=int, dest="rows", default=DEFAULT_BOARD_SIZE[1])
+    p_wiz.add_argument("--square-mm", "--square-length", type=float, dest="square_length", default=DEFAULT_SQUARE_LENGTH)
+    p_wiz.add_argument("--marker-mm", "--marker-length", type=float, dest="marker_length", default=DEFAULT_MARKER_LENGTH)
     p_wiz.add_argument("--dict", dest="aruco_dict", default="DICT_4X4_100",
                         help="Nombre del dict ArUco. Default DICT_4X4_100 (el board final)")
     p_wiz.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
@@ -3320,6 +3351,18 @@ def main() -> None:
                              "impide alcanzar los thresholds default. El "
                              "resultado es una calibración más subdeterminada "
                              "matemáticamente, pero preferible a no calibrar.")
+    p_wiz.add_argument("--align-loose-px", type=float, default=None,
+                        help="Override de la tolerancia del centroid-offset "
+                             "contra el ghost target (default 12px tight / "
+                             "25px loose). Valores mayores (ej. 200) "
+                             "efectivamente desactivan el match-al-ghost — el "
+                             "wizard captura cuando el board está estable, "
+                             "donde esté en el frame. Útil cuando los ghosts "
+                             "fueron generados para una geometría distinta "
+                             "(setup vertical, FOV asimétrico) y matchear-al-"
+                             "pixel es físicamente imposible. La captura "
+                             "queda atribuida a la pose más cercana del ghost "
+                             "secuencial, pero el solver no se afecta.")
     p_wiz.add_argument("--pose-timeout-sec", type=float,
                         default=SKIP_POSE_TIMEOUT_SEC,
                         help=f"Segundos antes de que una pose no capturada sea "
@@ -3361,6 +3404,14 @@ def main() -> None:
 
     p_wiz.add_argument("--resume", action="store_true",
                         help="Continúa una sesión previa del wizard — saltea las poses ya capturadas")
+    p_wiz.add_argument("--baseline-tol-mm", type=float, default=5.0,
+                        help="Tolerancia ± en mm para el check de baseline vs "
+                             "diseño (140mm) en el reporte. Default 5mm "
+                             "(matchea el QA target de fabricación del "
+                             "bracket). Subir cuando un device conocido tiene "
+                             "drift mayor y querés que el reporte salga PASS — "
+                             "ojo, la rectificación absorbe el drift, no es "
+                             "un gate de calidad real (el depth check sí).")
     p_wiz.add_argument("--force-degenerate-coverage", action="store_true",
                         help="Bypassea el block de coverage crítico. Por "
                              "default el wizard se rehúsa a calibrar cuando "
@@ -3411,6 +3462,13 @@ def main() -> None:
                              "ajusta durante toda la sesión, más simple y la "
                              "imagen del reporte ground-truth matchea lo que "
                              "ven las cámaras.")
+    p_wiz.add_argument("--max-exposure-us", type=int, default=16000,
+                        help="Cap de exposure time en microsegundos vía "
+                             "FrameDurationLimits. Default 16000us (16ms), "
+                             "mismo que el runtime. Freezea micro-vibración "
+                             "que rompe el decoder ArUco asimétricamente "
+                             "entre L/R en luz baja. AE compensa con "
+                             "AnalogueGain. Pasar 0 para deshabilitar el cap.")
     p_wiz.set_defaults(func=cmd_wizard)
 
     args = parser.parse_args()

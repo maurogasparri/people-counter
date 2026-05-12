@@ -150,14 +150,27 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
         # el shutter sube hasta 30ms — produce blur OOD del training distribution
         # para personas en movimiento rápido. 16000us (16ms) achata el blur a
         # niveles cubiertos por los frames motion-trigger del dataset.
-        max_exposure_us = config.get("vision", {}).get("max_exposure_us")
-        cap = StereoCapture(
+        vision_cfg = config.get("vision", {})
+        # Default 16000us si el config omite la key, en vez de fallar al
+        # default de picamera2 (~33ms a 30fps). 16ms es el valor canónico
+        # de la flota (config.example.yaml) — un config viejo sin la key
+        # corre con el cap correcto. Setear explícitamente null para
+        # deshabilitar.
+        max_exposure_us = vision_cfg.get("max_exposure_us", 16000)
+        # sensor_raw_size forza el sensor mode del IMX708 a Mode 1 (2304×1296
+        # full-FOV binned). Sin él, picamera2 elige Mode 0 cropeado y se
+        # pierde el HFOV de 120° diseñado. Ver capture.py CANONICAL_RAW_SIZE.
+        raw_size = vision_cfg.get("sensor_raw_size")
+        capture_kwargs = dict(
             cam_left_id=config["bracket"]["camera_left_csi"],
             cam_right_id=config["bracket"]["camera_right_csi"],
             resolution=_runtime_resolution(config),
             fps=_runtime_fps(config),
             max_exposure_us=max_exposure_us,
         )
+        if raw_size is not None:
+            capture_kwargs["sensor_raw_size"] = tuple(raw_size)
+        cap = StereoCapture(**capture_kwargs)
     return cap
 
 
@@ -682,6 +695,30 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # --- Construir captura ---
     capture = build_capture(config, replay_dir=getattr(args, "replay_dir", None))
     capture.open()
+
+    # Loggear el estado de exposición/gain de cada cámara al startup —
+    # observabilidad para confirmar que AE convergió, validar el cap de
+    # max_exposure_us, y comparar L vs R en condiciones de campo. No es
+    # fatal si el sensor no expone metadata (FileCapture, mock hardware).
+    if isinstance(capture, StereoCapture):
+        try:
+            cam_l = capture._cam_left
+            cam_r = capture._cam_right
+            if cam_l is not None and cam_r is not None:
+                m_l = cam_l.capture_metadata()
+                m_r = cam_r.capture_metadata()
+                logger.info(
+                    "capture_ae_startup_state",
+                    extra={
+                        "left_exposure_us": int(m_l.get("ExposureTime", 0)),
+                        "left_analogue_gain": float(m_l.get("AnalogueGain", 0)),
+                        "right_exposure_us": int(m_r.get("ExposureTime", 0)),
+                        "right_analogue_gain": float(m_r.get("AnalogueGain", 0)),
+                        "max_exposure_us": capture.max_exposure_us,
+                    },
+                )
+        except Exception:
+            logger.debug("No pude leer metadata AE de startup", exc_info=True)
 
     # --- Focal length + baseline para profundidad ---
     # El .npz de calibración overridea ambos al cargar (ver _bootstrap_optical_*).

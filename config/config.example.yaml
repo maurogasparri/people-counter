@@ -67,6 +67,15 @@ vision:
                                     # binned full-FOV. El .npz de calibración
                                     # tiene que ser reescalado para matchear via
                                     # scripts/rescale_calibration.py.
+  sensor_raw_size: [2304, 1296]     # Sensor mode canónico del IMX708 — Mode 1
+                                    # (full-FOV binned 2×2, HFOV 120°, 56fps).
+                                    # CRITICAL: sin este override, picamera2
+                                    # elige Mode 0 (1536×864 cropeado) que
+                                    # reduce el HFOV efectivo a ~80° y la
+                                    # cobertura de piso a ~50% del diseño. Se
+                                    # pasa como raw={"size": ...} en el config
+                                    # de picamera2. Cambiar este valor invalida
+                                    # toda calibración previa.
   fps: 30                           # Frame rate de captura a la resolución runtime.
   max_exposure_us: 16000            # Cap de shutter time en microsegundos.
                                     # Limita motion blur para que la distribución
@@ -94,37 +103,35 @@ vision:
                                     # para override (raro, solo diagnóstico).
     block_size: 9                   # Impar, 5..15.
     downscale: 4                    # 1=full, 2=half, 4=quarter, 8=eighth.
-                                    # 4 se eligió por sobre 8 después de tests
-                                    # de piloto que mostraron que downscale=8
-                                    # producía suficiente speckle SGBM dentro
-                                    # del bbox de head-region como para sesgar
-                                    # la mediana de depth hacia arriba cuando
-                                    # una persona estaba parada quieta — se
-                                    # manifestaba como lecturas infladas de
-                                    # head-height (ej. 1.94 m para un usuario
-                                    # sentado). Dividir el downscale a la mitad
-                                    # duplica la resolución del grid de
-                                    # disparity y remueve mayormente ese ruido.
-                                    # El costo de SGBM es ~4× el de downscale=8
-                                    # pero igual cabe en el budget runtime
-                                    # de la Pi 5.
+                                    # 4 es el sweet spot calidad/costo para
+                                    # head-height a mount 2.0-3.5m: la
+                                    # resolución del grid de disparity es
+                                    # suficiente para que la mediana de depth
+                                    # dentro del bbox de cabeza no se sesgue
+                                    # por speckle SGBM, y el costo SGBM
+                                    # (~4× el de downscale=8) cabe holgado
+                                    # en el budget runtime de la Pi 5.
 
 
 # =============================================================================
 # DETECTION — modelo + thresholds (model-specific, fleet-uniform tras lab tune)
 # =============================================================================
 detection:
-  architecture: rapid               # Selector de postprocessor: "yolov8" (raw
-                                    # o NMS built-in de Hailo) o "rapid"
-                                    # (head rotated-bbox, anchors decodeados
-                                    # en CPU). Producción usa "rapid" pareado
-                                    # con rapid_mwhb1024.hef.
-  model_path: /usr/src/people-counter/models/rapid_mwhb1024.hef
+  architecture: yolov8              # Selector de postprocessor: "yolov8" (raw
+                                    # o NMS built-in de Hailo) o "rapid" (head
+                                    # rotated-bbox, anchors decodeados en CPU).
+                                    # Producción usa "yolov8" pareado con
+                                    # people-counter-detector.hef (modelo propio,
+                                    # YOLOv8n fine-tuneado cenital sobre dataset
+                                    # multi-site con hard negatives explícitos,
+                                    # entrenado en Kaggle T4 con datos curados
+                                    # desde Roboflow). Ver scripts/training/.
+  model_path: /usr/src/people-counter/models/people-counter-detector.hef
                                     # HEF compilado para Hailo-8L. Mismo path
                                     # en cada device.
   confidence_threshold: 0.30        # Piso del score de detección de person/head.
-                                    # Tuneado para RAPiD MWHB1024 — corta FPs
-                                    # del modelo (alucinaciones en piso vacío).
+                                    # Tuneado para people-counter-detector — corta
+                                    # FPs del modelo (alucinaciones en piso vacío).
   low_confidence_threshold: 0.10    # Two-stage matching (estilo ByteTrack).
                                     # Detecciones en [low, confidence) entran
                                     # al tracker SOLO para re-asociar tracks
@@ -148,7 +155,7 @@ detection:
                                     # el umbral mínimo. null para que spawn
                                     # caiga al confidence_threshold.
   nms_threshold: 0.45               # Threshold de IoU para non-maximum suppression.
-  cluster_distance_px: 200          # Clustering por centroide post-NMS:
+  cluster_distance_px: 120          # Clustering por centroide post-NMS:
                                     # detecciones cuyos centroides caen dentro
                                     # de esta cantidad de pixels se mergean,
                                     # manteniendo la de mayor confidence.
@@ -156,7 +163,11 @@ detection:
                                     # cenital donde head + torso + miembros
                                     # de la misma persona producen cajas
                                     # distintas que NMS no colapsa porque sus
-                                    # IoUs pairwise son <0.45. 0 desactiva.
+                                    # IoUs pairwise son <0.45. 120px ~10% del
+                                    # ancho a 1152×648; cabezas de ~50-80px a
+                                    # mount 3m fittean cómodas, y dos personas
+                                    # codo-a-codo (~50cm físico ≈ 130-150px) no
+                                    # se mergean. 0 desactiva.
 
   # Static FP suppressor — defense-in-depth contra clutter estructural
   # (sombras estables, blobs aprendidos sobre maniquíes / ropa colgada
@@ -422,14 +433,14 @@ head_depth:
                                     # desactiva el filtro espacial.
   blob_percentile: 75               # Percentile (0-100) sobre los depths del
                                     # blob de cabeza más grande dentro del slice
-                                    # nearest del histograma. Default 75 captura
-                                    # la superficie típica del cráneo, robusto a
-                                    # speckle near-camera de SGBM sobre hair fluff
-                                    # con contraste alto (pixels cercanos que se
-                                    # cuelan en el mismo bin que la cabeza real
-                                    # y, con mediana, tiran el depth promedio
-                                    # hacia abajo → height sobre-estimada por
-                                    # ~3-5cm). Bajar a 50 = mediana = back-compat.
+                                    # nearest del histograma. 75 captura la
+                                    # superficie típica del cráneo y es robusto
+                                    # a speckle near-camera de SGBM sobre hair
+                                    # fluff (pixels cercanos con contraste
+                                    # alto que se cuelan en el mismo bin que
+                                    # la cabeza real y, con mediana, tiran el
+                                    # depth promedio hacia abajo → height
+                                    # sobre-estimada por ~3-5cm). 50 = mediana.
 
 
 # --- Height sanity filter (defensa post-tracker) ----------------------------
@@ -457,43 +468,41 @@ tracking:
                                     # frame-a-frame. Escalar linealmente con
                                     # la resolución runtime si la cambiás.
   state_machine:
-    confirm_frames: 1               # Hits para promover CANDIDATE -> CONFIRMED.
-                                    # Tuneado agresivo (1) para el detector
-                                    # actual que tiene detecciones gappy;
-                                    # con un detector fine-tuneado esto sube
-                                    # de vuelta a 3 para menos churn de
-                                    # false-positives.
+    confirm_frames: 3               # Hits para promover CANDIDATE -> CONFIRMED.
+                                    # 3 frames sobre el detector fine-tuneado
+                                    # (people-counter-detector) filtran FPs
+                                    # efímeros que sobreviven un solo frame.
+                                    # Bajar a 1 si se usa un detector con
+                                    # dropeos frame-a-frame agresivos.
     pending_max_frames: 20          # Misses antes de PENDING -> LOST.
-    reid_gate_px: 300               # Gate de distancia para re-id. Ancho
-                                    # porque el tracker es single-camera y
-                                    # el detector ocasionalmente dropea el
-                                    # track por varios frames entre
-                                    # re-detecciones.
+    reid_gate_px: 180               # Gate de distancia para re-id en PENDING.
+                                    # 180px (~28% del ancho a 1152×648) cubre
+                                    # gaps de detección de hasta ~1s a
+                                    # velocidad de caminata. Pareado con
+                                    # pending_velocity_decay que congela el
+                                    # predict cerca de la última observación,
+                                    # así el gate no necesita ser más ancho.
     depth_gate_m: 0.5               # Gate de |Δz| para re-id cross frames.
     pending_velocity_decay: 0.5     # Factor multiplicativo aplicado a (vx, vy)
                                     # del Kalman cada frame en estado PENDING.
                                     # 0.5 → velocidad colapsa a <5% en 5 frames
                                     # (~0.35s a 14 fps), efectivamente
-                                    # congelando la posición predicha. Sin esto,
-                                    # un track que pierde detecciones (oclusión,
+                                    # congelando la posición predicha. Modela
+                                    # el prior bayesiano: un humano sin obs
+                                    # tiende a quedarse quieto, no a acelerar
+                                    # indefinidamente. Sin decay (1.0) un
+                                    # track que pierde detecciones (oclusión,
                                     # static_suppressor, motion blur) sigue
-                                    # extrapolando con la última velocidad
-                                    # observada → el predict drifta off-ROI →
-                                    # al re-aparecer la persona >1.5s después,
-                                    # cae fuera del reid_gate_px → nace un
-                                    # track NUEVO → doble conteo (1 in del
-                                    # track viejo + 1 in/out del nuevo).
-                                    # 1.0 = sin decay (comportamiento previo).
-                                    # 0.3-0.7 = razonable para retail.
-                                    # Implementación del prior bayesiano:
-                                    # humano sin obs tiende a quedarse quieto,
-                                    # no a acelerar indefinidamente.
+                                    # extrapolando → el predict drifta off-ROI
+                                    # → al re-aparecer >1.5s después cae fuera
+                                    # del reid_gate_px → spawn de track nuevo
+                                    # → doble conteo. 0.3-0.7 razonable para
+                                    # retail.
     kalman:                         # Filtro Kalman de velocidad constante
                                     # sobre el estado [cx, cy, vx, vy] de
-                                    # cada track. Reemplaza la extrapolación
-                                    # lineal vieja `last + (last-prev)`, que
-                                    # perdía tracks cuando el detector
-                                    # dropeaba 2-5 frames a baja FPS.
+                                    # cada track. Tolera gaps del detector de
+                                    # varios frames a baja FPS sin perder el
+                                    # match cuando la detección reaparece.
       process_noise: 1.0            # Diagonal de Q — incertidumbre del
                                     # modelo (px²/frame²). Más alto = dejar
                                     # que la velocidad flexione más entre
@@ -501,7 +510,7 @@ tracking:
                                     # en movimiento de línea recta.
       measurement_noise: 5.0        # Diagonal de R — ruido de posición
                                     # del detector (px). ~5 px es típico
-                                    # para YOLO/RAPiD con bboxes bien
+                                    # para YOLOv8n cenital con bboxes bien
                                     # confirmados.
       initial_velocity_uncertainty: 100.0
                                     # Diagonal de P para vx/vy al init del

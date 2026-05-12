@@ -80,6 +80,55 @@ def generate_board_image(
 # ---------------------------------------------------------------------------
 
 
+# Kernel de sharpen 3×3 (Laplacian unit-sum) usado por
+# ``detect_charuco_dual_pass``. Compartido para mantener los outputs
+# determinísticos entre tools.
+_SHARPEN_KERNEL = np.array(
+    [[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32,
+)
+
+
+def detect_charuco_dual_pass(
+    image: np.ndarray,
+    board: cv2.aruco.CharucoBoard,
+    min_corners: int = 4,
+    lenient: bool = True,
+    accept_threshold: int = 8,
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Detecta ChArUco intentando primero el frame original y, si quedó
+    corto, reintentando con un sharpen 3×3.
+
+    Resuelve el flicker de detección bajo foco marginal o iluminación
+    pobre: el original suele detectar mejor cuando el board está bien
+    enfocado, pero ante un copy de lens flojo el sharpen recupera
+    decenas de markers que el detector descarta como border-soft. Si el
+    sharpen amplifica ruido sobre el threshold del decoder y termina con
+    *menos* corners que el original, se queda con el original.
+
+    Args:
+        accept_threshold: Cuando el original ya supera este número de
+            corners, se devuelve sin probar sharpen. 8 es el piso típico
+            para un PnP estable.
+
+    Devuelve siempre ``(corners, ids)`` del mejor candidato — None solo si
+    ninguno de los dos pasos alcanzó ``min_corners``.
+    """
+    c_orig, i_orig = detect_charuco_corners(
+        image, board, min_corners=min_corners, lenient=lenient,
+    )
+    n_orig = 0 if i_orig is None else len(i_orig)
+    if n_orig >= accept_threshold:
+        return c_orig, i_orig
+    sharp = cv2.filter2D(image, -1, _SHARPEN_KERNEL)
+    c_sh, i_sh = detect_charuco_corners(
+        sharp, board, min_corners=min_corners, lenient=lenient,
+    )
+    n_sh = 0 if i_sh is None else len(i_sh)
+    if n_sh > n_orig:
+        return c_sh, i_sh
+    return c_orig, i_orig
+
+
 def detect_charuco_corners(
     image: np.ndarray,
     board: cv2.aruco.CharucoBoard,

@@ -268,6 +268,12 @@ def main() -> None:
                         help="AE metering mode. Use 'centre' / 'spot' when "
                              "bright zones in the periphery (windows, lights) "
                              "drag exposure down on the centre.")
+    parser.add_argument("--lock-ae", action="store_true",
+                        help="Lock AE/AWB on both cameras after a 1s settle "
+                             "(same behaviour as the calibrate wizard and the "
+                             "runtime pipeline). Without lock, each camera "
+                             "runs AE/AWB independently and L/R can drift to "
+                             "different exposure / colour state.")
     parser.add_argument("--config", default=None,
                         help="Optional path to the runtime config.yaml. When "
                              "provided, the preview matches the pipeline's "
@@ -277,6 +283,10 @@ def main() -> None:
                              "direction labels on the L preview. Use this to "
                              "verify the runtime layout before launching "
                              "main.py.")
+    parser.add_argument("--max-exposure-us", type=int, default=16000,
+                        help="Exposure time cap in microseconds via "
+                             "FrameDurationLimits. Default 16000us (16ms), "
+                             "same as the runtime pipeline. Pass 0 to disable.")
     args = parser.parse_args()
 
     # Optional: load runtime config so the preview reflects the pipeline's
@@ -337,13 +347,23 @@ def main() -> None:
     from picamera2 import Picamera2
     from libcamera import controls as _libcam_controls
 
+    from src.vision.capture import CANONICAL_RAW_SIZE
+
     cam_l = Picamera2(args.left)
     cam_r = Picamera2(args.right)
     w, h = args.resolution
+    max_exp = int(args.max_exposure_us) if args.max_exposure_us > 0 else None
+    initial_controls = (
+        {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
+    )
     for cam in [cam_l, cam_r]:
+        # raw FIJO en el sensor mode canónico (full-FOV 120°). Sin esto,
+        # picamera2 elige Mode 0 cropeado (1536×864, HFOV ~80°). Ver
+        # capture.py CANONICAL_RAW_SIZE.
         config = cam.create_still_configuration(
             main={"size": (w, h), "format": "BGR888"},
-            raw={"size": (w, h)},
+            raw={"size": CANONICAL_RAW_SIZE},
+            controls=initial_controls,
         )
         cam.configure(config)
         cam.start()
@@ -357,6 +377,18 @@ def main() -> None:
             cam.set_controls({"AeMeteringMode": meter_map[args.meter]})
 
     time.sleep(1)
+
+    # Mirror the lock-ae behaviour of capture.py / focus_assist / calibrate.
+    if args.lock_ae:
+        for cam in [cam_l, cam_r]:
+            metadata = cam.capture_metadata()
+            cam.set_controls({
+                "AeEnable": False,
+                "AwbEnable": False,
+                "ExposureTime": metadata.get("ExposureTime", 30000),
+                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+            })
 
     ThreadingHTTPServer.allow_reuse_address = True
     try:

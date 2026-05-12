@@ -91,6 +91,12 @@ def main() -> None:
                              "variable (luz natural). Default off — AE ajusta a "
                              "la escena actual, la captura single-frame no se "
                              "afecta por drift.")
+    parser.add_argument("--max-exposure-us", type=int, default=16000,
+                        help="Cap de exposure time en microsegundos vía "
+                             "FrameDurationLimits. Default 16000us (16ms), "
+                             "mismo que el runtime — diagnostica con la "
+                             "misma distribución de blur que vé el detector. "
+                             "Pasar 0 para deshabilitar.")
     parser.add_argument("--json", dest="json_path",
                         help="Escribe los resultados per-zona + veredicto a este "
                              "path JSON. Permite que el wizard / tooling de CI "
@@ -185,6 +191,9 @@ def main() -> None:
         cam_left_id=cam_left, cam_right_id=cam_right,
         resolution=resolution, fps=5,
         meter_mode=args.meter, lock_ae=args.lock_ae,
+        max_exposure_us=(
+            args.max_exposure_us if args.max_exposure_us > 0 else None
+        ),
     )
     cap.open()
 

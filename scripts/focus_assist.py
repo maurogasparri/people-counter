@@ -40,7 +40,7 @@ from src.vision.calibration import (
     NOMINAL_FOCAL_PX,
     NOMINAL_FULL_RES,
     create_charuco_board,
-    detect_charuco_corners,
+    detect_charuco_dual_pass,
     live_lighting_warnings,
 )
 
@@ -108,9 +108,9 @@ def _apply_threshold_overrides(args: argparse.Namespace) -> None:
     (vidrio frontal, luz baja) sin editar código.
 
     Orden de resolución por setting: flag CLI explícito > preset
-    --low-light > default productivo. Los defaults sentinela ``None``
-    en los args identifican "el operador no pasó este flag
-    explícitamente".
+    --low-light > derivación geométrica desde mount_height > default
+    productivo. Los defaults sentinela ``None`` en los args identifican
+    "el operador no pasó este flag explícitamente".
     """
     global MIN_SCORE, MIN_CORNER_SCORE, MAX_LR_DIFF_PCT, MAX_LR_ZONE_DIFF_PCT
     global TARGET_DISTANCE_MIN_MM, TARGET_DISTANCE_MAX_MM
@@ -129,8 +129,41 @@ def _apply_threshold_overrides(args: argparse.Namespace) -> None:
     MIN_CORNER_SCORE = _resolve("min_corner_score", MIN_CORNER_SCORE)
     MAX_LR_DIFF_PCT = _resolve("max_lr_diff_pct", MAX_LR_DIFF_PCT)
     MAX_LR_ZONE_DIFF_PCT = _resolve("max_lr_zone_diff_pct", MAX_LR_ZONE_DIFF_PCT)
-    TARGET_DISTANCE_MIN_MM = _resolve("target_distance_min_mm", TARGET_DISTANCE_MIN_MM)
-    TARGET_DISTANCE_MAX_MM = _resolve("target_distance_max_mm", TARGET_DISTANCE_MAX_MM)
+
+    # Distancia target: si no se pasa explícito y no estamos en --low-light,
+    # deriva geométricamente desde mount_height. distance = mount - head_height
+    # cubre el rango de cabezas (HEAD_MIN..HEAD_MAX), que es lo que el lens
+    # tiene que enfocar para que la detección sea nítida en producción. Para
+    # mount=3m da 1.15-1.80m, casi idéntico al universal 1.3-1.7m. Para mount
+    # más bajo (testing, sites con techos bajos) se adapta automático.
+    explicit_min = args.target_distance_min_mm
+    explicit_max = args.target_distance_max_mm
+    if explicit_min is not None or explicit_max is not None or low_light:
+        TARGET_DISTANCE_MIN_MM = _resolve(
+            "target_distance_min_mm", TARGET_DISTANCE_MIN_MM,
+        )
+        TARGET_DISTANCE_MAX_MM = _resolve(
+            "target_distance_max_mm", TARGET_DISTANCE_MAX_MM,
+        )
+    else:
+        derived_min_mm = max(
+            200.0, (args.mount_height_m - HEAD_HEIGHT_MAX_M) * 1000,
+        )
+        derived_max_mm = max(
+            derived_min_mm + 200.0,
+            (args.mount_height_m - HEAD_HEIGHT_MIN_M) * 1000,
+        )
+        TARGET_DISTANCE_MIN_MM = derived_min_mm
+        TARGET_DISTANCE_MAX_MM = derived_max_mm
+        print(
+            f"[focus] Target distance derivado de mount_height "
+            f"{args.mount_height_m:.2f}m + head {HEAD_HEIGHT_MIN_M:.2f}-"
+            f"{HEAD_HEIGHT_MAX_M:.2f}m → "
+            f"{TARGET_DISTANCE_MIN_MM/1000:.2f}-"
+            f"{TARGET_DISTANCE_MAX_MM/1000:.2f}m. Override con "
+            f"--target-distance-min/max-mm.",
+            flush=True,
+        )
 
     if low_light and args.scene == "auto":
         args.scene = _LOW_LIGHT_DEFAULTS["scene"]
@@ -195,9 +228,7 @@ def estimate_charuco_distance_mm(
     parity L/R upstream. Usa intrínsecos nominales de IMX708 — ±10%
     está bien para validar "¿el board está a 2.5-3m?".
     """
-    corners, ids = detect_charuco_corners(
-        frame, board, min_corners=4, lenient=True,
-    )
+    corners, ids = detect_charuco_dual_pass(frame, board, min_corners=4)
     if corners is None or ids is None or len(corners) < 4:
         return None, 0, 0.0, None
     h, w = frame.shape[:2]
@@ -1060,6 +1091,45 @@ def _resolve_resolution_from_device_config(
     args.resolution = [int(res[0]), int(res[1])]
 
 
+def _resolve_mount_height_from_device_config(
+    args: argparse.Namespace, parser: argparse.ArgumentParser,
+) -> None:
+    """Si --mount-height-m no fue pasado, leerlo de /etc/people-counter/
+    config.yaml (vision.mounting_height_m). Si el config no existe o le
+    falta el valor, caer al DEFAULT_MOUNT_HEIGHT_M con una advertencia
+    (no es crítico: solo afecta la derivación del target distance, que
+    el operador puede overridear con --target-distance-min/max-mm).
+    """
+    if args.mount_height_m is not None:
+        return
+    from src.config.loader import (
+        DEFAULT_DEVICE_CONFIG_PATH,
+        load_device_config,
+    )
+    try:
+        cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
+    except FileNotFoundError:
+        args.mount_height_m = DEFAULT_MOUNT_HEIGHT_M
+        print(
+            f"[focus] {DEFAULT_DEVICE_CONFIG_PATH} no existe — usando mount "
+            f"height default {DEFAULT_MOUNT_HEIGHT_M:.2f}m. Pasá "
+            f"--mount-height-m explícito o aprovisioná el config.",
+            flush=True,
+        )
+        return
+    mount = cfg.get("vision", {}).get("mounting_height_m")
+    if mount is None:
+        args.mount_height_m = DEFAULT_MOUNT_HEIGHT_M
+        print(
+            f"[focus] vision.mounting_height_m no definido en "
+            f"{DEFAULT_DEVICE_CONFIG_PATH} — usando default "
+            f"{DEFAULT_MOUNT_HEIGHT_M:.2f}m.",
+            flush=True,
+        )
+        return
+    args.mount_height_m = float(mount)
+
+
 def main() -> None:
     global latest_jpeg, shutting_down, _status_html, finish_requested
     global _report_path_global
@@ -1113,19 +1183,30 @@ def main() -> None:
                              "paredes detrás de un backdrop texturado) que "
                              "arrastran la exposición abajo en el board. "
                              "--low-light defaultea esto a 'centre'.")
+    parser.add_argument("--lock-ae", action="store_true",
+                        help="Lockea AE/AWB en ambas cámaras tras 1s de "
+                             "settle. Sin lock, cada cámara corre AE/AWB "
+                             "independiente y pueden converger a estados "
+                             "distintos (exposición o tinte diferente entre "
+                             "L y R), lo que causa que el decoder ArUco "
+                             "lea los bits del marker bien en un lado y mal "
+                             "en el otro — manifestándose como detección "
+                             "asimétrica random. Recomendado siempre que se "
+                             "use focus_assist en serio. Espejo del flag del "
+                             "wizard de calibrate y del runtime principal.")
     parser.add_argument("--max-lr-diff-pct", type=float, default=None,
                         help="Asimetría global máxima de sharpness L/R "
                              "(default 15%%, o 50%% con --low-light)")
     parser.add_argument("--max-lr-zone-diff-pct", type=float, default=None,
                         help="Asimetría per-zone L/R máxima (default 30%%, "
                              "o 100%% con --low-light)")
-    parser.add_argument("--mount-height-m", type=float, default=DEFAULT_MOUNT_HEIGHT_M,
-                        help=f"Solo informativo: altura de mount de la "
-                             f"cámara desde el piso. El foco se hace una "
-                             f"vez en lab a una distancia fija (ver "
-                             f"--target-distance-min/max-mm) — este flag "
-                             f"no afecta el rango target. "
-                             f"Default {DEFAULT_MOUNT_HEIGHT_M}m.")
+    parser.add_argument("--mount-height-m", type=float, default=None,
+                        help="Altura de mount de la cámara desde el piso. "
+                             "Sin override, se lee vision.mounting_height_m "
+                             "del config per-device. La distancia target de "
+                             "foco se deriva de este valor (mount minus rango "
+                             "de altura de cabezas) salvo que se pasen "
+                             "--target-distance-min/max-mm explícitos.")
     parser.add_argument("--target-distance-min-mm", type=float,
                         default=None,
                         help=f"Distancia target mínima (mm) para validación "
@@ -1174,7 +1255,19 @@ def main() -> None:
                              "garantiza match con el runtime). Pasá "
                              "explícito solo para tests / dev workstation "
                              "donde no hay config per-device.")
+    parser.add_argument("--max-exposure-us", type=int, default=16000,
+                        help="Cap de exposure time en microsegundos via "
+                             "FrameDurationLimits (mismo cap que el runtime). "
+                             "Default 16000us (16ms) freezea micro-vibración "
+                             "del bracket que rompe el decoder ArUco "
+                             "asimétricamente entre L/R en luz baja con "
+                             "shutter largo. AE compensa con AnalogueGain "
+                             "más alto (más ruido pero cero blur). Setear "
+                             "0 para deshabilitar el cap.")
     args = parser.parse_args()
+    # mount_height_m tiene que estar resuelto antes de _apply_threshold_overrides
+    # porque la derivación del target distance lo usa.
+    _resolve_mount_height_from_device_config(args, parser)
     _apply_threshold_overrides(args)
     _resolve_resolution_from_device_config(args, parser)
 
@@ -1186,16 +1279,27 @@ def main() -> None:
     from picamera2 import Picamera2
     from libcamera import controls as _libcam_controls
 
+    from src.vision.capture import CANONICAL_RAW_SIZE
+
     cam_l = Picamera2(args.left)
     cam_r = Picamera2(args.right)
     res = (int(args.resolution[0]), int(args.resolution[1]))
+    # Cap de exposure idéntico al runtime (vision.max_exposure_us del
+    # config). 0 (o negativo) deshabilita el cap.
+    max_exp = int(args.max_exposure_us) if args.max_exposure_us > 0 else None
+    initial_controls = (
+        {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
+    )
     for cam in [cam_l, cam_r]:
-        # Resolución desde vision.resolution del config per-device — el
-        # foco y la calibración tienen que matchear el sensor mode del
-        # runtime (típicamente 2304x1296 binned, full-FOV, 16:9, @56fps).
+        # Resolución main desde vision.resolution del config per-device.
+        # raw size FIJO en el sensor mode canónico (Mode 1 IMX708 = 2304×1296
+        # binned, full-FOV 120° HFOV). Pasar res chica (ej. 1152×648) como
+        # raw hace que picamera2 caiga al Mode 0 cropeado (1536×864, HFOV
+        # ~80°) y todas las distancias salen ~35% más cerca de la realidad.
         config = cam.create_still_configuration(
             main={"size": res, "format": "BGR888"},
-            raw={"size": res},
+            raw={"size": CANONICAL_RAW_SIZE},
+            controls=initial_controls,
         )
         cam.configure(config)
         cam.start()
@@ -1217,7 +1321,27 @@ def main() -> None:
         print(f"[meter] AE metering = {args.meter} (centre/spot ignora "
               "los bordes del frame, útil cuando hay zonas brillantes "
               "rodeando el board)", flush=True)
-    time.sleep(1)
+    # Lock provisional tras 2s de settle. La escena puede no tener
+    # el board todavía (operador acaba de lanzar el script), pero un
+    # lock estable evita la oscilación de AE auto durante el waiting.
+    # Cuando el operador apreta Comenzar re-habilitamos AE con el board
+    # ya posicionado, esperamos otro settle, y re-lockeamos — así los
+    # valores reflejan la escena REAL de medición.
+    time.sleep(2.0)
+    if args.lock_ae:
+        for cam, name in [(cam_l, "left"), (cam_r, "right")]:
+            metadata = cam.capture_metadata()
+            cam.set_controls({
+                "AeEnable": False,
+                "AwbEnable": False,
+                "ExposureTime": metadata.get("ExposureTime", 30000),
+                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+            })
+        print(f"[lock-ae] Lock provisional tras 2s settle "
+              f"(L: exp={cam_l.capture_metadata().get('ExposureTime',0)}us "
+              f"R: exp={cam_r.capture_metadata().get('ExposureTime',0)}us)",
+              flush=True)
 
     board = create_charuco_board(
         board_size=(args.board_cols, args.board_rows),
@@ -1240,7 +1364,7 @@ def main() -> None:
           f"{args.marker_mm:.0f}mm mk / {dict_attr}")
     print(f"Distancia target de foco: "
           f"{TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f}m "
-          f"(altura de mount {args.mount_height_m:.2f}m — informativo)")
+          f"(mount {args.mount_height_m:.2f}m del config)")
     print("Esperando que el operador haga click en Comenzar...")
 
     # Bloquear hasta que el operador apreta Comenzar — matchea el flow de calibrate.py.
@@ -1271,6 +1395,29 @@ def main() -> None:
         except Exception:
             pass
         sys.exit(0)
+
+    # Re-settle AE con el board ya posicionado y re-lock — los valores
+    # provisionales del startup pudieron diferir de la escena real de
+    # medición. Solo si --lock-ae está activo (matchea diagnose_bracket).
+    if args.lock_ae:
+        print("[lock-ae] Re-settle con board en escena (1.5s)...", flush=True)
+        for cam in [cam_l, cam_r]:
+            cam.set_controls({"AeEnable": True, "AwbEnable": True})
+        time.sleep(1.5)
+        for cam, name in [(cam_l, "left"), (cam_r, "right")]:
+            metadata = cam.capture_metadata()
+            cam.set_controls({
+                "AeEnable": False,
+                "AwbEnable": False,
+                "ExposureTime": metadata.get("ExposureTime", 30000),
+                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+            })
+        print(f"[lock-ae] Re-lock final (L: "
+              f"exp={cam_l.capture_metadata().get('ExposureTime',0)}us "
+              f"R: exp={cam_r.capture_metadata().get('ExposureTime',0)}us)",
+              flush=True)
+
     print("Poné el board ChArUco en ese rango frente al par. Ajustá los lentes.")
     print("Click Finalizar en la UI cuando las barras estén verdes.\n")
 
