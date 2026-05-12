@@ -45,6 +45,22 @@ Sin esto, el reporte va a tirar `FAIL` o `WARN` en uniformidad de corners y/o gr
 - Dispositivo RPi5 encendido, con el repo clonado y dependencias instaladas.
 - Laptop o tablet con browser (Chrome/Firefox) en la misma red que el RPi, para la UI web del wizard.
 
+## Paso 0 (opcional) — QC del bracket pre-calibración
+
+Para unidades que vienen de la línea de ensamble, conviene correr
+`diagnose_bracket.py` **antes** del flujo óptico de este lab. Mide
+pitch / yaw / roll / offsets Y-Z entre L y R con thresholds factory
+(0.5° / 1.0° / 0.5° / 2mm / 2mm), sin necesidad de calibración previa
+— solo requiere un board ChArUco frontal a ~1m.
+
+```bash
+sudo PYTHONPATH=. python3 scripts/diagnose_bracket.py
+```
+
+Browser-driven igual que el resto. Si el reporte da FAIL en alguna
+métrica, escalá la unidad al sector de ensamble antes de gastar lab
+time en foco + calibración óptica.
+
 ## Paso 1 — Setup físico
 
 ### Alturas del trípode
@@ -154,6 +170,13 @@ Reemplazar `DEV-XXX` con el identificador del dispositivo (va al reporte).
 Defaults aplicados: resolución 2304×1296 binned (4× más rápido que full-res en detect, mismo FOV), far=3.0m (cabe en tripod 70–210cm), 20 poses canónicas, tolerance "normal", pose-timeout 180s (tripod-friendly).
 
 **Antes de arrancar**, verificá que las cámaras estén bien mapeadas con `focus_assist` — la pill verde "✓ L/R OK" en el panel del browser confirma. Si dice "L/R INVERTIDO", reiniciá pasando `--left/--right` swappeados (el wizard tiene los mismos flags). Calibrar contra un par invertido produce extrínsecos sign-flipped silenciosos.
+
+**Flags compartidos con los otros setup tools** (`focus_assist`, `preview`, `diagnose_depth`, `diagnose_bracket`):
+
+- `--max-exposure-us 16000` (default) — cap de shutter time a 16ms vía `FrameDurationLimits`. Mismo cap que el runtime para que la distribución de motion blur de la captura matchee la que vé el detector en producción. Pasar `0` para deshabilitar.
+- `--lock-ae` — patrón canónico settle 2s → lock provisional → re-settle 1.5s al apretar Comenzar → re-lock final. Útil cuando la escena tiene luz variable (vidrieras, HVAC). Default OFF (AE auto, más simple). Los timings (`initial_settle_seconds`, `resettle_seconds`) se leen de `vision.ae_lock` del config per-device — en sites donde AE necesita más tiempo de convergencia, subir esos valores.
+- `--meter matrix|centre|spot` — modo de AE metering. `matrix` (default) pondera todo el frame; `centre`/`spot` ignoran la periferia y exponen para el centro — usar cuando hay zonas brillantes alrededor del board (ventanas, paredes detrás de un backdrop texturado) que arrastran la exposición hacia abajo sobre el board.
+- Parámetros del board (`--board-cols`, `--board-rows`, `--square-mm`, `--marker-mm`, `--dict`, `--legacy-pattern`) defaultean desde `vision.charuco` del config per-device. Para un board no canónico se edita el config; los CLI flags siguen funcionando como override per-corrida.
 
 ### Si necesitás restart limpio
 

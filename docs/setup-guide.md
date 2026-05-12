@@ -336,7 +336,7 @@ azul en la UI lo indica. Forzá el modo con `--scene=compact|full` si hace falta
 
 ### 12.2. Calibración estéreo (modo wizard guiado)
 
-Board recomendado para IMX708: **9x6 squares, checker 45mm, marker 33mm, DICT_4X4_100, A3 landscape** (405x270mm impreso, 40 esquinas internas, 27 markers). Ya generado en `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`. Imprimir desde Adobe Reader con "Actual size" (NO "Fit to page"), laminar OPP mate sobre PVC rígido 3mm (foam flexa demasiado en A3). Verificar con calibre — un square debe medir exactamente 45.0mm. Si difiere, pasar el valor medido con `--square-length`.
+Board recomendado para IMX708: **9x6 squares, checker 45mm, marker 33mm, DICT_4X4_100, A3 landscape** (405x270mm impreso, 40 esquinas internas, 27 markers). Ya generado en `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`. Imprimir desde Adobe Reader con "Actual size" (NO "Fit to page"), laminar OPP mate sobre PVC rígido 3mm (foam flexa demasiado en A3). Verificar con calibre — un square debe medir exactamente 45.0mm. Si difiere, pasar el valor medido con `--square-mm`.
 
 **Comando de una sola pasada** — pre-flight + captura guiada + calibración + residuales + ground-truth + reporte HTML con QR:
 

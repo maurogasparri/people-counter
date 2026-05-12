@@ -23,14 +23,13 @@ la Pi solo ejecuta el `.hef` final.
 
 | Archivo | Para qué |
 |---|---|
-| `train_head_detector.ipynb` | Notebook único Kaggle T4. Para iterar el modelo (v3, v4, ...) basta actualizar la URL de Roboflow en Cell 2 y el `name` del run en Cell 3. ~20 min en T4. |
-| `download_roboflow.py` | Pull de un dataset Roboflow Universe a `dataset/` (formato YOLOv8). |
+| `train_head_detector.ipynb` | Notebook único Kaggle T4. Para iterar el modelo (v3, v4, ...) basta actualizar la URL de Roboflow en Cell 2 y el `name` del run en Cell 3. ~20 min en T4. El notebook descarga el dataset directo desde Roboflow vía signed URL — no pasa por la PC local. |
 | `bench_detector.py` | Bench de inferencia de modelos locales `.pt`/`.onnx` (subcomandos `bench` y `diff`). |
 | `bench_roboflow_api.py` | Triage de modelos publicados en Roboflow Universe vía REST sin descargar pesos. Útil para evaluar candidatos rápido. |
 | `capture_mjpeg.py` | Capturador multi-site de streams MJPEG HTTP. Modos: random-interval o motion-trigger (`cv2.absdiff` entre frames consecutivos, multiplica × 10–50 la fracción útil). `--background-interval` agrega samples de fondo para medir FP rate. `--operating-hours` filtra por horario local. Soporta SBS estéreo + rectificación on-the-fly. |
 | `record_clips.py` | Grabación continua de clips MP4 multi-site (un subprocess `ffmpeg` por site, `-c copy`). Para validation E2E con tracker — los snapshots de `capture_mjpeg.py` no preservan continuidad temporal. |
 | `sample_for_roboflow.py` | Sampling estratificado de capturas para subir a Roboflow (balance positivos / hard negatives). |
-| `polys_to_bboxes.py` | Conversión de polígonos SAM3 a bboxes YOLO. |
+| `polys_to_bboxes.py` | Conversión de polígonos a bboxes YOLO. Útil sólo si en algún momento el project exporta segmentación en vez de detection; con nuestro setup actual no hace falta. |
 | `eval_yolo.py` | Corre un modelo YOLO sobre una carpeta de frames, dibuja bboxes y dumpea labels + summary. |
 | `../capture_baseline_frames.py` | Captura frames rectificados de la Pi para usar como bench corpus (validación, **no** training). |
 | `.env.example` | Convención del env-var `ROBOFLOW_API_KEY` (el `.env` real está gitignoreado). |
@@ -38,11 +37,12 @@ la Pi solo ejecuta el `.hef` final.
 ## Composición del dataset
 
 Roboflow project: `people-counter-detector`, tipo Object Detection
-(SAM3 polys se auto-convierten a bboxes en este tipo de project).
+(los polygons salen como bboxes auto en este tipo de project).
 
-- **Volumen**: ~945 imgs sampleadas con `sample_for_roboflow.py` (490 motion + 455 bg) desde el pool multi-site `debug/mjpeg_capture/`. Balance de capacidad de pre-label: 11 credits Roboflow × 100 imgs/credit = 1100 ceiling, dejando ~155 de margen.
-- **Stratificación por site**: 7 sites a 75 motion + 65 bg cada uno, salvo `site_54_21` capeado a 40 motion (vidriera con reflejo donde el detector ve poco — sobre-representarlo sesga el set).
-- **Hard negatives explícitos**: bg captures del `--background-interval` cubren clutter persistente (ropa colgada, sombras, estructura). En la revisión, las bg que SAM3 detecta con persona se promueven a positivo; las que quedan limpias entran como "null examples" en Roboflow.
+- **Volumen**: ~945 imgs sampleadas con `sample_for_roboflow.py` (490 motion + 455 bg) desde el pool multi-site `training_data/captures/`. Manifest exacto de los frames subidos en `training_data/roboflow_uploaded_manifest.txt`.
+- **Labeling**: AI-Assisted Labeling con **Smart Polygon** (la "varita mágica" de Roboflow, basada en SAM). Click-por-objeto en cada imagen — mucho más barato en credits que una pasada batch sobre todo el dataset. Revisión manual sobre las labels generadas para fix de bordes y descartar falsos.
+- **Stratificación por site**: per-site uniforme (motion + bg balanceados), con override por site (`--site-cap`) para los que tengan sesgo conocido — sites con vidriera, reflejos fuertes o escena pobre se capean para no sobre-representarlos.
+- **Hard negatives explícitos**: bg captures del `--background-interval` cubren clutter persistente (ropa colgada, sombras, estructura). En la revisión, las bg que terminan teniendo persona se promueven a positivo; las que quedan limpias entran como "null examples" en Roboflow.
 - **Ratio target post-screening**: ~2:1 positivos:negativos. Cargado a positivos para favorecer recall.
 - **Defense-in-depth runtime** (independiente del modelo): post-NMS el pipeline aplica containment filter (descarta bbox chico contenido >50% en otro de mayor confianza) + `StaticSuppressor` (cuadricula el frame en celdas de 30px y suprime detecciones sobre celdas con hit-rate ≥70% en una ventana rolling de 3s).
 
@@ -51,13 +51,13 @@ Roboflow project: `people-counter-detector`, tipo Object Detection
 ## Validation set
 
 `capture_mjpeg.py` corre en el workstation contra los streams MJPEG de
-los sites disponibles. Configurás los sites en un YAML (formato en el
-docstring del script). Ejemplo:
+los sites disponibles. Los sites se declaran en `training_data/sites.yaml`
+(gitignored porque contiene IPs reales + matrices de calibración).
+Template documentado en `training_data/sites.yaml.example`. Ejemplo de
+corrida:
 
 ```bash
 python scripts/training/capture_mjpeg.py \
-    --config debug/mjpeg_sites.yaml \
-    --output debug/mjpeg_capture \
     --duration 3600 \
     --motion-trigger \
     --motion-threshold 5.0 \
@@ -65,14 +65,19 @@ python scripts/training/capture_mjpeg.py \
     --background-interval 600
 ```
 
+(`--config` y `--output` default a `training_data/sites.yaml` y
+`training_data/captures` respectivamente).
+
 Los filenames distinguen el origen:
 - `<ts>_motion_<rand>.jpg` — cambio detectado en absdiff
 - `<ts>_bg_<rand>.jpg` — control de fondo periódico
 
 Para sites con stream SBS (estéreo lado-a-lado en un único MJPEG) la
-rectificación se aplica on-the-fly usando `debug/calib_dumps/<ip>/calib.npz`
-— el output queda listo para training sin post-processing manual. Ver
-`debug/mjpeg_sites.yaml` para el formato.
+rectificación se aplica on-the-fly usando las matrices `K`, `D`, `R_rect`
+y `P_rect` embebidas inline en cada site del YAML — el output queda
+listo para training sin post-processing manual y sin dependencia de
+dumps externos. Ver `training_data/README.md` para el flujo completo
+y `training_data/sites.yaml.example` para el formato.
 
 ## Workflow del bench
 

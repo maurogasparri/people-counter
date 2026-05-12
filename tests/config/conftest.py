@@ -105,7 +105,6 @@ _COMPLETE_CONFIG: dict = {
         "footfall_scaling_factor": 1.0,
         "counting_enabled": True,
         "wifi_ble_enabled": True,
-        "telemetry_interval_seconds": 300,
     },
 }
 

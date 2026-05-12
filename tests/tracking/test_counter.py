@@ -440,7 +440,7 @@ def test_build_counter_full_schema():
             ],
         },
     }
-    c = build_counter(cfg, frame_height=480)
+    c = build_counter(cfg)
     assert isinstance(c, Counter)
     assert c.roi == (100.0, 500.0, 200.0, 400.0)
     assert len(c.lines) == 1

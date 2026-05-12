@@ -289,15 +289,6 @@ class StereoCapture:
 
         return frame_l, frame_r
 
-    def read_with_timestamps(self) -> tuple[np.ndarray, np.ndarray, int, int]:
-        """Lee un par de frames junto con el timestamp del sensor de cada cámara (ns).
-
-        Returns:
-            (left_frame, right_frame, ts_left_ns, ts_right_ns)
-        """
-        frame_l, frame_r, ts_l, ts_r, _temp_l, _temp_r = self.read_with_metadata()
-        return frame_l, frame_r, ts_l, ts_r
-
     def read_with_metadata(
         self,
     ) -> tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]:

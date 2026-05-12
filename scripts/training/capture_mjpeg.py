@@ -15,9 +15,9 @@ guarda frames según el modo elegido:
 Streams estéreo SBS (side-by-side, ambos lentes lado a lado en un solo
 frame) se soportan declarando ``sbs: true`` en el site. El frame se
 parte por la mitad horizontal y cada lado se procesa por separado.
-Si además se da ``calibration: <ruta a .npz>`` se rectifica on-the-fly
-usando los mapas precalculados — el output queda listo para training
-sin requerir post-processing.
+Si además se da un bloque ``calibration:`` con las matrices inline se
+rectifica on-the-fly usando los mapas precalculados — el output queda
+listo para training sin requerir post-processing.
 
 Resiliente por diseño:
 - Si el stream se cae, reconecta solo
@@ -26,8 +26,8 @@ Resiliente por diseño:
 
 Usage:
     python scripts/training/capture_mjpeg.py \\
-        --config debug/mjpeg_sites.yaml \\
-        --output debug/mjpeg_capture \\
+        --config training_data/sites.yaml \\
+        --output training_data/captures \\
         --duration 3600 \\
         --motion-trigger \\
         --min-interval 5 \\
@@ -42,10 +42,18 @@ Config YAML format:
         url: http://192.168.1.10/mjpg/video.mjpg
 
       # SBS estéreo — partido por la mitad, rectificado por lente.
+      # Las matrices van embebidas para no depender de archivos externos.
       - name: site_b
         url: http://192.168.2.10/mjpg/raw.mjpg
         sbs: true
-        calibration: debug/calib_dumps/192.168.2.10/calib.npz
+        calibration:
+          ref_size: [160, 120]    # resolución a la que fueron escritas K, P_rect
+          left:
+            K: [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+            D: [k1, k2, k3, k4]   # fisheye distortion
+            R_rect: [[...3x3...]]
+            P_rect: [[...3x4...]]
+          right: { K: [...], D: [...], R_rect: [...], P_rect: [...] }
 
       # SBS sin calibración — partido pero sin rectificar.
       - name: site_c
@@ -85,33 +93,32 @@ import yaml
 
 logger = logging.getLogger("capture_mjpeg")
 
-# Layout del .npz de calibración: los arrays están guardados a la resolución
-# de calibración (160×120 en los dumps que usamos). Cuando la mitad SBS del
-# runtime es más grande (ej. 960×720 = 1920÷2) escalamos K y P_rect
-# linealmente. La distorsión es adimensional.
-_CALIB_REF_SIZE = (160, 120)
+# Las matrices vienen embebidas en el sites.yaml por site. Cada bloque
+# `calibration` declara la resolución de referencia a la que están escritas
+# (típicamente 160×120 en los dumps que usamos) y nosotros escalamos K y
+# P_rect linealmente al half_size real del stream. La distorsión es
+# adimensional así que no se escala.
 
 
 def _load_site_calibration(
-    npz_path: Path, half_size: tuple[int, int],
+    cal_block: dict[str, Any], half_size: tuple[int, int],
 ) -> dict[str, tuple[Any, Any]]:
     """Precomputa los maps de rectificación fisheye para un par de lentes.
 
-    Lee ``scaled_{left,right}_intrinsic_4`` (K) + ``{left,right}_distortion_4``
-    (D) + ``scaled_{left,right}_R_rect_4`` (R_rect) +
-    ``scaled_{left,right}_intrinsic_rect_4`` (P_rect) del .npz, escala K y P
-    de la resolución de calibración a ``half_size`` y devuelve un dict con
+    ``cal_block`` es el bloque ``calibration`` inline del sites.yaml — un
+    dict con ``ref_size: [W, H]`` y ``{left, right}: {K, D, R_rect, P_rect}``.
+    Escala K y P_rect de ``ref_size`` a ``half_size`` y devuelve un dict con
     ``"left"`` y ``"right"`` mapeando a ``(map1, map2)`` listos para
     ``cv2.remap``. Produce la imagen rectificada (geometría epipolar
     alineada), no solo la imagen sin distorsión.
     """
-    cal = np.load(npz_path)
+    ref_w, ref_h = cal_block["ref_size"]
     out_w, out_h = half_size
-    sx = out_w / _CALIB_REF_SIZE[0]
-    sy = out_h / _CALIB_REF_SIZE[1]
+    sx = out_w / ref_w
+    sy = out_h / ref_h
 
-    def _scale_K(K: np.ndarray) -> np.ndarray:
-        K2 = K.astype(np.float64).copy()
+    def _scale_K(K_raw: list) -> np.ndarray:
+        K2 = np.array(K_raw, dtype=np.float64)
         K2[0, 0] *= sx
         K2[0, 2] *= sx
         K2[1, 1] *= sy
@@ -120,10 +127,11 @@ def _load_site_calibration(
 
     maps: dict[str, tuple[Any, Any]] = {}
     for side in ("left", "right"):
-        K = _scale_K(cal[f"scaled_{side}_intrinsic_4"])
-        D = cal[f"{side}_distortion_4"].astype(np.float64).reshape(-1, 1)
-        R = cal[f"scaled_{side}_R_rect_4"].astype(np.float64)
-        P = _scale_K(cal[f"scaled_{side}_intrinsic_rect_4"])
+        side_block = cal_block[side]
+        K = _scale_K(side_block["K"])
+        D = np.array(side_block["D"], dtype=np.float64).reshape(-1, 1)
+        R = np.array(side_block["R_rect"], dtype=np.float64)
+        P = _scale_K(side_block["P_rect"])
         m1, m2 = cv2.fisheye.initUndistortRectifyMap(
             K, D, R, P, (out_w, out_h), cv2.CV_16SC2,
         )
@@ -274,8 +282,8 @@ def _capture_site(
     # La calibración se carga lazy en el primer frame exitoso porque
     # necesitamos el half-frame size para computar el scale factor; los
     # streams SBS están siempre split horizontal, así half_size = (W//2, H).
-    calib_path = site.get("calibration")
-    calib_pending = bool(calib_path) and sbs
+    calib_block = site.get("calibration")
+    calib_pending = bool(calib_block) and sbs
 
     while not stop_event.is_set():
         # Operating-hours gate antes de abrir el stream — evita conexiones
@@ -341,17 +349,17 @@ def _capture_site(
                 half_size = (fw // 2, fh)
                 try:
                     rect_maps = _load_site_calibration(
-                        Path(calib_path), half_size,  # type: ignore[arg-type]
+                        calib_block, half_size,  # type: ignore[arg-type]
                     )
                     logger.info(
-                        "[%s] calibración cargada (%s) para half=%dx%d",
-                        name, calib_path, half_size[0], half_size[1],
+                        "[%s] calibración cargada (inline) para half=%dx%d",
+                        name, half_size[0], half_size[1],
                     )
                 except Exception as e:
                     stats.last_error = f"calibration load failed: {e!r}"
                     logger.exception(
-                        "[%s] no pude cargar calibración %s — guardo sin rectificar",
-                        name, calib_path,
+                        "[%s] no pude cargar calibración inline — guardo sin rectificar",
+                        name,
                     )
                     rect_maps = None
                 calib_pending = False
@@ -451,12 +459,14 @@ def _stats_reporter(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--config", type=Path, required=True,
-        help="YAML con la lista de sites (ver docstring para el formato)",
+        "--config", type=Path, default=Path("training_data/sites.yaml"),
+        help="YAML con la lista de sites (ver docstring para el formato). "
+             "Default training_data/sites.yaml",
     )
     parser.add_argument(
-        "--output", type=Path, required=True,
-        help="Carpeta raíz donde se crean los subfolders por site",
+        "--output", type=Path, default=Path("training_data/captures"),
+        help="Carpeta raíz donde se crean los subfolders por site. "
+             "Default training_data/captures",
     )
     parser.add_argument(
         "--duration", type=int, default=3600,
@@ -553,7 +563,7 @@ def main() -> int:
         if s.get("sbs"):
             flags.append("sbs")
         if s.get("calibration"):
-            flags.append(f"rectify={s['calibration']}")
+            flags.append("rectify=inline")
         flag_str = f" [{', '.join(flags)}]" if flags else ""
         logger.info("  - %s -> %s%s", s["name"], s["url"], flag_str)
     logger.info("save-side: %s", args.save_side)

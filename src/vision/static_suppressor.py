@@ -160,38 +160,3 @@ class StaticSuppressor:
             for d in det_list
             if self._cell_of(d.centroid[0], d.centroid[1]) not in hot_cells
         ]
-
-    @property
-    def hot_cells(self) -> set[tuple[int, int]]:
-        """Celdas hot actuales — útil para debugging / observabilidad.
-
-        Se computa on-demand desde el buffer; no cachea para mantener
-        el invariante: hot_cells siempre refleja el estado consistente
-        con la última llamada a update_and_filter().
-        """
-        now = self._time_fn()
-        if not self._is_warm(now):
-            return set()
-        cell_hits: Counter[tuple[int, int]] = Counter()
-        for _ts, frame_cells in self._buffer:
-            cell_hits.update(frame_cells)
-        threshold_count = int(self.hit_rate_threshold * len(self._buffer))
-        return {c for c, n in cell_hits.items() if n >= threshold_count}
-
-    @property
-    def effective_fps(self) -> float:
-        """FPS efectivo observado durante la ventana actual.
-
-        Útil para observabilidad: confirma si el pipeline corre cerca de
-        lo nominal o si hay degradación. Devuelve 0.0 si el buffer
-        todavía no tiene suficiente historia para estimar.
-        """
-        if len(self._buffer) < 2:
-            return 0.0
-        oldest = self._buffer[0][0]
-        newest = self._buffer[-1][0]
-        span = newest - oldest
-        if span <= 0:
-            return 0.0
-        # len-1 intervals entre len timestamps
-        return (len(self._buffer) - 1) / span

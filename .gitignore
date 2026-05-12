@@ -74,11 +74,11 @@ Thumbs.db
 # Use this for downloaded reports, screenshots, pasted outputs, etc.
 /debug/
 
-# Training datasets — Roboflow overhead_person, WEPDTOF, etc. Big binary
-# blobs that don't belong in git. Path referenced by scripts/training/*.
-# Use /dataset/* (not /dataset/) so the README exception below works —
-# gitignore can't re-include a file when its parent directory is ignored.
-/dataset/*
-!/dataset/README.md
+# Training workspace — sites.yaml con IPs + matrices, captures rectificadas,
+# manifests, clips. Pesado y/o sensible. Trackear sólo el README y el
+# template del YAML.
+/training_data/*
+!/training_data/README.md
+!/training_data/sites.yaml.example
 
 .claude/

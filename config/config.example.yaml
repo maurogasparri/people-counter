@@ -4,9 +4,10 @@
 #
 # Archivo único de configuración per-device. Vive en /etc/people-counter/config.yaml
 # en cada dispositivo. Este archivo (config.example.yaml) shippea en el repo como
-# referencia canónica + fuente de defaults — `load_config()` lo lee como baseline
-# y mergea el YAML per-device encima, así cualquier key ausente de
-# /etc/people-counter/config.yaml cae al valor de acá.
+# TEMPLATE documentado para aprovisionar devices nuevos y auditar qué keys son
+# válidas. `load_config()` lee SOLO /etc/people-counter/config.yaml — no hay
+# merge runtime contra este template. Cambios fleet-wide se shippean editando
+# este archivo + redeployando el config a cada device.
 #
 # Secciones en orden de relevancia para el operador:
 #
@@ -393,7 +394,6 @@ cloud_defaults:
   footfall_scaling_factor: 1.0
   counting_enabled: true
   wifi_ble_enabled: true
-  telemetry_interval_seconds: 300
 
 
 # =============================================================================

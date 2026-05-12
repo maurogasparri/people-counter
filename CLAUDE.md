@@ -85,6 +85,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Config**: archivo único per-device.
   - `config/config.example.yaml` (en repo): defaults canónicos de la flota. `load_config()` lo lee como base y deep-mergea encima `/etc/people-counter/config.yaml` (per-device override).
   - **No hay separación fleet vs site**. Cambios fleet-wide se hacen en el example o se pushean por shadow (RUNTIME_SAFE_KEYS en `src/config/loader.py`).
+  - **Hardware-agnostic**: los parámetros que dependen del hardware/setup del device (sensor, lens, bracket, board ChArUco, AE timings) están consolidados en `src/config/hardware.py` (dataclass `HardwareParams` + `load_hardware_params()`). Cambiar de sensor / bracket / lens / board se hace editando keys del config; ningún script tiene constantes hardware hardcodeadas. Los setup tools (focus_assist, calibrate, preview, roi_picker, diagnose_bracket, diagnose_depth) leen `HardwareParams` al startup; el runtime también plumb-ea los mismos valores a `StereoCapture`.
 - **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. **Nunca commitear**.
 - **Tests**: pytest, estructura espejo de src.
 - **No usar clases salvo que haya estado.** Tracker, MQTTClient justifican clases. Resto = funciones.
@@ -102,9 +103,9 @@ people-counter/
 │   ├── mqtt/           <- client (AWS IoT), buffer (SQLite outbox)
 │   ├── cloud/          <- lambda_dedup (L3 inter-cam)
 │   ├── status/         <- led, health, monitor (background thread)
-│   ├── config/         <- loader (deep-merge example + per-device)
+│   ├── config/         <- loader (deep-merge example + per-device) + hardware (HardwareParams dataclass)
 │   └── main.py         <- orquestador del pipeline
-├── tests/              <- 718 tests, estructura espejo de src
+├── tests/              <- 721 tests, estructura espejo de src
 ├── scripts/
 │   ├── calibrate.py    <- CLI con wizard end-to-end (browser-driven, ChArUco, ground-truth check)
 │   ├── focus_assist.py <- asistente de foco guiado (browser-driven)
@@ -114,10 +115,13 @@ people-counter/
 │   ├── download_model.py, capture_baseline_frames.py, rescale_calibration.py
 │   ├── provision.py    <- create/deploy/harvest/reprovision/list (disaster recovery)
 │   ├── verify_hardware.py, setup_device.sh
-│   └── training/       <- train_head_detector.ipynb, download_roboflow.py, bench_detector.py,
-│                          bench_roboflow_api.py, capture_mjpeg.py, sample_for_roboflow.py,
+│   └── training/       <- train_head_detector.ipynb (Kaggle T4, descarga directo de Roboflow),
+│                          bench_detector.py, bench_roboflow_api.py, capture_mjpeg.py,
+│                          record_clips.py, sample_for_roboflow.py, sample_for_calib.py,
 │                          polys_to_bboxes.py, eval_yolo.py
-├── dataset/            <- gitignoreado salvo README. Datasets descargados de Roboflow.
+├── training_data/      <- gitignoreado salvo README + sites.yaml.example. Workspace local:
+│                          sites.yaml inline (matrices + IPs), captures rectificadas, manifest
+│                          de los frames subidos a Roboflow.
 ├── calibration/        <- board ChArUco A3 PDF (calib.io)
 ├── infra/cloudformation/ <- people-counter.yaml (stack completo)
 ├── docs/               <- setup-guide, lab-calibration-guide, pilot-operator-guide
@@ -130,7 +134,7 @@ people-counter/
 |--------|------|--------|
 | S3 | PoC visión | **DONE** — capture (picamera2), detect (Hailo) |
 | S4 | Calibración | **DONE** — fisheye K-B, board en `calibration/`, diagnose_depth |
-| S5 | Detección | **DONE** — YOLOv8n single-class cenital, HEF compilado, deployable. Modelo activo: `people-counter-detector` (multi-site, ~945 imgs, hard negatives explícitos vía SAM3 pre-label) |
+| S5 | Detección | **DONE** — YOLOv8n single-class cenital, HEF compilado, deployable. Modelo activo: `people-counter-detector` (multi-site, ~945 imgs, labeling con Smart Polygon click-por-imagen + hard negatives explícitos) |
 | S6 | Tracking + counting | **DONE** — tracker Kalman + counter ROI/línea (E2E validado) |
 | S7 | WiFi/BLE | **DONE** — nexmon + bleak, hashing + dedup L1/L2 |
 | S8 | MQTT | **DONE** — IoT Core + buffer SQLite + replay |
@@ -163,10 +167,12 @@ people-counter/
 - `vision.num_disparities: auto` — deriva rango SGBM desde `mounting_height_m`. Override con int múltiplo de 16.
 - `vision.sgbm.downscale: 4` — SGBM a resolución reducida (1=full, 2=half, 4=quarter), upscale del disparity post-match. 4 default (~4× costo de 8 pero remueve speckle que infla head-height); 1 solo para diagnósticos.
 - `--no-mqtt` (CLI) — reemplaza MQTT con no-op que loguea a stdout. Para testing local sin AWS.
-- `detection.confidence_threshold` (0.30) / `new_track_threshold` (0.50) / `low_confidence_threshold` (0.10) — banda triple del detector: <low descartado, [low, conf) re-asocia tracks existentes (ByteTrack-style), [conf, new_track) re-asocia + display, ≥new_track spawnea tracks nuevos. Tuneado para `people-counter-detector` (YOLOv8n fine-tuneado).
+- `detection.confidence_threshold` (0.30) / `new_track_threshold` (0.50) / `low_confidence_threshold` (0.15) — banda triple del detector: <low descartado, [low, conf) re-asocia tracks existentes (ByteTrack-style), [conf, new_track) re-asocia + display, ≥new_track spawnea tracks nuevos. Tuneado para `people-counter-detector` (YOLOv8n fine-tuneado).
 - `detection.cluster_distance_px: 120` — mergea bboxes post-NMS por centroide. 120px en 1152×648 deja cabezas de 50-80px holgadas; dos personas adyacentes (~130-150px) NO se mergean.
-- `detection.static_suppressor` — defense-in-depth contra clutter estructural (FPs persistentes en mismas celdas). Configurable cell/window/threshold.
+- `detection.static_suppressor` — defense-in-depth contra clutter estructural (FPs persistentes en mismas celdas). Ventana medida en segundos reales con timestamps internos (independiente del FPS instantáneo). Configurable cell/window/threshold/min_samples.
 - `vision.max_exposure_us: 16000` — shutter cap 16ms para reducir motion blur a ~5cm a 3 m/s. AE compensa con AnalogueGain. Default 16000us si la key falta del config. Mismo cap en TODOS los setup tools (`focus_assist`, `calibrate`, `preview`, `diagnose_depth`, `diagnose_bracket`).
+- `vision.ae_lock.{initial_settle_seconds, resettle_seconds}` — timings del AE lock pattern canónico, compartido por todos los setup tools browser-driven (settle → lock provisional → re-settle on Comenzar → re-lock final). Subir en sites con luz fluctuante donde AE necesita más tiempo para converger.
+- `vision.charuco.*` — board ChArUco + dual-pass detection. Si cambia el board de calibración (kit distinto, tamaño distinto), se edita acá y los setup tools lo recogen.
 - `tracking.state_machine.confirm_frames: 3` — frames hasta promover CANDIDATE→CONFIRMED. 3 filtra FPs efímeros sobre el detector fine-tuneado. Bajar a 1 para detectores con dropeos frame-a-frame.
 - `tracking.state_machine.reid_gate_px: 180` — gate de distancia para re-id en PENDING. Pareado con `pending_velocity_decay: 0.5` que congela el predict del Kalman cerca de la última observación, así el gate cubre gaps de ~1s a velocidad de caminata sin necesidad de ser más ancho.
 - `counter.foot_projection_enabled` — proyección parallax-corrected del foot pixel. Default off; activar solo después de validar calibración con diagnose_depth.

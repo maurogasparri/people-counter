@@ -119,22 +119,6 @@ def check_internet(
         return False
 
 
-def check_cloud_endpoint(
-    endpoint: str, port: int = 8883, timeout_s: float = 5.0,
-) -> bool:
-    """Probe TCP al broker de AWS IoT (sin validación TLS).
-
-    Se usa como fallback de cold-start antes de que el cliente MQTT tenga
-    el flag connected. Una vez que MQTT está arriba, ``MQTTClient.is_connected()``
-    es la fuente de verdad.
-    """
-    try:
-        with socket.create_connection((endpoint, port), timeout=timeout_s):
-            return True
-    except OSError:
-        return False
-
-
 def decide_state(
     *,
     boot_failure: bool = False,

@@ -4,14 +4,15 @@
 El compile a HEF en ``hailomz compile`` corre quantization-aware con un
 sample de ~200 imágenes representativas. Para evitar leak entre el set
 de quant y el de evaluación / training, sampleamos del pool original
-(``debug/mjpeg_capture/``) excluyendo los frames que ya están en el
-dataset de Roboflow.
+(``training_data/captures/``) excluyendo los frames que ya fueron al
+dataset de Roboflow (listados en
+``training_data/roboflow_uploaded_manifest.txt``).
 
 Uso típico:
 
     python scripts/training/sample_for_calib.py \\
-        --sources debug/mjpeg_capture \\
-        --exclude-dir debug/people_counter_detector_sample \\
+        --sources training_data/captures \\
+        --exclude-manifest training_data/roboflow_uploaded_manifest.txt \\
         --output models/training/people-counter-detector/calib \\
         --total 200 \\
         --motion-ratio 0.6 \\
@@ -19,10 +20,11 @@ Uso típico:
 
 Características:
 
-- Reconstruye el "original stem" desde los filenames renombrados del
-  exclude-dir (formato del ``sample_for_roboflow.py``:
-  ``NNN_<site>__<orig>.jpg``) y matchea contra (site, basename) en las
-  sources, así no hay risk de reintroducir un frame del train al calib.
+- Reconstruye el "original stem" desde los filenames del manifest
+  (formato ``NNN_<site>__<orig>.jpg``) y matchea contra (site, basename)
+  en las sources, así no hay risk de reintroducir un frame del train al
+  calib. También se acepta ``--exclude-dir`` apuntando al folder original
+  con los archivos (back-compat).
 - Balanceado per-site con mix motion/bg configurable (default 60/40 —
   matchea aproximadamente la distribución de inferencia en producción).
 - Determinístico vía ``--seed`` para que el calib set sea reproducible
@@ -39,13 +41,14 @@ from pathlib import Path
 
 
 # Filenames renameados por sample_for_roboflow.py tienen la forma
-# ``NNN_<site>__<original>.jpg`` (ej. ``000_site_57_27__20260509_122928_motion_L_9172c7.jpg``).
+# ``NNN_<site>__<original>.jpg`` (ej. ``000_<site_name>__<ts>_motion_L_<hash>.jpg``).
 # Este regex extrae site + basename original para el matching contra mjpeg_capture/<site>/<basename>.
 _RENAMED_RX = re.compile(r"^\d+_(?P<site>site_[^_]+(?:_[^_]+)*)__(?P<orig>.+\.jpg)$")
 
 
-def _parse_exclude(exclude_dir: Path) -> set[tuple[str, str]]:
-    """Devuelve un set de claves (site, basename) para los frames a excluir."""
+def _parse_exclude_dir(exclude_dir: Path) -> set[tuple[str, str]]:
+    """Devuelve un set de claves (site, basename) para los frames a excluir,
+    leyendo los filenames del dir."""
     excluded: set[tuple[str, str]] = set()
     if not exclude_dir.exists():
         print(f"WARN: exclude-dir no existe: {exclude_dir}")
@@ -54,6 +57,25 @@ def _parse_exclude(exclude_dir: Path) -> set[tuple[str, str]]:
         m = _RENAMED_RX.match(f.name)
         if not m:
             print(f"WARN: no parsea como renamed: {f.name}")
+            continue
+        excluded.add((m.group("site"), m.group("orig")))
+    return excluded
+
+
+def _parse_exclude_manifest(manifest: Path) -> set[tuple[str, str]]:
+    """Lee un manifest de texto plano (una entry por línea con el formato
+    ``NNN_<site>__<orig>.jpg``) y devuelve el set (site, basename)."""
+    excluded: set[tuple[str, str]] = set()
+    if not manifest.exists():
+        print(f"WARN: exclude-manifest no existe: {manifest}")
+        return excluded
+    for raw in manifest.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _RENAMED_RX.match(line)
+        if not m:
+            print(f"WARN: línea del manifest no parsea: {line}")
             continue
         excluded.add((m.group("site"), m.group("orig")))
     return excluded
@@ -69,6 +91,14 @@ def main() -> None:
         "--exclude-dir", type=Path, action="append", default=[],
         help="Dir con frames renombrados (formato sample_for_roboflow.py) "
              "que deben EXCLUIRSE del calib. Repetible.",
+    )
+    parser.add_argument(
+        "--exclude-manifest", type=Path, action="append", default=[],
+        help="Manifest .txt con una entry por línea (formato "
+             "NNN_<site>__<orig>.jpg, igual que sample_for_roboflow.py). "
+             "Sirve para excluir aún cuando los archivos originales ya no "
+             "existen — usar training_data/roboflow_uploaded_manifest.txt. "
+             "Repetible.",
     )
     parser.add_argument(
         "--output", type=Path, required=True,
@@ -93,10 +123,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Acumular exclusion set desde TODOS los exclude-dirs.
+    # Acumular exclusion set desde TODOS los exclude-dirs y manifests.
     excluded: set[tuple[str, str]] = set()
     for d in args.exclude_dir:
-        excluded |= _parse_exclude(d)
+        excluded |= _parse_exclude_dir(d)
+    for m in args.exclude_manifest:
+        excluded |= _parse_exclude_manifest(m)
     print(f"Excluyendo {len(excluded)} frames del calib (train/eval overlap).")
 
     rng = random.Random(args.seed)

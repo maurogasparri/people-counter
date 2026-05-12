@@ -1,0 +1,55 @@
+# Sites para capture_mjpeg.py y record_clips.py.
+#
+# Copiá este archivo a `training_data/sites.yaml` (gitignoreado por
+# contener IPs reales + matrices de calibración) y editalo con los
+# sites a los que tengas acceso.
+
+sites:
+  # ----------------------------------------------------------------
+  # Site mono (un único lente). Frames se guardan tal cual.
+  # ----------------------------------------------------------------
+  - name: site_a
+    url: http://192.168.1.10/mjpg/video.mjpg
+
+  # ----------------------------------------------------------------
+  # Site SBS estéreo CON calibración inline. El frame se parte por la
+  # mitad horizontal y cada lente se rectifica on-the-fly. El output
+  # queda listo para training (no requiere post-processing manual).
+  #
+  # ref_size es la resolución a la que fueron escritas K y P_rect.
+  # capture_mjpeg.py las re-escala linealmente al half_size real del
+  # stream (ej. si el SBS es 1920×720, half_size = 960×720).
+  # ----------------------------------------------------------------
+  - name: site_b
+    url: http://192.168.2.10/mjpg/raw.mjpg
+    sbs: true
+    calibration:
+      ref_size: [160, 120]
+      left:
+        K: [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+        D: [k1, k2, k3, k4]            # fisheye Kannala-Brandt (4 params)
+        R_rect: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        P_rect: [[fx_rect, 0, cx_rect, 0], [0, fy_rect, cy_rect, 0], [0, 0, 1, 0]]
+      right:
+        K: [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+        D: [k1, k2, k3, k4]
+        R_rect: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        P_rect: [[fx_rect, 0, cx_rect, baseline_term], [0, fy_rect, cy_rect, 0], [0, 0, 1, 0]]
+
+  # ----------------------------------------------------------------
+  # Site SBS sin calibración — partido por la mitad pero sin rectificar.
+  # Útil cuando no tenemos calibración del bracket todavía.
+  # ----------------------------------------------------------------
+  - name: site_c
+    url: http://192.168.2.11/mjpg/raw.mjpg
+    sbs: true
+
+# Notas:
+#
+# - Si la cámara requiere auth básico HTTP, usá el formato:
+#     url: http://user:pass@192.168.X.X/mjpg/video.mjpg
+#
+# - Para extraer matrices desde un .npz legacy con la forma estándar
+#   (scaled_{left,right}_intrinsic_4, etc.) hay un helper one-shot:
+#     python scripts/training/_embed_calib_into_sites.py \
+#         --in legacy.yaml --out training_data/sites.yaml

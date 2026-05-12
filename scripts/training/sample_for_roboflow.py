@@ -4,10 +4,8 @@
 Uso típico:
 
     python scripts/training/sample_for_roboflow.py \\
-        --sources debug/mjpeg_capture_20260508_4h \\
-                  debug/mjpeg_capture_20260508_8h \\
-                  debug/mjpeg_capture \\
-        --output debug/roboflow_sample \\
+        --sources training_data/captures \\
+        --output training_data/roboflow_sample \\
         --per-site 40 \\
         --seed 42
 
@@ -52,8 +50,8 @@ def main() -> None:
     parser.add_argument(
         "--site-cap", action="append", default=[], metavar="SITE=N",
         help="Override el per-site para un site específico (ej. para sitios "
-             "sobre-representados). Repetible: --site-cap site_54_21=12 "
-             "--site-cap site_43_6=20",
+             "sobre-representados). Repetible: --site-cap <site_name>=12 "
+             "--site-cap <other_site>=20",
     )
     parser.add_argument(
         "--seed", type=int, default=42,
@@ -70,7 +68,7 @@ def main() -> None:
     for entry in args.site_cap:
         if "=" not in entry:
             raise SystemExit(
-                f"--site-cap mal formado: '{entry}'. Uso: SITE=N (ej. site_54_21=12)"
+                f"--site-cap mal formado: '{entry}'. Uso: SITE=N (ej. <site_name>=12)"
             )
         key, val = entry.split("=", 1)
         try:
@@ -81,7 +79,7 @@ def main() -> None:
     rng = random.Random(args.seed)
 
     # Acumular frames agrupados por site name + tipo (motion/bg). El site name
-    # es el último componente del path (ej. ``site_43_6``).
+    # es el último componente del path.
     def _collect(pattern: str) -> dict[str, list[Path]]:
         result: dict[str, list[Path]] = defaultdict(list)
         for source in args.sources:
@@ -99,7 +97,7 @@ def main() -> None:
     if not motion_by_site:
         raise SystemExit("Ningún motion frame encontrado en las sources dadas.")
 
-    print(f"Frames disponibles por site:")
+    print("Frames disponibles por site:")
     all_sites = sorted(set(motion_by_site) | set(bg_by_site))
     for site in all_sites:
         nm = len(motion_by_site.get(site, []))
@@ -157,7 +155,7 @@ def main() -> None:
             shutil.copy2(src, dst)
         total_copied += 1
 
-    print(f"\nSample por site:")
+    print("\nSample por site:")
     total_motion = total_bg = 0
     for site, counts in sorted(sample_summary.items()):
         m = counts.get("motion", 0)

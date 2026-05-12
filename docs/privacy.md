@@ -77,9 +77,9 @@ captura opcional de frames "best-frame" para data de active learning.
    del dispositivo (e.g. para etiquetado externo), `scripts/export_anonymized.py`
    aplica blur al área del bbox conocido (o blur uniforme + canny edges
    como fallback si no hay metadata) antes de cualquier salida.
-6. **Sin reconocimiento facial.** El detector RAPiD/YOLO produce
-   bounding boxes de cuerpo entero o cabeza top-down, no encodings
-   faciales. No hay base de datos biométrica.
+6. **Sin reconocimiento facial.** El detector (YOLOv8n fine-tuneado,
+   `people-counter-detector`) produce bounding boxes de cabeza top-down,
+   no encodings faciales. No hay base de datos biométrica.
 
 ### Medidas organizativas
 

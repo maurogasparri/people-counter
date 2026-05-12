@@ -88,15 +88,6 @@ class TestWarmup:
             out = _tick_and_update(sup, clock, [det], dt=0.1)
             assert out == [det], "Antes de cubrir la ventana no debe filtrar"
 
-    def test_hot_cells_empty_during_warmup(self) -> None:
-        sup, clock = _suppressor()
-        det = _FakeDet(100, 100)
-        for _ in range(5):
-            _tick_and_update(sup, clock, [det])
-        assert sup.hot_cells == set(), (
-            "hot_cells expone vacío durante warm-up para no confundir consumers"
-        )
-
 
 class TestHotCellSuppression:
     def test_persistent_detection_is_suppressed(self) -> None:
@@ -197,21 +188,6 @@ class TestEmptyAndNone:
         det = _FakeDet(100, 100)
         out = _tick_and_update(sup, clock, [det])
         assert isinstance(out, list)
-
-
-class TestEffectiveFps:
-    def test_effective_fps_zero_before_two_samples(self) -> None:
-        sup, clock = _suppressor()
-        assert sup.effective_fps == 0.0
-        _tick_and_update(sup, clock, [])
-        assert sup.effective_fps == 0.0
-
-    def test_effective_fps_matches_tick_rate(self) -> None:
-        """Con dt=0.1 entre ticks, el FPS efectivo es 10."""
-        sup, clock = _suppressor()
-        for _ in range(11):
-            _tick_and_update(sup, clock, [], dt=0.1)
-        assert abs(sup.effective_fps - 10.0) < 0.1
 
 
 class TestConfigValidation:

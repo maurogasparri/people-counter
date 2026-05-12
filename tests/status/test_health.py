@@ -8,7 +8,6 @@ import pytest
 
 from src.status.health import (
     check_calibration_loadable,
-    check_cloud_endpoint,
     check_cpu_temp_ok,
     check_disk_ok,
     check_hailo_temp_ok,
@@ -222,7 +221,7 @@ def test_check_calibration_path_missing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# check_internet / check_cloud_endpoint
+# check_internet
 # ---------------------------------------------------------------------------
 
 
@@ -244,23 +243,3 @@ def test_check_internet_failure(monkeypatch):
 
     monkeypatch.setattr(socket, "create_connection", _raise)
     assert check_internet() is False
-
-
-def test_check_cloud_endpoint_success(monkeypatch):
-    class _Sock:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _Sock())
-    assert check_cloud_endpoint("xxx.iot.us-east-1.amazonaws.com") is True
-
-
-def test_check_cloud_endpoint_failure(monkeypatch):
-    def _raise(*_a, **_k):
-        raise OSError("dns failure")
-
-    monkeypatch.setattr(socket, "create_connection", _raise)
-    assert check_cloud_endpoint("xxx.iot.us-east-1.amazonaws.com") is False

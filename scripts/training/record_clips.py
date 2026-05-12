@@ -14,8 +14,8 @@ conexiones concurrentes en MJPEG HTTP).
 
 Uso:
     python scripts/training/record_clips.py \\
-        --config debug/mjpeg_sites.yaml \\
-        --output debug/mjpeg_clips \\
+        --config training_data/sites.yaml \\
+        --output training_data/clips \\
         --duration 900           # 15 minutos por site
 
 Salida:
@@ -36,8 +36,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from src.config.loader import DEFAULT_DEVICE_CONFIG_PATH
 
 logger = logging.getLogger("record_clips")
 
@@ -213,10 +211,13 @@ def _record_site(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--config", type=Path, default=Path(DEFAULT_DEVICE_CONFIG_PATH),
-        help=f"Path al config YAML (default: {DEFAULT_DEVICE_CONFIG_PATH}).",
+        "--config", type=Path, default=Path("training_data/sites.yaml"),
+        help="Path al sites YAML (default training_data/sites.yaml).",
     )
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--output", type=Path, default=Path("training_data/clips"),
+        help="Carpeta destino (default training_data/clips).",
+    )
     parser.add_argument(
         "--duration", type=int, default=900,
         help="Segundos a grabar por site (default 900 = 15 min).",

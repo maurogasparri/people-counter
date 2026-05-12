@@ -47,20 +47,10 @@ def enable_depth_debug(enabled: bool = True) -> None:
     Cuando está habilitado, las próximas ``DEPTH_DEBUG_MAX_DUMPS`` llamadas a
     ``head_depth_in_bbox`` que produzcan resultado escriben un PNG a
     ``DEPTH_DEBUG_DIR`` y loguean un resumen de histograma. Las llamadas
-    subsiguientes son no-op hasta que el counter se resetee (llamar de nuevo
-    con True tras un restart de proceso, o llamar a ``reset_depth_debug()``
-    para re-armar).
+    subsiguientes son no-op hasta que el proceso reinicie.
     """
     global _depth_debug_enabled
     _depth_debug_enabled = bool(enabled)
-
-
-def reset_depth_debug() -> None:
-    """Resetea el counter de dumps para que las próximas
-    ``DEPTH_DEBUG_MAX_DUMPS`` llamadas vuelvan a disparar. Útil para tests y
-    re-armar mid-process."""
-    global _depth_debug_count
-    _depth_debug_count = 0
 
 
 # Parámetros SGBM para Arducam IMX708 120° HFOV, baseline 14cm, rango 1.3-6m.

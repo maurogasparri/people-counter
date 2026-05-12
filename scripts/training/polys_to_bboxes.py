@@ -6,13 +6,16 @@ Cada línea de los .txt en formato seg es:
 La conversión a detection es trivial — el bbox es el min/max del polígono:
     class cx cy w h    (todo normalizado [0,1])
 
-Uso típico tras descargar un dataset de Roboflow exportado como YOLOv8 desde
-un project de Instance Segmentation:
+Idempotente: si una línea ya tiene 4 coords (bbox), se deja como está.
+Útil sólo cuando un dataset bajado de Roboflow trae labels con polys —
+no es parte del flujo normal, queda como fallback.
+
+Uso:
 
     python scripts/training/polys_to_bboxes.py \\
-        --dataset dataset/roboflow_<workspace>_<project>_v<N>
+        --dataset <path-al-export-de-roboflow>
 
-Modifica los .txt en place. Hace backup .seg.txt por las dudas.
+Modifica los .txt in place. Hace backup .seg.txt por las dudas.
 """
 from __future__ import annotations
 
@@ -94,7 +97,7 @@ def main() -> None:
     print(f"Procesados {total_files} archivos:")
     print(f"  poligonos -> bbox: {total_converted}")
     print(f"  ya eran bbox (no tocados): {total_skipped}")
-    print(f"  backup .seg.txt creado para los convertidos")
+    print("  backup .seg.txt creado para los convertidos")
 
 
 if __name__ == "__main__":

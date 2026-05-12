@@ -49,23 +49,14 @@ BEST_FRAME_DEFAULTS: dict[str, Any] = {
 
 
 # Keys que pueden ser overrideadas por el cloud shadow bajo ``cloud_defaults``.
+# El intervalo de telemetría se overridea vía RUNTIME_SAFE_KEYS
+# ``telemetry.interval_seconds`` (path real en el config), no acá.
 CLOUD_OVERRIDABLE = {
     "operating_hours",
     "on_invalid_schedule",
     "footfall_scaling_factor",
     "counting_enabled",
     "wifi_ble_enabled",
-    "telemetry_interval_seconds",
-}
-
-VALID_DAYS = {
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
 }
 
 VALID_INVALID_SCHEDULE_MODES = {"fail_open", "fail_closed"}
@@ -78,8 +69,6 @@ RUNTIME_SAFE_KEYS = frozenset(
     {
         "cloud_defaults.operating_hours",
         "cloud_defaults.on_invalid_schedule",
-        "cloud_defaults.rssi_passerby",
-        "cloud_defaults.rssi_shopper",
         "telemetry.interval_seconds",
         "counter.roi",
         "counter.lines",
@@ -165,6 +154,7 @@ def load_config(path: str) -> dict[str, Any]:
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
+    _apply_compat_renames(config)
     _validate(config)
     _normalise_best_frame(config)
 
@@ -181,6 +171,114 @@ def load_config(path: str) -> dict[str, Any]:
         config["_schedule_error"] = schedule_error
 
     return config
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat: renombre de keys que cambiaron de nombre
+# ---------------------------------------------------------------------------
+
+# Mapa de keys con nombres viejos a los actuales. Cuando un config
+# per-device todavía usa el nombre viejo, se renombra silenciosamente
+# en memoria (con un warning) antes de validar. Permite migrar la flota
+# sin sincronizar el push del código con el push del config.
+#
+# Cada entry: (path_tupla_old, key_new). La path_tupla apunta al dict
+# parent y key_new es la nueva clave dentro de ese dict.
+_COMPAT_RENAMES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    # tracking.max_disappeared → max_disappeared_frames
+    (("tracking",), "max_disappeared", "max_disappeared_frames"),
+    # tracking.max_distance → max_distance_px
+    (("tracking",), "max_distance", "max_distance_px"),
+    # vision.ae_lock.initial_settle_s → initial_settle_seconds
+    (("vision", "ae_lock"), "initial_settle_s", "initial_settle_seconds"),
+    # vision.ae_lock.resettle_s → resettle_seconds
+    (("vision", "ae_lock"), "resettle_s", "resettle_seconds"),
+)
+
+# Keys obsoletas que deben ser eliminadas (no renombradas). Si están
+# presentes, se loggea un warning y se las saca del dict.
+_COMPAT_REMOVED: tuple[tuple[tuple[str, ...], str], ...] = (
+    # vision.sensor_raw_size → ahora se usa sensor.default_res como
+    # fuente única.
+    (("vision",), "sensor_raw_size"),
+    # detection.static_suppressor.approx_fps → el supresor mide la
+    # ventana con timestamps reales, ya no necesita estimación de FPS.
+    (("detection", "static_suppressor"), "approx_fps"),
+)
+
+
+def _walk_nested_dict(
+    parent: dict[str, Any], path: tuple[str, ...]
+) -> dict[str, Any] | None:
+    """Camina ``path`` dentro de ``parent`` y devuelve el dict hoja, o None
+    si algún tramo no existe o no es un dict. Compartido entre el loader
+    runtime y ``scripts/migrate_config.py``."""
+    node: Any = parent
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+        if node is None:
+            return None
+    return node if isinstance(node, dict) else None
+
+
+def _apply_compat_renames(config: dict[str, Any]) -> None:
+    """Aplica renombres de keys con compat para configs viejos in-place.
+
+    Loggea warnings así el operador puede migrar el config a los nombres
+    canónicos cuando le convenga. Idempotente: si las keys ya tienen el
+    nombre nuevo, no hace nada.
+    """
+    for path, old_key, new_key in _COMPAT_RENAMES:
+        parent = _walk_nested_dict(config, path)
+        if parent is None:
+            continue
+        if old_key in parent and new_key not in parent:
+            parent[new_key] = parent.pop(old_key)
+            logger.warning(
+                "config_key_renamed",
+                extra={
+                    "path": ".".join(path) if path else "<root>",
+                    "old": old_key,
+                    "new": new_key,
+                    "action": (
+                        "Run scripts/migrate_config.py para limpiar el "
+                        "config per-device a los nombres canónicos."
+                    ),
+                },
+            )
+        elif old_key in parent and new_key in parent:
+            # El operador metió el nombre nuevo Y dejó el viejo —
+            # honoramos el nuevo y descartamos el viejo con warning.
+            parent.pop(old_key)
+            logger.warning(
+                "config_key_obsolete_and_new_both_present",
+                extra={
+                    "path": ".".join(path) if path else "<root>",
+                    "old": old_key,
+                    "new": new_key,
+                },
+            )
+
+    for path, old_key in _COMPAT_REMOVED:
+        parent = _walk_nested_dict(config, path)
+        if parent is None:
+            continue
+        if old_key in parent:
+            parent.pop(old_key)
+            logger.warning(
+                "config_key_obsolete",
+                extra={
+                    "path": ".".join(path) if path else "<root>",
+                    "old": old_key,
+                    "action": (
+                        "Removida silenciosamente. Run "
+                        "scripts/migrate_config.py para limpiar el "
+                        "config per-device."
+                    ),
+                },
+            )
 
 
 # ---------------------------------------------------------------------------

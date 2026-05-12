@@ -278,16 +278,25 @@ counter:
 ```
 
 Para ajustar ROI y línea **necesitás ver un frame de las cámaras**. Usar
-`focus_assist.py` en modo preview:
+`roi_picker.py` — tool dedicado que dibuja la ROI + línea sobre el frame
+y vuelca el snippet YAML listo para copiar al config:
 
 ```bash
 cd /usr/src/people-counter
-PYTHONPATH=. python3 scripts/focus_assist.py --grid --no-zoom
+sudo PYTHONPATH=. python3 scripts/roi_picker.py
 ```
 
-Abrir `http://people-counter.local:8080` en el navegador. Mirar dónde cae
-la puerta en el frame y transcribir coordenadas al YAML. Ctrl+C para salir
-del script cuando termines de medir.
+Abrir `http://people-counter.local:8080` en el navegador. Arrastrar para
+definir el rectángulo de ROI y la línea virtual; el tool guarda el YAML
+en `./roi_config.yaml` listo para copiar al config per-device. Ctrl+C
+para salir.
+
+Alternativa para solo ver el frame (sin ROI picker): `preview.py` con
+grid de tercios + crosshair central:
+
+```bash
+sudo PYTHONPATH=. python3 scripts/preview.py
+```
 
 **`operating_hours`** — horario del local. Vive en `cloud_defaults`:
 
@@ -498,7 +507,7 @@ Síntomas: personas pasan pero no se disparan eventos.
    Debe existir y pesar >5 MB. Si no, escalar.
 3. **Iluminación**: si el local está muy oscuro (<100 lux), la YOLO pierde
    recall. Pedir al encargado subir iluminación o reubicar.
-4. **Frame de preview**: correr `focus_assist.py` y mirar si las personas
+4. **Frame de preview**: correr `preview.py` y mirar si las personas
    aparecen en el frame y en el ROI configurado. Muchas veces el ROI está
    desplazado respecto a la puerta real.
 
@@ -514,13 +523,15 @@ Anotar para el reporte a ingeniería:
 - Screenshot del preview:
 
 ```bash
-PYTHONPATH=. python3 scripts/focus_assist.py --grid --no-zoom &
+sudo PYTHONPATH=. python3 scripts/preview.py --config /etc/people-counter/config.yaml &
 sleep 5
-scp pi@people-counter.local:/tmp/focus_left.jpg .
+# abrir http://people-counter.local:8080 y tomar screenshot del L (con la ROI dibujada encima si pasaste --config)
 kill %1
 ```
 
 Comparar el ROI configurado con la ubicación real de la puerta en el frame.
+`preview.py --config` superpone la ROI y la línea virtual del config sobre
+el frame rectificado, así se puede ver directamente si están en su lugar.
 
 ### 5.5. El servicio reinicia solo
 
@@ -529,8 +540,8 @@ sudo journalctl -u people-counter --since '1 hour ago' | grep -Ei "error|excepti
 ```
 
 - `Killed` o `OOM`: el dispositivo está quedándose sin RAM. Puede ser que
-  el preview de `focus_assist.py` quedó abierto en paralelo. Matarlo y
-  volver a probar.
+  un preview (`focus_assist.py`, `preview.py`, `roi_picker.py`) quedó
+  abierto en paralelo. Matarlo y volver a probar.
 - `TimeoutError` en Hailo: driver PCIe tiene algún problema. Reboot del
   dispositivo (`sudo reboot`) y volver a verificar. Si persiste, escalar.
 - `ConnectionRefusedError` a MQTT: ver 5.1.
@@ -626,7 +637,8 @@ Adjuntar al ticket/mail:
   y redeploy, no por mail.
 - Credenciales AWS (access keys, session tokens).
 - Capturas de video o imágenes de personas identificables. El frame de
-  preview de `focus_assist.py` es aceptable si es de un local vacío.
+  preview de `preview.py` o `focus_assist.py` es aceptable si es de un
+  local vacío.
 
 ---
 
@@ -642,8 +654,8 @@ cd /usr/src/people-counter && sudo PYTHONPATH=. python3 scripts/preflight.py
 # Logs en vivo
 sudo journalctl -u people-counter -f
 
-# Preview de cámaras (puerto 8080)
-cd /usr/src/people-counter && PYTHONPATH=. python3 scripts/focus_assist.py --grid --no-zoom
+# Preview de cámaras con overlay de ROI + línea (puerto 8080)
+cd /usr/src/people-counter && sudo PYTHONPATH=. python3 scripts/preview.py --config /etc/people-counter/config.yaml
 
 # Reiniciar servicio tras editar config
 sudo systemctl restart people-counter

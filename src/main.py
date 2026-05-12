@@ -1009,7 +1009,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 ) or None
                 counter = build_counter(
                     config,
-                    frame_height=rect_l.shape[0],
                     mounting_height_mm=mount_mm_for_counter,
                     principal_point=principal_pt,
                 )

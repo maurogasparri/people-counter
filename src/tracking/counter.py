@@ -724,7 +724,6 @@ class Counter:
 
 def build_counter(
     config: dict[str, Any],
-    frame_height: Optional[int] = None,  # noqa: ARG001 — se mantiene por estabilidad de API
     *,
     mounting_height_mm: Optional[float] = None,
     principal_point: Optional[tuple[float, float]] = None,

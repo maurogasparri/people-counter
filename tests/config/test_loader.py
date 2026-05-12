@@ -493,4 +493,100 @@ class TestBuildReportedState:
         assert "counter" not in reported
         assert "telemetry" not in reported
         assert "cloud_defaults" not in reported
-        assert "vision" not in reported
+
+
+class TestBackwardCompatRenames:
+    """El loader acepta los nombres viejos de keys que cambiaron, así un
+    config per-device aprovisionado antes del rename sigue cargando sin
+    intervención manual del operador. Tests cubren las dos categorías:
+    renames (vieja → nueva) y removals (obsoleta).
+    """
+
+    def test_max_disappeared_legacy_name_renamed(self, complete_config, tmp_path):
+        cfg = complete_config
+        cfg["tracking"]["max_disappeared"] = cfg["tracking"].pop("max_disappeared_frames")
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        loaded = load_config(str(cfg_path))
+        assert loaded["tracking"]["max_disappeared_frames"] == 30
+        assert "max_disappeared" not in loaded["tracking"]
+
+    def test_max_distance_legacy_name_renamed(self, complete_config, tmp_path):
+        cfg = complete_config
+        cfg["tracking"]["max_distance"] = cfg["tracking"].pop("max_distance_px")
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        loaded = load_config(str(cfg_path))
+        assert loaded["tracking"]["max_distance_px"] == 50
+        assert "max_distance" not in loaded["tracking"]
+
+    def test_ae_lock_legacy_names_renamed(self, complete_config, tmp_path):
+        cfg = complete_config
+        cfg["vision"]["ae_lock"] = {
+            "initial_settle_s": 3.0,
+            "resettle_s": 2.0,
+        }
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        loaded = load_config(str(cfg_path))
+        ae_lock = loaded["vision"]["ae_lock"]
+        assert ae_lock["initial_settle_seconds"] == 3.0
+        assert ae_lock["resettle_seconds"] == 2.0
+        assert "initial_settle_s" not in ae_lock
+        assert "resettle_s" not in ae_lock
+
+    def test_obsolete_sensor_raw_size_removed(self, complete_config, tmp_path):
+        """vision.sensor_raw_size es obsoleta — ahora se usa
+        sensor.default_res como fuente única. El loader la dropea
+        silenciosamente (con warning), no rompe el load."""
+        cfg = complete_config
+        cfg["vision"]["sensor_raw_size"] = [2304, 1296]
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        loaded = load_config(str(cfg_path))
+        assert "sensor_raw_size" not in loaded["vision"]
+
+    def test_obsolete_approx_fps_removed(self, complete_config, tmp_path):
+        """detection.static_suppressor.approx_fps es obsoleta — el
+        supresor mide la ventana con timestamps reales."""
+        cfg = complete_config
+        cfg["detection"]["static_suppressor"] = {
+            "enabled": True,
+            "cell_size_px": 30,
+            "window_seconds": 3.0,
+            "hit_rate_threshold": 0.7,
+            "approx_fps": 17,  # legacy
+        }
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        loaded = load_config(str(cfg_path))
+        suppressor = loaded["detection"]["static_suppressor"]
+        assert "approx_fps" not in suppressor
+        # Y las keys actuales siguen intactas.
+        assert suppressor["window_seconds"] == 3.0
+        assert suppressor["hit_rate_threshold"] == 0.7
+
+    def test_both_old_and_new_present_keeps_new(self, complete_config, tmp_path):
+        """Si por accidente el config tiene AMBOS nombres, gana el nuevo
+        y el viejo se dropea (con warning)."""
+        cfg = complete_config
+        # max_disappeared_frames=30 ya está; metemos también el viejo
+        # con un valor distinto.
+        cfg["tracking"]["max_disappeared"] = 999
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        loaded = load_config(str(cfg_path))
+        assert loaded["tracking"]["max_disappeared_frames"] == 30
+        assert "max_disappeared" not in loaded["tracking"]
+
+    def test_config_already_canonical_unchanged(
+        self, complete_config_yaml,
+    ):
+        """Si el config ya está en los nombres canónicos, el load es
+        idempotente — no hay renames espurios."""
+        loaded = load_config(complete_config_yaml)
+        assert loaded["tracking"]["max_disappeared_frames"] == 30
+        assert loaded["tracking"]["max_distance_px"] == 50
+        # Verificar que no aparecieron las keys legacy por accidente.
+        assert "max_disappeared" not in loaded["tracking"]
+        assert "max_distance" not in loaded["tracking"]
