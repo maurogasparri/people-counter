@@ -19,6 +19,87 @@ activo promedio, 50% de los días con doble turno).
 > por módulo dentro de una sesión es proporcional al commit count. ±20%
 > de error está principalmente en el trabajo previo al primer commit de
 > cada sesión (research, debug manual en la Pi sin commit aún).
+>
+> **Datos medidos vs. proyecciones**. Las **89.5h del PoC actual** salen
+> de timestamps reales — son datos. El **escenario ideal sin rework** y
+> el **greenfield desde cero** son **proyecciones** basadas en
+> asunciones explícitas. Las proyecciones incluyen un buffer de +15%
+> sobre la estimación naive para cubrir la fricción operativa normal
+> que aparece incluso en escenarios "straightforward" (dependencias
+> rotas, hardware con quirks, IAM policies, Hailo Docker que falla la
+> primera vez, etc.).
+
+---
+
+## Resumen ejecutivo
+
+### PoC entregado (datos medidos)
+
+- **89.5h efectivas en 41 días calendario** (2026-04-02 → 2026-05-12),
+  28 días activos, 51 sesiones partidas mañana/noche detectadas.
+- **+ ~40-60h estimadas del skeleton bundleado** en el initial commit
+  (20 módulos en `src/` + ~130 tests + pyproject + main.py).
+- **Total real del proyecto: ~130-150h hands-on**.
+
+### Distribución del esfuerzo medido
+
+| Bloque | % del esfuerzo |
+|--------|--------------:|
+| Visión + calibración | **48%** |
+| Misc cross-cutting | 14% |
+| Detector (training + Hailo + tracker + counter) | 13% |
+| Tracking | 5% |
+| Docs + config + cleanup | 12% |
+| Infra (WiFi/BLE + MQTT + Cloud + Status LED + Provisioning) | 9% |
+
+### Hitos del PoC
+
+| ID | Hito | Estado |
+|----|------|--------|
+| M0 | Skeleton inicial importado | ✓ Done (04-02) |
+| M1 | Hardware verificado | ✓ Done (04-04) |
+| M2 | Calibración estéreo aceptable (RMS < 0.5 px) | ✓ Done (04-15) |
+| M3 | Setup tools UX completo | ✓ Done (05-12) |
+| M4 | Detector fine-tuned corriendo en Hailo | ✓ Done (05-08) |
+| M5 | Pipeline E2E con conteo validado | ✓ Done (05-08) |
+| — | Dashboards funcionales (QuickSight) | **⊘ Pendiente** (CFN desplegado, dashboard no construido) |
+
+### Rework cuantificado
+
+- **~12h del esfuerzo (~13%) fueron rework** por modelos iniciales
+  incorrectos: ~10h en calibración (OV5647 170° intratable, pinhole
+  vs. fisheye híbrido, sensor mode footgun) + ~2h en tracker (rewrite
+  Kalman 4-D + ByteTrack en mayo).
+- **Calendario perdido por rework: ~19 días** (46% del calendario)
+  porque el rework cayó sobre el camino crítico bloqueando depth +
+  tracker + counter + detector.
+
+### Detector — dimensionamiento del dataset
+
+- **Estrategia adoptada (bulk)**: 5 sites capturados en paralelo →
+  945 imágenes labeleadas con Smart Polygon en **1h 45min** → train
+  Kaggle T4 → compile HEF.
+- **Estrategia metodológicamente correcta (iterativa)**: 200-300 imgs
+  de 1 site, ~30min labeling, iter 0 con stock YOLO primero. Se
+  documentó como Opción A pero **no se siguió** porque la infra de
+  captura multi-site ya estaba disponible y validar generalización
+  cross-site era valioso para roadmap.
+
+### Proyecciones para futuros proyectos
+
+| Escenario | Hands-on | Wall-clock floor | Calendario full-time |
+|-----------|---------:|-----------------:|--------------------:|
+| Greenfield desde cero (todo straightforward, +15% buffer) | **~130-155h** | 18-22 días | ~4 semanas |
+| Greenfield con este repo como referencia | ~75-90h | 14-18 días | ~3 semanas |
+| PoC nuevo dominio visión/edge (sin este repo) | 130-160h | ~30-45 días | ~5-6 semanas |
+
+### Post-cursada (fuera de scope del PoC)
+
+| Ítem | Estimación gruesa |
+|------|------------------:|
+| Piloto en 2 sucursales | 40-60h |
+| Ajustes post-piloto | 15-30h |
+| Rollout progresivo a 30 locales | 100-200h |
 
 ---
 
@@ -180,17 +261,18 @@ a futuro, presupuestar ~20% del total.**
 
 ---
 
-### 6. Pre-history (~40h, no medidas en git)
+### 6. Pre-history (~40-60h, no medidas en git)
 
 | T-code | Detalle | Estimado |
 |--------|---------|----------|
-| T00 | Skeleton del repo importado al primer commit: 20 módulos en `src/`, 129 tests de pytest, pyproject, estructura base | ~40h |
+| T00 | Skeleton del repo importado al primer commit: 20 módulos en `src/`, 129 tests de pytest, pyproject, estructura base | **~40-60h** |
 
 > El initial commit (`7882dab`, 2026-04-02 16:40) trajo trabajo previo
-> bundleado que git no puede medir. Estimación gruesa basada en el volumen
-> de código (20 módulos + 129 tests pasaron a estar tracked en un solo
-> commit). Si ese código vino de otro repo trackeado, ahí estaría el dato
-> exacto.
+> bundleado que git no puede medir. **Rango realista** basado en el
+> volumen de código (20 módulos + ~130 tests pasaron a estar tracked en
+> un solo commit). Honestamente no lo sabemos: si vino de otro repo
+> trackeado, ahí estaría el dato exacto; si fue construido en bursts no
+> committeados, el upper bound del rango (~60h) es más plausible.
 
 ---
 
@@ -512,14 +594,16 @@ demás arranca en paralelo desde entonces.
 
 ### Recomendación de presupuesto para un proyecto análogo
 
-| Tipo de proyecto | T00 baseline | T03+T15 baseline | Total medido | Wall-clock |
-|------------------|------------:|----------------:|-------------:|-----------:|
-| Este PoC actual (modelos descubiertos sobre la marcha) | 40h | 15h | 89.5h | 41 días |
-| PoC similar con este repo como referencia | **5-10h** | **5h** | **~60h** | **~20-25 días** |
-| PoC nuevo dominio (otra tarea de visión + edge) | 30-40h | 10-15h | 80-100h | 30-40 días |
+| Tipo de proyecto | T00 baseline | T03+T15 baseline | Total realista | Wall-clock |
+|------------------|------------:|----------------:|---------------:|-----------:|
+| Este PoC actual (modelos descubiertos sobre la marcha) | 40-60h | 15h | 89.5h medidas | 41 días |
+| PoC similar con este repo como referencia | **5-10h** | **5h** | **~75-90h** (con +15% buffer) | **~25-30 días** |
+| PoC nuevo dominio (otra tarea de visión + edge) | 40-60h | 12-20h | 130-160h | 35-45 días |
 
-El repo + memorias + docs (este Gantt incluido) **valen ~30h de ahorro**
-para el próximo proyecto con stack similar.
+El repo + memorias + docs (este Gantt incluido) **valen ~40-50h de
+ahorro** para el próximo proyecto con stack similar (skeleton ya
+existe, modelos correctos identificados, gotchas de hardware
+documentados, lab protocol definido).
 
 ---
 
@@ -533,14 +617,14 @@ genuinamente nuevo que hay que hacer**, no rework.
 
 ### Task table greenfield
 
-| ID | Tarea | Horas straightforward | Notas |
-|----|-------|---------------------:|-------|
-| T00 | Skeleton (módulos + tests + pyproject + main.py) | **25-30h** | 20 módulos + ~130 tests + orquestador. Sin descubrimiento de diseño = más rápido que el bundle original, pero hay que escribir el código. |
+| ID | Tarea | Horas | Notas |
+|----|-------|------:|-------|
+| T00 | Skeleton (módulos + tests + pyproject + main.py) | **35-45h** | 20 módulos + ~130 tests + orquestador. Aún con diseño claro, escribir código real lleva tiempo. |
 | T01 | HW setup + bootstrap (RPi5 + Hailo + cámaras + systemd) | 3 | |
 | T02 | Captura estéreo (picamera2 dual cam, Mode 1 forzado) | 3 | |
 | T03 | Calibración K-B canónica + ChArUco | 3 | Modelo correcto desde día 1 |
 | T04 | Depth pipeline (SGBM + WLS + world coords) | 4 | |
-| T05 | Setup tools UX wizards (5 tools browser-driven) | 13 | Diseño UX ya pre-pensado; ahorra ~5h vs los 18h medidos |
+| T05 | Setup tools UX wizards (5 tools browser-driven) | **25-30** | AE lock canónico + dual-pass detect + gates de coverage + audio + reportes HTML. Aun con UX pre-diseñada, son 5 wizards con bastante surface area. |
 | T06 | WiFi/BLE + dedup L1/L2 | 1.5 | |
 | T07 | Status LED + health monitor | 1.5 | |
 | T08 | Config system (HardwareParams + naming canónico desde día 1) | 3 | Sin back-compat shims = -2h vs medido |
@@ -548,14 +632,16 @@ genuinamente nuevo que hay que hacer**, no rework.
 | T10 | Infra AWS (CFN + Lambda + Timestream + IoT Core) | 2 | |
 | T11 | Provisioning + disaster recovery | 2 | |
 | T12 | Detector — captura multi-site | 3 | |
-| T13 | Detector — labeling + training | 2.5 | Trabajo activo. (Wall-clock adicional: ~3 días de espera externa) |
+| T13 | Detector — labeling + training | 2.5 | Trabajo activo. (Wall-clock adicional: ~1-2 días de espera externa) |
 | T14 | Detector — Hailo compile + integración | 3.5 | Receta conocida |
-| T15 | Tracker (Kalman + ByteTrack from day 1) | 1.5 | |
+| T15 | Tracker (Kalman + ByteTrack from day 1) | **3-4** | Integración + edge cases del state machine + reid + velocity decay. Happy path 1.5h, pero los corner cases siempre aparecen. |
 | T16 | Counter (ROI + line crossing) | 1.5 | |
 | T17 | Docs (setup + lab + privacy) | 3 | |
 | T18 | Tests E2E + integración explícita | 3 | Más allá de los tests embedded en cada T |
 | T19 | Cleanup / hygiene normal | 1.5 | Sin deuda técnica acumulada |
-| **TOTAL** | | **~78-83h** | |
+| **Subtotal naive** | | **~101-117h** | Suma directa, sin buffer |
+| **+15% fricción operativa** | | **+15-18h** | Deps rotas, IAM friction, Hailo Docker que falla primera vez, etc. |
+| **TOTAL greenfield realista** | | **~116-135h** | |
 
 ### Operaciones físicas (despliegue del dispositivo PoC)
 
@@ -568,12 +654,12 @@ setup_device.sh, focus_assist, calibrate, roi_picker).
 | Actividad | Hands-on | Wait | Notas |
 |-----------|---------:|-----:|-------|
 | **Ensamblaje del dispositivo** (RPi5 + Hailo HAT + 2× IMX708 + bracket 140mm + PoE HAT + LED RGB + microSD + enclosure) | 4h | — | Tornillería + dupont + termofit. Una vez por unidad. |
-| **Foco con lab protocol universal** (mount a 2.0m, target a 1.5m, ambos lentes, esmalte transparente al seam para fijar) | 1h | +15-20min touch-dry / 30-60min cure full | Llave dedicada durante el foco, se retira antes de pintar |
-| **Calibración estéreo** (wizard browser-driven, ChArUco A3 a 1.0/2.0/3.0m, ~20 poses con coverage gates) | 1.5h | — | Validar con diagnose_depth.py (error <5% a 2m) |
+| **Foco con lab protocol universal** (mount a 2.0m, target a 1.5m, ambos lentes, esmalte transparente al seam para fijar) | **1-2h** | +15-20min touch-dry / 30-60min cure full | Los lens M12 tienen play mecánico, casi siempre iterás 2-3 ciclos de foco. Llave dedicada durante el foco, se retira antes de pintar. |
+| **Calibración estéreo** (wizard browser-driven, ChArUco A3 a 1.0/2.0/3.0m, ~20 poses con coverage gates) | **1.5-2h** | — | Si alguna pose falla coverage o gate de re-detect, se re-corre. Validar con diagnose_depth.py (error <5% a 2m). |
 | **Provisioning del device** (flash SD con OS, ejecutar setup_device.sh, escribir /etc/people-counter/config.yaml, dropear calib.npz + HEF + certs X.509, enable services) | 2.5h | — | Mayormente wait por installs apt |
 | **ROI + líneas de conteo** (`roi_picker.py` en el local final, definir ROI rectangular + línea virtual con etiquetas ingress/egress) | 1h | — | Necesita la Pi montada en su posición real |
-| **Validación E2E** (walk-through con personas, verificar eventos MQTT, dashboard cloud recibiendo, tunear thresholds si hace falta) | 2h | — | Iterativo según los walk-throughs |
-| **TOTAL operaciones PoC** | **~12h** | **+ ~30min cure del esmalte** | |
+| **Validación E2E** (walk-through con personas, verificar eventos MQTT, dashboard cloud recibiendo, tunear thresholds si hace falta) | **2-4h** | — | Primera vez aparecen issues de ROI/thresholds que requieren tuning iterativo. 2h es el caso happy-path, 4h con tuning normal. |
+| **TOTAL operaciones PoC** | **~14-18h** | **+ ~30min cure del esmalte** | |
 
 > **Calendario operaciones**: con esmalte (touch-dry 15-20min, full
 > 30-60min) **todo entra en una sola sesión de lab + un día de visita
@@ -683,12 +769,12 @@ que **no se pueden compactar** por más straightforward que sea el resto:
 
 | Espera | Duración |
 |--------|---------:|
-| Provisioning de AWS account + IoT Core registration (si arrancás sin cuenta) | 0.5-1 día |
+| Provisioning de AWS account + IoT Core registration (si arrancás sin cuenta) | 1-2 días (IAM policies + verificación de cuenta + IoT Core registration) |
 | Roboflow labeling (945 imgs con Smart Polygon click-por-imagen) | **~2h** (medido: 1h 45min + pausas) |
-| Kaggle T4 queue + training run | 1-2 días (con buffer por queue picos) |
-| Hailo compile en Docker x86 (~15-30 min × ~3 compiles efectivos) | 0.5 día |
+| Kaggle T4 queue + training run | 1-2 días (incluso "straightforward" probablemente iterás 2-3 runs por hyperparams o export) |
+| Hailo compile en Docker x86 | 0.5-1 día (Docker primera vez + iteración por end-node-names) |
 | Captura multi-site con motion-trigger (5 sites en paralelo, 1 sesión 10-21h) | **1 día** (o 2-3 si querés diversidad multi-día) |
-| **TOTAL wall-clock irreducible** | **~3-5 días** |
+| **TOTAL wall-clock irreducible** | **~5-8 días** |
 
 > **Labeling**: Smart Polygon es **mucho más rápido de lo esperado**.
 > Con 945 imgs el ritmo medido fue ~9 imgs/min (~6-7 segundos por
@@ -713,43 +799,55 @@ que **no se pueden compactar** por más straightforward que sea el resto:
 
 | Concepto | Horas |
 |----------|------:|
-| Desarrollo de software (T00 → T19) | 78-83h |
-| Operaciones físicas (ensamblaje + provisioning + foco + calib + ROI + validación) | ~12h |
-| **TOTAL hands-on** | **~90-95h** |
-| Wall-clock irreducible adicional (espera externa) | 3-5 días |
+| Desarrollo de software (T00 → T19) — naive | 101-117h |
+| Operaciones físicas (ensamblaje + provisioning + foco + calib + ROI + validación) | 14-18h |
+| Sub-total naive | 115-135h |
+| +15% buffer de fricción operativa | +17-20h |
+| **TOTAL hands-on realista** | **~130-155h** |
+| Wall-clock irreducible adicional (espera externa) | 5-8 días |
 
 ### Calendar por dedicación
 
 | Modo de trabajo | Horas/día efectivas | Días activos | Calendario total |
 |-----------------|--------------------:|-------------:|----------------:|
-| **Full-time dedicado** (sin laburo en el medio) | 7-8h | 13-14 días | **~13-16 días** (2-3 semanas) |
-| **Half-time** (4h/día foco real) | 4h | 23-24 días | **~26-32 días** (4-5 semanas) |
-| **Part-time como el medido** (mañana + noche, ~3h/día) | 3.2h | 29-30 días | **~35-43 días** (5-6 semanas) |
+| **Full-time dedicado** (sin laburo en el medio) | 7-8h | 18-22 días | **~22-28 días** (4 semanas) |
+| **Half-time** (4h/día foco real) | 4h | 32-38 días | **~38-48 días** (6-7 semanas) |
+| **Part-time como el medido** (mañana + noche, ~3h/día) | 3.2h | 40-48 días | **~50-62 días** (8-9 semanas) |
 
-El **wall-clock irreducible (3-5 días)** marca un piso. Con la
-estrategia de **1 sesión de captura 10-21h en paralelo (5 sites
-simultáneos)** y compactando los waits externos, **no se puede bajar
-de ~10-12 días** incluso con 8h/día y todo perfecto. Los cuellos de
-botella son AWS setup (~1 día) + Kaggle queue + Hailo compile. El
-labeling (~2h) salió completamente del camino crítico.
+El **wall-clock irreducible (5-8 días)** + el **buffer operativo
+normal** marcan el piso real. **No se puede bajar de ~18-22 días**
+incluso con 8h/día y todo "straightforward", porque la fricción
+operativa (deps rotas, IAM friction, Docker primera vez, iteraciones
+de foco normales, etc.) se acumula aún cuando no hay rework. Los
+cuellos de botella externos son AWS setup (1-2 días) + Kaggle queue +
+Hailo compile. El labeling (~2h) salió completamente del camino
+crítico, pero el setup tools UX (T05, 25-30h) sigue siendo el bloque
+más caro del greenfield.
 
 ### Camino crítico greenfield
 
-`T00 → T01 → T02 → T03 → T12 → T13 → T14 → T15 → T16` = 47h de trabajo
-sobre el camino crítico que culmina en M5 (E2E count validado). Las
-ramas paralelas (T06 wifi/ble, T07 status, T09/T10/T11 mqtt/cloud, T05
-wizards) corren en simultáneo y no extienden el cronograma si hay
-capacidad para paralelizar.
+`T00 → T01 → T02 → T03 → T12 → T13 → T14 → T15 → T16` = **57-69h de
+trabajo sobre el camino crítico** (con T00 en 35-45h y T15 en 3-4h)
+que culmina en M5 (E2E count validado). Las ramas paralelas (T06
+wifi/ble, T07 status, T09/T10/T11 mqtt/cloud, T05 wizards) corren en
+simultáneo y no extienden el cronograma si hay capacidad para
+paralelizar.
 
-### Resumen ejecutivo
+### Resumen del greenfield
 
-> **Si tuvieras que armarlo todo desde cero, sabiendo lo que ya sabés,
-> sin descubrir nada sobre la marcha: ~90-95h totales (80h dev + 12h
-> ops físicas), distribuidas en ~2-3 semanas si es full-time, ~5-6
-> semanas si seguís el patrón mañana/noche actual. El wall-clock no
-> baja de ~10-12 días por AWS setup + Kaggle + Hailo. Captura
-> multi-site se hace en 1 día con los 5 sites en paralelo (10-21h)
-> y labeling con Smart Polygon ~2h — ambos salieron del camino crítico.**
+> Si tuvieras que armarlo todo desde cero, sabiendo lo que ya sabés,
+> sin descubrir nada sobre la marcha pero contando la fricción operativa
+> normal: **~130-155h totales** (~100-120h dev + 14-18h ops físicas +
+> 15% buffer por entropía de sistema). Distribuidas en ~4 semanas
+> full-time, ~8-9 semanas si seguís el patrón mañana/noche actual. El
+> wall-clock no baja de ~18-22 días por AWS setup + Kaggle + Hailo +
+> fricción operativa normal. Captura multi-site se hace en 1 día con
+> los 5 sites en paralelo (10-21h) y labeling con Smart Polygon ~2h —
+> ambos salieron del camino crítico. El bloque más caro del greenfield
+> es **T05 setup tools UX (25-30h)**.
+
+(Para el resumen del PoC entregado, hitos cumplidos y rework, ver
+**Resumen ejecutivo** al inicio del doc.)
 
 ---
 
