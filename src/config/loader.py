@@ -49,14 +49,23 @@ BEST_FRAME_DEFAULTS: dict[str, Any] = {
 
 
 # Keys que pueden ser overrideadas por el cloud shadow bajo ``cloud_defaults``.
-# El intervalo de telemetría se overridea vía RUNTIME_SAFE_KEYS
-# ``telemetry.interval_seconds`` (path real en el config), no acá.
+#
+# Scope deliberadamente acotado a las 2 keys con valor real para un end user
+# que no tiene acceso SSH:
+#   - operating_hours: el horario de la tienda cambia (feriados, eventos
+#     especiales, extended hours) y el end user lo debe poder ajustar sin
+#     tocar el device.
+#   - counting_enabled: toggle on/off para mantenimiento, limpieza, evento
+#     privado, etc.
+#
+# El resto de los knobs (thresholds, ROI, tracker tuning, vision params)
+# requieren visualización o análisis técnico — se siguen modificando vía
+# SSH a /etc/people-counter/config.yaml + restart. Para una flota futura
+# con muchos devices este whitelist se puede expandir, pero para 1 device
+# PoC es ceremonia innecesaria.
 CLOUD_OVERRIDABLE = {
     "operating_hours",
-    "on_invalid_schedule",
-    "footfall_scaling_factor",
     "counting_enabled",
-    "wifi_ble_enabled",
 }
 
 VALID_INVALID_SCHEDULE_MODES = {"fail_open", "fail_closed"}
@@ -68,27 +77,14 @@ VALID_INVALID_SCHEDULE_MODES = {"fail_open", "fail_closed"}
 RUNTIME_SAFE_KEYS = frozenset(
     {
         "cloud_defaults.operating_hours",
-        "cloud_defaults.on_invalid_schedule",
-        "telemetry.interval_seconds",
-        "counter.roi",
-        "counter.lines",
-        # counter.tracker.* handled via prefix below
-        # vision.num_disparities / block_size explicit entries
-        "vision.num_disparities",
-        "vision.block_size",
-        # mounting_height_m es runtime-safe: main.py lo lee en vivo para el
-        # height classifier y para auto num_disparities en el rebuild de SGBM.
-        "vision.mounting_height_m",
-        # operational.* handled via prefix below
+        "cloud_defaults.counting_enabled",
     }
 )
 
 # Prefijos bajo los cuales cualquier child key es runtime-safe.
-RUNTIME_SAFE_PREFIXES = (
-    "counter.tracker.",
-    "counter.height_classifier.",
-    "operational.",
-)
+# Vacío: todos los knobs técnicos requieren restart (SSH + edit + systemctl
+# restart). Documentado en infra/README.md.
+RUNTIME_SAFE_PREFIXES: tuple[str, ...] = ()
 
 SHADOW_CACHE_SUFFIX = ".shadow.json"
 

@@ -63,11 +63,14 @@ class TestMergeCloudConfig:
         merged = merge_cloud_config(cfg, {})
         assert merged["cloud_defaults"]["footfall_scaling_factor"] == 1.0
 
-    def test_shadow_overrides_scaling_factor(self, complete_config_yaml):
+    def test_shadow_does_not_override_scaling_factor(self, complete_config_yaml):
+        """footfall_scaling_factor fue removido de CLOUD_OVERRIDABLE
+        (técnico, no end-user). Se queda en config.yaml local."""
         cfg = load_config(complete_config_yaml)
         shadow = {"footfall_scaling_factor": 1.15}
         merged = merge_cloud_config(cfg, shadow)
-        assert merged["cloud_defaults"]["footfall_scaling_factor"] == 1.15
+        # El valor del config.yaml no cambia
+        assert merged["cloud_defaults"]["footfall_scaling_factor"] == 1.0
 
     def test_shadow_overrides_operating_hours(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)
@@ -153,19 +156,25 @@ class TestFeatureToggles:
         cfg["wifi_ble"]["enabled"] = False
         assert not is_wifi_ble_enabled(cfg)
 
-    def test_wifi_ble_disabled_from_cloud(self, complete_config_yaml):
+    def test_wifi_ble_not_pushable_from_cloud(self, complete_config_yaml):
+        """wifi_ble_enabled fue removido de CLOUD_OVERRIDABLE — toggle de
+        captura WiFi/BLE no se pushea remoto. Si se necesita, SSH + restart."""
         cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {"wifi_ble_enabled": False})
-        assert not is_wifi_ble_enabled(merged)
+        # El push se ignora; el valor del config.yaml local manda.
+        assert is_wifi_ble_enabled(merged) is True  # default del config
 
     def test_scaling_factor_default(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)
         assert get_scaling_factor(cfg) == 1.0
 
-    def test_scaling_factor_from_cloud(self, complete_config_yaml):
+    def test_scaling_factor_not_pushable_from_cloud(self, complete_config_yaml):
+        """footfall_scaling_factor no es overridable por shadow — se queda
+        en config.yaml local. Para ajustarlo, SSH + restart."""
         cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {"footfall_scaling_factor": 1.1})
-        assert get_scaling_factor(merged) == pytest.approx(1.1)
+        # El default del config.yaml manda; el push se ignora.
+        assert get_scaling_factor(merged) == pytest.approx(1.0)
 
     def test_get_effective_value_with_fallback(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)
@@ -299,7 +308,9 @@ class TestApplyShadowDelta:
             for r in caplog.records
         )
 
-    def test_nested_counter_tracker_prefix_applied(self, complete_config_yaml):
+    def test_counter_tracker_no_longer_pushable(self, complete_config_yaml):
+        """counter.tracker.* dejó de ser pusheable — tuning algorítmico
+        requiere SSH + restart, no end user via shadow."""
         cfg = load_config(complete_config_yaml)
         delta = {
             "counter": {
@@ -307,41 +318,49 @@ class TestApplyShadowDelta:
             }
         }
         new_cfg, applied = apply_shadow_delta(cfg, delta)
-        assert "counter.tracker.confirm_frames" in applied
-        assert "counter.tracker.reid_gate_px" in applied
-        assert new_cfg["counter"]["tracker"]["confirm_frames"] == 5
-        assert new_cfg["counter"]["tracker"]["reid_gate_px"] == 100.0
+        assert applied == []
+        # El config no tiene counter.tracker por default; el push no debe
+        # crearlo silenciosamente.
+        assert "tracker" not in new_cfg.get("counter", {})
 
     def test_mixed_safe_and_unsafe(self, complete_config_yaml):
+        """Solo cloud_defaults.{operating_hours, counting_enabled} son
+        runtime-safe. El resto (incluso si parecía técnico-razonable como
+        telemetry.interval_seconds) se rechaza."""
         cfg = load_config(complete_config_yaml)
         delta = {
+            "cloud_defaults": {"counting_enabled": False},
             "telemetry": {"interval_seconds": 60},
-            "device_id": "hacker",  # identity — must be rejected
+            "device_id": "hacker",
             "vision": {"num_disparities": 128, "baseline_cm": 99},
         }
         new_cfg, applied = apply_shadow_delta(cfg, delta)
-        assert "telemetry.interval_seconds" in applied
-        assert "vision.num_disparities" in applied
-        assert "vision.baseline_cm" not in applied
+        assert "cloud_defaults.counting_enabled" in applied
+        assert "telemetry.interval_seconds" not in applied
+        assert "vision.num_disparities" not in applied
         assert "device_id" not in applied
-        assert new_cfg["telemetry"]["interval_seconds"] == 60
-        assert new_cfg["vision"]["num_disparities"] == 128
+        assert new_cfg["cloud_defaults"]["counting_enabled"] is False
+        # Las keys técnicas no se inyectaron silenciosamente.
+        assert "telemetry" not in new_cfg or new_cfg.get("telemetry") == cfg.get(
+            "telemetry"
+        )
+        assert "vision" not in new_cfg or new_cfg["vision"] == cfg.get("vision")
         assert new_cfg["device"]["id"] == cfg["device"]["id"]
 
     def test_persists_shadow_cache(self, complete_config_yaml, tmp_path):
         cfg = load_config(complete_config_yaml)
-        delta = {"cloud_defaults": {"on_invalid_schedule": "fail_closed"}}
+        delta = {"cloud_defaults": {"counting_enabled": False}}
         new_cfg, applied = apply_shadow_delta(
             cfg, delta, config_path=complete_config_yaml
         )
-        assert applied == ["cloud_defaults.on_invalid_schedule"]
+        assert applied == ["cloud_defaults.counting_enabled"]
 
         shadow_file = Path(complete_config_yaml).with_suffix(".shadow.json")
         assert shadow_file.exists()
         persisted = json.loads(shadow_file.read_text())
         assert (
-            persisted["state"]["desired"]["cloud_defaults"]["on_invalid_schedule"]
-            == "fail_closed"
+            persisted["state"]["desired"]["cloud_defaults"]["counting_enabled"]
+            is False
         )
 
     def test_no_persist_when_no_keys_applied(self, complete_config_yaml):
@@ -352,13 +371,13 @@ class TestApplyShadowDelta:
         shadow_file = Path(complete_config_yaml).with_suffix(".shadow.json")
         assert not shadow_file.exists()
 
-    def test_operational_prefix_applied(self, complete_config_yaml):
+    def test_operational_prefix_no_longer_pushable(self, complete_config_yaml):
+        """operational.* dejó de ser pusheable — runtime tuning queda en
+        config.yaml + SSH."""
         cfg = load_config(complete_config_yaml)
         delta = {"operational": {"max_queue_depth": 500, "debug_trace": True}}
-        new_cfg, applied = apply_shadow_delta(cfg, delta)
-        assert "operational.max_queue_depth" in applied
-        assert "operational.debug_trace" in applied
-        assert new_cfg["operational"]["max_queue_depth"] == 500
+        _new_cfg, applied = apply_shadow_delta(cfg, delta)
+        assert applied == []
 
 
 class TestInvalidScheduleMode:
@@ -376,10 +395,14 @@ class TestInvalidScheduleMode:
         cfg["cloud_defaults"]["on_invalid_schedule"] = "nonsense"
         assert get_invalid_schedule_mode(cfg) == "fail_open"
 
-    def test_shadow_can_override_mode(self, complete_config_yaml):
+    def test_shadow_does_not_override_mode(self, complete_config_yaml):
+        """on_invalid_schedule fue removido de CLOUD_OVERRIDABLE — decisión
+        de fail mode es one-time per deployment, no end-user via shadow."""
         cfg = load_config(complete_config_yaml)
+        cfg["cloud_defaults"]["on_invalid_schedule"] = "fail_open"
         merged = merge_cloud_config(cfg, {"on_invalid_schedule": "fail_closed"})
-        assert get_invalid_schedule_mode(merged) == "fail_closed"
+        # El push del shadow se ignora; queda el valor del config local.
+        assert get_invalid_schedule_mode(merged) == "fail_open"
 
 
 class TestBuildReportedState:
@@ -421,27 +444,24 @@ class TestBuildReportedState:
     def test_includes_whitelisted_keys_only(self):
         from src.config.loader import build_reported_state
 
-        reported = build_reported_state(self._cfg(), calibration=None)
+        cfg = self._cfg()
+        # Aseguramos que counting_enabled esté presente para verificar el report.
+        cfg["cloud_defaults"]["counting_enabled"] = True
+        reported = build_reported_state(cfg, calibration=None)
 
-        # Whitelisted scalars present
-        assert reported["vision"]["num_disparities"] == 192
-        assert reported["vision"]["block_size"] == 9
-        assert reported["telemetry"]["interval_seconds"] == 300
+        # Sólo las 2 keys pusheables están en el reported state.
         assert reported["cloud_defaults"]["operating_hours"] == {
             "monday": "09:00-22:00"
         }
-        assert reported["cloud_defaults"]["on_invalid_schedule"] == "fail_open"
-        # Prefix-based whitelists present
-        assert reported["counter"]["tracker"]["confirm_frames"] == 3
-        assert reported["counter"]["lines"] == [
-            {
-                "from": [0, 240], "to": [640, 240],
-                "labels": {"top_to_bottom": "ingress"},
-            },
-        ]
-        assert reported["operational"] == {"paused": False}
+        assert reported["cloud_defaults"]["counting_enabled"] is True
 
-        # Secrets / endpoints must NOT leak into reported
+        # Las keys técnicas (no pusheables) no reportan al shadow.
+        assert "vision" not in reported
+        assert "telemetry" not in reported
+        assert "operational" not in reported
+        assert reported.get("cloud_defaults", {}).get("on_invalid_schedule") is None
+
+        # Secrets / endpoints nunca filtran al reported.
         assert "mqtt" not in reported
         assert "cert_path" not in reported.get("vision", {})
 
