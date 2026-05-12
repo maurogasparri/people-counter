@@ -101,13 +101,19 @@ def _capture_from_cameras(
                 pass
         raise RuntimeError(f"No pude abrir cámara(s): {exc}") from exc
 
+    from src.vision.capture import CANONICAL_RAW_SIZE
+
     frames: dict[str, np.ndarray] = {}
     try:
         for cam, key in [(cam_left, "left"), (cam_right, "right")]:
             if cam is None:
                 continue
+            # raw FIJO en el sensor mode canónico (full-FOV 120°). Sin esto,
+            # picamera2 elige Mode 0 cropeado y el ROI termina dibujado sobre
+            # un FOV ~35% más cerrado que el del runtime.
             cfg = cam.create_still_configuration(
                 main={"size": resolution, "format": "BGR888"},
+                raw={"size": CANONICAL_RAW_SIZE},
             )
             cam.configure(cfg)
             cam.start()

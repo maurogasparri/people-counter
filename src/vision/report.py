@@ -51,6 +51,7 @@ def generate_html_report(
     per_pair_residuals: Optional[list[dict[str, float]]] = None,
     epipolar_image: Optional[Path] = None,
     ground_truth_image: Optional[Path] = None,
+    baseline_tol_mm: float = BASELINE_WARN_TOL_MM,
 ) -> str:
     """Construye un string de reporte HTML self-contained.
 
@@ -63,6 +64,10 @@ def generate_html_report(
         device_id: identificador del dispositivo para el header del reporte
         rms_stereo: RMS general (px) de la calibración estéreo si se conoce
         timestamp: override del timestamp; default a ahora
+        baseline_tol_mm: tolerancia ± de baseline vs diseño (140mm). Default
+            BASELINE_WARN_TOL_MM (5mm). Overrideable para devices conocidos con
+            drift mayor o para QA loose; el verdadero gate de calidad es el
+            depth check, no el baseline. La rectificación absorbe drift.
     """
     ts = timestamp or _dt.datetime.now()
 
@@ -73,7 +78,7 @@ def generate_html_report(
     fy_l = float(K_l[1, 1])
     baseline_mm = float(abs(T[0, 0]))
     baseline_delta = baseline_mm - DESIGN_BASELINE_MM
-    baseline_ok = abs(baseline_delta) <= BASELINE_WARN_TOL_MM
+    baseline_ok = abs(baseline_delta) <= baseline_tol_mm
 
     rms_text = f"{rms_stereo:.3f} px" if rms_stereo is not None else "—"
 
@@ -332,7 +337,7 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
     if not baseline_ok:
         baseline_note = (
             f'<div class="alert">⚠ Baseline estimada difiere {baseline_delta:+.1f} mm '
-            f'del diseño ({DESIGN_BASELINE_MM:.0f}mm, tolerancia ±{BASELINE_WARN_TOL_MM:.0f}mm).</div>'
+            f'del diseño ({DESIGN_BASELINE_MM:.0f}mm, tolerancia ±{baseline_tol_mm:.0f}mm).</div>'
         )
 
     # Imagen de verificación de rectificación (epipolar), embedded.
@@ -420,7 +425,7 @@ th{{background:#f5f5f5}}
 <div class="kv">
 <b>RMS estéreo</b><span>{rms_text}</span>
 <b>Focal izquierda (fx, fy)</b><span>{fx_l:.1f} px, {fy_l:.1f} px</span>
-<b>Baseline medido</b><span>{baseline_mm:.2f} mm (diseño {DESIGN_BASELINE_MM:.0f} mm, Δ {baseline_delta:+.2f}mm) {_pill('tolerancia ±' + f'{BASELINE_WARN_TOL_MM:.0f}mm', baseline_ok)}</span>
+<b>Baseline medido</b><span>{baseline_mm:.2f} mm (diseño {DESIGN_BASELINE_MM:.0f} mm, Δ {baseline_delta:+.2f}mm) {_pill('tolerancia ±' + f'{baseline_tol_mm:.0f}mm', baseline_ok)}</span>
 <b>Principal point L</b><span>cx={K_l[0,2]:.1f}, cy={K_l[1,2]:.1f}</span>
 <b>Principal point R</b><span>cx={K_r[0,2]:.1f}, cy={K_r[1,2]:.1f}</span>
 </div>

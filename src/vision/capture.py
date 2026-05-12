@@ -17,6 +17,15 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Sensor mode canónico del IMX708. Picamera2, sin hint de raw=,
+# elige Mode 0 (1536×864 = crop central del 67% del sensor, HFOV
+# efectivo ~80°) en vez del modo full-FOV. Eso silenciosamente
+# reduce la cobertura de piso a ~50% del diseño (120° HFOV). Forzar
+# raw={"size": CANONICAL_RAW_SIZE} selecciona Mode 1 — full-FOV
+# binned 2×2, 56fps, HFOV 120°. Cambiar este valor invalida toda
+# calibración previa.
+CANONICAL_RAW_SIZE = (2304, 1296)
+
 
 class StereoCapture:
     """Maneja la captura simultánea desde las cámaras CSI izquierda y derecha vía picamera2."""
@@ -30,6 +39,7 @@ class StereoCapture:
         meter_mode: str = "matrix",
         lock_ae: bool = False,
         max_exposure_us: Optional[int] = None,
+        sensor_raw_size: tuple[int, int] = CANONICAL_RAW_SIZE,
     ) -> None:
         """Inicializa la captura estéreo.
 
@@ -60,6 +70,11 @@ class StereoCapture:
                 Override fps efectivo: con max_exposure_us=16000 la cámara corre a
                 ~60 FPS internamente; el pipeline siempre consume el frame más
                 reciente (latest-only semantics del request loop).
+            sensor_raw_size: Tamaño del stream RAW del sensor (w, h). Forza el
+                sensor mode de picamera2 vía raw={"size": ...}. Default
+                (2304, 1296) = Mode 1 IMX708, full-FOV binned 2×2 (120° HFOV).
+                Sin override, picamera2 elige Mode 0 (1536×864 cropeado) que
+                reduce el FOV a ~80°. Cambiar invalida la calibración existente.
         """
         self.cam_left_id = cam_left_id
         self.cam_right_id = cam_right_id
@@ -68,6 +83,7 @@ class StereoCapture:
         self.meter_mode = meter_mode
         self.lock_ae = lock_ae
         self.max_exposure_us = max_exposure_us
+        self.sensor_raw_size = sensor_raw_size
         self._cam_left = None
         self._cam_right = None
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -112,6 +128,7 @@ class StereoCapture:
         ]:
             config = cam.create_still_configuration(
                 main={"size": (w, h), "format": "BGR888"},
+                raw={"size": self.sensor_raw_size},
                 controls=initial_controls,
             )
             cam.configure(config)
