@@ -184,6 +184,119 @@ class DedupEngine:
             "turn_in_rate": round(turn_in, 4),
         }
 
+    def get_recent_hashes(
+        self,
+        since_ts: float,
+        until_ts: float | None = None,
+        protocol: str | None = None,
+    ) -> list[str]:
+        """Devuelve los hashes vistos por primera vez en una ventana temporal.
+
+        Usado por el publisher para armar el payload periódico que va a
+        Lambda L3 (dedup inter-cámara). Filtra por ``first_seen`` así cada
+        ventana es disjunta — un hash sólo se reporta en la ventana en la
+        que fue detectado por primera vez ese día.
+
+        Args:
+            since_ts: epoch seconds — borde inferior inclusivo.
+            until_ts: epoch seconds — borde superior exclusivo. None = ``time.time()``.
+            protocol: ``"wifi"`` o ``"ble"`` para filtrar por protocolo.
+                None = ambos.
+
+        Returns:
+            Lista de hashes hex (deduplicada implícitamente por la PK de
+            ``seen_hashes``).
+        """
+        if until_ts is None:
+            until_ts = time.time()
+
+        params: list[float | str] = [since_ts, until_ts]
+        where = "WHERE first_seen >= ? AND first_seen < ?"
+        if protocol is not None:
+            where += " AND protocol = ?"
+            params.append(protocol)
+
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"SELECT hash FROM seen_hashes {where}",
+                params,
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_window_summary(
+        self,
+        since_ts: float,
+        until_ts: float | None = None,
+        rssi_passerby: float = -75.0,
+        rssi_shopper: float = -55.0,
+    ) -> dict[str, int]:
+        """Agregados WiFi+BLE post-L2 dedup para una ventana cerrada.
+
+        Es lo que publica el bridge a cloud — sin hashes, solo counts.
+        Cuenta visitantes únicos: un dispositivo detectado por WiFi Y BLE
+        en la ventana cuenta como 1 (gracias a los unified_hashes de L2).
+
+        Args:
+            since_ts: epoch seconds — borde inferior inclusivo del ``first_seen``.
+            until_ts: epoch seconds — borde superior exclusivo. None = ``time.time()``.
+            rssi_passerby: RSSI mínimo para "pasó por la zona" (default -75 dBm).
+            rssi_shopper:  RSSI mínimo para "muy cerca / probable entrada" (-55 dBm).
+
+        Returns:
+            {"passersby": N, "shoppers": M} — ``shoppers ⊆ passersby``.
+        """
+        if until_ts is None:
+            until_ts = time.time()
+
+        # Las queries cuentan dispositivos únicos: si un MAC fue unificado en L2
+        # (visto por WiFi y BLE en ventana corta), aparece en seen_hashes dos
+        # veces pero unified_hashes lo agrupa — la lógica sigue siendo idéntica
+        # a la de ``get_unique_count`` pero scoped a la ventana por ``first_seen``.
+        with sqlite3.connect(self.db_path) as conn:
+            # Hashes individuales NO unificados, dentro de la ventana, con RSSI
+            # >= threshold. Cuenta cada uno una sola vez.
+            def _count(rssi_threshold: float) -> int:
+                # Componentes:
+                # 1) hashes individuales que no son parte de ningún unified
+                #    y que cumplen el filtro de RSSI en la ventana.
+                # 2) unified_hashes cuyo created_at cae en la ventana — si
+                #    alguno de los dos lados del par cumple el RSSI threshold
+                #    el unified cuenta (un walk-by detectado fuerte por uno de
+                #    los radios alcanza).
+                individual = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM seen_hashes sh
+                    WHERE sh.first_seen >= ? AND sh.first_seen < ?
+                      AND sh.rssi IS NOT NULL AND sh.rssi >= ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM unified_hashes uh
+                          WHERE uh.wifi_hash = sh.hash OR uh.ble_hash = sh.hash
+                      )
+                    """,
+                    (since_ts, until_ts, rssi_threshold),
+                ).fetchone()[0]
+
+                unified = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM unified_hashes uh
+                    WHERE uh.created_at >= ? AND uh.created_at < ?
+                      AND EXISTS (
+                          SELECT 1 FROM seen_hashes sh
+                          WHERE (sh.hash = uh.wifi_hash OR sh.hash = uh.ble_hash)
+                            AND sh.rssi IS NOT NULL
+                            AND sh.rssi >= ?
+                      )
+                    """,
+                    (since_ts, until_ts, rssi_threshold),
+                ).fetchone()[0]
+
+                return individual + unified
+
+            passersby = _count(rssi_passerby)
+            shoppers = _count(rssi_shopper)
+
+        return {"passersby": passersby, "shoppers": shoppers}
+
     def reset_daily(self) -> None:
         """Limpia todos los hashes para un nuevo día comercial."""
         with sqlite3.connect(self.db_path) as conn:

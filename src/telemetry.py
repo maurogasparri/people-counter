@@ -32,6 +32,8 @@ _STATE_DEPENDENT_KEYS = (
     "mqtt_disconnect_count",
     "seconds_since_last_reconnect",
     "buffer_backlog_messages",
+    "wifi_probe_ok",
+    "ble_scanner_ok",
 )
 
 
@@ -229,6 +231,13 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
 
     # --- Backlog del buffer ---
     telemetry["buffer_backlog_messages"] = state.get("buffer_backlog")
+
+    # --- Health de subsistemas WiFi/BLE ---
+    # ``None`` cuando el subsistema está deshabilitado en config (wifi_ble.enabled
+    # = false); ``True``/``False`` cuando está habilitado y reportando salud.
+    # Permite distinguir "no aplica" de "está caído" en las alertas de Grafana.
+    telemetry["wifi_probe_ok"] = state.get("wifi_probe_ok")
+    telemetry["ble_scanner_ok"] = state.get("ble_scanner_ok")
 
     # Garantiza que toda key dependiente de state exista aunque algo arriba
     # haya raiseado antes de asignarla.

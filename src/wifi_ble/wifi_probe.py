@@ -82,6 +82,21 @@ class WiFiProbeCapture:
     def probe_count(self) -> int:
         return self._probe_count
 
+    @property
+    def is_running(self) -> bool:
+        """True si el thread de captura está vivo y no fue señalizado para parar.
+
+        Usado por la telemetría para reportar la health del subsistema WiFi —
+        si el firmware nexmon murió o airmon-ng falló silenciosamente, el thread
+        sale y este flag pasa a False sin matar el pipeline de visión.
+        """
+        thread = self._capture_thread
+        return (
+            thread is not None
+            and thread.is_alive()
+            and not self._stop_event.is_set()
+        )
+
     def setup_monitor_mode(self) -> None:
         """Crea la interfaz monitor vía airmon-ng.
 

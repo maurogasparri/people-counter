@@ -60,6 +60,10 @@ from src.vision.detect import detect_persons, load_model
 from src.vision.static_suppressor import StaticSuppressor
 from src.web.annotate import annotate_left, compose_3panel, depth_to_colormap
 from src.web.viewer import WebViewer
+from src.wifi_ble.ble_scan import BLEAdvertisement, BLEScanner
+from src.wifi_ble.dedup import DedupEngine
+from src.wifi_ble.publisher import WifiBlePublisher
+from src.wifi_ble.wifi_probe import ProbeEvent, WiFiProbeCapture
 
 # Tamaño de las ventanas rolling usadas para los percentiles de latencia por
 # frame y los cálculos de detection-rate. 100 cubre ~7s a 15 FPS — suficiente
@@ -267,6 +271,112 @@ def build_mqtt(
     return client, buffer
 
 
+def build_wifi_ble(
+    config: dict[str, Any],
+    mqtt_client: Any,
+) -> tuple[DedupEngine, WifiBlePublisher, WiFiProbeCapture | None, BLEScanner | None] | None:
+    """Arma la cadena WiFi/BLE: captura → dedup → publisher.
+
+    Returns:
+        Tupla (dedup, publisher, wifi_capture, ble_scanner). Las dos últimas
+        pueden ser ``None`` si su sub-toggle está apagado. Devuelve ``None``
+        cuando ``wifi_ble.enabled`` es false (deshabilitado fleet-wide).
+    """
+    wifi_cfg = config.get("wifi_ble", {})
+    if not bool(wifi_cfg.get("enabled", False)):
+        logger.info("wifi_ble disabled — saltando bridge a MQTT")
+        return None
+
+    dedup_db = wifi_cfg.get("dedup_db_path") or os.path.join(
+        os.path.dirname(config["buffer"]["db_path"]),
+        "wifi_ble_dedup.sqlite",
+    )
+    dedup = DedupEngine(
+        db_path=dedup_db,
+        cross_window_seconds=float(
+            wifi_cfg.get("cross_protocol_window_seconds", 2.0)
+        ),
+        cross_rssi_delta=float(wifi_cfg.get("cross_protocol_rssi_delta", 5.0)),
+    )
+
+    wifi_capture: WiFiProbeCapture | None = None
+    iface = wifi_cfg.get("wifi_interface", "wlan0")
+
+    def _on_probe(event: ProbeEvent) -> None:
+        try:
+            dedup.process_detection(event.mac, "wifi", event.rssi)
+        except Exception:
+            logger.exception("dedup wifi process_detection falló")
+
+    try:
+        wifi_capture = WiFiProbeCapture(interface=iface, on_probe=_on_probe)
+        wifi_capture.setup_monitor_mode()
+        wifi_capture.start()
+        logger.info("wifi_probe_capture_started", extra={"interface": iface})
+    except Exception:
+        logger.exception(
+            "wifi_probe_capture_init_failed — el pipeline sigue sin WiFi probing"
+        )
+        wifi_capture = None
+
+    ble_scanner: BLEScanner | None = None
+    if bool(wifi_cfg.get("ble_enabled", True)):
+        def _on_advert(advert: BLEAdvertisement) -> None:
+            try:
+                dedup.process_detection(advert.mac, "ble", advert.rssi)
+            except Exception:
+                logger.exception("dedup ble process_detection falló")
+
+        try:
+            ble_scanner = BLEScanner(on_advert=_on_advert)
+            ble_scanner.start()
+            logger.info("ble_scanner_started")
+        except Exception:
+            logger.exception(
+                "ble_scanner_init_failed — el pipeline sigue sin BLE scanning"
+            )
+            ble_scanner = None
+
+    publisher = WifiBlePublisher(
+        mqtt_client=mqtt_client,
+        dedup=dedup,
+        period_seconds=float(wifi_cfg.get("probe_interval_seconds", 900)),
+        rssi_passerby=float(wifi_cfg.get("rssi_passerby_threshold", -75.0)),
+        rssi_shopper=float(wifi_cfg.get("rssi_shopper_threshold", -55.0)),
+    )
+    return dedup, publisher, wifi_capture, ble_scanner
+
+
+def _wifi_ble_health(
+    wifi_capture: "WiFiProbeCapture | None",
+    ble_scanner: "BLEScanner | None",
+) -> tuple[bool | None, bool | None]:
+    """Devuelve (wifi_probe_ok, ble_scanner_ok). None = subsistema deshabilitado.
+
+    El runtime distingue 3 estados por subsistema:
+        - None  → wifi_ble.enabled = false en config (no aplica)
+        - True  → thread de captura vivo
+        - False → thread murió (firmware nexmon caído, BlueZ caído, exception
+                  no manejada). El pipeline de visión sigue, pero la métrica
+                  permite alertar y rebootear el device.
+    """
+    wifi_ok: bool | None = None
+    if wifi_capture is not None:
+        try:
+            wifi_ok = bool(wifi_capture.is_running)
+        except Exception:
+            logger.exception("wifi_capture.is_running raised")
+            wifi_ok = False
+    ble_ok: bool | None = None
+    if ble_scanner is not None:
+        try:
+            ble_ok = bool(ble_scanner.is_running)
+        except Exception:
+            logger.exception("ble_scanner.is_running raised")
+            ble_ok = False
+    return wifi_ok, ble_ok
+
+
 def _build_telemetry_state(
     frame_latencies_ms: "deque[float]",
     detection_counts: "deque[int]",
@@ -275,6 +385,8 @@ def _build_telemetry_state(
     tracker: EuclideanTracker,
     mqtt_client: MQTTClient,
     buffer: MessageBuffer,
+    wifi_capture: "WiFiProbeCapture | None" = None,
+    ble_scanner: "BLEScanner | None" = None,
 ) -> dict[str, Any]:
     """Toma snapshot del estado runtime del pipeline al dict que espera
     :func:`collect_telemetry`. Cada lookup está wrappeado así un solo probe
@@ -310,6 +422,10 @@ def _build_telemetry_state(
     except Exception:
         logger.exception("buffer.count_unsent failed")
         state["buffer_backlog"] = None
+
+    wifi_ok, ble_ok = _wifi_ble_health(wifi_capture, ble_scanner)
+    state["wifi_probe_ok"] = wifi_ok
+    state["ble_scanner_ok"] = ble_ok
 
     return state
 
@@ -674,6 +790,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         no_mqtt=getattr(args, "no_mqtt", False),
     )
 
+    # --- WiFi/BLE: captura + dedup + bridge a MQTT ---
+    # Cualquier falla acá (firmware nexmon ausente, BlueZ caído, sin permisos)
+    # la pesca ``build_wifi_ble`` internamente y degrada — el pipeline de visión
+    # no se cae por culpa del subsistema de probing.
+    wifi_ble = build_wifi_ble(config, mqtt_client)
+    wifi_ble_publisher: WifiBlePublisher | None = None
+    wifi_capture: WiFiProbeCapture | None = None
+    ble_scanner: BLEScanner | None = None
+    if wifi_ble is not None:
+        _dedup, wifi_ble_publisher, wifi_capture, ble_scanner = wifi_ble
+
     # --- Wiring de los shadow delta ------------------------------------------
     # Los deltas llegan en el thread de red de paho; la queue es el handoff
     # thread-safe al main loop, que es el único writer de `config`. La misma
@@ -943,6 +1070,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                                 tracker,
                                 mqtt_client,
                                 buffer,
+                                wifi_capture=wifi_capture,
+                                ble_scanner=ble_scanner,
                             )
                         )
                         telem["error"] = "invalid_schedule"
@@ -1507,6 +1636,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         tracker,
                         mqtt_client,
                         buffer,
+                        wifi_capture=wifi_capture,
+                        ble_scanner=ble_scanner,
                     )
                 )
                 telem["fps"] = telem_frame_count / max(telem_elapsed, 1)
@@ -1520,6 +1651,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 frame_latencies_ms.clear()
                 detection_counts.clear()
                 detection_window_start_ts = now
+
+            # --- WiFi/BLE: publica resumen de la ventana si tocaba ---
+            # ``maybe_publish`` chequea internamente si pasó probe_interval; cuando
+            # ``wifi_ble.enabled`` es false, ``wifi_ble_publisher`` queda None y
+            # este bloque se saltea entero.
+            if wifi_ble_publisher is not None:
+                try:
+                    wifi_ble_publisher.maybe_publish()
+                except Exception:
+                    logger.exception("wifi_ble publisher tick falló")
 
             # --- Mantenimiento del buffer (cada 60s, no cada frame) ---
             if now - last_purge >= 60.0:
@@ -1543,6 +1684,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             health_monitor.stop()
         if status_led is not None:
             status_led.close()
+        if ble_scanner is not None:
+            try:
+                ble_scanner.stop()
+            except Exception:
+                logger.exception("ble_scanner stop falló")
+        if wifi_capture is not None:
+            try:
+                wifi_capture.stop()
+                wifi_capture.teardown_monitor_mode()
+            except Exception:
+                logger.exception("wifi_capture teardown falló")
         capture.close()
         mqtt_client.disconnect()
         # Libera recursos de Hailo si el backend lo soporta

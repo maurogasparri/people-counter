@@ -58,6 +58,21 @@ class BLEScanner:
     def advert_count(self) -> int:
         return self._advert_count
 
+    @property
+    def is_running(self) -> bool:
+        """True si el thread de scan está vivo y no fue señalizado para parar.
+
+        Usado por la telemetría para reportar la health del subsistema BLE —
+        si BlueZ murió o bleak crasheó, el thread sale y este flag pasa a False
+        sin matar el pipeline de visión.
+        """
+        thread = self._scan_thread
+        return (
+            thread is not None
+            and thread.is_alive()
+            and not self._stop_event.is_set()
+        )
+
     def start(self) -> None:
         """Arranca el scanning BLE asíncrono."""
         if self._scan_thread is not None:
