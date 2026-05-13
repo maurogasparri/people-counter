@@ -88,8 +88,8 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Lenguaje**: Python 3.13 (RPi OS Trixie). Black 88 chars, Ruff, type hints obligatorios.
 - **Logging**: módulo `logging` JSON estructurado. DEBUG dev / INFO prod.
 - **Config**: archivo único per-device.
-  - `config/config.example.yaml` (en repo): defaults canónicos de la flota. `load_config()` lo lee como base y deep-mergea encima `/etc/people-counter/config.yaml` (per-device override).
-  - **No hay separación fleet vs site**. Cambios fleet-wide se hacen en el example o se pushean por shadow (RUNTIME_SAFE_KEYS en `src/config/loader.py`).
+  - `/etc/people-counter/config.yaml` (per-device): fuente única de verdad en runtime. `load_config()` lee SOLO este archivo, sin merge con el example. Tiene que contener todas las keys requeridas (validadas en `_validate`).
+  - `config/config.example.yaml` (en repo): TEMPLATE documentado de la flota. NO se mergea en runtime — sirve para provisionar un device nuevo (operator copia → `/etc/people-counter/config.yaml` y edita) y para auditar qué keys son válidas. Cambios fleet-wide se shippean editando el template + redeployando el config a cada device. Una whitelist chica de keys (`CLOUD_OVERRIDABLE`: operating_hours + counting_enabled) puede pushearse vía AWS IoT Device Shadow sin restart.
   - **Hardware-agnostic**: los parámetros que dependen del hardware/setup del device (sensor, lens, bracket, board ChArUco, AE timings) están consolidados en `src/config/hardware.py` (dataclass `HardwareParams` + `load_hardware_params()`). Cambiar de sensor / bracket / lens / board se hace editando keys del config; ningún script tiene constantes hardware hardcodeadas. Los setup tools (focus_assist, calibrate, preview, roi_picker, diagnose_bracket, diagnose_depth) leen `HardwareParams` al startup; el runtime también plumb-ea los mismos valores a `StereoCapture`.
 - **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. **Nunca commitear**.
 - **Tests**: pytest, estructura espejo de src.
@@ -108,7 +108,7 @@ people-counter/
 │   ├── mqtt/           <- client (AWS IoT), buffer (SQLite outbox)
 │   ├── cloud/          <- persist_event Lambda (IoT Rules → Postgres)
 │   ├── status/         <- led, health, monitor (background thread)
-│   ├── config/         <- loader (deep-merge example + per-device) + hardware (HardwareParams dataclass)
+│   ├── config/         <- loader (strict, lee solo /etc/people-counter/config.yaml) + hardware (HardwareParams dataclass)
 │   └── main.py         <- orquestador del pipeline
 ├── tests/              <- 721 tests, estructura espejo de src
 ├── scripts/

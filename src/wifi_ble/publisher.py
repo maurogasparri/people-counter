@@ -87,24 +87,47 @@ class WifiBlePublisher:
         self._rssi_passerby = float(rssi_passerby)
         self._rssi_shopper = float(rssi_shopper)
         self._now = now_fn
-        self._last_period_end: float = self._now()
+        # Alineamos las ventanas a múltiplos de ``period_seconds`` desde el
+        # epoch (Unix 0). Con period=900s (15min) los boundaries quedan
+        # exactamente en :00, :15, :30, :45 UTC. Esto sincroniza el
+        # period_bucket del wifi_ble con el event_bucket de counting_events
+        # en Postgres, así turn_in_rate y conversion_rate joinean limpio.
+        #
+        # El primer ``maybe_publish`` emite el período del boundary que
+        # antecede al arranque hasta el siguiente boundary. Es parcial
+        # (solo tiene datos desde el arranque, no del boundary completo),
+        # pero etiqueta una ventana completa de 15min — aceptable trade-off
+        # contra perder los primeros 1-15min de data por skip.
+        self._last_period_end: float = (
+            self._now() // self._period
+        ) * self._period
 
     @property
     def last_period_end(self) -> float:
         return self._last_period_end
 
     def maybe_publish(self) -> int:
-        """Si ya pasó una ventana completa desde el último publish, emite.
+        """Si ya pasó el siguiente boundary, emite la ventana cerrada.
+
+        Las ventanas son ``[N*period, (N+1)*period)`` desde el epoch — no
+        relativas al arranque. Cuando ``now`` cruzó ``last_period_end +
+        period``, la ventana ``[last_period_end, last_period_end + period)``
+        ya está cerrada y se emite con esos límites exactos (no ``now``).
+
+        Si el pipeline se atrasa y cruzó varios boundaries en una sola call,
+        emitimos solo el siguiente; el resto se cubre en las próximas calls
+        (el loop principal llama esto cada frame, catch-up es rápido).
 
         Returns:
             1 si se publicó, 0 si todavía no tocaba o si la ventana fue vacía.
         """
         now = self._now()
-        if now - self._last_period_end < self._period:
+        next_boundary = self._last_period_end + self._period
+        if now < next_boundary:
             return 0
 
         period_start = self._last_period_end
-        period_end = now
+        period_end = next_boundary
 
         try:
             summary = self._dedup.get_window_summary(
@@ -135,11 +158,17 @@ class WifiBlePublisher:
             return 0
 
         try:
+            # period_bucket: como el publisher ya alinea period_start al
+            # múltiplo de _period (commit 8c797de), period_bucket == period_start.
+            # Lo mandamos explícito así Postgres lo guarda directo en la columna
+            # period_bucket (regular, no GENERATED) — facilita queries multi-bucket
+            # cuando los devices de la flota corren con bucket_seconds distintos.
             self._mqtt.publish_event(
                 "wifi_ble",
                 {
                     "period_start": int(period_start),
                     "period_end": int(period_end),
+                    "period_bucket": int(period_start),
                     "passersby": summary["passersby"],
                     "shoppers": summary["shoppers"],
                 },

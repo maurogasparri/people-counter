@@ -321,7 +321,6 @@ def head_depth_in_bbox(
     cx_px: float,
     cy_px: float,
     *,
-    rotated_bbox: Optional[tuple[float, float, float, float, float]] = None,
     slice_thickness_mm: float = 100.0,
     min_head_area_px: int = 40,
     max_head_height_mm: float = 1800.0,
@@ -383,17 +382,6 @@ def head_depth_in_bbox(
             conversión depth-to-world.
         cx_px: Principal point x rectificado en px (P1[0, 2]).
         cy_px: Principal point y rectificado en px (P1[1, 2]).
-        rotated_bbox: Rectángulo rotado opcional ``(cx, cy, w, h,
-            angle_deg)`` en coordenadas pixel de imagen. Cuando se
-            provee, el sampling de depth se restringe a los pixels
-            dentro de este polígono — estrictamente más tight que el
-            ``bbox`` axis-aligned, cuyo envelope del rectángulo rotado
-            infla el área hasta 2× a 45° de rotación. Crucial para
-            geometría cenital donde RAPiD emite un rectángulo rotado
-            body-aligned pero ``bbox`` se desborda al piso +
-            estructura vecina que pasan el depth gate antropométrico.
-            Pasar ``None`` (default) para detectores axis-aligned
-            (yolov8) donde ``bbox`` ya es el envelope tight.
         slice_thickness_mm: Ancho de bin del histograma. 10 cm es
             más ancho que la cuantización de depth de SGBM en el
             rango operativo, así que una cabeza real llena al menos
@@ -458,40 +446,6 @@ def head_depth_in_bbox(
     valid = (roi > 0) & (roi >= near) & (roi <= far)
     if int(valid.sum()) < min_head_area_px:
         return None
-
-    # ---- Máscara de rectángulo rotado (detectores estilo RAPiD) ----
-    # El ``bbox`` axis-aligned es el envelope tight de un rectángulo
-    # rotado para arquitecturas como RAPiD. En ángulos no triviales
-    # el envelope arrastra piso + estructura vecina; en geometría
-    # cenital esa estructura puede caer a depths dentro del gate
-    # antropométrico (borde de escritorio, respaldo de silla, gabinete
-    # alto al margen del bbox) y el histogram-walk-from-nearest lo
-    # elige como "cabeza". Filtrar ``valid`` contra el polígono rotado
-    # le da a la función un ROI con forma de cuerpo incluso cuando el
-    # bbox axis-aligned es 2× el área del cuerpo real.
-    if rotated_bbox is not None:
-        rcx, rcy, rw, rh, rang_deg = rotated_bbox
-        rang = float(np.deg2rad(rang_deg))
-        cos_a, sin_a = float(np.cos(rang)), float(np.sin(rang))
-        # 4 esquinas del rectángulo rotado en coords de imagen original.
-        dx = np.array(
-            [-rw / 2.0, rw / 2.0, rw / 2.0, -rw / 2.0], dtype=np.float32
-        )
-        dy = np.array(
-            [-rh / 2.0, -rh / 2.0, rh / 2.0, rh / 2.0], dtype=np.float32
-        )
-        corners_x = rcx + dx * cos_a - dy * sin_a
-        corners_y = rcy + dx * sin_a + dy * cos_a
-        # Translate a coords ROI-locales (origen en bbox top-left).
-        # Redondear a int una sola vez — fillPoly toma int32.
-        poly = np.empty((4, 2), dtype=np.int32)
-        poly[:, 0] = np.round(corners_x - x1).astype(np.int32)
-        poly[:, 1] = np.round(corners_y - y1).astype(np.int32)
-        poly_mask = np.zeros(roi.shape[:2], dtype=np.uint8)
-        cv2.fillPoly(poly_mask, [poly], 1)
-        valid = valid & poly_mask.astype(bool)
-        if int(valid.sum()) < min_head_area_px:
-            return None
 
     # ---- Back-projection 3D de cada pixel gateado en el ROI ----
     # Construir grids (u, v) de pixel-centre cubriendo el bbox en
@@ -606,7 +560,6 @@ def head_depth_in_bbox(
             valid_col=valid_col,
             head_blob_mask=(lbl == biggest),
             bbox=(x1, y1, x2, y2),
-            rotated_bbox=rotated_bbox,
             near_mm=near,
             far_mm=far,
             d_lo=d_lo,
@@ -631,7 +584,6 @@ def _dump_depth_debug(
     valid_col: np.ndarray,
     head_blob_mask: np.ndarray,
     bbox: tuple[int, int, int, int],
-    rotated_bbox: Optional[tuple[float, float, float, float, float]],
     near_mm: float,
     far_mm: float,
     d_lo: float,
@@ -650,9 +602,8 @@ def _dump_depth_debug(
 
     Cuando se provee ``debug_frame`` (el frame izquierdo rectificado
     de main.py), el primer panel muestra el crop del bbox con
-    polígono rotado + overlay de texto así la escena visual se
-    matchea contra el análisis de depth side-by-side en una única
-    imagen.
+    overlay de texto así la escena visual se matchea contra el
+    análisis de depth side-by-side en una única imagen.
 
     Auto-desactiva después de ``DEPTH_DEBUG_MAX_DUMPS`` para mantener
     bounded el uso de disco. Una línea de log por dump resume el
@@ -707,31 +658,11 @@ def _dump_depth_debug(
             if crop.shape[:2] != (h, w):
                 crop = cv2.resize(crop, (w, h), interpolation=cv2.INTER_AREA)
 
-            # Dibujar el polígono rotado (el footprint del cuerpo
-            # detectado por RAPiD) en verde; envelope axis-aligned
-            # en blanco para contraste.
+            # Dibujar el envelope axis-aligned del bbox en blanco para
+            # contraste contra el contenido del crop.
             cv2.rectangle(
                 crop, (0, 0), (w - 1, h - 1), (255, 255, 255), 1,
             )
-            if rotated_bbox is not None:
-                rcx, rcy, rw, rh, rang_deg = rotated_bbox
-                rang = float(np.deg2rad(rang_deg))
-                cos_a, sin_a = float(np.cos(rang)), float(np.sin(rang))
-                dx = np.array(
-                    [-rw / 2.0, rw / 2.0, rw / 2.0, -rw / 2.0],
-                    dtype=np.float32,
-                )
-                dy = np.array(
-                    [-rh / 2.0, -rh / 2.0, rh / 2.0, rh / 2.0],
-                    dtype=np.float32,
-                )
-                corners_x = rcx + dx * cos_a - dy * sin_a
-                corners_y = rcy + dx * sin_a + dy * cos_a
-                # Translate a coords crop-locales (origen en bbox top-left).
-                poly = np.empty((4, 2), dtype=np.int32)
-                poly[:, 0] = np.round(corners_x - x1).astype(np.int32)
-                poly[:, 1] = np.round(corners_y - y1).astype(np.int32)
-                cv2.polylines(crop, [poly], True, (0, 255, 0), 2)
 
             # Marcar el centroide del blob de cabeza elegido en el
             # crop con una cruz roja — pista visual principal:

@@ -119,10 +119,10 @@ def setup_logging(config: dict[str, Any]) -> None:
 def _runtime_resolution(config: dict[str, Any]) -> tuple[int, int]:
     """Elige la resolución de runtime desde el config.
 
-    ``config.vision.resolution`` es la única fuente de verdad (defaults
-    mergeados de config.example.yaml; el YAML per-device puede overridear).
-    Cae al sensor default_res solo cuando ``vision`` falta enteramente
-    (fixtures legacy / mínimas de tests).
+    ``config.vision.resolution`` es la única fuente de verdad — viene
+    del per-device ``/etc/people-counter/config.yaml`` (sin merge contra
+    el example del repo). Cae al sensor default_res solo cuando
+    ``vision`` falta enteramente (fixtures legacy / mínimas de tests).
     """
     cfg_res = (config.get("vision") or {}).get("resolution")
     if cfg_res:
@@ -157,9 +157,10 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
         vision_cfg = config.get("vision", {})
         # Default 16000us si el config omite la key, en vez de fallar al
         # default de picamera2 (~33ms a 30fps). 16ms es el valor canónico
-        # de la flota (config.example.yaml) — un config viejo sin la key
-        # corre con el cap correcto. Setear explícitamente null para
-        # deshabilitar.
+        # de la flota (documentado en config.example.yaml como template);
+        # se aplica acá vía .get(key, 16000) porque el loader es strict y
+        # NO mergea con el example en runtime. Setear explícitamente null
+        # para deshabilitar.
         max_exposure_us = vision_cfg.get("max_exposure_us", 16000)
         # Sensor raw size = sensor.default_res. Anclar el sensor mode del
         # IMX708 a Mode 1 (2304×1296 full-FOV binned); sin esto picamera2
@@ -337,10 +338,17 @@ def build_wifi_ble(
             )
             ble_scanner = None
 
+    # Period del summary: probe_interval_seconds (per-device override) o
+    # analytics.bucket_seconds (fleet-wide default). Así la ventana del
+    # summary matchea por default con el bucket analítico usado en Postgres.
+    analytics_cfg = config.get("analytics", {}) or {}
+    default_bucket = float(analytics_cfg.get("bucket_seconds", 900))
+    period_seconds = float(wifi_cfg.get("probe_interval_seconds", default_bucket))
+
     publisher = WifiBlePublisher(
         mqtt_client=mqtt_client,
         dedup=dedup,
-        period_seconds=float(wifi_cfg.get("probe_interval_seconds", 900)),
+        period_seconds=period_seconds,
         rssi_passerby=float(wifi_cfg.get("rssi_passerby_threshold", -75.0)),
         rssi_shopper=float(wifi_cfg.get("rssi_shopper_threshold", -55.0)),
     )
@@ -504,9 +512,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     """Corre el pipeline principal de procesamiento."""
     device_id = config["device"]["id"]
     store_id = config["device"]["store_id"]
-    # Todos los settings ahora están en `config` — defaults de config.example.yaml
-    # (bundled en el repo) mergeados con /etc/people-counter/config.yaml
-    # (overrides per-device) al momento de load_config(). Los deltas del
+    # Todos los settings vienen de `config` — cargado strict desde
+    # /etc/people-counter/config.yaml (single source of truth, sin merge
+    # con el example del repo) en load_config(). Los deltas del
     # cloud shadow aplican encima vía apply_shadow_delta() dentro del main loop.
     vision_cfg = config["vision"]
     detect_cfg = config["detection"]
@@ -565,17 +573,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # --- Cargar modelo de detección ---
     model_path = detect_cfg["model_path"]
     detection_backend = getattr(args, "detection_backend", "auto")
-    architecture = detect_cfg["architecture"]
     logger.info(
-        "Cargando modelo: %s (backend=%s, arch=%s)",
+        "Cargando modelo: %s (backend=%s)",
         model_path,
         detection_backend,
-        architecture,
     )
     model = load_model(
         model_path,
         backend=detection_backend,
-        architecture=architecture,
     )
 
     # --- Construir SGBM ---
@@ -1310,13 +1315,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # SGBM domina el costo per-frame (~60ms a downscale=4 en Pi 5).
             # Lo corremos solo cuando realmente necesitamos depth fresca:
             #   - hay detecciones → height + z del tracker la necesitan ahora,
-            #   - viewer enabled y el último refresh fue hace >0.5s →
-            #     mantener el panel de depth actualizándose a ~2 fps así un
-            #     operador ve liveness incluso cuando no hay nadie en frame.
+            #   - viewer con clientes activos y el último refresh fue hace
+            #     >0.5s → mantener el panel de depth a ~2 fps así un
+            #     operador conectado ve liveness incluso sin nadie en frame.
             # Cuando ninguna aplica dejamos depth_map=None y el viewer
-            # reusa last_depth_panel del frame anterior.
+            # reusa last_depth_panel del frame anterior. Gateado por
+            # ``has_subscribers``: si nadie está mirando, no se paga el
+            # costo de SGBM solo por el viewer.
             viewer_depth_due = (
                 viewer is not None
+                and viewer.has_subscribers()
                 and (t_iter_start - last_viewer_depth_t) >= VIEWER_DEPTH_INTERVAL_S
             )
             if (
@@ -1364,11 +1372,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     cx, cy = det.centroid
                     # Tracker z = mediana del crop central del bbox. Esa es
                     # la depth del "centro de masa" del cuerpo (torso para
-                    # YOLO stock, cabeza para RAPiD) — lo que queremos para
-                    # gating de re-id entre frames. Head depth necesita un
-                    # estimate separado, específico-cabeza, porque en
-                    # geometría cenital con el bbox YOLO-COCO el centroide
-                    # cae sobre el torso, no la cabeza.
+                    # YOLO stock) — lo que queremos para gating de re-id
+                    # entre frames. Head depth necesita un estimate
+                    # separado, específico-cabeza, porque en geometría
+                    # cenital con el bbox YOLO-COCO el centroide cae sobre
+                    # el torso, no la cabeza.
                     if depth_map is not None:
                         z = depth_at_bbox(depth_map, det.bbox)
                         # El filtro de columna 3-D requiere intrínsecos
@@ -1385,15 +1393,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                                 fx_px=float(focal_length_px),
                                 cx_px=float(cx_rect_px),
                                 cy_px=float(cy_rect_px),
-                                # RAPiD emite un rectángulo rotado body-aligned
-                                # que colapsamos al ``bbox`` axis-aligned para
-                                # los consumers tracker / NMS; acá queremos
-                                # el polígono ajustado de vuelta así el sampler
-                                # de depth ignora el piso + estructura vecina
-                                # que el envelope axis-aligned barre. yolov8
-                                # deja ``rotated`` como None y la función cae
-                                # al modo bbox-only.
-                                rotated_bbox=det.rotated,
                                 max_head_height_mm=head_depth_max_mm,
                                 min_head_above_floor_mm=head_depth_min_mm,
                                 column_radius_mm=head_depth_column_radius_mm,
@@ -1587,11 +1586,25 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         event.timestamp,
                     )
 
+                # event_bucket: alineamos event_time al múltiplo de
+                # analytics.bucket_seconds (epoch). Lo calculamos en el
+                # device y lo mandamos en el payload así Postgres lo guarda
+                # como columna regular — cambiar bucket_seconds via shadow
+                # no requiere migration, y rows viejos preservan su bucket
+                # original (históricamente correcto).
+                bucket_secs = float(
+                    config.get("analytics", {}).get("bucket_seconds", 900)
+                )
+                event_bucket = (
+                    int(event.timestamp / bucket_secs) * bucket_secs
+                )
+
                 payload = {
                     "direction": event.direction,
                     "track_id": event.track_id,
                     "position_y": event.position_y,
                     "event_time": event.timestamp,
+                    "event_bucket": event_bucket,
                     "total_in": counter.total_in,
                     "total_out": counter.total_out,
                     "scaling_factor": scaling,
@@ -1644,47 +1657,53 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 fps_start = time.time()
 
             # --- Push al web viewer ---
-            # Composite de 3 paneles (L annotated | R raw | depth colormap).
-            # El panel de depth está cacheado: SGBM se computa solo en frames
-            # con detecciones (ver sección depth), así entre detecciones
-            # mostramos el depth map más reciente en vez de un panel negro.
-            # ``push`` es no-bloqueante; las fallas se loggean pero no rompen
+            # Stats se actualizan siempre — son cheap (dict update bajo
+            # lock) y permiten que alguien pollee ``/stats`` sin tener
+            # el stream abierto, viendo counts en vivo.
+            #
+            # El composite (annotate + compose_3panel) cuesta 3-5ms reales
+            # y solo sirve al stream MJPEG. Gateado por
+            # ``has_subscribers()`` — sin clientes, ni siquiera se construye.
+            # Match al patrón production-grade del incumbent (Drawing.cpp
+            # corre solo si subscriberCount > 0; counting es independiente).
+            # ``push`` es no-bloqueante; fallas se loggean pero no rompen
             # el pipeline.
             if viewer is not None:
-                try:
-                    if depth_map is not None:
-                        last_depth_panel = depth_to_colormap(depth_map)
-                    elif last_depth_panel is None:
-                        last_depth_panel = depth_to_colormap(None)
-                    left_annot = annotate_left(
-                        rect_l,
-                        detections,
-                        tracks,
-                        counter,
-                        fps=last_fps_estimate,
-                    )
-                    composite = compose_3panel(
-                        left_annot,
-                        rect_r,
-                        last_depth_panel,
-                    )
-                    confirmed_or_pending = sum(
-                        1
-                        for t in tracks.values()
-                        if getattr(t, "state", None) in ("confirmed", "pending")
-                    )
-                    viewer.push(
-                        composite,
-                        {
-                            "total_in": counter.total_in,
-                            "total_out": counter.total_out,
-                            "fps": last_fps_estimate,
-                            "tracks": confirmed_or_pending,
-                            "dets": len(detections),
-                        },
-                    )
-                except Exception:
-                    logger.exception("Falló el push al web viewer")
+                confirmed_or_pending = sum(
+                    1
+                    for t in tracks.values()
+                    if getattr(t, "state", None) in ("confirmed", "pending")
+                )
+                viewer.update_stats(
+                    {
+                        "total_in": counter.total_in,
+                        "total_out": counter.total_out,
+                        "fps": last_fps_estimate,
+                        "tracks": confirmed_or_pending,
+                        "dets": len(detections),
+                    }
+                )
+                if viewer.has_subscribers():
+                    try:
+                        if depth_map is not None:
+                            last_depth_panel = depth_to_colormap(depth_map)
+                        elif last_depth_panel is None:
+                            last_depth_panel = depth_to_colormap(None)
+                        left_annot = annotate_left(
+                            rect_l,
+                            detections,
+                            tracks,
+                            counter,
+                            fps=last_fps_estimate,
+                        )
+                        composite = compose_3panel(
+                            left_annot,
+                            rect_r,
+                            last_depth_panel,
+                        )
+                        viewer.push(composite)
+                    except Exception:
+                        logger.exception("Falló el push al web viewer")
 
             # --- Observability: registra latencia per-frame + count de detecciones ---
             frame_latencies_ms.append((time.perf_counter() - t_iter_start) * 1000.0)

@@ -59,24 +59,47 @@ REMOTE_LOG_DIR = "/var/log/people-counter"
 
 
 def cmd_create(args: argparse.Namespace) -> None:
-    """Crea un device nuevo: registra el IoT thing, genera certs, arma config."""
+    """Provisiona un device (certs + config + metadata).
+
+    Comportamiento idempotente respecto del template — re-correr ``create``
+    sobre un device existente refresca el config desde
+    ``config/config.example.yaml`` sin tocar los certs. Eso permite que el
+    operador edite el template y sincronice el provisioned local con un
+    ``create`` plano, sin riesgo de rotar certs (operación destructiva en
+    AWS IoT).
+
+    Reglas:
+      - Device nuevo: registra IoT thing + emite cert + arma config + metadata.
+      - Device existente sin ``--force``: solo refresca config + metadata.
+        Certs intactos. Si necesitás rotar certs, usá ``reprovision`` (no
+        ``create --force``, que es más destructivo).
+      - Device existente con ``--force``: regenera TODO incluído cert
+        (rotación implícita). Útil para empezar de cero sobre un device
+        comprometido. Equivale a ``reprovision`` + refresh de config en
+        un solo comando.
+    """
     device_id = args.device_id
     device_dir = PROVISION_DIR / device_id
     cert_dir = device_dir / "certs"
 
-    if device_dir.exists() and not args.force:
-        logger.error(
-            "Device %s already provisioned at %s. Use --force to overwrite.",
-            device_id,
-            device_dir,
-        )
-        sys.exit(1)
+    existing = device_dir.exists()
+    config_refresh_only = existing and not args.force
 
     device_dir.mkdir(parents=True, exist_ok=True)
     cert_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Registrar IoT Thing ---
-    if not args.skip_aws:
+    # --- Registrar IoT Thing + emitir cert ---
+    # En modo refresh saltamos toda la interacción con AWS — el thing y
+    # el cert ya existen y son válidos. El operador puede usar
+    # ``reprovision`` si necesita rotar el cert por separado.
+    if config_refresh_only:
+        logger.info(
+            "Device %s ya existe — refreshing config desde el template "
+            "(certs intactos; usar 'reprovision' para rotarlos, o "
+            "'create --force' para rotación + refresh en uno)",
+            device_id,
+        )
+    elif not args.skip_aws:
         _create_iot_thing(device_id, cert_dir, args.endpoint, args.policy_name)
     else:
         logger.warning("Skipping AWS IoT registration (--skip-aws)")
@@ -86,10 +109,10 @@ def cmd_create(args: argparse.Namespace) -> None:
             if not placeholder.exists():
                 placeholder.write_text(f"# Placeholder — replace with real {name}\n")
 
-    # --- Armar config YAML ---
+    # --- Armar config YAML --- (siempre, incluso en refresh)
     _build_config(device_dir, args)
 
-    # --- Guardar metadata del device ---
+    # --- Guardar metadata del device --- (siempre)
     metadata = {
         "device_id": device_id,
         "store_id": args.store_id,
@@ -98,7 +121,10 @@ def cmd_create(args: argparse.Namespace) -> None:
     }
     (device_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
-    logger.info("Device %s provisioned at %s", device_id, device_dir)
+    if config_refresh_only:
+        logger.info("Config refreshed at %s (certs unchanged)", device_dir)
+    else:
+        logger.info("Device %s provisioned at %s", device_id, device_dir)
 
 
 def _create_iot_thing(

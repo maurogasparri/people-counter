@@ -305,6 +305,16 @@ class WiFiProbeCapture:
             )
             return
 
+        # Scapy loguea un WARNING ruidoso ("Socket ... failed with [Errno 100]
+        # Network is down") cuando el teardown_monitor_mode baja wlan0 mientras
+        # sniff() está bloqueado esperando un packet. Es esperable durante el
+        # shutdown — el socket muere porque CAMBIAMOS el modo de la interface.
+        # El warning sale del módulo scapy.sendrecv/scapy.arch, no del runtime,
+        # así que silenciamos el logger padre "scapy" que cascadea a todos los
+        # children — escribirlos uno por uno es frágil (puede cambiar entre
+        # versiones de scapy).
+        logging.getLogger("scapy").setLevel(logging.ERROR)
+
         def _handle_packet(pkt: Any) -> None:
             if not pkt.haslayer(Dot11):
                 return

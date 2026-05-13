@@ -303,7 +303,6 @@ def _validate(config: dict[str, Any]) -> None:
         "lens": ("type", "hfov_deg"),
         "vision": ("resolution", "fps", "calibration_file", "sgbm"),
         "detection": (
-            "architecture",
             "model_path",
             "confidence_threshold",
             "nms_threshold",

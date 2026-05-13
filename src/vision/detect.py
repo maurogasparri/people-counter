@@ -1,4 +1,4 @@
-"""Detección de personas con arquitecturas de modelo intercambiables.
+"""Detección de personas — backend hailo (HEF) o opencv (ONNX).
 
 Dos backends comparten el path de preproceso (letterbox + uint8 NHWC para
 Hailo, o float32 NCHW para OpenCV):
@@ -6,18 +6,10 @@ Hailo, o float32 NCHW para OpenCV):
   - hailo: Producción. Corre HEF sobre Hailo-8L vía SDK hailo_platform.
   - opencv: Desarrollo/testing. Corre ONNX vía OpenCV DNN.
 
-El path de postproceso es **architecture-specific** y vive en el registry
-``ARCHITECTURES`` debajo. Cada entry conoce su input size y su decoder.
-Actualmente shippeamos dos:
-
-  - yolov8: head COCO 80-class. Auto-detecta si el HEF emitió una lista
-    Hailo-NMS de arrays o un tensor raw ``(1, 84, N)``.
-  - rapid:  head rotated-bbox de Boston VIP, 1-class person. El HEF emite
-    tres tensores raw per-scale (strides 8/16/32). El decode corre en CPU
-    después de Hailo ya que la head rotada no está soportada por la unidad
-    NMS on-chip.
-
-Agregar una arquitectura nueva es un entry en ``ARCHITECTURES`` más un
+El postproceso vive en el registry ``ARCHITECTURES`` debajo. Hoy solo
+shippeamos ``yolov8`` (head COCO 80-class; auto-detecta si el HEF emitió
+una lista Hailo-NMS de arrays o un tensor raw ``(1, 84, N)``). Agregar
+una arquitectura nueva es un entry en ``ARCHITECTURES`` más un
 postprocess callable con la misma signature.
 """
 
@@ -47,24 +39,13 @@ class Detection:
     bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2) en coords de imagen original
     confidence: float
     centroid: tuple[float, float]  # (cx, cy) centro del bbox
-    # Rectángulo rotado ajustado de las arquitecturas que emiten uno (RAPiD).
-    # ``(cx, cy, w, h, angle_deg)`` en coordenadas de imagen original — mismo
-    # frame que ``bbox``. ``None`` para detectores axis-aligned (yolov8).
-    # Los consumers a los que les importa el footprint real del cuerpo (head
-    # depth, máscaras) deberían preferir este cuando esté presente; ``bbox``
-    # es el envelope axis-aligned ajustado y sobrepasa cuando el ángulo no
-    # es trivial.
-    rotated: tuple[float, float, float, float, float] | None = None
 
     def to_dict(self) -> dict:
-        d: dict = {
+        return {
             "bbox": list(self.bbox),
             "confidence": self.confidence,
             "centroid": list(self.centroid),
         }
-        if self.rotated is not None:
-            d["rotated"] = list(self.rotated)
-        return d
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +68,6 @@ class DetectionBackend(Protocol):
 
             - yolov8 + NMS built-in de Hailo → lista de 80 arrays per-class.
             - yolov8 raw → ndarray de forma ``(1, 84, N)``.
-            - rapid raw → lista de 3 ndarrays per-scale.
         """
         ...
 
@@ -106,7 +86,7 @@ class HailoBackend:
 
     Maneja tanto HEFs single-output (ej. YOLOv8 con NMS on-chip, donde
     el único output es la lista de detección per-class) como HEFs
-    multi-output (ej. RAPiD raw, tres tensores per-scale).
+    multi-output (tensores raw per-scale para postproceso CPU).
     """
 
     def __init__(self, hef_path: str) -> None:
@@ -156,7 +136,7 @@ class HailoBackend:
 
         self._input_name = self._hef.get_input_vstream_infos()[0].name
         # Capturar el orden de outputs declarado por el HEF así modelos
-        # multi-output decodean en orden determinístico (S, M, L para RAPiD).
+        # multi-output decodean en orden determinístico per-scale.
         self._output_names = [
             info.name for info in self._hef.get_output_vstream_infos()
         ]
@@ -490,220 +470,6 @@ def postprocess_hailo_nms(
 
 
 # ---------------------------------------------------------------------------
-# Postprocess: output raw 3-scale de RAPiD
-# ---------------------------------------------------------------------------
-
-# Anchors RAPiD para los weights MWHB1024 (Boston VIP). Per-scale 3
-# anchors, una fila cada uno = (anchor_w_px, anchor_h_px) al input
-# nativo 1024×1024 del modelo. El HEF saca tensores raw per-scale (sin
-# decode on-chip), así que reproducimos el decode original de PyTorch
-# acá en CPU.
-RAPID_ANCHORS = {
-    8: np.array(
-        [[18.78, 33.47], [28.89, 61.75], [48.68, 68.39]], dtype=np.float32,
-    ),
-    16: np.array(
-        [[45.07, 101.47], [63.10, 113.54], [81.39, 134.46]], dtype=np.float32,
-    ),
-    32: np.array(
-        [[91.74, 144.99], [137.52, 178.48], [194.44, 250.80]], dtype=np.float32,
-    ),
-}
-RAPID_STRIDES = (8, 16, 32)
-RAPID_INPUT_SIZE = (1024, 1024)
-# Rango de ángulo usado por la head de RAPiD: output sigmoid mapeado a
-# (-180°, 180°). La magnitud exacta no importa para nuestro output de
-# bbox axis-aligned (el rectángulo envolvente tight es el mismo hasta
-# un flip sign-symmetric), pero mantener la parametrización original
-# evita sorpresas si alguien reusa este decoder después para NMS rotado.
-_RAPID_ANGLE_RANGE_DEG = 360.0
-
-
-def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
-
-
-def _rapid_to_grid(
-    arr: np.ndarray, expected_channels: int = 18,
-) -> "np.ndarray | None":
-    """Normaliza un tensor RAPiD per-scale a ``(H, W, n_anchors, 6)``.
-
-    Hailo VStream devuelve NHWC por default; el path OpenCV puede
-    devolver NCHW. Aceptamos ambos y cualquier batch dim leading.
-    """
-    a = np.asarray(arr)
-    if a.ndim == 4 and a.shape[0] == 1:
-        a = a[0]
-    if a.ndim != 3:
-        return None
-
-    if a.shape[-1] == expected_channels:
-        h, w, _ = a.shape
-    elif a.shape[0] == expected_channels:
-        a = np.transpose(a, (1, 2, 0))
-        h, w, _ = a.shape
-    else:
-        return None
-
-    return a.reshape(h, w, 3, 6)
-
-
-def postprocess_rapid(
-    raw_output: list,
-    confidence_threshold: float,
-    nms_threshold: float,
-    scale: float,
-    pad_x: int,
-    pad_y: int,
-    original_size: tuple[int, int],
-    input_size: tuple[int, int] = RAPID_INPUT_SIZE,
-) -> list[Detection]:
-    """Postprocesa output raw 3-scale de RAPiD a detecciones de personas.
-
-    El HEF de RAPiD emite tres tensores per-scale (S/M/L = strides
-    8/16/32), cada uno con 18 channels = ``3 anchors × (cx, cy, w, h,
-    angle, conf)``. Hacemos sigmoid + decode de anchors en CPU,
-    convertimos cada rectángulo rotado a su tight axis-aligned
-    enclosing box, y corremos NMS plano sobre esos enclosing boxes —
-    el tracker downstream solo consume bboxes axis-aligned, así que
-    colapsamos la rotación acá.
-
-    Args:
-        raw_output: Lista de 3 ndarrays per-scale en orden HEF (S, M, L).
-        confidence_threshold: Mínima confidence sigmoid a mantener.
-        nms_threshold: Threshold de IoU para NMS axis-aligned.
-        scale: Factor de escala letterbox.
-        pad_x, pad_y: Offsets de padding letterbox.
-        original_size: ``(width, height)`` de la imagen original.
-        input_size: Input ``(W, H)`` del modelo — default 1024×1024.
-    """
-    if not isinstance(raw_output, (list, tuple)) or len(raw_output) != 3:
-        return []
-
-    all_boxes: list[np.ndarray] = []  # axis-aligned [x1, y1, x2, y2]
-    all_scores: list[np.ndarray] = []
-    all_rotated: list[np.ndarray] = []  # [cx, cy, w, h, angle_deg]
-
-    for arr, stride in zip(raw_output, RAPID_STRIDES):
-        grid = _rapid_to_grid(arr)
-        if grid is None:
-            continue
-
-        h, w = grid.shape[:2]
-        tx = grid[..., 0]
-        ty = grid[..., 1]
-        tw = grid[..., 2]
-        th = grid[..., 3]
-        ta = grid[..., 4]
-        tc = grid[..., 5]
-
-        conf = _sigmoid(tc)
-        mask = conf >= confidence_threshold
-        if not np.any(mask):
-            continue
-
-        # Construir offsets de cell-grid, broadcast a los 3 slots de anchor.
-        gy_, gx_ = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
-        gx = gx_[..., None].astype(np.float32)  # (h, w, 1)
-        gy = gy_[..., None].astype(np.float32)
-
-        bx = (_sigmoid(tx) + gx) * stride
-        by = (_sigmoid(ty) + gy) * stride
-        anchors = RAPID_ANCHORS[stride]  # (3, 2)
-        bw = anchors[None, None, :, 0] * np.exp(tw)
-        bh = anchors[None, None, :, 1] * np.exp(th)
-        angle_deg = (_sigmoid(ta) - 0.5) * _RAPID_ANGLE_RANGE_DEG
-
-        bx_f = bx[mask]
-        by_f = by[mask]
-        bw_f = bw[mask]
-        bh_f = bh[mask]
-        ang_f = angle_deg[mask]
-        conf_f = conf[mask]
-
-        # Bbox axis-aligned tight del rectángulo rotado: rotar los 4
-        # offsets de esquina y tomar el min/max per-row. Vectorizado
-        # sobre todas las celdas que sobrevivieron en este scale.
-        cos_a = np.cos(np.deg2rad(ang_f))
-        sin_a = np.sin(np.deg2rad(ang_f))
-        dx = np.stack(
-            [-bw_f / 2, bw_f / 2, bw_f / 2, -bw_f / 2], axis=1,
-        )
-        dy = np.stack(
-            [-bh_f / 2, -bh_f / 2, bh_f / 2, bh_f / 2], axis=1,
-        )
-        rx = dx * cos_a[:, None] - dy * sin_a[:, None]
-        ry = dx * sin_a[:, None] + dy * cos_a[:, None]
-        cx = bx_f[:, None] + rx
-        cy = by_f[:, None] + ry
-        x1 = cx.min(axis=1)
-        y1 = cy.min(axis=1)
-        x2 = cx.max(axis=1)
-        y2 = cy.max(axis=1)
-
-        all_boxes.append(np.stack([x1, y1, x2, y2], axis=1))
-        all_scores.append(conf_f)
-        # Preservar el rectángulo rotado (cx, cy, w, h, angle_deg)
-        # antes del collapse axis-aligned — los consumers downstream
-        # (head_depth_in_bbox) lo usan como máscara polígono para
-        # rechazar pixels de fondo que el envelope axis-aligned
-        # arrastra cuando la rotación es no trivial.
-        all_rotated.append(
-            np.stack([bx_f, by_f, bw_f, bh_f, ang_f], axis=1).astype(np.float32)
-        )
-
-    if not all_boxes:
-        return []
-
-    boxes = np.concatenate(all_boxes, axis=0).astype(np.float32)
-    scores = np.concatenate(all_scores, axis=0).astype(np.float32)
-    rotated = np.concatenate(all_rotated, axis=0).astype(np.float32)
-
-    # Deshacer el letterbox para volver a coords de imagen original.
-    boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / scale
-    boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / scale
-    # Lo mismo para el centro + size rotado. El ángulo es invariante
-    # bajo scale + translation uniforme, así que no se toca.
-    rotated[:, 0] = (rotated[:, 0] - pad_x) / scale
-    rotated[:, 1] = (rotated[:, 1] - pad_y) / scale
-    rotated[:, 2] = rotated[:, 2] / scale
-    rotated[:, 3] = rotated[:, 3] / scale
-
-    orig_w, orig_h = original_size
-    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, orig_w)
-    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, orig_h)
-
-    indices = cv2.dnn.NMSBoxes(
-        boxes.tolist(),
-        scores.tolist(),
-        confidence_threshold,
-        nms_threshold,
-    )
-    if len(indices) == 0:
-        return []
-
-    detections: list[Detection] = []
-    for i in np.asarray(indices).flatten():
-        bx1, by1, bx2, by2 = boxes[i]
-        rcx, rcy, rw, rh, rang = rotated[i]
-        detections.append(
-            Detection(
-                bbox=(int(bx1), int(by1), int(bx2), int(by2)),
-                confidence=float(scores[i]),
-                centroid=((bx1 + bx2) / 2.0, (by1 + by2) / 2.0),
-                rotated=(
-                    float(rcx),
-                    float(rcy),
-                    float(rw),
-                    float(rh),
-                    float(rang),
-                ),
-            )
-        )
-    return detections
-
-
-# ---------------------------------------------------------------------------
 # Architecture registry
 # ---------------------------------------------------------------------------
 
@@ -745,28 +511,6 @@ def _postprocess_yolov8(
     )
 
 
-def _postprocess_rapid(
-    raw_output: Any,
-    confidence_threshold: float,
-    nms_threshold: float,
-    scale: float,
-    pad_x: int,
-    pad_y: int,
-    original_size: tuple[int, int],
-    input_size: tuple[int, int],
-) -> list[Detection]:
-    return postprocess_rapid(
-        raw_output,
-        confidence_threshold,
-        nms_threshold,
-        scale,
-        pad_x,
-        pad_y,
-        original_size,
-        input_size=input_size,
-    )
-
-
 # Cada entry bindea un name a su ``input_size`` esperado (para
 # letterbox) y su callable ``postprocess``. Agregar un modelo nuevo =
 # una entry acá + una función postprocess con la misma signature.
@@ -778,10 +522,6 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
     "yolov8": {
         "input_size": (640, 640),
         "postprocess": _postprocess_yolov8,
-    },
-    "rapid": {
-        "input_size": (1024, 1024),
-        "postprocess": _postprocess_rapid,
     },
 }
 

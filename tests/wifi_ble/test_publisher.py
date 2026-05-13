@@ -94,7 +94,7 @@ def test_publishes_summary_when_period_elapsed():
 
 
 def test_empty_window_does_not_publish_but_advances():
-    """passersby=0 → no publica, pero last_period_end avanza."""
+    """passersby=0 → no publica, pero last_period_end avanza al siguiente boundary."""
     mqtt = _FakeMQTT()
     dedup = _FakeDedup(passersby=0, shoppers=0)
     pub = WifiBlePublisher(
@@ -105,8 +105,9 @@ def test_empty_window_does_not_publish_but_advances():
 
     assert sent == 0
     assert mqtt.sent == []
-    # Importante: avanzó la ventana así la próxima consulta empieza desde acá.
-    assert pub.last_period_end == 11
+    # Importante: avanzó al boundary 10 (no a now=11) — el alineamiento al
+    # epoch garantiza que la próxima ventana empiece exactamente en t=10.
+    assert pub.last_period_end == 10
 
 
 def test_thresholds_propagados_a_dedup():
@@ -129,11 +130,12 @@ def test_thresholds_propagados_a_dedup():
 
 
 def test_period_boundaries_are_disjoint():
-    """Después de publicar, el próximo `last_period_end` arranca donde terminó."""
+    """Las ventanas son contiguas y alineadas a múltiplos de period_seconds."""
     mqtt = _FakeMQTT()
     dedup = _FakeDedup(passersby=1, shoppers=0)
-    # t=0 init, t=10 primer tick (publica), t=11 segundo tick demasiado cerca,
-    # t=21 ok (publica con period_start=10).
+    # t=0 init (last_period_end=0), t=10 primer tick (publica 0→10),
+    # t=11 segundo tick (todavía dentro del bucket 10-20),
+    # t=21 ok (publica con period 10→20).
     pub = WifiBlePublisher(
         mqtt_client=mqtt,
         dedup=dedup,
@@ -141,17 +143,17 @@ def test_period_boundaries_are_disjoint():
         now_fn=_clock([0, 10, 11, 21]),
     )
 
-    pub.maybe_publish()  # publica @ t=10
+    pub.maybe_publish()  # publica @ t=10 con period 0→10
     assert pub.last_period_end == 10
-    pub.maybe_publish()  # @ t=11 — todavía no pasó la ventana
+    pub.maybe_publish()  # @ t=11 — antes del siguiente boundary (20)
     assert pub.last_period_end == 10
-    pub.maybe_publish()  # @ t=21 — publica con period_start=10
-    assert pub.last_period_end == 21
+    pub.maybe_publish()  # @ t=21 — publica 10→20, last_period_end pasa a 20
+    assert pub.last_period_end == 20
 
-    # La segunda publicación debe tener period_start=10 (sin overlap con la primera).
+    # La segunda publicación tiene period 10→20 (alineado al boundary, no a now=21).
     second_publish = [m for m in mqtt.sent if m["data"]["period_start"] == 10]
     assert len(second_publish) == 1
-    assert second_publish[0]["data"]["period_end"] == 21
+    assert second_publish[0]["data"]["period_end"] == 20
 
 
 def test_dedup_query_failure_advances_window():
@@ -177,7 +179,7 @@ def test_dedup_query_failure_advances_window():
 
     assert sent == 0
     assert mqtt.sent == []
-    assert pub.last_period_end == 11
+    assert pub.last_period_end == 10
 
 
 def test_mqtt_publish_failure_advances_window():
@@ -199,4 +201,4 @@ def test_mqtt_publish_failure_advances_window():
 
     assert sent == 0
     # La ventana avanza igual — el outbox de MQTTClient cubre la resiliencia.
-    assert pub.last_period_end == 11
+    assert pub.last_period_end == 10

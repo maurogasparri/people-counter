@@ -949,3 +949,62 @@ def test_debounce_default_disabled():
     # Sin debounce el último cruce dentro del ROI es egress, y al salir
     # arriba ese label se emite — el legacy permite que jitter cuente.
     assert ev is not None and ev.direction == "egress"
+
+
+def test_entry_side_uses_last_outside_pos_under_detection_gap():
+    """Con ROI chico y detector miss en la zona pre-línea, la primera
+    detección inside puede caer ya del otro lado. El counter debe
+    snapshotear sides[] desde la última posición outside-ROI conocida
+    (lado de approach, inequívoco), no desde la primera detección inside.
+
+    Reproduce el bug operativo observado en piloto: ROI 264-384 vertical
+    + línea en y=324 + detector que pierde el frame inside-pre-línea.
+    Sin fix, sides[0] se cachea ya como ``below`` y el cruce nunca se
+    detecta — el track sale del ROI sin emitir.
+    """
+    # ROI vertical chico, simulando la setup de piloto antes del enlarge.
+    small_roi = {"x_min": 100, "x_max": 500, "y_min": 264, "y_max": 384}
+    counter = Counter(lines=[_line_h(line_y=324)], roi=small_roi)
+
+    # Frame 1: track outside-ROI arriba de la línea (approach).
+    track = _make_track(1, [[300, 240, 3000]])
+    assert counter._process_track(track) is None
+
+    # Frame 2: detección MISS en y=290 (would be inside, above line) —
+    # simula `det=N`. No se llama _process_track; el siguiente frame
+    # vendrá con la posición real cuando el detector firee otra vez.
+
+    # Frame 3: primera detección inside ROI, ya pasada la línea (y=350).
+    # Sin el fix, sides[0] se cachearía aquí como "below" y todo lo
+    # que sigue mantiene "below" → no se observa cruce.
+    _advance(counter, track, [300, 350, 3000])
+
+    # Frame 4: track sale del ROI por abajo.
+    ev = _advance(counter, track, [300, 400, 3000])
+
+    # Con el fix: sides[0] se snapshoteó desde la última outside-pos
+    # (y=240, above line). El frame inside @ y=350 detectó el flip
+    # above→below durante el inside-loop, capturó label=ingress. El
+    # exit @ y=400 emite el evento.
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+    assert counter.total_out == 0
+
+
+def test_entry_side_fallback_when_track_born_inside_roi():
+    """Si el track aparece directamente dentro del ROI (sin posición
+    outside previa registrada), el counter cae al comportamiento legacy:
+    snapshotear sides[] desde la posición actual. Sin regresión para
+    tracks que nacen inside.
+    """
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Track nace inside ROI, arriba de la línea (y=210 < line y=300).
+    track = _make_track(1, [[300, 210, 3000]])
+    assert counter._process_track(track) is None
+    # Camina cruzando la línea.
+    _advance(counter, track, [300, 320, 3000])
+    ev = _advance(counter, track, [300, 420, 3000])  # exit abajo
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1

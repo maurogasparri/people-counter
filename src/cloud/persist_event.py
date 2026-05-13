@@ -121,15 +121,16 @@ def _insert_counting(conn, event: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT INTO counting_events
-                (device_id, store_id, event_time, direction,
+                (device_id, store_id, event_time, event_bucket, direction,
                  track_id, confidence, height_class)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (device_id, event_time, track_id, direction) DO NOTHING
             """,
             (
                 device_id,
                 _infer_store_id(device_id),
                 _ts_to_pg(event["timestamp"]),
+                _ts_to_pg(data.get("event_bucket")) if data.get("event_bucket") else None,
                 data["direction"],
                 data.get("track_id"),
                 data.get("confidence"),
@@ -185,13 +186,18 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
 def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
     data = event["data"]
     device_id = event["device_id"]
+    # period_bucket: el publisher manda el bucket pre-alineado (== period_start
+    # con el alineamiento al epoch del commit 8c797de). Si por alguna razón no
+    # viene (cliente viejo), fallback al period_start crudo así Postgres no
+    # rechaza el NOT NULL — la query downstream queda equivalente al period_start.
+    period_bucket = data.get("period_bucket", data["period_start"])
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO wifi_ble_summaries
-                (device_id, store_id, period_start, period_end,
+                (device_id, store_id, period_start, period_end, period_bucket,
                  passersby, shoppers)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (device_id, period_start, period_end) DO NOTHING
             """,
             (
@@ -199,6 +205,7 @@ def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
                 _infer_store_id(device_id),
                 _ts_to_pg(data["period_start"]),
                 _ts_to_pg(data["period_end"]),
+                _ts_to_pg(period_bucket),
                 data["passersby"],
                 data["shoppers"],
             ),

@@ -136,16 +136,32 @@ def test_create_metadata():
     assert meta["store_name"] == "TestStore"
 
 
-def test_create_fails_if_exists():
+def test_create_refreshes_config_on_existing_device_without_force():
+    """``create`` sin --force sobre un device existente refresca el
+    config + metadata desde el template, sin tocar los certs ni
+    contactar AWS. Es la operación normal para sincronizar el
+    provisioned local con un template editado entre corridas."""
     tmpdir = tempfile.mkdtemp()
     device_dir = Path(tmpdir) / "store-001-cam-01"
-    device_dir.mkdir()
+    cert_dir = device_dir / "certs"
+    cert_dir.mkdir(parents=True)
+    # Cert pre-existente — el refresh NO lo debe tocar.
+    (cert_dir / "device.pem.crt").write_text("EXISTING_CERT_DO_NOT_TOUCH")
 
     args = _make_args(skip_aws=True, force=False)
 
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
-        with pytest.raises(SystemExit):
+        with patch(
+            "provision.CONFIG_TEMPLATE",
+            Path(__file__).resolve().parent.parent / "config" / "config.example.yaml",
+        ):
             cmd_create(args)
+
+    # Config y metadata regenerados.
+    assert (device_dir / "config.yaml").exists()
+    assert (device_dir / "metadata.json").exists()
+    # Cert preservado.
+    assert (cert_dir / "device.pem.crt").read_text() == "EXISTING_CERT_DO_NOT_TOUCH"
 
 
 def test_create_force_overwrites():

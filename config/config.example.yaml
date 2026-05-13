@@ -51,6 +51,27 @@ device:
 
 
 # =============================================================================
+# ANALYTICS — unidad mínima de medición operativa
+# =============================================================================
+# bucket_seconds define cada cuánto se agrega counting + wifi/ble para reportes
+# (turn-in rate, conversion rate, hourly aggregates). El device pre-calcula
+# event_bucket / period_bucket alineados al epoch (floor(ts / bucket_seconds) *
+# bucket_seconds) y los manda en el payload MQTT. Postgres los guarda como
+# columnas regulares — no GENERATED — así cambiar el bucket via shadow no
+# requiere migration en el schema; los rows viejos preservan su bucket
+# original (históricamente correcto).
+#
+# El publisher wifi/ble usa este mismo valor como ventana de agregación
+# (override via wifi_ble.probe_interval_seconds si hace falta).
+#
+# Defaults razonables: 300 (5min), 900 (15min), 1800 (30min), 3600 (1h).
+# 900 es el sweet spot operativo para retail footfall según FootfallCam y
+# similares — granularidad útil sin volumen excesivo de filas.
+analytics:
+  bucket_seconds: 900
+
+
+# =============================================================================
 # VISION — captura, rectificación, profundidad
 # =============================================================================
 vision:
@@ -149,18 +170,13 @@ vision:
 # DETECTION — modelo + thresholds (model-specific, fleet-uniform tras lab tune)
 # =============================================================================
 detection:
-  architecture: yolov8              # Selector de postprocessor: "yolov8" (raw
-                                    # o NMS built-in de Hailo) o "rapid" (head
-                                    # rotated-bbox, anchors decodeados en CPU).
-                                    # Producción usa "yolov8" pareado con
-                                    # people-counter-detector.hef (modelo propio,
-                                    # YOLOv8n fine-tuneado cenital sobre dataset
-                                    # multi-site con hard negatives explícitos,
-                                    # entrenado en Kaggle T4 con datos curados
-                                    # desde Roboflow). Ver scripts/training/.
   model_path: /usr/src/people-counter/models/people-counter-detector.hef
-                                    # HEF compilado para Hailo-8L. Mismo path
-                                    # en cada device.
+                                    # HEF compilado para Hailo-8L. people-counter-detector
+                                    # es un YOLOv8n fine-tuneado cenital sobre
+                                    # dataset multi-site con hard negatives
+                                    # explícitos, entrenado en Kaggle T4 con
+                                    # datos curados desde Roboflow. Ver
+                                    # scripts/training/.
   confidence_threshold: 0.30        # Piso del score de detección de person/head.
                                     # Tuneado para people-counter-detector — corta
                                     # FPs del modelo (alucinaciones en piso vacío).
@@ -210,11 +226,16 @@ detection:
   # que sobreviven NMS y cluster-por-centroide). Cuadricula el frame en
   # celdas y suprime cualquier detección que caiga en una celda activa
   # >= hit_rate_threshold de los últimos `window_seconds`. Inactivo
-  # durante warm-up para no filtrar antes de tener historia. El conteo
-  # de personas legítimas no se afecta — se mueven por el frame, no se
-  # quedan ≥70% del tiempo en la misma celda de 30px.
+  # durante warm-up para no filtrar antes de tener historia.
+  #
+  # OFF por default: en retail con asientos / mostradores / colas en
+  # cuadro hay personas legítimas que permanecen quietas >3s en las
+  # mismas 2-3 celdas (cabeza estática). El suppressor las clasifica
+  # como FP estructural y las corta. Encender SOLO en sites con
+  # clutter probadamente estable (maniquíes, posters, sombras) y
+  # validar que no se coma cabezas reales del flujo del local.
   static_suppressor:
-    enabled: true
+    enabled: false
     cell_size_px: 30                # Resolución espacial del filtro.
                                     # 30px funciona para 1152×648 con cabezas
                                     # ~50-80px (cada cabeza ocupa ~2-3 celdas).
@@ -332,7 +353,9 @@ wifi_ble:
   # No cambiar sin coordinar a lo largo de la flota (dividiría los buckets
   # de dedup).
   wifi_interface: wlan0             # CYW43455 onboard, modo monitor.
-  probe_interval_seconds: 900       # Ventana de agregación de 15 min.
+  probe_interval_seconds: 900       # Ventana de agregación. Default 900s (15min);
+                                    # si no se setea, el publisher cae a
+                                    # analytics.bucket_seconds.
   cross_protocol_window_seconds: 2  # Ventana de dedup WiFi+BLE same-device.
   cross_protocol_rssi_delta: 5      # |Delta RSSI| max para match cross-protocol.
 
@@ -512,9 +535,17 @@ height:
 # --- Tracker + state machine (tuning de algo, fleet-uniform tras piloto) ----
 tracking:
   max_disappeared_frames: 30        # Frames que un track puede miss antes de drop.
-  max_distance_px: 50               # Distancia max en px para asociación
-                                    # frame-a-frame. Escalar linealmente con
-                                    # la resolución runtime si la cambiás.
+  max_distance_px: 100              # Distancia max en px para asociación
+                                    # frame-a-frame. A 26 fps con caminata
+                                    # rápida (~3 m/s ≈ 35 px/frame a mount
+                                    # 2.55m / 1152×648), 100 cubre hasta
+                                    # ~5 m/s con holgura sin abrir cross-id
+                                    # entre personas adyacentes. Valores
+                                    # más bajos (50-70) fragmentan tracks
+                                    # en motion blur → más PENDING → más
+                                    # unknowns de height. Escalar
+                                    # linealmente con la resolución runtime
+                                    # si la cambiás.
   state_machine:
     confirm_frames: 3               # Hits para promover CANDIDATE -> CONFIRMED.
                                     # 3 frames sobre el detector fine-tuneado
@@ -522,9 +553,16 @@ tracking:
                                     # efímeros que sobreviven un solo frame.
                                     # Bajar a 1 si se usa un detector con
                                     # dropeos frame-a-frame agresivos.
-    pending_max_frames: 20          # Misses antes de PENDING -> LOST.
-    reid_gate_px: 180               # Gate de distancia para re-id en PENDING.
-                                    # 180px (~28% del ancho a 1152×648) cubre
+    pending_max_frames: 30          # Misses antes de PENDING -> LOST. A
+                                    # 26 fps son ~1.15s para recovery.
+                                    # Mantener generoso reduce track
+                                    # fragmentation cuando el detector
+                                    # tiene misses esporádicos sobre la
+                                    # misma cabeza — confidence medianas
+                                    # más largas por track → mejor
+                                    # estimación de altura.
+    reid_gate_px: 200               # Gate de distancia para re-id en PENDING.
+                                    # 200px (~17% del ancho a 1152×648) cubre
                                     # gaps de detección de hasta ~1s a
                                     # velocidad de caminata. Pareado con
                                     # pending_velocity_decay que congela el

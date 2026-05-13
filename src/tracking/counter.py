@@ -564,6 +564,17 @@ class Counter:
         prev_projected = bool(meta.get("proj_active", False))
         is_inside = self._inside_roi(cx, cy)
 
+        # Memoria de la última posición outside-ROI bajo la convención
+        # actual. La entry-fresca abajo la usa para snapshotear sides[]
+        # desde la trayectoria de approach (lado inequívoco de donde
+        # viene el track) en lugar de la primera detección inside —
+        # que con ROI chico + detector miss rate puede caer ya del otro
+        # lado de la línea y dejar el cache corrupto, perdiendo el
+        # cruce. Solo se actualiza cuando el track está outside; se
+        # consume y opcionalmente persiste a través del cycle.
+        if not is_inside:
+            meta["last_outside_pos"] = (cx, cy)
+
         # Cache per-line del lado previo (un slot por línea). Se crea
         # lazy; se repara si cambió el count de líneas configurado
         # entre updates.
@@ -585,6 +596,10 @@ class Counter:
             for i, line in enumerate(self._lines):
                 sides[i] = line.side_of(cx, cy) if is_inside else 0
             meta["proj_active"] = projected
+            # La outside-pos memoria está expresada en la convención
+            # vieja; descartarla así la próxima entry-fresca no
+            # snapshotea con coordenadas heterogéneas.
+            meta.pop("last_outside_pos", None)
             if not is_inside:
                 # Tratarlo como un exit benigno (sin contexto de
                 # cruce confiable).
@@ -595,12 +610,21 @@ class Counter:
 
         if is_inside and not was_inside:
             # Entry fresca: resetear estado del ciclo y snapshotear
-            # sides actuales.
+            # sides desde la última posición outside-ROI conocida (el
+            # lado del cual el track se aproxima — inequívoco). Esto
+            # protege contra el case patológico donde, con ROI chico
+            # y detector miss rate, la primera detección inside cae
+            # ya del otro lado de la línea y dejaría sides[] cacheado
+            # del lado equivocado (resultando en cruces no detectados).
+            # Fallback al (cx, cy) actual si el track nació inside
+            # sin historia outside.
             meta["inside"] = True
             meta["last_label"] = None
             meta["last_track_pos"] = (cx, cy)
+            outside_pos = meta.get("last_outside_pos")
+            snap_x, snap_y = outside_pos if outside_pos is not None else (cx, cy)
             for i, line in enumerate(self._lines):
-                sides[i] = line.side_of(cx, cy)
+                sides[i] = line.side_of(snap_x, snap_y)
             return None
 
         if is_inside and was_inside:

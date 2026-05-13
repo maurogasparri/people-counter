@@ -18,14 +18,12 @@ CREATE TABLE IF NOT EXISTS counting_events (
     device_id       TEXT NOT NULL,
     store_id        TEXT NOT NULL,
     event_time      TIMESTAMPTZ NOT NULL,           -- timestamp del evento en el device
-    -- event_bucket: ventana de 15min en la que cae event_time, alineada al
-    -- epoch (00:00, 00:15, 00:30, 00:45 UTC). 15min es la unidad mínima de
-    -- agregación operativa (matchea probe_interval_seconds de wifi_ble).
-    -- GENERATED ALWAYS AS STORED: calcula al INSERT, indexable, visible
-    -- desde cualquier cliente SQL sin necesidad de envolver con date_bin.
-    event_bucket    TIMESTAMPTZ GENERATED ALWAYS AS (
-        date_bin('15 minutes'::interval, event_time, TIMESTAMPTZ '1970-01-01 00:00:00+00')
-    ) STORED,
+    -- event_bucket: alineamiento al múltiplo de analytics.bucket_seconds
+    -- (epoch). El device lo calcula y lo manda en el payload MQTT así
+    -- cambiar bucket_seconds via shadow no requiere migration y los rows
+    -- viejos preservan su bucket original. Columna regular (no GENERATED)
+    -- — visible desde cualquier cliente SQL sin envolver con date_bin.
+    event_bucket    TIMESTAMPTZ,
     ingest_time     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     direction       TEXT NOT NULL CHECK (direction IN ('ingress', 'egress')),
     track_id        INTEGER,
@@ -95,14 +93,11 @@ CREATE TABLE IF NOT EXISTS wifi_ble_summaries (
     store_id        TEXT NOT NULL,
     period_start    TIMESTAMPTZ NOT NULL,
     period_end      TIMESTAMPTZ NOT NULL,
-    -- period_bucket: alineamiento de 15min de period_start. Si en el futuro
-    -- el publisher emite ventanas alineadas desde el device, period_bucket
-    -- coincide con period_start. Hoy el publisher emite cada 15min desde el
-    -- arranque del pipeline (no aligned), así que period_bucket normaliza a
-    -- las marcas de reloj para JOINs limpios con counting_events.event_bucket.
-    period_bucket   TIMESTAMPTZ GENERATED ALWAYS AS (
-        date_bin('15 minutes'::interval, period_start, TIMESTAMPTZ '1970-01-01 00:00:00+00')
-    ) STORED,
+    -- period_bucket: alineamiento al múltiplo de analytics.bucket_seconds
+    -- (epoch). El device lo calcula al publicar (igual a period_start con
+    -- el alineamiento del commit 8c797de) y lo manda en el payload MQTT.
+    -- Columna regular (no GENERATED) — ver event_bucket en counting_events.
+    period_bucket   TIMESTAMPTZ,
     ingest_time     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     passersby       INTEGER NOT NULL DEFAULT 0,
     shoppers        INTEGER NOT NULL DEFAULT 0,

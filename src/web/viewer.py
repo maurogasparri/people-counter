@@ -126,11 +126,45 @@ class WebViewer:
         self._server_thread: Optional[threading.Thread] = None
         self._encode_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        # Contador de subscribers activos al MJPEG stream. El runtime
+        # consulta ``has_subscribers`` antes de hacer trabajo que solo
+        # sirve al preview (annotation overlay + SGBM-para-panel-depth
+        # cada 0.5s) — match al patrón production-grade donde el
+        # productor no gasta CPU cuando nadie está mirando. El counting
+        # del pipeline NO depende de este flag.
+        self._subscribers = 0
+        self._subscribers_lock = threading.Lock()
 
     # ----------------------------------------------------------------- API
     @property
     def running(self) -> bool:
         return self._server is not None and not self._stop_evt.is_set()
+
+    def has_subscribers(self) -> bool:
+        """¿Hay clientes activos consumiendo el MJPEG stream?
+
+        El main loop usa este flag para gatear trabajo que solo sirve al
+        preview (annotate_left, compose_3panel, push al encoder, refresh
+        de depth panel cada 0.5s). Cuando no hay clientes, esos costs se
+        evitan — el counting del pipeline sigue corriendo idéntico.
+
+        Devuelve False cuando el viewer no arrancó (bind failure) o
+        cuando el server está apagado, así los callers pueden gateaer sin
+        chequear ``running`` por separado.
+        """
+        if self._server is None or self._stop_evt.is_set():
+            return False
+        with self._subscribers_lock:
+            return self._subscribers > 0
+
+    def _subscriber_attach(self) -> None:
+        with self._subscribers_lock:
+            self._subscribers += 1
+
+    def _subscriber_detach(self) -> None:
+        with self._subscribers_lock:
+            if self._subscribers > 0:
+                self._subscribers -= 1
 
     def start(self) -> bool:
         """Bindea, arranca a servir, devuelve True ante éxito.
@@ -188,18 +222,38 @@ class WebViewer:
             self._server_thread.join(timeout=2.0)
         self._server = None
 
+    def update_stats(self, stats: dict) -> None:
+        """Actualiza el dict que sirve ``/stats``. Cheap (lock + update).
+
+        Se llama siempre, independiente de si hay clientes mirando el
+        MJPEG — alguien puede estar polleando ``/stats`` solo para
+        monitorear counts sin abrir el stream.
+        """
+        if self._server is None:
+            return
+        with self._stats_lock:
+            self._stats.update(stats)
+
     def push(
         self, frame_bgr: np.ndarray, stats: Optional[dict] = None,
     ) -> None:
-        """No bloqueante. Drop-oldest si la queue de encode está llena."""
+        """Encola un frame para encode JPEG. No bloqueante.
+
+        Stats se actualizan siempre cuando se proveen (via update_stats).
+        El frame solo se encolea cuando hay subscribers activos —
+        si nadie está mirando, el encode JPEG es trabajo descartado
+        y el caller debería haberse salteado el composite igual.
+        Mantener el guard interno como defensa en profundidad.
+        """
         if self._server is None:
+            return
+        if stats is not None:
+            self.update_stats(stats)
+        if not self.has_subscribers():
             return
         with self._encode_lock:
             self._encode_queue.append(frame_bgr)
         self._encode_evt.set()
-        if stats is not None:
-            with self._stats_lock:
-                self._stats.update(stats)
 
     # ------------------------------------------------------------- internal
     def _encode_loop(self) -> None:
@@ -289,6 +343,10 @@ def _build_handler(viewer: WebViewer):
             self.send_header("Cache-Control", "no-cache, private")
             self.send_header("Pragma", "no-cache")
             self.end_headers()
+            # Registrar el cliente para que has_subscribers() devuelva
+            # True. detach incondicional en el finally así crashes de
+            # render / kills del browser no dejan el contador inflado.
+            viewer._subscriber_attach()
             last_id = -1
             try:
                 while not viewer._stop_evt.is_set():
@@ -305,5 +363,7 @@ def _build_handler(viewer: WebViewer):
             except (BrokenPipeError, ConnectionResetError):
                 # Cliente desconectado mid-stream; esperado.
                 pass
+            finally:
+                viewer._subscriber_detach()
 
     return Handler
