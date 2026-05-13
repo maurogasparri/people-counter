@@ -110,7 +110,7 @@ people-counter/
 │   ├── status/         <- led, health, monitor (background thread)
 │   ├── config/         <- loader (strict, lee solo /etc/people-counter/config.yaml) + hardware (HardwareParams dataclass)
 │   └── main.py         <- orquestador del pipeline
-├── tests/              <- 721 tests, estructura espejo de src
+├── tests/              <- 765 tests, estructura espejo de src
 ├── scripts/
 │   ├── calibrate.py    <- CLI con wizard end-to-end (browser-driven, ChArUco, ground-truth check)
 │   ├── focus_assist.py <- asistente de foco guiado (browser-driven)
@@ -172,15 +172,19 @@ people-counter/
 - `vision.num_disparities: auto` — deriva rango SGBM desde `mounting_height_m`. Override con int múltiplo de 16.
 - `vision.sgbm.downscale: 4` — SGBM a resolución reducida (1=full, 2=half, 4=quarter), upscale del disparity post-match. 4 default (~4× costo de 8 pero remueve speckle que infla head-height); 1 solo para diagnósticos.
 - `--no-mqtt` (CLI) — reemplaza MQTT con no-op que loguea a stdout. Para testing local sin AWS.
-- `detection.confidence_threshold` (0.30) / `new_track_threshold` (0.50) / `low_confidence_threshold` (0.15) — banda triple del detector: <low descartado, [low, conf) re-asocia tracks existentes (ByteTrack-style), [conf, new_track) re-asocia + display, ≥new_track spawnea tracks nuevos. Tuneado para `people-counter-detector` (YOLOv8n fine-tuneado).
-- `detection.cluster_distance_px: 120` — mergea bboxes post-NMS por centroide. 120px en 1152×648 deja cabezas de 50-80px holgadas; dos personas adyacentes (~130-150px) NO se mergean.
+- `detection.confidence_threshold` (0.20) / `new_track_threshold` (0.35) / `low_confidence_threshold` (0.10) — banda triple del detector: <low descartado, [low, conf) re-asocia tracks existentes (ByteTrack-style), [conf, new_track) re-asocia + display, ≥new_track spawnea tracks nuevos. Tuneado para `people-counter-detector` (YOLOv8n fine-tuneado).
+- `detection.cluster_distance_px: 150` — mergea bboxes post-NMS por centroide. 150px en 1152×648 deja cabezas de 50-80px holgadas; dos personas adyacentes (~150-180px) NO se mergean.
 - `detection.static_suppressor` — defense-in-depth contra clutter estructural (FPs persistentes en mismas celdas). Ventana medida en segundos reales con timestamps internos (independiente del FPS instantáneo). Configurable cell/window/threshold/min_samples.
 - `vision.max_exposure_us: 16000` — shutter cap 16ms para reducir motion blur a ~5cm a 3 m/s. AE compensa con AnalogueGain. Default 16000us si la key falta del config. Mismo cap en TODOS los setup tools (`focus_assist`, `calibrate`, `preview`, `diagnose_depth`, `diagnose_bracket`).
 - `vision.ae_lock.{initial_settle_seconds, resettle_seconds}` — timings del AE lock pattern canónico, compartido por todos los setup tools browser-driven (settle → lock provisional → re-settle on Comenzar → re-lock final). Subir en sites con luz fluctuante donde AE necesita más tiempo para converger.
+- `vision.sgbm.wls.{enabled, lambda, sigma}` — WLS post-filter del disparity (opencv-contrib ximgproc). Suaviza el speckle de SGBM y rellena agujeros del WTA usando el matcher derecho como confidence map. Defaults `enabled: true, lambda: 4000, sigma: 1.0`. Apagar solo para comparar contra disparity raw.
 - `vision.charuco.*` — board ChArUco + dual-pass detection. Si cambia el board de calibración (kit distinto, tamaño distinto), se edita acá y los setup tools lo recogen.
-- `tracking.state_machine.confirm_frames: 3` — frames hasta promover CANDIDATE→CONFIRMED. 3 filtra FPs efímeros sobre el detector fine-tuneado. Bajar a 1 para detectores con dropeos frame-a-frame.
-- `tracking.state_machine.reid_gate_px: 180` — gate de distancia para re-id en PENDING. Pareado con `pending_velocity_decay: 0.5` que congela el predict del Kalman cerca de la última observación, así el gate cubre gaps de ~1s a velocidad de caminata sin necesidad de ser más ancho.
-- `counter.foot_projection_enabled` — proyección parallax-corrected del foot pixel. Default off; activar solo después de validar calibración con diagnose_depth.
+- `tracking.state_machine.confirm_frames: 2` — frames hasta promover CANDIDATE→CONFIRMED. 2 balancea filtrar FPs efímeros con responsividad para pasadas rápidas; el detector fine-tuneado es estable enough para no necesitar 3.
+- `tracking.state_machine.reid_gate_px: 200` — gate de distancia para re-id en PENDING. Pareado con `pending_velocity_decay: 0.85` que reduce el predict del Kalman cerca de la última observación, así el gate cubre gaps de ~1s a velocidad de caminata sin necesidad de ser más ancho.
+- `tracking.state_machine.pending_grace_frames: 3` — frames iniciales de PENDING en los que el predict del Kalman se mantiene full velocity antes de aplicar `pending_velocity_decay`. Cubre gaps cortos del detector (1-3 frames) preservando la trayectoria; después de la gracia el decay arranca para evitar drift del predictor.
+- `tracking.ambiguous_match_ratio: 0.8` — ratio test estilo Lowe post-Hungarian. Si el segundo mejor candidato de una asignación está dentro del 80% del mejor, la match se rechaza por ambigua. Filtra el caso "dos detecciones cerca, dos tracks cerca, Hungarian arma un cruce arbitrario".
+- `counter.foot_projection_enabled` — proyección parallax-corrected del foot pixel. Default off; activar solo después de validar calibración con `diagnose_depth.py`.
+- **U-turn cancellation**: el ROI ACTÚA como zona de cancelación. Eventos opuestos (IN/OUT) que ambos caen dentro del mismo ROI dentro de 5s se cancelan mutuamente. Captura "persona dudó en la puerta y se volvió" + fragmentación de track cerca de la línea sin contabilizar IN+OUT espurios. Window hardcoded en `Counter.UTURN_WINDOW_SECONDS = 5.0`; sin params extra en config.
 
 ## Pipeline del detector
 

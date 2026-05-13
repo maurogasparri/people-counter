@@ -7,7 +7,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales, basado en 
 - **Cuenta personas** que entran y salen de un local en tiempo real usando profundidad por cámara estéreo + YOLOv8n en acelerador Hailo-8L
 - **Detecta tráfico exterior** vía captura pasiva de probe requests WiFi y advertising BLE
 - **Clasifica tráfico** con umbrales duales de RSSI: transeúntes (-75 dBm) vs compradores (-55 dBm), calculando Turn In Rate
-- **Deduplica** señales WiFi/BLE entre protocolos (L1+L2 en dispositivo) y entre cámaras del mismo local (L3 en Lambda)
+- **Deduplica** señales WiFi/BLE entre protocolos (L1+L2 en dispositivo). La L3 inter-cámara queda reservada para deploys multi-cam por local (no aplica al PoC con 1 device/sucursal).
 - **Transmite metadatos** a AWS vía MQTT con buffer local SQLite para resiliencia offline
 - **Respeta horarios operativos** vía AWS IoT Device Shadow (configuración pushada desde la nube)
 
@@ -28,13 +28,14 @@ Cada unidad consiste en:
 ## Arquitectura
 
 ```
-Dispositivo edge (por puerta)         AWS Cloud
+Dispositivo edge (por puerta)         AWS Cloud (PoC, 1 device)
 +--------------------------+         +-------------------------+
-| Capture → Rectify → SGBM |  MQTT   | IoT Core → Timestream   |
-| YOLOv8n → Track → Count  |--TLS-->| Lambda → DynamoDB       |
-| WiFi/BLE → Hash → Dedup  |  QoS1  | API GW → QuickSight     |
-| SQLite buffer (72h)      |         | CloudWatch + S3 OTA     |
-+--------------------------+         +-------------------------+
+| Capture → Rectify → SGBM |  MQTT   | IoT Core (3 IoT Rules)  |
+| YOLOv8n → Track → Count  |--TLS-->| → Lambda persist_event  |
+| WiFi/BLE → Hash → Dedup  |  QoS1  | → Postgres 16 (EC2)     |
+| SQLite buffer (72h)      |         | → Grafana OSS (EC2)     |
++--------------------------+         | pg_dump diario → S3     |
+                                     +-------------------------+
 ```
 
 ### Procesos en el edge
@@ -47,7 +48,7 @@ El dispositivo corre tres servicios systemd independientes:
 | `wifi-monitor.service` | `airmon-ng` | Pone el WiFi en monitor mode para captura de probe requests |
 | `people-counter-reset.timer` | Diario a las 04:00 | Resetea contadores de dedup y totales de conteo para el nuevo día comercial |
 
-El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT, y la dedup L3 entre cámaras se hace en la nube (Lambda).
+El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT. La dedup L3 inter-cámara queda reservada para deploys multi-cam future work (no aplica al PoC con 1 device/sucursal).
 
 La config cloud usa una estrategia de **caché local de shadow**: al bootear, `main.py` lee un archivo `.shadow.json` si existe (actualizado por un proceso de fondo o en el boot anterior). Los cambios cloud-pusheados se aplican en el próximo boot del servicio.
 
@@ -73,7 +74,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 727/727 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge + back-compat renames + HardwareParams), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
+| Tests | 765 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge + back-compat renames + HardwareParams), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
 | Config | Defaults + Per-device + Cloud + Hardware-agnostic | `config/config.example.yaml` (defaults canónicos), `/etc/people-counter/config.yaml` (per-device override), AWS IoT Shadow (business cloud). Parámetros de hardware (sensor, lens, bracket, board ChArUco, AE timings) consolidados en `src/config/hardware.py` (HardwareParams) y leídos por el runtime + todos los setup tools — swap de sensor / bracket / board = solo editar config.yaml, ningún script tiene constantes hardware hardcodeadas |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
@@ -85,7 +86,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
-| Infra cloud | CloudFormation | IoT Core, Timestream, DynamoDB, Lambda (dedup L3) |
+| Infra cloud | CloudFormation | IoT Core (broker + 3 IoT Rules SQL) + Lambda persist_event + EC2 t3.micro con Postgres 16 + Grafana OSS + pg_dump diario a S3 |
 | Deployment | Listo | provision.py (create/deploy/harvest/reprovision), servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
 | Disaster recovery | Listo | `harvest` baja `calibration.npz` al workstation; `reprovision` revoca cert viejo en IoT Core y emite uno nuevo. Certs nunca se respaldan — rotan en cada restore |
 | Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup-guide.md). Guía para operadores en campo (docs/pilot-operator-guide.md) |
@@ -298,7 +299,7 @@ Defense-in-depth runtime (independiente del modelo):
 - **Containment filter** post-NMS: descarta bbox chico contenido
   >50% en otro con mayor confidence (NMS por IoU no agarra esto en
   geometría cenital).
-- **Cluster por centroide** (`cluster_distance_px: 120`): mergea
+- **Cluster por centroide** (`cluster_distance_px: 150`): mergea
   detecciones multi-firing (cabeza + hombro como cajas distintas).
 - **`StaticSuppressor`** (`cell_size_px: 30`, `window_seconds: 3`):
   suprime detecciones en celdas hot ≥70% de los últimos 3s — clutter
@@ -312,12 +313,12 @@ src/
 ├── tracking/        # Tracker euclidiano 3D + contador por línea virtual / ROI con height_class por track
 ├── wifi_ble/        # Captura de probes WiFi (nexmon), scan BLE (bleak), hashing de MAC, dedup (L1+L2)
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
-├── cloud/           # Lambda dedup L3 (inter-cámara)
+├── cloud/           # Lambda persist_event (IoT Rules → Postgres en EC2)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
 ├── config/          # Loader (deep-merge defaults + per-device + IoT Shadow) + hardware (HardwareParams dataclass — sensor/lens/bracket/charuco/ae_lock leídos del config, hardware-agnostic)
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
-tests/               # 721 tests espejando src/ + tests/scripts/ para el wizard
+tests/               # 765 tests espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,
@@ -342,7 +343,7 @@ scripts/
 ├── roi_picker.py          # Seleccionador de ROI + línea virtual
 ├── export_events.py       # Export de eventos desde el buffer local
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
-├── deploy_lambda.sh       # Packaging del Lambda dedup L3
+├── deploy_lambda.sh       # Packaging del Lambda persist_event (psycopg binary + handler)
 ├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock
 ├── capture_baseline_frames.py  # Captura frames rectificados de la Pi para validation bench (no training)
 ├── training/

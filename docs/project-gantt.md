@@ -62,7 +62,7 @@ activo promedio, 50% de los días con doble turno).
 | M3 | Setup tools UX completo | ✓ Done (05-12) |
 | M4 | Detector fine-tuned corriendo en Hailo | ✓ Done (05-08) |
 | M5 | Pipeline E2E con conteo validado | ✓ Done (05-08) |
-| — | Dashboards funcionales (QuickSight) | **⊘ Pendiente** (CFN desplegado, dashboard no construido) |
+| — | Dashboards funcionales (Grafana OSS sobre Postgres) | **⊘ Pendiente** (CFN desplegado, dashboards no construidos) |
 
 ### Iteraciones de diseño exploradas
 
@@ -113,7 +113,7 @@ Totales por agrupación (medidos del repo):
 |------------|-----------|-------|--------------|
 | **Soporte** | Adquisición + ensamblaje + config | 8.0 | 9% |
 | **Dev** | Scripts calib + Detección + WiFi/BLE + MQTT | 59.2 | 66% |
-| **Infra (AWS)** | IoT Core + Timestream + Lambda + dashboards | 2.0 | 2% |
+| **Infra (AWS)** | IoT Core + Lambda persist_event + EC2 (Postgres + Grafana) | 2.0 | 2% |
 | **Pruebas** | Per-módulo + integración E2E | ~5.0 | 6% |
 | **Cross-cutting** | Config system + Docs + Cleanup | 13.1 | 15% |
 | **Pre-history** | Bundle pre-existente del initial commit | ~40 | (no medido) |
@@ -222,14 +222,17 @@ diseño del data model + permisos IAM.**
 | Sub-tarea | T-code | Horas | Inicio | Fin | Predecesoras | Estado |
 |-----------|--------|-------|--------|-----|--------------|--------|
 | IoT Core + certificados X.509 (Thing registry, policies, MQTT topics) | T10a | 0.5 | 04-24 | 05-08 | T09 | OK |
-| Timestream + DynamoDB (tabla de eventos + tabla de dedup) | T10b | 0.5 | 04-24 | 05-08 | T10a | OK |
-| API Gateway + Lambda dedup L3 (función inter-cam) | T10c | 0.8 | 04-24 | 05-08 | T10b | OK |
+| Lambda persist_event + Postgres 16 en EC2 t3.micro (free tier) | T10b | 0.5 | 04-24 | 05-08 | T10a | OK |
+| 3 IoT Rules SQL (counting / wifi_ble / telemetry → Lambda) | T10c | 0.8 | 04-24 | 05-08 | T10b | OK |
 | CloudWatch (logging + métricas básicas) | T10d | 0.2 | 04-24 | 05-08 | T10a | OK (mínimo) |
-| Dashboards funcionales (QuickSight u otro) | T10e | — | — | — | T10b | **Pendiente** |
+| Dashboards funcionales (Grafana OSS en la misma EC2) | T10e | — | — | — | T10b | **Pendiente** |
 
-> Total medido: ~2.0h. El "dashboard funcional" no está construido todavía.
-> Una vez con datos reales del PoC, presupuestar **3-5h** para una primera
-> versión en QuickSight conectado a Timestream.
+> Total medido: ~2.0h. El stack del PoC consolidó en Postgres self-hosted +
+> Grafana OSS sobre EC2 free tier (Timestream queda fuera del Free Plan;
+> reintroducción evaluable cuando el volumen lo justifique). La Lambda dedup
+> L3 inter-cámara queda reservada para deploys multi-cam future work — con
+> 1 device/sucursal el dedup L1+L2 local cubre todo. El "dashboard funcional"
+> en Grafana queda pendiente de construcción con datos reales del piloto.
 
 ---
 
@@ -388,10 +391,10 @@ gantt
 
     section Infra AWS
     IoT Core + X.509 (T10a)               :done, t10a, 2026-04-24, 15d
-    Timestream + DynamoDB (T10b)          :done, t10b, 2026-04-24, 15d
-    API GW + Lambda dedup (T10c)          :done, t10c, 2026-04-24, 15d
+    Lambda persist_event + Postgres (T10b):done, t10b, 2026-04-24, 15d
+    3 IoT Rules SQL (T10c)                :done, t10c, 2026-04-24, 15d
     CloudWatch (T10d)                     :done, t10d, 2026-04-24, 15d
-    Dashboards funcionales (T10e)         :crit, t10e, 2026-05-13, 7d
+    Dashboards Grafana (T10e)             :crit, t10e, 2026-05-13, 7d
 
     section Pruebas
     Integral PoC (T18 + E2E)              :done, t18, 2026-05-06, 7d
@@ -451,7 +454,7 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
 2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Con el modelo de distorsión definido upfront y el sensor mode canónico documentado, son 3-4h. Para sensors/lenses nuevos presupuestar 1.5× del baseline consolidado.
 3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-ROI) probablemente cueste 6-10h cada uno.
 4. **Detector "barato" en horas locales pero caro en wall-clock** — 11h directas, pero hay 20+ días de calendario entre captura → label → train → compile porque cada etapa tiene wait externo (Roboflow labeling humano, Kaggle queue, Hailo compile en Docker).
-5. **Infra AWS hands-on muy bajo (2h)** porque CloudFormation declarativo. Pero los **dashboards funcionales no están** — para un piloto real presupuestar 3-5h adicionales en QuickSight conectado a Timestream.
+5. **Infra AWS hands-on muy bajo (2h)** porque CloudFormation declarativo. Pero los **dashboards funcionales no están** — para un piloto real presupuestar 3-5h adicionales armando dashboards en Grafana OSS conectado al Postgres del PoC.
 6. **Cross-cutting suma ~13h (15% del total medido)** — config + docs + cleanup. Para próximos proyectos similares, presupuestar 15-20% extra sobre las feature stories.
 7. **Pre-history reutilizable** — el skeleton del T00 (módulos, tests, pyproject, systemd units) es casi proyecto-agnóstico para edge devices similares y se podría usar como template para acortar el T00 de un proyecto análogo a 5-10h en vez de 40.
 8. **Pruebas embebidas vs. dedicadas** — el 90% de las pruebas en este proyecto fueron interleaved con el desarrollo (validated-on-hardware commits). Para un cronograma formal con QA separado, presupuestar +20% sobre las horas de dev para una fase de Pruebas explícita.
@@ -529,7 +532,7 @@ tareas en paralelo.
 | T07 | Status LED + health | 2.0 | 2.0 | Abr 02 | Abr 04 | — |
 | T08 | Config (HardwareParams desde día 1) | 5.0 | 5.0 | Abr 04 | Abr 12 | — |
 | T09 | MQTT cliente | 2.0 | 2.0 | Abr 05 | Abr 07 | — |
-| T10 | Infra AWS (CFN + Lambda + Timestream) | 2.0 | 2.0 | Abr 06 | Abr 09 | — |
+| T10 | Infra AWS (CFN + IoT Core + Lambda + EC2 Postgres) | 2.0 | 2.0 | Abr 06 | Abr 09 | — |
 | T11 | Provisioning | 2.5 | 2.5 | Abr 07 | Abr 10 | — |
 | T12 | Detector — captura multi-site | 4.0 | 4.0 | Abr 07 | Abr 13 | — |
 | T13 | Detector — labeling + training | 3.0 | 3.0 | Abr 13 | Abr 16 | — |
@@ -578,7 +581,7 @@ gantt
     MQTT cliente                  :done, t09i, after t04i, 2d
 
     section Infra AWS
-    IoT Core + Timestream + Lambda :done, t10i, after t09i, 4d
+    IoT Core + Lambda + EC2 Postgres :done, t10i, after t09i, 4d
 
     section Cross-cutting
     Config (HW-agnostic día 1)    :done, t08i, after t01i, 9d
@@ -640,7 +643,7 @@ genuinamente nuevo que hay que hacer.**
 | T07 | Status LED + health monitor | 1.5 | |
 | T08 | Config system (HardwareParams + naming canónico desde día 1) | 3 | Sin back-compat shims = -2h vs medido |
 | T09 | MQTT cliente + buffer + shadow | 1.5 | |
-| T10 | Infra AWS (CFN + Lambda + Timestream + IoT Core) | 2 | |
+| T10 | Infra AWS (CFN + IoT Core + Lambda + EC2 Postgres + Grafana) | 2 | |
 | T11 | Provisioning + disaster recovery | 2 | |
 | T12 | Detector — captura multi-site | 3 | |
 | T13 | Detector — labeling + training | 2.5 | Trabajo activo. (Wall-clock adicional: ~1-2 días de espera externa) |

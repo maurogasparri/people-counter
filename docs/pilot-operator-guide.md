@@ -378,9 +378,9 @@ aws --profile people-counter-field logs tail /aws/lambda/people-counter-persist-
 Cada evento de conteo del dispositivo debería generar una invocación del
 Lambda. Si ves invocations pero con errores de parsing, avisar a ingeniería.
 
-Alternativa: pedir a ingeniería que te arme una query saved en Timestream
-del estilo `SELECT * FROM counting WHERE device_id = '<id>' ORDER BY time
-DESC LIMIT 20` y correrla desde la consola.
+Alternativa: pedir a ingeniería que te arme una query saved en Postgres
+(Grafana panel o psql directo) del estilo `SELECT * FROM counting WHERE
+device_id = '<id>' ORDER BY event_time DESC LIMIT 20`.
 
 ### 4.2. Caminata de test
 
