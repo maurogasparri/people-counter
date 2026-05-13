@@ -18,6 +18,7 @@ import queue
 import signal
 import socket
 import sys
+import threading
 import time
 from collections import deque
 from datetime import datetime
@@ -867,19 +868,32 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         except queue.Full:
             logger.warning("Queue de shadow delta llena — descartando delta")
 
+    # Event para que el on_connected callback (que corre en el thread de
+    # paho) pueda señalizarle al main loop que dispare el primer telemetry
+    # tick. Sin esto el primer tick fira por tiempo (last_telem inicializado
+    # en el pasado) y queda con mqtt_connected=False en el payload + log
+    # — el evento se buffea correcto y se replea, pero es confuso para
+    # debugging del bring-up.
+    _first_telem_event = threading.Event()
+
     def _on_mqtt_connected() -> None:
         # Corre en el thread de paho — encolar, no bloquear.
         try:
             shadow_queue.put_nowait(_RECONCILE_SENTINEL)
         except queue.Full:
             logger.warning("Shadow queue llena — descartando request de reconcile")
+        # Disparar el primer telemetry post-connect así sale con
+        # mqtt_connected=True. Reconnects subsecuentes re-disparan
+        # (idempotente y deseable: snapshot fresco post-recovery).
+        _first_telem_event.set()
 
     mqtt_client.on_connected = _on_mqtt_connected
     # Startup jitter anti thundering-herd cuando la flota entera bootea
-    # post-outage. 30s default es razonable: la Pi tarda más en bootear,
-    # los eventos se bufferean local hasta que el connect finalice.
+    # post-outage. 10s default sirve a PoC + flotas chicas; subir a 30s
+    # solo si la flota es grande (50+ devices que pueden coincidir en
+    # reboots). Eventos se bufferean local durante la espera.
     startup_jitter = float(
-        config.get("mqtt", {}).get("startup_jitter_seconds", 30.0)
+        config.get("mqtt", {}).get("startup_jitter_seconds", 10.0)
     )
     mqtt_client.connect(startup_jitter_seconds=startup_jitter)
 
@@ -932,12 +946,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     # --- Timer de telemetría ---
     telem_interval = telem_cfg.get("interval_seconds", 300)
-    # Inicializamos last_telem en el pasado (now - interval) para que la
-    # primera iteración del loop dispare un publish inmediato. Sirve como
-    # signal "el servicio arrancó" + permite validar el path device→cloud
-    # desde el primer minuto sin esperar el interval completo (que puede
-    # ser 1h en producción).
-    last_telem = time.time() - telem_interval
+    # Inicializamos last_telem en "ahora" — el primer tick lo dispara
+    # el callback _on_mqtt_connected vía _first_telem_event, NO el
+    # tiempo. Razón: si firáramos por tiempo desde el boot, el primer
+    # tick saldría con mqtt_connected=False (el connect tiene jitter
+    # bg de hasta startup_jitter_seconds). El evento se buferea correcto
+    # pero el log inicial queda confuso para debugging. Ataque a las
+    # tres causas:
+    #   1. last_telem = now → no fira inmediato.
+    #   2. on_connected → set(_first_telem_event) → próxima iteración
+    #      del loop publica con mqtt=True.
+    #   3. Si MQTT NUNCA conecta (offline indefinido), el ciclo normal
+    #      del interval igual lo dispara después de telem_interval.
+    last_telem = time.time()
 
     # --- Shutdown gracioso ---
     running = True
@@ -958,6 +979,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     frame_count = 0
     fps_start = time.time()
+    last_fps_log = 0.0
     telem_frame_count = 0
     telem_fps_start = time.time()
     last_hours_check = 0.0
@@ -1150,7 +1172,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             if schedule_invalid and invalid_mode == "fail_closed":
                 # Mantener telemetría + watchdog vivos así ops puede re-pushear config.
                 telem_now = time.time()
-                if telem_now - last_telem >= telem_interval:
+                telem_due = (
+                    telem_now - last_telem >= telem_interval
+                    or _first_telem_event.is_set()
+                )
+                if telem_due:
+                    _first_telem_event.clear()
                     telem = collect_telemetry(
                         _build_telemetry_state(
                             frame_latencies_ms,
@@ -1695,13 +1722,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             if elapsed >= 10.0:
                 fps = frame_count / elapsed
                 last_fps_estimate = fps
-                logger.info(
-                    "Pipeline: %.1f FPS, %d detections, in=%d out=%d",
-                    fps,
-                    len(detections),
-                    counter.total_in,
-                    counter.total_out,
-                )
+                now_ts = time.time()
+                if now_ts - last_fps_log >= 60.0:
+                    logger.info(
+                        "Pipeline: %.1f FPS, %d detections, in=%d out=%d",
+                        fps,
+                        len(detections),
+                        counter.total_in,
+                        counter.total_out,
+                    )
+                    last_fps_log = now_ts
                 frame_count = 0
                 fps_start = time.time()
 
@@ -1713,10 +1743,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # El composite (annotate + compose_3panel) cuesta 3-5ms reales
             # y solo sirve al stream MJPEG. Gateado por
             # ``has_subscribers()`` — sin clientes, ni siquiera se construye.
-            # Match al patrón production-grade del incumbent (Drawing.cpp
-            # corre solo si subscriberCount > 0; counting es independiente).
-            # ``push`` es no-bloqueante; fallas se loggean pero no rompen
-            # el pipeline.
+            # Patrón production-grade: el drawing del live preview corre
+            # solo cuando hay subscribers; el counting es independiente y
+            # corre siempre. ``push`` es no-bloqueante; fallas se loggean
+            # pero no rompen el pipeline.
             if viewer is not None:
                 confirmed_or_pending = sum(
                     1
@@ -1759,8 +1789,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             detection_counts.append(len(detections))
 
             # --- Telemetría ---
+            # Dos triggers: (a) interval expiró, (b) MQTT acaba de
+            # (re)conectar y _on_mqtt_connected pidió un snapshot
+            # fresco. Limpiar el event al consumir para no re-disparar.
             now = time.time()
-            if now - last_telem >= telem_interval:
+            telem_due = (
+                now - last_telem >= telem_interval
+                or _first_telem_event.is_set()
+            )
+            if telem_due:
+                _first_telem_event.clear()
                 telem_elapsed = now - telem_fps_start
                 telem = collect_telemetry(
                     _build_telemetry_state(

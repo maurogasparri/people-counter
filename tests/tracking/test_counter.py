@@ -168,14 +168,17 @@ def test_egress_counts_on_exit():
     assert counter.total_in == 0
 
 
-def test_same_track_can_count_two_full_cycles():
-    """A track that completes two full cycles must produce two events.
+def test_same_track_two_full_cycles_cancel_via_uturn(monkeypatch):
+    """A track that completes two full cycles back-to-back se cancela
+    mutuamente vía U-turn (el ROI ES la zona de cancelación).
 
-    Antiglitch: the counter resets meta after each emitted event so a
-    legitimate "person walks in and immediately walks out without leaving
-    the camera frame long enough for the track to die" case still
-    registers both events.
-    """
+    Antiglitch: el counter resetea meta después de cada evento emitido
+    así el mismo track puede producir cycles separados; pero si los
+    cycles ocurren dentro de la ventana U-turn (default 5s), se cancelan
+    — modela "persona entró, dudó, volvió a salir" como neutral, no
+    como 1 IN + 1 OUT espurios. Para validar el mecanismo de reset de
+    meta independiente de U-turn, se patchea la ventana a 0."""
+    monkeypatch.setattr(Counter, "_try_cancel_uturn", lambda *a, **kw: False)
     counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 210, 3000]])
 
@@ -188,7 +191,9 @@ def test_same_track_can_count_two_full_cycles():
     assert counter.total_in == 1
     assert counter.total_out == 0
 
-    # Cycle 2: same track re-enters from below and crosses to above
+    # Cycle 2: same track re-enters from below and crosses to above.
+    # Con U-turn deshabilitado, el reset de meta permite contar el
+    # segundo cycle como egress independiente.
     _advance(counter, track, [300, 380, 3000])
     _advance(counter, track, [300, 310, 3000])
     _advance(counter, track, [300, 290, 3000])
@@ -196,6 +201,30 @@ def test_same_track_can_count_two_full_cycles():
     assert ev2 is not None and ev2.direction == "egress"
     assert counter.total_in == 1
     assert counter.total_out == 1
+
+
+def test_same_track_two_full_cycles_within_window_cancel():
+    """Con U-turn enabled (default — ROI configurado), dos cycles
+    back-to-back del mismo track dentro de la ventana se cancelan
+    mutuamente: 1 IN emitido, 1 OUT cancela el IN, net 0/0."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 210, 3000]])
+
+    counter._process_track(track)
+    _advance(counter, track, [300, 280, 3000])
+    _advance(counter, track, [300, 320, 3000])
+    ev1 = _advance(counter, track, [300, 420, 3000])
+    assert ev1 is not None and ev1.direction == "ingress"
+    assert counter.total_in == 1
+
+    _advance(counter, track, [300, 380, 3000])
+    _advance(counter, track, [300, 310, 3000])
+    _advance(counter, track, [300, 290, 3000])
+    ev2 = _advance(counter, track, [300, 180, 3000])
+    # El egress cancela el ingress previo: ev2=None, totals vuelven a 0.
+    assert ev2 is None
+    assert counter.total_in == 0
+    assert counter.total_out == 0
 
 
 def test_oscillation_without_full_cycle_does_not_count_twice():
@@ -327,16 +356,10 @@ def test_synthetic_exit_on_track_death_after_crossing():
 
 def test_uturn_zone_cancels_in_followed_by_out():
     """Persona entra al ROI cruzando IN, sale del ROI (emite ingress),
-    re-entra al ROI cruzando OUT dentro de window_seconds y dentro del
-    polígono → U-turn detectado, el ingress previo se cancela y el OUT
-    NO se emite. Total IN/OUT queda en 0 (net neutral)."""
-    poly = [(50.0, 100.0), (550.0, 100.0), (550.0, 500.0), (50.0, 500.0)]
-    counter = Counter(
-        lines=[_line_h()],
-        roi=ROI,
-        uturn_polygon=poly,
-        uturn_window_seconds=10.0,
-    )
+    re-entra al ROI cruzando OUT dentro de la ventana → U-turn detectado
+    (el ROI es la zona de cancelación), el ingress previo se cancela y
+    el OUT NO se emite. Total IN/OUT queda en 0 (net neutral)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 150, 3000]])  # outside, above line
     counter.check_all({1: track})
     track.positions.append(np.array([300, 250, 3000]))  # entry above line
@@ -366,19 +389,15 @@ def test_uturn_zone_cancels_in_followed_by_out():
     assert counter.total_out == 0
 
 
-def test_uturn_zone_does_not_cancel_outside_window():
-    """Eventos opuestos fuera de la window_seconds NO se cancelan —
-    visitantes legítimos que entran y salen mucho después siguen
-    contando como 1 IN + 1 OUT independientes."""
+def test_uturn_zone_does_not_cancel_outside_window(monkeypatch):
+    """Eventos opuestos fuera de la ventana NO se cancelan — visitantes
+    legítimos que entran y salen mucho después siguen contando como
+    1 IN + 1 OUT independientes."""
     import time as _time
 
-    poly = [(50.0, 100.0), (550.0, 100.0), (550.0, 500.0), (50.0, 500.0)]
-    counter = Counter(
-        lines=[_line_h()],
-        roi=ROI,
-        uturn_polygon=poly,
-        uturn_window_seconds=0.1,  # ventana muy corta
-    )
+    # Patchear la constante de clase para no esperar 5s reales en test.
+    monkeypatch.setattr(Counter, "UTURN_WINDOW_SECONDS", 0.1)
+    counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 150, 3000]])
     counter.check_all({1: track})
     track.positions.append(np.array([300, 250, 3000]))
@@ -389,7 +408,7 @@ def test_uturn_zone_does_not_cancel_outside_window():
     counter.check_all({1: track})
     assert counter.total_in == 1
 
-    # Esperar más que window_seconds.
+    # Esperar más que la ventana.
     _time.sleep(0.15)
 
     track2 = _make_track(2, [[300, 450, 3000]])
@@ -408,11 +427,13 @@ def test_uturn_zone_does_not_cancel_outside_window():
     assert counter.total_out == 1
 
 
-def test_uturn_zone_disabled_by_default():
-    """Sin polígono configurado, dos eventos opuestos consecutivos
-    cuentan ambos (back-compat)."""
-    counter = Counter(lines=[_line_h()], roi=ROI)  # no uturn_polygon
-    # Mismo escenario que el test de cancelación.
+def test_uturn_does_not_cancel_when_window_disabled(monkeypatch):
+    """Con UTURN_WINDOW_SECONDS=0, la cancelación está efectivamente
+    deshabilitada — dos eventos opuestos consecutivos cuentan ambos.
+    Documenta cómo escapar del comportamiento default si algún site
+    necesita desactivar la cancelación."""
+    monkeypatch.setattr(Counter, "_try_cancel_uturn", lambda *a, **kw: False)
+    counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 150, 3000]])
     counter.check_all({1: track})
     track.positions.append(np.array([300, 250, 3000]))
@@ -431,7 +452,6 @@ def test_uturn_zone_disabled_by_default():
     track2.positions.append(np.array([300, 150, 3000]))
     counter.check_all({2: track2})
 
-    # Sin U-turn, ambos eventos cuentan.
     assert counter.total_in == 1
     assert counter.total_out == 1
 
@@ -1041,7 +1061,14 @@ def test_convention_flip_does_not_emit_phantom_crossing():
     assert counter.total_out == 0
 
 
-def test_check_all_processes_multiple_tracks():
+def test_check_all_processes_multiple_tracks(monkeypatch):
+    # Patcheamos la ventana U-turn a 0 — el test cubre el procesamiento
+    # batch de múltiples tracks. Con U-turn enabled (default), un IN +
+    # OUT en el mismo ROI dentro de la ventana cancelarían (cubierto
+    # por test_uturn_zone_cancels_in_followed_by_out). Acá queremos
+    # verificar que check_all efectivamente emite ambos eventos cuando
+    # la cancelación no aplica.
+    monkeypatch.setattr(Counter, "_try_cancel_uturn", lambda *a, **kw: False)
     counter = Counter(lines=[_line_h()], roi=ROI)
     # Track 1: full ingress cycle
     t1 = _make_track(1, [[200, 220, 3000]])

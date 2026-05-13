@@ -65,8 +65,9 @@ device:
 # (override via wifi_ble.probe_interval_seconds si hace falta).
 #
 # Defaults razonables: 300 (5min), 900 (15min), 1800 (30min), 3600 (1h).
-# 900 es el sweet spot operativo para retail footfall según FootfallCam y
-# similares — granularidad útil sin volumen excesivo de filas.
+# 900 es el sweet spot operativo para retail footfall — granularidad útil
+# para detectar tendencias intra-hora sin volumen excesivo de filas (~96
+# samples/día por device).
 analytics:
   bucket_seconds: 900
 
@@ -377,40 +378,14 @@ counter:
   # doble-conteo por jitter en el piloto.
   min_crossing_movement_px: 0.0
 
-  # UTurnZone — polígono donde se cancelan pares IN/OUT (o el par
-  # opuesto que corresponda a la línea) que ocurren dentro de una
-  # ventana corta. Modela "persona dudó en la entrada, cruzó adentro
-  # y se volvió enseguida" sin que cuente 1 IN + 1 OUT espurios.
-  #
-  # OFF por default: el polígono se define per-site según el layout
-  # físico del local (suele ser una banda alrededor de la línea de
-  # cruce, deep enough para abarcar el área de hesitation típica).
-  # Habilitar cuando se observen casos reales de double-counting por
-  # U-turns en el piloto. Mismo formato que ROI extendido a polígono:
-  # lista de vértices [[x, y], ...] en pixels del frame canonical.
-  #
-  # Cuando ON, requiere al menos 3 vértices o falla la construcción
-  # del counter al boot. Si el evento actual y un previo opuesto caen
-  # AMBOS dentro del polígono dentro de window_seconds, se cancelan
-  # mutuamente (decrementa el opuesto, no emite el actual).
-  uturn:
-    enabled: false                  # Toggle global. False = sin cancelación
-                                    # de U-turn (feature off).
-    window_seconds: 5.0             # Ventana temporal para considerar
-                                    # dos eventos opuestos como U-turn.
-                                    # 5s cubre el caso típico de hesitation
-                                    # en una puerta (entró, miró, salió);
-                                    # más alto puede mezclar visitantes
-                                    # legítimos rápidos.
-    polygon: []                     # Lista de vértices [[x, y], ...].
-                                    # Vacía cuando enabled=false. Cuando
-                                    # se habilite, definir un polígono
-                                    # cerrado (al menos 3 vértices) en
-                                    # las coords del frame canonical
-                                    # 1152×648. Ejemplo: banda alrededor
-                                    # de la línea de la puerta —
-                                    # [[300, 270], [850, 270],
-                                    #  [850, 380], [300, 380]]
+  # U-turn cancellation usa el ROI como zona de cancelación: cuando un
+  # evento de cruce cae dentro del ROI y existe un evento opuesto
+  # reciente (≤5s, hardcoded) también dentro del ROI, ambos se cancelan
+  # mutuamente. Captura "persona dudó en la entrada, cruzó y volvió
+  # enseguida" así como fragmentación de track cerca de la línea
+  # (track A cruza IN, jitter parte el track, track B cruza OUT) sin
+  # contabilizar IN+OUT espurios. Activo automáticamente cuando hay
+  # ROI configurado — sin params extra.
 
 
 # =============================================================================
@@ -442,7 +417,7 @@ mqtt:
   key_path: "/etc/people-counter/certs/device.pem.key"
   ca_path: "/etc/people-counter/certs/AmazonRootCA1.pem"
   port: 8883                        # Puerto TLS de AWS IoT Core.
-  startup_jitter_seconds: 30.0      # Anti thundering-herd. Cuando la
+  startup_jitter_seconds: 10.0      # Anti thundering-herd. Cuando la
                                     # flota entera bootea simultáneamente
                                     # tras un outage (incident regional,
                                     # mass restart de cadena retail) o
@@ -454,8 +429,14 @@ mqtt:
                                     # thread background — connect()
                                     # retorna inmediatamente y los eventos
                                     # se bufferean local hasta connect.
-                                    # 30s spread permite a una flota de
-                                    # 100 devices arrancar sin coordinar.
+                                    # 10s default es razonable para PoC y
+                                    # flotas chicas (≤20 devices) y
+                                    # minimiza la ventana en la que el
+                                    # primer telemetry tick se ve como
+                                    # ``mqtt_connected=False`` en logs.
+                                    # Subir a 30s para flotas grandes
+                                    # (50+ devices que pueden coincidir
+                                    # en reboots).
                                     # 0 deshabilita (dev / single device).
   topics:
     counting:  "store/{store_id}/counting"

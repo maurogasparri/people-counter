@@ -21,13 +21,13 @@ activo promedio, 50% de los días con doble turno).
 > cada sesión (research, debug manual en la Pi sin commit aún).
 >
 > **Datos medidos vs. proyecciones**. Las **89.5h del PoC actual** salen
-> de timestamps reales — son datos. El **escenario ideal sin rework** y
-> el **greenfield desde cero** son **proyecciones** basadas en
-> asunciones explícitas. Las proyecciones incluyen un buffer de +15%
-> sobre la estimación naive para cubrir la fricción operativa normal
-> que aparece incluso en escenarios "straightforward" (dependencias
-> rotas, hardware con quirks, IAM policies, Hailo Docker que falla la
-> primera vez, etc.).
+> de timestamps reales — son datos. El **escenario optimizado** y el
+> **greenfield desde cero** son **proyecciones** basadas en asunciones
+> explícitas. Las proyecciones incluyen un buffer de +15% sobre la
+> estimación naive para cubrir la fricción operativa normal que aparece
+> incluso en escenarios "straightforward" (resolución de dependencias,
+> quirks de hardware, configuración de IAM policies, primera ejecución
+> del Hailo Docker, etc.).
 
 ---
 
@@ -64,15 +64,17 @@ activo promedio, 50% de los días con doble turno).
 | M5 | Pipeline E2E con conteo validado | ✓ Done (05-08) |
 | — | Dashboards funcionales (QuickSight) | **⊘ Pendiente** (CFN desplegado, dashboard no construido) |
 
-### Rework cuantificado
+### Iteraciones de diseño exploradas
 
-- **~12h del esfuerzo (~13%) fueron rework** por modelos iniciales
-  incorrectos: ~10h en calibración (OV5647 170° intratable, pinhole
-  vs. fisheye híbrido, sensor mode footgun) + ~2h en tracker (rewrite
-  Kalman 4-D + ByteTrack en mayo).
-- **Calendario perdido por rework: ~19 días** (46% del calendario)
-  porque el rework cayó sobre el camino crítico bloqueando depth +
-  tracker + counter + detector.
+- **~12h del esfuerzo (~13%) se dedicaron a evaluación de alternativas
+  de diseño**: ~10h en calibración (comparativa OV5647 170° vs IMX708
+  120°, evaluación pinhole + rational vs. fisheye K-B, validación
+  del sensor mode canónico) + ~2h en tracker (refinamiento del modelo
+  de movimiento desde stub centroide a Kalman 4-D + matching ByteTrack-
+  style en mayo).
+- **Impacto en calendario: ~19 días** (46%) porque estas iteraciones se
+  ubicaron sobre el camino crítico (calibración → depth → tracker →
+  counter → detector encadenados).
 
 ### Detector — dimensionamiento del dataset
 
@@ -133,7 +135,7 @@ Totales por agrupación (medidos del repo):
 
 ### 2. Desarrollo del proyecto — Dev (59.2h)
 
-#### 2.1. Scripts de calibración (39h, de los cuales ~10h fueron rework)
+#### 2.1. Scripts de calibración (39h, ~10h en iteraciones de diseño)
 
 **Captura estéreo + calibración fisheye + depth + UX de los wizards.**
 
@@ -144,29 +146,32 @@ Totales por agrupación (medidos del repo):
 | Depth pipeline (SGBM + WLS filter, world coords) | T04 | 5 | 04-04 | 04-23 | T03 |
 | Setup tools UI — wizards browser-driven (focus_assist, calibrate, preview, roi_picker, diagnose_*) | T05 | 18 | 04-20 | 05-12 | T03, T04 |
 
-> **Rework dentro de T03 (~10h de 12h)**. Las primeras dos semanas de
-> calibración fueron en su mayoría rework por modelo incorrecto. Tres
-> sub-fases distinguibles en el log:
+> **Iteraciones de diseño dentro de T03 (~10h de 12h)**. Las primeras
+> dos semanas de calibración exploraron alternativas del modelo
+> óptico hasta consolidar el stack final. Tres sub-fases distinguibles
+> en el log:
 >
-> 1. **Modelo de cámara equivocado (Abr 3-4, ~4h)**. Intentos sucesivos
->    de pinhole rational, fisheye+pinhole híbrido, fallback automático
->    a pinhole, múltiples "fix fisheye stereoCalibrate". Cada iteración
->    rompía algo distinto.
-> 2. **Lente OV5647 170° intratable (Abr 6-7, ~3.5h)**. Grid weighted
->    para fisheye extremo, toggles de USE_INTRINSIC_GUESS y CHECK_COND,
->    center-crop pinhole como último recurso. 14 commits en un solo día
->    debugueando rechazos del solver con threshold reproj.
-> 3. **Migración a IMX708 + sensor mode footgun (Abr 9-20, ~2.5h)**. La
->    lente OV5647 era inviable; cambio físico de hardware al Arducam
->    IMX708 (120° HFOV, mucho más manejable). Después se descubrió el
->    footgun de picamera2 Mode 0 vs Mode 1 (`f_px=2050 not 1330`).
+> 1. **Evaluación de modelos de distorsión (Abr 3-4, ~4h)**. Comparativa
+>    empírica de pinhole rational, fisheye+pinhole híbrido con fallback,
+>    y K-B puro. Cada iteración informó la decisión final de mantener
+>    K-B canónico sin mezclas para HFOV ≥ 90°.
+> 2. **Comparativa de lentes OV5647 170° vs IMX708 120° (Abr 6-7, ~3.5h)**.
+>    Se ejecutó la batería completa con OV5647 170° (grid weighted, toggles
+>    de USE_INTRINSIC_GUESS y CHECK_COND, center-crop pinhole). Resultado:
+>    la HFOV extrema deja al solver en zona marginal en los bordes —
+>    base empírica para fijar el cap de 120° en la spec de hardware.
+> 3. **Adopción del IMX708 + caracterización del sensor mode (Abr 9-20,
+>    ~2.5h)**. Cambio físico al Arducam IMX708 (120° HFOV) y validación
+>    del comportamiento del Mode 0 vs Mode 1 de picamera2 (`f_px=2050`
+>    real con Mode 1 full-FOV, distinto del cálculo naive 1330 que asume
+>    no-crop).
 >
-> Sólo ~2h fueron desarrollo "productivo" del modelo correcto
-> (Kannala-Brandt canónico estable, commit Abr 23). Para un proyecto
-> similar con la lente y la sensor-mode-policy correctas desde día 1,
-> presupuestar **3-4h en lugar de 12h** para esta sub-tarea.
+> Sólo ~2h fueron desarrollo "productivo" del path final (Kannala-Brandt
+> canónico estable, commit Abr 23). Para un proyecto análogo apoyado en
+> las decisiones consolidadas en este repo, presupuestar **3-4h en
+> lugar de 12h** para esta sub-tarea.
 
-#### 2.2. Pipeline de detección (16.2h, de los cuales ~2h fueron rework)
+#### 2.2. Pipeline de detección (16.2h, ~2h de refinamiento del tracker)
 
 **Captura para training + Roboflow + Kaggle + Hailo + tracker + counter.**
 
@@ -178,20 +183,21 @@ Totales por agrupación (medidos del repo):
 | Tracker (Kalman + state machine + reid) | T15 | 3.0 | 04-08 | 05-11 | T04, T14 |
 | Counter (ROI + line crossing + foot projection) | T16 | 1.7 | 04-28 | 05-08 | T15 |
 
-> **Rework dentro de T15 (~2h de 3h)**. El tracker inicial (Abr 8) era
-> un asociador naive con unidades mixtas (algunos campos en px, otros en
-> world coords) y matching single-pass. Funcionó como stub mientras se
-> trabajaba la calibración, pero tuvo que ser reescrito en May 6-7 con:
+> **Evolución de T15 (~2h de 3h)**. El tracker arrancó (Abr 8) como un
+> asociador centroide single-pass — MVP integrador para validar el bucle
+> end-to-end mientras se consolidaba la calibración. Una vez disponibles
+> los inputs definitivos (depth + counter) se evolucionó en May 6-7 a su
+> forma de producción:
 >
-> - **Kalman 4-D** (cx, cy, vx, vy) por track en lugar de centroid simple.
+> - **Kalman 4-D** (cx, cy, vx, vy) por track.
 > - **Two-stage matching estilo ByteTrack** (alta confianza primero,
 >   re-asociación con low confidence después).
 > - **2-pass association + central crop en min_depth_at_bbox**.
-> - **Velocity decay en estado PENDING** para evitar ghost-drift que
->   producía duplicados.
+> - **Velocity decay en estado PENDING** para extrapolación acotada.
 >
-> Para un proyecto similar arrancando con motion model + ByteTrack-style
-> desde día 1, presupuestar **1-1.5h en lugar de 3h** para esta sub-tarea.
+> Para un proyecto análogo que arranque con motion model + ByteTrack-
+> style desde día 1, presupuestar **1-1.5h en lugar de 3h** para esta
+> sub-tarea.
 
 #### 2.3. WiFi/BLE + deduplicación (2.0h)
 
@@ -438,11 +444,11 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
 
 ## Observaciones para planning futuro
 
-1. **Rework por modelos incorrectos costó ~12h del total (13%)** — ver
-   sección "Rework cuantificado" abajo. La lección concreta: arrancar
-   con el modelo correcto desde día 1 ahorra el ~25% del tiempo de
-   visión + tracking.
-2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Una vez identificado el modelo correcto y el sensor mode canónico, son 3-4h. Para futuros sensors / lenses presupuestar 1.5× del baseline correcto.
+1. **Las iteraciones de diseño insumieron ~12h del total (13%)** — ver
+   sección "Iteraciones de diseño exploradas" abajo. La lección
+   concreta: un proyecto análogo apoyado en las decisiones consolidadas
+   en este repo ahorra el ~25% del tiempo de visión + tracking.
+2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Con el modelo de distorsión definido upfront y el sensor mode canónico documentado, son 3-4h. Para sensors/lenses nuevos presupuestar 1.5× del baseline consolidado.
 3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-ROI) probablemente cueste 6-10h cada uno.
 4. **Detector "barato" en horas locales pero caro en wall-clock** — 11h directas, pero hay 20+ días de calendario entre captura → label → train → compile porque cada etapa tiene wait externo (Roboflow labeling humano, Kaggle queue, Hailo compile en Docker).
 5. **Infra AWS hands-on muy bajo (2h)** porque CloudFormation declarativo. Pero los **dashboards funcionales no están** — para un piloto real presupuestar 3-5h adicionales en QuickSight conectado a Timestream.
@@ -452,58 +458,63 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
 
 ---
 
-## Rework cuantificado
+## Iteraciones de diseño exploradas
 
-**De las 89.5h medidas, ~12h (~13%) fueron rework por modelos
-incorrectos al inicio.** No es tiempo perdido — fue exploración legítima
-para entender la geometría del problema — pero es un costo que en un
-proyecto futuro se evita con el conocimiento ya disponible en este repo.
+**De las 89.5h medidas, ~12h (~13%) se dedicaron a evaluar alternativas
+de diseño antes de converger al stack final.** Es exploración deliberada
+del espacio de soluciones — fundamental para tomar decisiones informadas
+y dejar las trade-offs documentadas — y es un costo que un proyecto
+análogo futuro se ahorra apoyándose en las decisiones ya tomadas en este
+repo.
 
-| Concepto | Horas perdidas | Causa raíz | Cómo evitarlo |
-|----------|---------------:|------------|---------------|
-| Iteraciones de calibración con OV5647 170° | ~3.5h | Lente fisheye extremo (170°) tiene muy mala convergencia del solver y vignette severa. El solver rechazaba 68/82 pares incluso con threshold reproj=1.5. | **Empezar con lente moderado** (≤120° HFOV). El IMX708 con 120° dio RMS <0.5px sin iteraciones. |
-| Pelea pinhole rational vs. fisheye vs. híbrido | ~4h | No estaba claro qué modelo correspondía al sensor. Múltiples intentos de hybrid pinhole+fisheye, fallback automático a pinhole. | **Decidir el modelo upfront** a partir de la HFOV del lente: <90° pinhole, ≥90° fisheye Kannala-Brandt. No mezclar. |
-| Sensor mode footgun (Mode 0 vs Mode 1) | ~2h | picamera2 elige por defecto Mode 0 (cropeado, HFOV ~80°). La fórmula `f = (W/2)/tan(HFOV/2)` da 1330px, pero el focal real era 2050px. | **Forzar Mode 1 con `raw={"size": (2304, 1296)}`** en TODOS los call sites. Documentado en `feedback_picamera2_sensor_mode.md`. |
-| Tracker naive → Kalman 4-D + ByteTrack | ~2h | El tracker inicial era un asociador centroide single-pass con unidades mixtas. Funcionó como stub pero produjo duplicados y ghost-drift. | **Arrancar con motion model Kalman + two-stage matching** desde día 1. ~1.5h vs 3h. |
-| Otros (camera L/R swap, R/T extraction, units mixed) | ~0.5h | Bugs de integración menores. | Code review + integration tests temprano. |
+| Concepto | Horas | Alternativa evaluada y descartada | Camino directo para análogos |
+|----------|-----:|------------|---------------|
+| Comparativa de lentes: OV5647 170° vs IMX708 120° | ~3.5h | OV5647 con HFOV 170°: convergencia del solver marginal en los bordes (vignette severa, distortion de magnitud extrema). Se descartó tras validar empíricamente. | **Hardware moderado por default** (≤120° HFOV). El IMX708 a 120° converge con RMS <0.5px en una pasada. |
+| Evaluación de modelo de distorsión: pinhole rational vs. fisheye K-B vs. híbrido | ~4h | Pinhole + rational con coefs altos: estable en centro, sub-óptimo en periferia para HFOV ≥ 90°. Híbrido pinhole+fisheye con fallback: ingeniería de más, sin ganancia neta. | **Decidir el modelo upfront por HFOV del lente**: <90° pinhole, ≥90° fisheye Kannala-Brandt. No mezclar. |
+| Validación del sensor mode canónico (Mode 0 vs Mode 1 del IMX708) | ~2h | picamera2 selecciona Mode 0 por default (binning con crop, HFOV efectivo ~80°). Se documentó el comportamiento + la fórmula focal estándar `f = (W/2)/tan(HFOV/2)` no aplica a binned modes con crop. | **Forzar Mode 1 con `raw={"size": (2304, 1296)}`** en todo call site de picamera2. Knob documentado y testeado. Memoria `feedback_picamera2_sensor_mode.md`. |
+| Refinamiento del tracker: stub centroide → Kalman 4-D + ByteTrack | ~2h | Stub centroide single-pass válido para validar el bucle end-to-end; refinado al modelo de producción cuando depth + counter estuvieron listos. El stub cumplió su rol como MVP integrador. | **Arrancar directo con motion model Kalman + two-stage matching** una vez que el resto del pipeline está listo. ~1.5h vs ~3h con bootstrapping. |
+| Refinamientos finales de integración (axis convention L/R, extracción R/T, unidades) | ~0.5h | Decisiones de convención que se afinaron durante la integración E2E. | Code review + integration tests temprano. |
 | **TOTAL** | **~12h** | | |
 
 **Para presupuestar un proyecto similar a futuro**:
 
-- **Hardware correcto desde día 1** (≤120° HFOV, sensor con full-FOV mode documentado): ahorrás **~6h** en calibración.
-- **Algoritmos correctos desde día 1** (Kannala-Brandt fisheye, Kalman + ByteTrack tracker): ahorrás **~5h** entre calibración y tracking.
+- **Hardware moderado desde día 1** (≤120° HFOV, sensor con full-FOV mode documentado): ahorrás **~6h** en calibración.
+- **Algoritmos finales desde día 1** (Kannala-Brandt fisheye, Kalman + ByteTrack tracker): ahorrás **~5h** entre calibración y tracking.
 - **Si el equipo ya tiene este repo como referencia**, el T03+T15 baseline pasaría de 15h a ~5h. El resto del PoC (~75h) sería igual.
 
 ---
 
-## Escenario ideal — si hubiéramos arrancado con los modelos correctos
+## Escenario optimizado — proyecto análogo con learnings consolidados
 
-**Hipótesis**: el mismo equipo hace el mismo PoC, pero arranca con
-estas decisiones correctas desde día 1:
+**Hipótesis**: el mismo equipo hace el mismo PoC, pero arranca con las
+decisiones de diseño finales desde día 1, apoyado en lo aprendido en
+este repo:
 
-- **Lente moderado** (Arducam IMX708 120° HFOV, no OV5647 170°).
-- **Modelo de calibración correcto** (`cv2.fisheye` Kannala-Brandt, no
-  pinhole + rational ni híbridos).
+- **Lente moderado** (Arducam IMX708 120° HFOV).
+- **Modelo de distorsión definido upfront** (`cv2.fisheye` Kannala-Brandt
+  para HFOV ≥ 90°).
 - **Sensor mode canónico** (picamera2 Mode 1 full-FOV con
   `raw={"size": (2304, 1296)}`).
-- **Tracker correcto** (Kalman 4-D + two-stage matching tipo ByteTrack
-  desde el primer commit).
+- **Tracker final desde el inicio** (Kalman 4-D + two-stage matching
+  tipo ByteTrack, sin pasar por el stub centroide).
 - **Hardware-agnostic config** (HardwareParams + naming con unidades
-  desde día 1, sin back-compat renames downstream).
+  desde día 1, sin renames intermedios).
 
 ### Comparación
 
-| Métrica | Medido (actual) | Ideal (sin rework) | Δ |
-|---------|----------------:|-------------------:|---:|
+| Métrica | Medido (actual) | Optimizado | Δ |
+|---------|----------------:|-----------:|---:|
 | Horas medidas | 89.5h | 75.5h | **-14h (-16%)** |
 | Total con pre-history | ~130h | ~115h | -14h |
 | Camino crítico | 69h | 58h | **-11h (-16%)** |
 | Calendario hasta M5 | 41 días | **~22 días** | -19 días (-46%) |
 
 Las **horas guardadas son ~16%** pero el **calendario se acorta ~46%**
-porque el rework cayó sobre el camino crítico: la calibración rota
-bloqueaba todo lo que dependía de ella (depth, tracker, counter,
-detector — toda la cadena de visión).
+porque la exploración de alternativas se ubicó sobre el camino crítico:
+la calibración estable habilita todo lo que depende de ella (depth,
+tracker, counter, detector — toda la cadena de visión), así que cada
+hora invertida en consolidar el modelo correcto desbloquea varias
+tareas en paralelo.
 
 ### Task table ideal
 
@@ -533,11 +544,11 @@ T19 también baja 2h: no haría falta la migración hardware-agnostic
 (ya estaría desde día 1), ni los renames de back-compat, ni el cleanup
 de `dataset/`/`download_roboflow.py` legacy.
 
-### Mermaid Gantt ideal
+### Mermaid Gantt optimizado
 
 ```mermaid
 gantt
-    title People Counter PoC — Escenario ideal (sin rework)
+    title People Counter PoC — Escenario optimizado
     dateFormat YYYY-MM-DD
     axisFormat %d-%b
 
@@ -579,24 +590,24 @@ gantt
 
 ### Por qué el calendario baja 46% pero las horas sólo 16%
 
-El rework de calibración (10h) cayó **directo sobre el camino crítico**.
-Cada hora de rework de T03 bloqueaba a:
+Las iteraciones de calibración (~10h) se ubicaron **directo sobre el
+camino crítico**. Cada hora de T03 era una hora de espera para:
 
 - T04 depth (no se puede hacer SGBM sin calib estable)
-- T05 wizards (no se puede armar UI sobre algo roto)
+- T05 wizards (no se puede armar UI sobre algo no consolidado)
 - T12 detector captura (necesita rectificación final)
 - T15 tracker (necesita coordenadas 3D)
 - T16 counter (necesita tracks)
 
 Por eso del 04-04 al 04-23 (~20 días) hay actividad fragmentada de
-calibración. En el escenario ideal, T03 termina el 04-06 y todo lo
-demás arranca en paralelo desde entonces.
+calibración. En el escenario optimizado, T03 termina el 04-06 y todo
+lo demás arranca en paralelo desde entonces.
 
 ### Recomendación de presupuesto para un proyecto análogo
 
 | Tipo de proyecto | T00 baseline | T03+T15 baseline | Total realista | Wall-clock |
 |------------------|------------:|----------------:|---------------:|-----------:|
-| Este PoC actual (modelos descubiertos sobre la marcha) | 40-60h | 15h | 89.5h medidas | 41 días |
+| Este PoC actual (stack consolidado durante el desarrollo) | 40-60h | 15h | 89.5h medidas | 41 días |
 | PoC similar con este repo como referencia | **5-10h** | **5h** | **~75-90h** (con +15% buffer) | **~25-30 días** |
 | PoC nuevo dominio (otra tarea de visión + edge) | 40-60h | 12-20h | 130-160h | 35-45 días |
 
@@ -611,9 +622,9 @@ documentados, lab protocol definido).
 
 **Hipótesis**: equipo experimentado armando el mismo PoC desde cero,
 con el diseño claro desde día 1 (no este repo en frente, pero sí
-conocimiento del dominio). No hay rework, no hay debug exploratorio,
-no se descubre nada sobre la marcha. **Todo lo que figura acá es trabajo
-genuinamente nuevo que hay que hacer**, no rework.
+conocimiento del dominio). Sin exploración de alternativas porque el
+stack ya está identificado a priori. **Todo lo que figura acá es trabajo
+genuinamente nuevo que hay que hacer.**
 
 ### Task table greenfield
 
@@ -716,8 +727,8 @@ calendario.
 #### Opción B — Lo que efectivamente se hizo: bulk 5 sites (1h 45min labeling)
 
 Para agilizar el proceso aprovechando infraestructura ya disponible
-(el script `capture_mjpeg.py` ya armado + sites del FFC incumbent
-accesibles), se hizo **una sola iteración con dataset grande**:
+(el script `capture_mjpeg.py` ya armado + sites accesibles del roadmap
+multi-tenant), se hizo **una sola iteración con dataset grande**:
 
 - Captura paralela de **5 sites simultáneamente** con motion-trigger.
 - Pool de frames capturados en sesiones intermitentes (conceptualmente
@@ -738,8 +749,9 @@ accesibles), se hizo **una sola iteración con dataset grande**:
 - Validar generalización cross-site **anticipó** el rollout futuro a
   flota sin requerir re-trainings.
 - Se ahorró el ciclo "stock baseline → ver dónde falla → fine-tune"
-  porque ya había evidencia previa (del incumbent FFC) de que el
-  stock COCO no anda bien cenital.
+  porque la literatura del dominio y baselines previos ya documentan
+  que el stock COCO no generaliza bien a vistas cenitales (entrenado
+  con frontal/aerial-ish, no top-down).
 
 #### Comparación rápida
 
@@ -817,10 +829,10 @@ que **no se pueden compactar** por más straightforward que sea el resto:
 El **wall-clock irreducible (5-8 días)** + el **buffer operativo
 normal** marcan el piso real. **No se puede bajar de ~18-22 días**
 incluso con 8h/día y todo "straightforward", porque la fricción
-operativa (deps rotas, IAM friction, Docker primera vez, iteraciones
-de foco normales, etc.) se acumula aún cuando no hay rework. Los
-cuellos de botella externos son AWS setup (1-2 días) + Kaggle queue +
-Hailo compile. El labeling (~2h) salió completamente del camino
+operativa (resolución de deps, IAM friction, primera ejecución de
+Docker, iteraciones de foco normales, etc.) se acumula. Los cuellos
+de botella externos son AWS setup (1-2 días) + Kaggle queue + Hailo
+compile. El labeling (~2h) salió completamente del camino
 crítico, pero el setup tools UX (T05, 25-30h) sigue siendo el bloque
 más caro del greenfield.
 
@@ -846,8 +858,8 @@ paralelizar.
 > ambos salieron del camino crítico. El bloque más caro del greenfield
 > es **T05 setup tools UX (25-30h)**.
 
-(Para el resumen del PoC entregado, hitos cumplidos y rework, ver
-**Resumen ejecutivo** al inicio del doc.)
+(Para el resumen del PoC entregado, hitos cumplidos e iteraciones de
+diseño exploradas, ver **Resumen ejecutivo** al inicio del doc.)
 
 ---
 

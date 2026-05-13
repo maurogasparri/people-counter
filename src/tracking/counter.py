@@ -65,9 +65,9 @@ class CountEvent:
     timestamp: float
     position_y: float
     # Posición x del track al momento del cruce. Útil para downstream
-    # analytics (clustering espacial de eventos) y para el UTurnZone
-    # polygon check (un evento solo cancela contra otro si AMBOS caen
-    # dentro de la zona — la x es necesaria para el test geométrico).
+    # analytics (clustering espacial de eventos) y para la cancelación
+    # U-turn (un evento solo cancela contra otro si AMBOS caen dentro
+    # del ROI — la x es necesaria para el test geométrico).
     position_x: float = 0.0
     # Atributos opcionales per-track que se populan cuando el classifier
     # está enabled. "unknown" cuando faltan datos de height (sin profundidad,
@@ -372,6 +372,15 @@ class Counter:
     # clasificación adult/child se vuelve conservadora.
     HEIGHT_CONFIDENCE_GATE = 0.5
 
+    # Ventana temporal para cancelar pares opuestos IN/OUT dentro del
+    # ROI (U-turn). Eventos opuestos del mismo ROI dentro de esta
+    # ventana se cancelan mutuamente — captura "persona dudó en la
+    # entrada, cruzó y volvió enseguida" o fragmentación de track cerca
+    # de la línea (track A cruza IN, jitter parte el track, track B
+    # cruza OUT). Tests patchean este attr de clase para validar
+    # comportamiento fuera de ventana.
+    UTURN_WINDOW_SECONDS = 5.0
+
     def __init__(
         self,
         lines: list[Line],
@@ -380,8 +389,6 @@ class Counter:
         mounting_height_mm: Optional[float] = None,
         principal_point: Optional[tuple[float, float]] = None,
         min_crossing_movement_px: float = 0.0,
-        uturn_polygon: Optional[list[tuple[float, float]]] = None,
-        uturn_window_seconds: float = 5.0,
     ) -> None:
         """
         Args:
@@ -433,23 +440,13 @@ class Counter:
         for line in self._lines:
             all_labels.update(line.labels.values())
         self._totals: dict[str, int] = {label: 0 for label in all_labels}
-        # UTurnZone polygon (lista de vértices [(x, y), ...]) opcional.
-        # None deshabilita la cancelación de pares por U-turn. Cuando
-        # configurada, un evento que cae dentro del polígono se cancela
-        # contra un evento opuesto reciente del mismo polígono dentro
-        # de ``uturn_window_seconds`` — captura el case "persona dudó
-        # en la entrada, cruzó y volvió enseguida" sin contabilizar
-        # IN+OUT espurios.
-        self._uturn_polygon: Optional[list[tuple[float, float]]] = None
-        if uturn_polygon is not None and len(uturn_polygon) >= 3:
-            self._uturn_polygon = [
-                (float(p[0]), float(p[1])) for p in uturn_polygon
-            ]
-        self._uturn_window_s: float = max(0.0, float(uturn_window_seconds))
-        # Mapa label → label opuesto, derivado de las líneas. Para una
-        # línea con labels {top_to_bottom: ingress, bottom_to_top: egress},
-        # opposites["ingress"] = "egress" y vice versa. Necesario para
-        # decidir qué evento previo cancela a uno nuevo.
+        # U-turn cancellation: el ROI ACTÚA como zona de cancelación.
+        # Eventos opuestos del mismo ROI dentro de ``UTURN_WINDOW_SECONDS``
+        # se cancelan mutuamente — captura "persona dudó y volvió" así
+        # como fragmentación de track cerca de la línea (track A cruza
+        # IN, jitter parte el track, track B cruza OUT). Sin ROI
+        # configurado, no hay cancelación (no podemos bound la zona).
+        # Mapa label → label opuesto, derivado de las líneas.
         self._opposites: dict[str, str] = {}
         for line in self._lines:
             line_labels = list(line.labels.values())
@@ -540,33 +537,6 @@ class Counter:
         self._recent_events.clear()
 
     # ------------------------------------------------------------- internal
-    def _inside_uturn_polygon(self, x: float, y: float) -> bool:
-        """Ray casting test point-in-polygon. Devuelve True si (x, y)
-        cae dentro del polígono UTurnZone. Si no hay polígono
-        configurado, siempre devuelve False (= zona vacía, sin cancelación).
-        """
-        poly = self._uturn_polygon
-        if poly is None or len(poly) < 3:
-            return False
-        n = len(poly)
-        inside = False
-        p1x, p1y = poly[0]
-        for i in range(1, n + 1):
-            p2x, p2y = poly[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (
-                                (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                            )
-                        else:
-                            xinters = p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
-        return inside
-
     def _try_cancel_uturn(
         self,
         track_id: int,
@@ -576,26 +546,22 @@ class Counter:
         timestamp: float,
     ) -> bool:
         """Intenta cancelar el evento contra un opuesto reciente dentro
-        del UTurnZone. Devuelve True si canceló (caller debe abortar la
+        del mismo ROI. Devuelve True si canceló (caller debe abortar la
         emisión).
 
-        Reglas:
-        - Polígono configurado y el evento actual cae dentro.
-        - Existe label opuesto definido por las líneas.
-        - Hay un evento previo en ``_recent_events`` con label opuesto,
-          dentro de la ventana temporal, y cuya posición también cae
-          dentro del polígono.
-        - Si se encuentra: decrementa el total del label opuesto,
-          remueve la entrada del cache, NO inserta el evento actual.
+        El ROI actúa como zona de cancelación: si el evento actual y un
+        evento opuesto reciente ambos caen dentro del ROI y la ventana
+        temporal no expiró, se cancelan mutuamente. Sin ROI configurado
+        no hay cancelación (no podemos bound la zona).
         """
-        if self._uturn_polygon is None:
+        if self._roi is None:
             return False
-        if not self._inside_uturn_polygon(x, y):
+        if not self._inside_roi(x, y):
             return False
         opposite = self._opposites.get(label)
         if opposite is None:
             return False
-        cutoff = timestamp - self._uturn_window_s
+        cutoff = timestamp - self.UTURN_WINDOW_SECONDS
         # Purgar eventos fuera de ventana.
         self._recent_events = [
             e for e in self._recent_events if e[4] >= cutoff
@@ -604,7 +570,7 @@ class Counter:
             r_tid, r_label, r_x, r_y, _r_ts = recent
             if r_label != opposite:
                 continue
-            if not self._inside_uturn_polygon(r_x, r_y):
+            if not self._inside_roi(r_x, r_y):
                 continue
             # U-turn detectado: revertir el evento previo y abortar el
             # actual. No discriminamos por track_id — el escenario
@@ -636,12 +602,12 @@ class Counter:
         timestamp: float,
     ) -> None:
         """Inserta el evento emitido en el cache de recent_events si el
-        UTurnZone está configurado. Eventos fuera del polígono no se
-        cachean porque nunca podrían cancelarse contra nada (el lookup
-        siempre requiere ambos dentro del polígono)."""
-        if self._uturn_polygon is None:
+        ROI está configurado. Eventos fuera del ROI no se cachean porque
+        nunca podrían cancelarse contra nada (el lookup siempre requiere
+        ambos dentro del ROI)."""
+        if self._roi is None:
             return
-        if not self._inside_uturn_polygon(x, y):
+        if not self._inside_roi(x, y):
             return
         self._recent_events.append((track_id, label, x, y, timestamp))
 
@@ -685,12 +651,18 @@ class Counter:
             height_m = _aggregate_height_m_from_track(track)
             head_depth_m = _aggregate_head_depth_m_from_track(track)
 
-        cx = float(track.positions[-1][0])
-        cy = float(track.positions[-1][1])
+        # Posición = anclaje del cruce (dentro del ROI), no la posición
+        # actual del track. Coherente con el path de exit normal: el
+        # CountEvent reporta dónde se cruzó la línea, y la cancelación
+        # U-turn matchea por proximidad espacial del cruce.
+        cross = meta.get("last_crossing_pos") or (
+            float(track.positions[-1][0]),
+            float(track.positions[-1][1]),
+        )
         self._track_snapshots[track.track_id] = {
             "label": meta["last_label"],
-            "position_x": cx,
-            "position_y": cy,
+            "position_x": float(cross[0]),
+            "position_y": float(cross[1]),
             "height_class": height_class,
             "height_m": height_m,
             "head_depth_m": head_depth_m,
@@ -709,7 +681,7 @@ class Counter:
         es la misma — un IN sintético cuenta igual que un IN
         geométrico.
 
-        Devuelve ``None`` si el evento se cancela vía UTurnZone (la
+        Devuelve ``None`` si el evento se cancela vía U-turn (la
         otra mitad del par ya estaba registrada). Caller debe filtrar
         None del resultado.
         """
@@ -931,6 +903,11 @@ class Counter:
                     label = line.crossing_label(prev_side, new_side)
                     if label is not None:
                         meta["last_label"] = label
+                        # Anclar la posición del cruce dentro del ROI
+                        # para el U-turn lookup. El emit en exit usa esta
+                        # posición (no la posición de salida, que está
+                        # fuera del ROI por definición).
+                        meta["last_crossing_pos"] = (cx, cy)
                 sides[i] = new_side
             meta["last_track_pos"] = (cx, cy)
             return None
@@ -941,7 +918,11 @@ class Counter:
             # Detectar cruces sobre la propia transición de exit.
             # Importante si el track salta de inside-un-lado a
             # outside-el-otro en un único frame (low fps + movimiento
-            # rápido, o gaps del detector).
+            # rápido, o gaps del detector). En este caso anclamos al
+            # midpoint del segmento de exit — la posición real del
+            # cruce cae entre los dos frames; el midpoint es la mejor
+            # aproximación y suele caer dentro del ROI.
+            last_inside = meta.get("last_track_pos")
             for i, line in enumerate(self._lines):
                 prev_side = sides[i]
                 new_side = line.side_of(cx, cy)
@@ -954,26 +935,41 @@ class Counter:
                     label = line.crossing_label(prev_side, new_side)
                     if label is not None:
                         meta["last_label"] = label
+                        if last_inside is not None:
+                            meta["last_crossing_pos"] = (
+                                (float(last_inside[0]) + cx) / 2.0,
+                                (float(last_inside[1]) + cy) / 2.0,
+                            )
+                        else:
+                            meta["last_crossing_pos"] = (cx, cy)
             label = meta.get("last_label")
+            crossing_pos = meta.get("last_crossing_pos") or (cx, cy)
             # Resetear estado así el mismo track puede contar otro
             # ciclo completo más tarde. El invariante antiglitch
             # vale: contar de nuevo requiere re-entry desde afuera +
             # un cruce de línea con label + exit.
             meta["inside"] = False
             meta["last_label"] = None
+            meta["last_crossing_pos"] = None
             for i in range(len(sides)):
                 sides[i] = 0
             if label:
                 now = time.time()
-                # U-turn cancellation: si el evento cae en la UTurnZone
-                # y matchea un evento opuesto reciente, decrementa el
-                # opuesto y aborta este sin emitir count. Mantiene la
-                # semántica de "persona dudó y volvió" sin inflar
-                # totales en ambas direcciones.
-                if self._try_cancel_uturn(track.track_id, label, cx, cy, now):
+                cross_x = float(crossing_pos[0])
+                cross_y = float(crossing_pos[1])
+                # U-turn cancellation: si el evento cae dentro del ROI
+                # (zona de cancelación) y matchea un evento opuesto
+                # reciente, decrementa el opuesto y aborta este sin
+                # emitir count. Captura "persona dudó y volvió" + track
+                # fragmentation cerca de la línea sin inflar totales.
+                if self._try_cancel_uturn(
+                    track.track_id, label, cross_x, cross_y, now
+                ):
                     return None
                 self._totals[label] = self._totals.get(label, 0) + 1
-                self._record_event_for_uturn(track.track_id, label, cx, cy, now)
+                self._record_event_for_uturn(
+                    track.track_id, label, cross_x, cross_y, now
+                )
                 logger.debug(
                     "count_event",
                     extra={"track_id": track.track_id, "label": label},
@@ -1005,8 +1001,8 @@ class Counter:
                     track_id=track.track_id,
                     direction=label,
                     timestamp=now,
-                    position_y=cy,
-                    position_x=cx,
+                    position_y=cross_y,
+                    position_x=cross_x,
                     height_class=height_class,
                     height_m=height_m,
                     head_depth_m=head_depth_m,
@@ -1077,23 +1073,6 @@ def build_counter(
             )
         labels = dict(raw.get("labels") or {})
         lines.append(Line(from_xy=from_xy, to_xy=to_xy, labels=labels))
-    # UTurnZone opcional — polígono donde se cancelan IN/OUT pares
-    # dentro de una ventana corta. None deshabilita el feature; el
-    # polígono debe definirse per-site (operador o tooling de
-    # commissioning); requiere al menos 3 vértices.
-    uturn_cfg = counter_cfg.get("uturn") or {}
-    uturn_polygon: Optional[list[tuple[float, float]]] = None
-    if uturn_cfg.get("enabled", False):
-        raw_poly = uturn_cfg.get("polygon")
-        if raw_poly and isinstance(raw_poly, list) and len(raw_poly) >= 3:
-            uturn_polygon = []
-            for idx, raw in enumerate(raw_poly):
-                if not isinstance(raw, (list, tuple)) or len(raw) != 2:
-                    raise ValueError(
-                        f"counter.uturn.polygon[{idx}] must be [x, y] pair"
-                    )
-                uturn_polygon.append((float(raw[0]), float(raw[1])))
-    uturn_window_s = float(uturn_cfg.get("window_seconds", 5.0) or 5.0)
 
     return Counter(
         lines=lines,
@@ -1103,6 +1082,4 @@ def build_counter(
         min_crossing_movement_px=float(
             counter_cfg.get("min_crossing_movement_px", 0.0) or 0.0
         ),
-        uturn_polygon=uturn_polygon,
-        uturn_window_seconds=uturn_window_s,
     )
