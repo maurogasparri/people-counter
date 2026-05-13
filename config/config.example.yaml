@@ -130,6 +130,32 @@ vision:
                                     # por speckle SGBM, y el costo SGBM
                                     # (~4× el de downscale=8) cabe holgado
                                     # en el budget runtime de la Pi 5.
+    # WLS post-filter — defense-in-depth contra holes en bordes de
+    # disparity. SGBM mete pixels inválidos cuando left↔right
+    # disagree, típicamente en bordes de objetos donde el matching es
+    # ambiguo. Sin WLS, un bbox de cabeza que cae sobre una zona con
+    # holes hace que el blob_percentile downstream tome una muestra
+    # truncada → altura derivada noisy → adult/child classifier
+    # inconsistente.
+    #
+    # ON por default: el costo extra (~2× SGBM compute + filter pass)
+    # cabe a downscale=4 en el budget de la Pi 5, y la ganancia en
+    # estabilidad de altura justifica el gasto en producción.
+    # Apagar (enabled: false) solo si el FPS baja a <10 en el target
+    # — en ese caso aumentar downscale a 8 antes que sacar WLS suele
+    # ser mejor compromiso.
+    wls:
+      enabled: true                 # Toggle del post-filter.
+      lambda: 4000.0                # Strength del smoothness term.
+                                    # Más alto = más smoothing pero menos
+                                    # preservación de bordes. 4000 sweet
+                                    # spot retail (rellena holes sin lavar
+                                    # detalle de cabezas).
+      sigma: 1.0                    # Sensibilidad al gradiente del guide.
+                                    # 1.0 = smoothing agresivo across
+                                    # edges suaves; bajar a 0.5-0.8
+                                    # preserva más detalle pero deja
+                                    # más holes.
 
   # --- AE lock timings (compartidos entre runtime + setup tools) ---
   ae_lock:
@@ -177,10 +203,13 @@ detection:
                                     # explícitos, entrenado en Kaggle T4 con
                                     # datos curados desde Roboflow. Ver
                                     # scripts/training/.
-  confidence_threshold: 0.30        # Piso del score de detección de person/head.
+  confidence_threshold: 0.20        # Piso del score de detección de person/head.
                                     # Tuneado para people-counter-detector — corta
-                                    # FPs del modelo (alucinaciones en piso vacío).
-  low_confidence_threshold: 0.15    # Two-stage matching (estilo ByteTrack).
+                                    # FPs del modelo (alucinaciones en piso vacío)
+                                    # pero deja pasar cabezas estáticas (sentado)
+                                    # que el modelo (sesgado por training set
+                                    # motion-trigger) saca con scores ~0.20-0.28.
+  low_confidence_threshold: 0.10    # Two-stage matching (estilo ByteTrack).
                                     # Detecciones en [low, confidence) entran
                                     # al tracker SOLO para re-asociar tracks
                                     # existentes que high-conf no matcheó.
@@ -189,14 +218,14 @@ detection:
                                     # Evita perder ID cuando una persona en
                                     # movimiento tiene un frame de motion blur
                                     # bajo el threshold y reaparece a alta
-                                    # conf unos frames después. 0.15 deja
+                                    # conf unos frames después. 0.10 deja
                                     # entrar detecciones de motion-blur reales
-                                    # pero corta el ruido sub-0.15 del
+                                    # pero corta el ruido sub-0.10 del
                                     # detector (donde FPs y match bonafide se
                                     # vuelven indistinguibles). Debe ser
                                     # estricto < confidence_threshold. null
                                     # para volver al comportamiento single-stage.
-  new_track_threshold: 0.50         # Spawn floor. Detecciones en
+  new_track_threshold: 0.35         # Spawn floor. Detecciones en
                                     # [confidence, new_track) pueden re-asociar
                                     # tracks existentes pero NO spawn nuevos.
                                     # Combina con low_confidence_threshold para
@@ -207,7 +236,7 @@ detection:
                                     # el umbral mínimo. null para que spawn
                                     # caiga al confidence_threshold.
   nms_threshold: 0.45               # Threshold de IoU para non-maximum suppression.
-  cluster_distance_px: 120          # Clustering por centroide post-NMS:
+  cluster_distance_px: 150          # Clustering por centroide post-NMS:
                                     # detecciones cuyos centroides caen dentro
                                     # de esta cantidad de pixels se mergean,
                                     # manteniendo la de mayor confidence.
@@ -215,27 +244,36 @@ detection:
                                     # cenital donde head + torso + miembros
                                     # de la misma persona producen cajas
                                     # distintas que NMS no colapsa porque sus
-                                    # IoUs pairwise son <0.45. 120px ~10% del
+                                    # IoUs pairwise son <0.45. 150px ~13% del
                                     # ancho a 1152×648; cabezas de ~50-80px a
-                                    # mount 3m fittean cómodas, y dos personas
-                                    # codo-a-codo (~50cm físico ≈ 130-150px) no
-                                    # se mergean. 0 desactiva.
+                                    # mount 3m fittean cómodas + absorbe el
+                                    # double-firing del modelo sobre heads
+                                    # grandes (cuando la persona cruza cerca
+                                    # del centro óptico). Dos personas codo-
+                                    # a-codo (~50cm físico ≈ 130-150px) entran
+                                    # en zona ambigua — si tu sitio espera
+                                    # flujos con personas pegadas (peatonal
+                                    # saturada, grupo familiar), bajar a 120.
+                                    # 0 desactiva.
 
   # Static FP suppressor — defense-in-depth contra clutter estructural
   # (sombras estables, blobs aprendidos sobre maniquíes / ropa colgada
-  # que sobreviven NMS y cluster-por-centroide). Cuadricula el frame en
-  # celdas y suprime cualquier detección que caiga en una celda activa
-  # >= hit_rate_threshold de los últimos `window_seconds`. Inactivo
+  # / sillas con prendas / posters con personas dibujadas que sobreviven
+  # NMS y cluster-por-centroide). Cuadricula el frame en celdas y
+  # suprime cualquier detección que caiga en una celda activa >=
+  # hit_rate_threshold de los últimos `window_seconds`. Inactivo
   # durante warm-up para no filtrar antes de tener historia.
   #
-  # OFF por default: en retail con asientos / mostradores / colas en
-  # cuadro hay personas legítimas que permanecen quietas >3s en las
-  # mismas 2-3 celdas (cabeza estática). El suppressor las clasifica
-  # como FP estructural y las corta. Encender SOLO en sites con
-  # clutter probadamente estable (maniquíes, posters, sombras) y
-  # validar que no se coma cabezas reales del flujo del local.
+  # ON por default: en retail real el clutter estructural es la norma
+  # (mostradores, displays con maniquíes, sillas en el cuadro del ROI)
+  # y el suppressor es la única defensa contra FPs persistentes que
+  # generan counts fantasma. La ventana de 3s + min_samples=8 da margen
+  # para que una persona quieta legítima salga del rango antes de
+  # alcanzar el threshold. Apagar SOLO si se observa que se come
+  # cabezas reales (zonas de espera donde la gente está parada >5s
+  # mirando algo, colas largas).
   static_suppressor:
-    enabled: false
+    enabled: true
     cell_size_px: 30                # Resolución espacial del filtro.
                                     # 30px funciona para 1152×648 con cabezas
                                     # ~50-80px (cada cabeza ocupa ~2-3 celdas).
@@ -339,6 +377,41 @@ counter:
   # doble-conteo por jitter en el piloto.
   min_crossing_movement_px: 0.0
 
+  # UTurnZone — polígono donde se cancelan pares IN/OUT (o el par
+  # opuesto que corresponda a la línea) que ocurren dentro de una
+  # ventana corta. Modela "persona dudó en la entrada, cruzó adentro
+  # y se volvió enseguida" sin que cuente 1 IN + 1 OUT espurios.
+  #
+  # OFF por default: el polígono se define per-site según el layout
+  # físico del local (suele ser una banda alrededor de la línea de
+  # cruce, deep enough para abarcar el área de hesitation típica).
+  # Habilitar cuando se observen casos reales de double-counting por
+  # U-turns en el piloto. Mismo formato que ROI extendido a polígono:
+  # lista de vértices [[x, y], ...] en pixels del frame canonical.
+  #
+  # Cuando ON, requiere al menos 3 vértices o falla la construcción
+  # del counter al boot. Si el evento actual y un previo opuesto caen
+  # AMBOS dentro del polígono dentro de window_seconds, se cancelan
+  # mutuamente (decrementa el opuesto, no emite el actual).
+  uturn:
+    enabled: false                  # Toggle global. False = sin cancelación
+                                    # de U-turn (feature off).
+    window_seconds: 5.0             # Ventana temporal para considerar
+                                    # dos eventos opuestos como U-turn.
+                                    # 5s cubre el caso típico de hesitation
+                                    # en una puerta (entró, miró, salió);
+                                    # más alto puede mezclar visitantes
+                                    # legítimos rápidos.
+    polygon: []                     # Lista de vértices [[x, y], ...].
+                                    # Vacía cuando enabled=false. Cuando
+                                    # se habilite, definir un polígono
+                                    # cerrado (al menos 3 vértices) en
+                                    # las coords del frame canonical
+                                    # 1152×648. Ejemplo: banda alrededor
+                                    # de la línea de la puerta —
+                                    # [[300, 270], [850, 270],
+                                    #  [850, 380], [300, 380]]
+
 
 # =============================================================================
 # WIFI/BLE — captura + dedup
@@ -369,6 +442,21 @@ mqtt:
   key_path: "/etc/people-counter/certs/device.pem.key"
   ca_path: "/etc/people-counter/certs/AmazonRootCA1.pem"
   port: 8883                        # Puerto TLS de AWS IoT Core.
+  startup_jitter_seconds: 30.0      # Anti thundering-herd. Cuando la
+                                    # flota entera bootea simultáneamente
+                                    # tras un outage (incident regional,
+                                    # mass restart de cadena retail) o
+                                    # power cut sucursal-wide, todas las
+                                    # devices piden TLS handshake al
+                                    # mismo tiempo → DDoS al broker IoT.
+                                    # Espera uniform[0, este valor] s
+                                    # antes del initial connect. Corre en
+                                    # thread background — connect()
+                                    # retorna inmediatamente y los eventos
+                                    # se bufferean local hasta connect.
+                                    # 30s spread permite a una flota de
+                                    # 100 devices arrancar sin coordinar.
+                                    # 0 deshabilita (dev / single device).
   topics:
     counting:  "store/{store_id}/counting"
     wifi_ble:  "store/{store_id}/wifi_ble"
@@ -547,12 +635,19 @@ tracking:
                                     # linealmente con la resolución runtime
                                     # si la cambiás.
   state_machine:
-    confirm_frames: 3               # Hits para promover CANDIDATE -> CONFIRMED.
-                                    # 3 frames sobre el detector fine-tuneado
-                                    # (people-counter-detector) filtran FPs
-                                    # efímeros que sobreviven un solo frame.
-                                    # Bajar a 1 si se usa un detector con
-                                    # dropeos frame-a-frame agresivos.
+    confirm_frames: 2               # Hits para promover CANDIDATE -> CONFIRMED.
+                                    # 2 frames es el sweet spot: filtra FPs
+                                    # de 1 frame (flicker) pero spawna lo bastante
+                                    # rápido para que el bbox aparezca antes del
+                                    # ROI a velocidad de caminata (a 12 fps son
+                                    # ~150ms = ~21cm, holgura suficiente sobre
+                                    # ROIs típicos). Combinado con
+                                    # static_suppressor + cluster_distance_px,
+                                    # los FPs sostenidos también se filtran sin
+                                    # necesidad de subir a 3. Bajar a 1 solo si
+                                    # el detector tiene dropeos agresivos
+                                    # frame-a-frame; subir a 3 si static_suppressor
+                                    # está OFF en el sitio y se ven ghosts.
     pending_max_frames: 30          # Misses antes de PENDING -> LOST. A
                                     # 26 fps son ~1.15s para recovery.
                                     # Mantener generoso reduce track
@@ -569,21 +664,65 @@ tracking:
                                     # predict cerca de la última observación,
                                     # así el gate no necesita ser más ancho.
     depth_gate_m: 0.5               # Gate de |Δz| para re-id cross frames.
-    pending_velocity_decay: 0.5     # Factor multiplicativo aplicado a (vx, vy)
+    ambiguous_match_ratio: 0.8      # Ratio test Lowe-style post-Hungarian
+                                    # — defensa anti-ID-swap en cruces.
+                                    # Rechaza un match cuando el 2do-mejor
+                                    # alternativa (otra detección para el
+                                    # mismo track o otro track para la
+                                    # misma detección) está dentro de este
+                                    # ratio del costo del best. Con 0.8,
+                                    # rechaza si best > 0.8 * second_best
+                                    # (= 2do está dentro del 25% del 1ro).
+                                    # Tracks rechazados van a PENDING;
+                                    # detecciones rechazadas se consumen
+                                    # (no spawnean nuevos IDs) — preferimos
+                                    # perder una obs ambigua a duplicar
+                                    # IDs por una asignación incierta.
+                                    # 1.0 desactiva (back-compat). Bajar
+                                    # a 0.6-0.7 en sites con cruces muy
+                                    # cerrados donde aceptamos miss extra
+                                    # a cambio de cero swaps.
+    pending_grace_frames: 3         # Frames iniciales de PENDING en los
+                                    # que se PRESERVA velocidad completa
+                                    # antes de empezar el decay. Modela
+                                    # oclusiones cortas (carrito que pasa
+                                    # ~250ms = 3 frames a 12 fps, motion
+                                    # blur de 1-2 frames, estructura
+                                    # overhead efímera). Sin grace, el
+                                    # decay desde el primer miss congela
+                                    # el predict atrás del lugar real y
+                                    # rompe el reid cuando la persona
+                                    # reaparece adelante. Con grace, los
+                                    # primeros N frames extrapolan honest
+                                    # a la velocidad observada (drift
+                                    # transitorio aceptado) y recién
+                                    # después arranca el decay si la
+                                    # pausa se extiende. 0 = decay desde
+                                    # frame 1 (back-compat / sites sin
+                                    # oclusiones donde no necesitamos
+                                    # extrapolar agresivo).
+    pending_velocity_decay: 0.85    # Factor multiplicativo aplicado a (vx, vy)
                                     # del Kalman cada frame en estado PENDING.
-                                    # 0.5 → velocidad colapsa a <5% en 5 frames
-                                    # (~0.35s a 14 fps), efectivamente
-                                    # congelando la posición predicha. Modela
-                                    # el prior bayesiano: un humano sin obs
-                                    # tiende a quedarse quieto, no a acelerar
-                                    # indefinidamente. Sin decay (1.0) un
-                                    # track que pierde detecciones (oclusión,
-                                    # static_suppressor, motion blur) sigue
-                                    # extrapolando → el predict drifta off-ROI
-                                    # → al re-aparecer >1.5s después cae fuera
-                                    # del reid_gate_px → spawn de track nuevo
-                                    # → doble conteo. 0.3-0.7 razonable para
-                                    # retail.
+                                    # 0.85 → velocidad colapsa a ~10% en 15
+                                    # frames (~1.2s a 12 fps), decay gradual
+                                    # en vez de freeze inmediato. Tradeoff
+                                    # crítico: valores agresivos (0.3-0.5)
+                                    # congelan la posición predicha demasiado
+                                    # rápido y rompen el reid cuando una
+                                    # persona se ocluye 1s detrás de un
+                                    # carrito o cartel (predict queda atrás,
+                                    # detección reaparece adelante fuera del
+                                    # reid_gate_px → spawn de track fantasma
+                                    # con last_label cacheado del track viejo,
+                                    # mismo síntoma del PENDING-atrapado-en-
+                                    # ROI). 0.85 mantiene velocidad útil para
+                                    # cubrir oclusiones cortas de caminata
+                                    # normal sin extrapolar indefinidamente.
+                                    # 0.7-0.9 es el rango razonable para
+                                    # retail con flujo en movimiento;
+                                    # bajar a 0.3-0.5 solo en sites donde
+                                    # la gente se queda parada largamente
+                                    # (probadores, mostradores con cola).
     kalman:                         # Filtro Kalman de velocidad constante
                                     # sobre el estado [cx, cy, vx, vy] de
                                     # cada track. Tolera gaps del detector de
@@ -608,7 +747,19 @@ tracking:
 # --- Convención de persistencia local ---------------------------------------
 buffer:
   db_path: /var/lib/people-counter/buffer.db
-  max_age_hours: 72
+  max_age_hours: 72                 # Edad máxima (en horas) que un mensaje
+                                    # unsent puede vivir antes de ser purgado.
+                                    # 72h = 3 días: tiempo razonable para
+                                    # recovery operacional ante outage de
+                                    # AWS/Internet sin que se acumule data
+                                    # demasiado vieja.
+  max_backlog: 50000                # Cap absoluto del número de mensajes
+                                    # unsent en backlog. Si el cap se
+                                    # excede (cloud unreachable por días),
+                                    # los más viejos se dropean para que
+                                    # el disco no se llene. 50k a ~500
+                                    # bytes/msg ≈ 25MB. Bounded data loss
+                                    # > disk fill. 0 deshabilita el cap.
 
 
 # --- Selector best-frame (data active-learning, default-OFF con awareness GDPR/LPDP) -

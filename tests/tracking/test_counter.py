@@ -268,16 +268,202 @@ def test_indeciso_no_crossing():
     assert counter.total_in == 0
 
 
-def test_lost_inside_does_not_count():
-    """Track inside the ROI goes LOST mid-crossing — no count is emitted."""
+def test_lost_inside_without_crossing_does_not_count():
+    """Track entra al ROI pero muere antes de cruzar la línea — no
+    cuenta. El synthetic exit solo dispara si hubo un cruce cacheado;
+    sin cruce no hay dirección que contar. Es la guardia conservativa
+    contra falsos positivos: tracks que entraron al ROI por glitch del
+    tracker y nunca cruzaron no se materializan en counts fantasma."""
     counter = Counter(lines=[_line_h()], roi=ROI)
-    track = _make_track(1, [[300, 250, 3000]])
-    counter._process_track(track)
-    _advance(counter, track, [300, 310, 3000])
+    track = _make_track(1, [[300, 220, 3000]])  # entry above line at y=300
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000]))  # still above line
+    counter.check_all({1: track})
+    assert 1 not in counter._track_snapshots  # no last_label cacheado
     track.state = LOST
-    counter.check_all({})  # tracker dropped it
+    events = counter.check_all({})  # tracker dropped it
+    assert events == []
     assert counter.total_in == 0
     assert counter.total_out == 0
+
+
+def test_synthetic_exit_on_track_death_after_crossing():
+    """Track entra al ROI, cruza la línea, y muere antes de salir
+    geométricamente — counter emite synthetic exit event con la
+    dirección del cruce cacheado. Cubre el caso real de oclusión o
+    pausa prolongada (persona se queda mirando un display, alguien la
+    tapa con un carrito) donde el tracker dropea el track post-cruce.
+    Sin este path los OUTs reales se pierden cuando el bbox se traba
+    en PENDING dentro del ROI."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+
+    # Frame 1: outside ROI, arriba de la línea.
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+
+    # Frame 2: entry inside ROI, todavía arriba de la línea.
+    track.positions.append(np.array([300, 250, 3000]))
+    counter.check_all({1: track})
+    assert 1 not in counter._track_snapshots  # aún no hubo cross
+
+    # Frame 3: cross — abajo de la línea, still inside ROI.
+    track.positions.append(np.array([300, 350, 3000]))
+    counter.check_all({1: track})
+    assert 1 in counter._track_snapshots
+    assert counter._track_snapshots[1]["label"] == "ingress"
+
+    # Frame 4: track desaparece del tracker (LOST + removido).
+    events = counter.check_all({})
+
+    assert len(events) == 1
+    assert events[0].track_id == 1
+    assert events[0].direction == "ingress"
+    assert counter.total_in == 1
+    assert counter.total_out == 0
+    # Snapshot limpiado post-emisión — evita doble cuenta si el mismo
+    # track_id reapareciera (no debería pero defensa en depth).
+    assert 1 not in counter._track_snapshots
+
+
+def test_uturn_zone_cancels_in_followed_by_out():
+    """Persona entra al ROI cruzando IN, sale del ROI (emite ingress),
+    re-entra al ROI cruzando OUT dentro de window_seconds y dentro del
+    polígono → U-turn detectado, el ingress previo se cancela y el OUT
+    NO se emite. Total IN/OUT queda en 0 (net neutral)."""
+    poly = [(50.0, 100.0), (550.0, 100.0), (550.0, 500.0), (50.0, 500.0)]
+    counter = Counter(
+        lines=[_line_h()],
+        roi=ROI,
+        uturn_polygon=poly,
+        uturn_window_seconds=10.0,
+    )
+    track = _make_track(1, [[300, 150, 3000]])  # outside, above line
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000]))  # entry above line
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 350, 3000]))  # cross down (IN)
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 450, 3000]))  # exit south
+    events = counter.check_all({1: track})
+    assert len(events) == 1
+    assert events[0].direction == "ingress"
+    assert counter.total_in == 1
+
+    # Persona re-entra, cruza OUT, sale north.
+    track2 = _make_track(2, [[300, 450, 3000]])
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 350, 3000]))  # entry south
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 250, 3000]))  # cross up (OUT)
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 150, 3000]))  # exit north
+    events2 = counter.check_all({2: track2})
+
+    # El OUT debería cancelar el IN previo: 0 eventos emitidos, totals
+    # vuelven a 0.
+    assert events2 == []
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_uturn_zone_does_not_cancel_outside_window():
+    """Eventos opuestos fuera de la window_seconds NO se cancelan —
+    visitantes legítimos que entran y salen mucho después siguen
+    contando como 1 IN + 1 OUT independientes."""
+    import time as _time
+
+    poly = [(50.0, 100.0), (550.0, 100.0), (550.0, 500.0), (50.0, 500.0)]
+    counter = Counter(
+        lines=[_line_h()],
+        roi=ROI,
+        uturn_polygon=poly,
+        uturn_window_seconds=0.1,  # ventana muy corta
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000]))
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 350, 3000]))
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 450, 3000]))
+    counter.check_all({1: track})
+    assert counter.total_in == 1
+
+    # Esperar más que window_seconds.
+    _time.sleep(0.15)
+
+    track2 = _make_track(2, [[300, 450, 3000]])
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 350, 3000]))
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 250, 3000]))
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 150, 3000]))
+    events2 = counter.check_all({2: track2})
+
+    # Ambos eventos legítimos — la window expiró antes del 2do.
+    assert len(events2) == 1
+    assert events2[0].direction == "egress"
+    assert counter.total_in == 1
+    assert counter.total_out == 1
+
+
+def test_uturn_zone_disabled_by_default():
+    """Sin polígono configurado, dos eventos opuestos consecutivos
+    cuentan ambos (back-compat)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)  # no uturn_polygon
+    # Mismo escenario que el test de cancelación.
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000]))
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 350, 3000]))
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 450, 3000]))
+    counter.check_all({1: track})
+
+    track2 = _make_track(2, [[300, 450, 3000]])
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 350, 3000]))
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 250, 3000]))
+    counter.check_all({2: track2})
+    track2.positions.append(np.array([300, 150, 3000]))
+    counter.check_all({2: track2})
+
+    # Sin U-turn, ambos eventos cuentan.
+    assert counter.total_in == 1
+    assert counter.total_out == 1
+
+
+def test_synthetic_exit_does_not_fire_on_legitimate_exit():
+    """Cuando un track sale del ROI legítimamente (path geométrico
+    normal), el snapshot se limpia al frame del exit y NO se emite
+    synthetic exit cuando el track desaparezca después. Evita
+    doble-conteo del mismo cruce."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+
+    # Cycle completo: outside → entry → cross → exit.
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000]))  # entry
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 350, 3000]))  # cross
+    counter.check_all({1: track})
+    assert 1 in counter._track_snapshots  # snapshotteado mid-ROI
+
+    track.positions.append(np.array([300, 450, 3000]))  # exit
+    events = counter.check_all({1: track})
+    assert len(events) == 1  # count event geométrico
+    assert events[0].direction == "ingress"
+    # Snapshot debe haberse limpiado en el frame de exit
+    # (meta.inside=False ⇒ _snapshot_track pop).
+    assert 1 not in counter._track_snapshots
+
+    # Track muere — NO debe disparar synthetic exit (ya contamos).
+    events = counter.check_all({})
+    assert events == []
+    assert counter.total_in == 1  # sigue siendo 1, no se duplicó
 
 
 def test_pending_state_counted():

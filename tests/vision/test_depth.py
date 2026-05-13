@@ -98,6 +98,53 @@ class TestComputeDisparity:
         if len(invalid) > 0:
             np.testing.assert_array_equal(invalid, -1.0)
 
+    @pytest.mark.skipif(
+        not hasattr(cv2.ximgproc, "createRightMatcher"),
+        reason="WLS requiere opencv-contrib-python con ximgproc completo",
+    )
+    def test_wls_filter_reduces_invalid_pixels(self):
+        """WLS post-filter rellena holes (pixels inválidos) en bordes
+        donde el matcher derecho discrepa del izquierdo. Verifica que el
+        recuento de pixels válidos en el disparity sube cuando WLS está
+        on respecto a off, para el mismo input."""
+        left, right = self._make_shifted_pair(20)
+        disp_no_wls = compute_disparity(
+            left, right, num_disparities=64, use_wls_filter=False
+        )
+        disp_wls = compute_disparity(
+            left, right, num_disparities=64, use_wls_filter=True
+        )
+        valid_no_wls = int((disp_no_wls > 0).sum())
+        valid_wls = int((disp_wls > 0).sum())
+        assert valid_wls > valid_no_wls, (
+            f"WLS debe rellenar holes ({valid_no_wls} → {valid_wls} válidos)"
+        )
+
+    @pytest.mark.skipif(
+        not hasattr(cv2.ximgproc, "createRightMatcher"),
+        reason="WLS requiere opencv-contrib-python con ximgproc completo",
+    )
+    def test_wls_lambda_sigma_kwargs_accepted(self):
+        """Los kwargs lambda/sigma se aceptan y producen output distinto
+        del default (verificación liviana de wiring, no del comportamiento
+        exacto del WLS que es del binding de OpenCV)."""
+        left, right = self._make_shifted_pair(20)
+        disp_default = compute_disparity(
+            left, right, num_disparities=64, use_wls_filter=True
+        )
+        disp_strong = compute_disparity(
+            left,
+            right,
+            num_disparities=64,
+            use_wls_filter=True,
+            wls_lambda=12000.0,  # 3× default
+            wls_sigma=0.5,  # half default
+        )
+        assert disp_default.shape == disp_strong.shape
+        # Strong lambda smoothea más, debería cambiar la distribución
+        # del disparity.
+        assert not np.allclose(disp_default, disp_strong, atol=0.01)
+
 
 class TestDisparityToDepth:
     def test_basic_conversion(self):

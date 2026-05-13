@@ -144,6 +144,29 @@ def test_detection_callback_increments_count():
     assert events[0].rssi == -65.0
 
 
+def test_is_healthy_false_when_never_started():
+    """Scanner recién instanciado nunca pulsó — is_healthy debe ser False
+    así el supervisor no falso-positivee como healthy."""
+    scanner = BLEScanner()
+    assert scanner.is_healthy(60.0) is False
+
+
+def test_is_healthy_true_after_fresh_heartbeat():
+    """Una pulsación reciente del heartbeat hace is_healthy True dentro
+    del timeout."""
+    scanner = BLEScanner()
+    scanner._last_heartbeat_ts = time.time()
+    assert scanner.is_healthy(60.0) is True
+
+
+def test_is_healthy_false_when_heartbeat_stale():
+    """Heartbeat más viejo que el timeout → is_healthy False, señal de
+    wedge para el supervisor."""
+    scanner = BLEScanner()
+    scanner._last_heartbeat_ts = time.time() - 120.0  # 2min atrás
+    assert scanner.is_healthy(60.0) is False
+
+
 def test_callback_error_does_not_propagate():
     """Errors in on_advert should not crash the scanner."""
     def bad_callback(e):

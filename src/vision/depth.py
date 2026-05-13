@@ -137,6 +137,8 @@ def compute_disparity(
     block_size: int = DEFAULT_BLOCK_SIZE,
     sgbm: cv2.StereoSGBM | None = None,
     use_wls_filter: bool = False,
+    wls_lambda: float = 4000.0,
+    wls_sigma: float = 1.0,
     use_green_channel: bool = False,
     use_clahe: bool = True,
     downscale: int = 1,
@@ -158,6 +160,20 @@ def compute_disparity(
             pasa sgbm.
         sgbm: Matcher SGBM pre-creado. Si None, se crea uno.
         use_wls_filter: Aplica filtro WLS para smoothing edge-preserving.
+            Recomendado para producción: rellena holes en bordes de
+            disparity que afectan al ``blob_percentile`` downstream
+            cuando un bbox de cabeza cae sobre zona con disparity
+            invalid. Costo: ~2× SGBM compute (un pass adicional con
+            right matcher) + el filter pass. A downscale=4 sigue
+            cabiendo en budget runtime de RPi 5.
+        wls_lambda: Strength del smoothness term del WLS. Más alto =
+            más suavizado pero menos preservación de bordes. 4000 es
+            el sweet spot retail (suficiente para llenar holes
+            pequeños sin lavar detail de cabezas).
+        wls_sigma: Sensibilidad al gradiente de color del guide image.
+            1.0 es agresivo (smoothing fuerte across edges suaves);
+            valores más bajos (0.5-0.8) preservan más detail pero
+            dejan más holes.
         use_green_channel: Usa solo el channel verde.
         use_clahe: Aplica enhancement de contraste CLAHE antes del matching.
         downscale: Factor para reducir resolución antes del matching
@@ -206,8 +222,8 @@ def compute_disparity(
         raw_disp_r = right_matcher.compute(gray_r, gray_l)
 
         wls = cv2.ximgproc.createDisparityWLSFilter(sgbm)
-        wls.setLambda(4000.0)
-        wls.setSigmaColor(1.0)
+        wls.setLambda(float(wls_lambda))
+        wls.setSigmaColor(float(wls_sigma))
 
         filtered = wls.filter(raw_disp_l, gray_l, disparity_map_right=raw_disp_r)
         disparity = filtered.astype(np.float32) / 16.0

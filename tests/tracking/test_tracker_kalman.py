@@ -302,6 +302,278 @@ def test_pending_velocity_decay_default_disabled_back_compat():
         pending_max_frames=20,
     )
     assert tracker.pending_velocity_decay == 1.0
+    assert tracker.pending_grace_frames == 0
+
+
+def test_pending_grace_frames_preserves_velocity_during_window():
+    """Production-grade: con ``pending_grace_frames=N``, los primeros N
+    frames de PENDING preservan velocidad completa antes de que arranque
+    el decay. Modela oclusiones cortas donde la persona sigue caminando
+    detrás del oclusor — queremos que el Kalman extrapole honest así el
+    predict cae cerca de la detección cuando reaparece, no congelado en
+    la posición de entrada al PENDING.
+
+    Sin grace (decay desde frame 1), una persona ocluida por 3 frames a
+    20 px/frame queda con predict cerca de pos_init + decayed_drift,
+    típicamente <30 px del freeze point. Con grace=3, los 3 frames
+    extrapolan a velocidad real → predict cae cerca del movimiento
+    real → reid robusto.
+
+    Timing: ``disappeared`` se incrementa en ``_record_miss`` AL FINAL
+    del update, así que el predict del próximo update ve el valor
+    post-incremento. Con grace=3 el decay arranca cuando
+    ``disappeared > 3`` entrando al predict (= 4to update sin obs).
+    """
+    tracker = EuclideanTracker(
+        max_distance=200,
+        confirm_frames=1,
+        pending_max_frames=50,
+        reid_gate_px=300,
+        pending_velocity_decay=0.5,
+        pending_grace_frames=3,
+    )
+    tracker.update([np.array([0.0, 100.0, 3000.0])])
+    tracker.update([np.array([20.0, 100.0, 3000.0])])
+    tid = list(tracker.tracks.keys())[0]
+    vx_observed = float(tracker.tracks[tid].kalman.x[2])
+    assert abs(vx_observed - 20.0) < 5.0
+
+    # 3 updates sin obs: el track entra a PENDING en el primero, los
+    # siguientes 2 mantienen velocidad porque disappeared ∈ {1,2,3}
+    # entrando al predict y todos satisfacen disappeared <= grace=3.
+    for _ in range(3):
+        tracker.update([])
+    assert tracker.tracks[tid].state == PENDING
+    vx_after_grace = float(tracker.tracks[tid].kalman.x[2])
+    assert abs(vx_after_grace - vx_observed) < 2.0, (
+        f"Durante grace=3 la velocidad debe preservarse "
+        f"(observed={vx_observed:.1f}, after_grace={vx_after_grace:.1f})"
+    )
+
+    # 5 updates más: el primero todavía tiene disappeared=3 entrando al
+    # predict (still grace), pero los siguientes 4 tienen disappeared
+    # ∈ {4,5,6,7} → decay aplica 4 veces, vx *= 0.5^4 = 0.0625.
+    for _ in range(5):
+        tracker.update([])
+    vx_after_decay = float(tracker.tracks[tid].kalman.x[2])
+    assert vx_after_decay < vx_observed * 0.3, (
+        f"Post-grace el decay debe colapsar velocidad "
+        f"(observed={vx_observed:.1f}, after_decay={vx_after_decay:.1f})"
+    )
+
+
+def test_track_id_cycles_mod_max():
+    """Con ``max_track_id`` pequeño, los IDs ciclan en lugar de crecer
+    monotónicamente — IDs de 0..max-1 se reusan después de que los
+    tracks viejos mueren. Garantiza el bound en runs largos (12h/día
+    × 363 días) y evita IDs growing-without-bound."""
+    tracker = EuclideanTracker(
+        max_distance=200,
+        confirm_frames=1,
+        pending_max_frames=1,
+        max_disappeared=1,
+        max_track_id=4,
+    )
+    ids_seen: list[int] = []
+    for i in range(8):
+        tracks = tracker.update(
+            [np.array([100.0 + i * 50.0, 100.0, 3000.0])]
+        )
+        # Capturar el ID asignado en este spawn antes de que muera.
+        ids_seen.extend(tracks.keys())
+        # Una vuelta vacía → track va a PENDING (disappeared=1).
+        tracker.update([])
+        # Otra vuelta vacía → PENDING + 1 > pending_max_frames=1 → LOST.
+        tracker.update([])
+    # Todos los IDs deben caer en [0, 4) (módulo 4).
+    assert all(0 <= tid < 4 for tid in ids_seen), (
+        f"IDs deben ciclar en [0, 4): {ids_seen}"
+    )
+    # Y debe haber al menos un ID repetido (cycling efectivo).
+    assert len(set(ids_seen)) < len(ids_seen), (
+        f"Esperaba IDs repitiéndose (cycling), todos únicos: {ids_seen}"
+    )
+
+
+def test_track_id_skips_live_collision():
+    """En el rollover, si el próximo ID candidato está en uso por un
+    track vivo, ``_register`` salta al siguiente disponible. Garantiza
+    que IDs colisionantes nunca se asignen — los tracks vivos preservan
+    identidad incluso en pools chicos."""
+    tracker = EuclideanTracker(
+        max_distance=200,
+        confirm_frames=1,
+        pending_max_frames=100,  # tracks NO mueren
+        max_track_id=4,
+    )
+    # 3 tracks vivos → IDs 0, 1, 2.
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([300.0, 100.0, 3000.0]),
+            np.array([500.0, 100.0, 3000.0]),
+        ]
+    )
+    assert set(tracker.tracks.keys()) == {0, 1, 2}
+    # Refrescar los 3 existentes + uno nuevo. El próximo candidato es
+    # 3 (libre) → se asigna 3.
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([300.0, 100.0, 3000.0]),
+            np.array([500.0, 100.0, 3000.0]),
+            np.array([700.0, 100.0, 3000.0]),
+        ]
+    )
+    assert set(tracker.tracks.keys()) == {0, 1, 2, 3}
+
+
+def test_track_id_default_max_is_16bit():
+    """Default 65536 = 16-bit unsigned. Verifica que el constructor
+    sin override usa ese valor."""
+    tracker = EuclideanTracker(max_distance=50)
+    assert tracker.max_track_id == 65536
+
+
+def test_ambiguous_match_rejected_no_spawn():
+    """Con ratio_test 0.8, una detección entre dos tracks equidistantes
+    se rechaza por ambigüedad: ambos tracks pasan a PENDING y la
+    detección se consume (no spawnea un track nuevo). Esta es la
+    defensa anti-ID-swap en cruces — preferimos miss antes que swap.
+    """
+    tracker = EuclideanTracker(
+        max_distance=100,
+        confirm_frames=1,
+        pending_max_frames=20,
+        reid_gate_px=100,
+        ambiguous_match_ratio=0.8,
+    )
+    # Spawn dos tracks adyacentes a 10px.
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([110.0, 100.0, 3000.0]),
+        ]
+    )
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([110.0, 100.0, 3000.0]),
+        ]
+    )
+    assert len(tracker.tracks) == 2
+    initial_ids = list(tracker.tracks.keys())
+    assert all(tracker.tracks[tid].state == CONFIRMED for tid in initial_ids)
+
+    # Detección equidistante (5px de cada). Hungarian asigna a UNO con
+    # cost=5; el 2do-mejor (otro track al mismo cost=5) está dentro del
+    # ratio 0.8 → rechazo.
+    tracker.update([np.array([105.0, 100.0, 3000.0])])
+
+    # Ambos tracks PENDING (rejected match + missed).
+    for tid in initial_ids:
+        assert tracker.tracks[tid].state == PENDING, (
+            f"Track {tid} debería estar PENDING, está "
+            f"{tracker.tracks[tid].state}"
+        )
+    # No spawn de un tercer track: la detección ambigua se consumió.
+    assert len(tracker.tracks) == 2
+
+
+def test_ambiguous_match_ratio_default_off_back_compat():
+    """Sin ratio_test (default 1.0), Hungarian asigna cualquier match
+    válido sin rechazar por ambigüedad. Garantiza que tests viejos no
+    cambian de semántica."""
+    tracker = EuclideanTracker(
+        max_distance=100,
+        confirm_frames=1,
+        pending_max_frames=20,
+        reid_gate_px=100,
+    )
+    assert tracker.ambiguous_match_ratio == 1.0
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([110.0, 100.0, 3000.0]),
+        ]
+    )
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([110.0, 100.0, 3000.0]),
+        ]
+    )
+    initial_ids = list(tracker.tracks.keys())
+    # Una sola detección ambigua — sin ratio test, Hungarian la matchea
+    # a uno y el otro queda missed.
+    tracker.update([np.array([105.0, 100.0, 3000.0])])
+    states = [tracker.tracks[tid].state for tid in initial_ids]
+    assert states.count(CONFIRMED) == 1
+    assert states.count(PENDING) == 1
+
+
+def test_unambiguous_match_passes_ratio_test():
+    """Con ratio=0.8 pero una detección claramente más cerca de un
+    track que del otro, el match no es ambiguo y se acepta."""
+    tracker = EuclideanTracker(
+        max_distance=200,
+        confirm_frames=1,
+        pending_max_frames=20,
+        reid_gate_px=200,
+        ambiguous_match_ratio=0.8,
+    )
+    # Tracks separados — cualquier detección cerca de uno deja al otro
+    # como alternativa muy lejana.
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([200.0, 100.0, 3000.0]),
+        ]
+    )
+    tracker.update(
+        [
+            np.array([100.0, 100.0, 3000.0]),
+            np.array([200.0, 100.0, 3000.0]),
+        ]
+    )
+    initial_ids = list(tracker.tracks.keys())
+    # Detección a 105: cost 5 a track 1, cost 95 a track 2 → ratio
+    # 5/95 = 0.05 << 0.8 → match no ambiguo.
+    tracker.update([np.array([105.0, 100.0, 3000.0])])
+    states = [tracker.tracks[tid].state for tid in initial_ids]
+    assert CONFIRMED in states  # uno fue matched
+    assert PENDING in states  # el otro missed (sin obs propia)
+
+
+def test_pending_grace_frames_default_zero_back_compat():
+    """Tracker sin ``pending_grace_frames`` aplica decay desde el primer
+    update que vea state=PENDING (semántica previa). Garantiza que
+    tests y configs viejas no shiftean.
+
+    Timing: el primer update con miss transiciona CONFIRMED→PENDING al
+    final, pero el predict de ESE update vio state=CONFIRMED → no
+    aplica decay. Es el SEGUNDO update con miss el primero que ve
+    state=PENDING entrando al predict → decay aplica. Con grace=0,
+    disappeared=1 > 0 = True → decay arranca en el 2do miss.
+    """
+    tracker = EuclideanTracker(
+        max_distance=200,
+        confirm_frames=1,
+        pending_max_frames=20,
+        pending_velocity_decay=0.5,
+    )
+    assert tracker.pending_grace_frames == 0
+    tracker.update([np.array([0.0, 100.0, 3000.0])])
+    tracker.update([np.array([20.0, 100.0, 3000.0])])
+    tid = list(tracker.tracks.keys())[0]
+    vx_pre = float(tracker.tracks[tid].kalman.x[2])
+    tracker.update([])  # CONFIRMED→PENDING, predict sin decay (still CONFIRMED)
+    tracker.update([])  # PENDING, disappeared=1 > 0 → decay aplica
+    vx_post = float(tracker.tracks[tid].kalman.x[2])
+    assert vx_post < vx_pre * 0.7, (
+        f"Con grace=0, decay aplica desde el primer update en PENDING "
+        f"(pre={vx_pre:.1f}, post={vx_post:.1f})"
+    )
 
 
 def test_tracker_kalman_params_propagated_to_filter():

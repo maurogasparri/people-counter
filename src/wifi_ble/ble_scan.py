@@ -53,6 +53,13 @@ class BLEScanner:
         self._stop_event = threading.Event()
         self._scan_thread: Optional[threading.Thread] = None
         self._advert_count = 0
+        # Heartbeat para watchdog: el thread async actualiza este ts cada
+        # ~0.5s mientras está vivo + funcional. Un supervisor externo
+        # (ej. main loop o monitor de health) puede chequear
+        # ``is_healthy(timeout)`` y, si False, llamar stop()+start() para
+        # recover de un wedge de bleak/D-Bus sin matar el resto del
+        # pipeline. 0.0 = nunca pulsó (no started yet).
+        self._last_heartbeat_ts: float = 0.0
 
     @property
     def advert_count(self) -> int:
@@ -72,6 +79,22 @@ class BLEScanner:
             and thread.is_alive()
             and not self._stop_event.is_set()
         )
+
+    def is_healthy(self, timeout_seconds: float = 60.0) -> bool:
+        """True si el scanner pulsó dentro de ``timeout_seconds``.
+
+        Discrimina el wedge case del thread-vivo-pero-stuck (D-Bus
+        wedged, bleak hangueado en una llamada interna): ``is_running``
+        seguiría True pero el async loop no avanza. El heartbeat tickea
+        cada ~0.5s mientras el loop async está vivo; si pasa más que
+        ``timeout_seconds`` sin tick, el thread está wedgeado y un
+        supervisor debe restartearlo.
+
+        Devuelve False si el scanner nunca arrancó (``_last_heartbeat_ts == 0``).
+        """
+        if self._last_heartbeat_ts == 0.0:
+            return False
+        return (time.time() - self._last_heartbeat_ts) < timeout_seconds
 
     def start(self) -> None:
         """Arranca el scanning BLE asíncrono."""
@@ -149,8 +172,12 @@ class BLEScanner:
         logger.info("bleak_scanner_active")
 
         start_time = time.monotonic()
+        self._last_heartbeat_ts = time.time()
         while not self._stop_event.is_set():
             await asyncio.sleep(0.5)
+            # Heartbeat tick: el supervisor externo lee esto para detectar
+            # wedges del thread sin afectar al pipeline.
+            self._last_heartbeat_ts = time.time()
             if self.scan_duration > 0 and (time.monotonic() - start_time) >= self.scan_duration:
                 break
 

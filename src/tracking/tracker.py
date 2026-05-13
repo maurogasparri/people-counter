@@ -148,6 +148,9 @@ class EuclideanTracker:
         measurement_noise: float = DEFAULT_MEASUREMENT_NOISE,
         initial_velocity_uncertainty: float = DEFAULT_INITIAL_VELOCITY_UNCERTAINTY,
         pending_velocity_decay: float = 1.0,
+        pending_grace_frames: int = 0,
+        ambiguous_match_ratio: float = 1.0,
+        max_track_id: int = 65536,
     ) -> None:
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
@@ -165,8 +168,41 @@ class EuclideanTracker:
         # bayesiano "humano sin obs tiende a quedarse quieto" y previenen
         # el ghost-drift que dispara duplicados al re-identificar (track
         # nuevo en vez de re-asociar al original cuando reaparece >1.5s
-        # después). Producción default 0.5 vía config.
+        # después). Producción default 0.85 vía config.
         self.pending_velocity_decay = float(pending_velocity_decay)
+        # Cantidad de frames iniciales de PENDING en los que SE PRESERVA
+        # la velocidad completa antes de empezar a aplicar decay. Modela
+        # oclusiones cortas (carrito que pasa, estructura overhead, motion
+        # blur en ~3 frames) donde queremos que el Kalman siga
+        # extrapolando a velocidad real así el predict cae cerca de la
+        # detección cuando reaparece — no congelado en la posición de
+        # entrada al PENDING. Default 0 = decay desde frame 1 (back-compat,
+        # comportamiento previo). Producción default 3 vía config: a 12 fps
+        # cubre ~250ms, suficiente para oclusión típica de carrito.
+        self.pending_grace_frames = max(0, int(pending_grace_frames))
+        # Ratio test post-Hungarian: rechaza matches donde el costo del
+        # 2do-mejor alternativa (otra detección para el mismo track O
+        # otro track para la misma detección) está dentro de este ratio
+        # del costo del best. La intuición es Lowe (SIFT) aplicada a
+        # tracking: si el match es ambiguo, mejor miss que ID swap. Con
+        # ratio=0.8, se rechaza cualquier match donde best > 0.8 *
+        # second_best — es decir, second_best está dentro del 25% del
+        # best. Default 1.0 = off (back-compat). Producción 0.8 vía
+        # config. Las detecciones de matches rechazados se CONSUMEN
+        # (no spawnean tracks nuevos) para no inflar la cuenta con un
+        # ID nuevo cuando el verdadero owner del bbox está ambiguo entre
+        # dos tracks existentes.
+        self.ambiguous_match_ratio = float(ambiguous_match_ratio)
+        # Bound de los track IDs — los IDs ciclan módulo este valor.
+        # Default 65536 (16-bit) es holgadísimo para un device: a 1000
+        # tracks/día × 363 días sigue cabiendo en menos de 6 ciclos/año
+        # y como tracks vivos simultáneos son ~10 max, las colisiones
+        # son prácticamente imposibles. Sirve para (a) UX en el viewer
+        # (IDs de 5 dígitos vs growth ilimitado de 7-8 dígitos en runs
+        # largos), (b) safety si algún consumer downstream parsea el
+        # ID como uint16/32. ``_register`` salta IDs en uso si chocara
+        # en el rollover (defense in depth).
+        self.max_track_id = max(1, int(max_track_id))
         self._next_id = 0
         self._tracks: OrderedDict[int, Track] = OrderedDict()
 
@@ -270,9 +306,22 @@ class EuclideanTracker:
                 # quieto" en vez de seguir empujando con la velocidad de
                 # cuando había detecciones. Skip cuando decay >= 1.0 (off)
                 # para evitar trabajo en el hot path del back-compat.
+                #
+                # Grace period: los primeros ``pending_grace_frames`` de
+                # PENDING preservan velocidad completa (sin decay) para
+                # modelar oclusiones cortas donde la persona sigue
+                # caminando detrás del oclusor. Sin grace, decay desde el
+                # primer miss puede congelar el predict atrás de la
+                # detección cuando reaparece, rompiendo el reid. Con
+                # grace, los primeros N frames extrapolan honest a la
+                # velocidad observada (acepta drift transitorio) y solo
+                # entonces empieza el decay si la pausa se extiende.
+                # ``track.disappeared`` cuenta misses consecutivos, así
+                # que > grace_frames significa "ya pasamos la ventana".
                 if (
                     track.state == PENDING
                     and self.pending_velocity_decay < 1.0
+                    and track.disappeared > self.pending_grace_frames
                 ):
                     track.kalman.x[2:] *= self.pending_velocity_decay
                 track.kalman.predict()
@@ -520,7 +569,19 @@ class EuclideanTracker:
 
         ``gate_per_track`` se broadcastea contra ``dist_2d``; las depths
         sobre ``max_depth_delta`` siempre se rechazan independientemente
-        del gate. Devuelve ``(matches, matched_track_indices, matched_det_indices)``.
+        del gate.
+
+        Post-Hungarian: ratio test (Lowe-style) si
+        ``ambiguous_match_ratio < 1.0``. Rechaza matches donde el costo
+        del best no es significativamente menor que el del 2do-mejor
+        alternativa (otra detección para el mismo track O otro track
+        para la misma detección). Los tracks de matches rechazados se
+        retornan UNMATCHED (caller los marcará como missed); las
+        detecciones se retornan CONSUMED (incluidas en ``matched_d``)
+        para evitar que spawneen tracks nuevos — preferimos perder una
+        obs ambigua antes que duplicar el ID.
+
+        Devuelve ``(matches, matched_track_indices, matched_det_indices)``.
         """
         INF = 1e9
         cost = dist_2d.copy()
@@ -532,12 +593,54 @@ class EuclideanTracker:
         matches: list[tuple[int, int]] = []
         matched_t: set[int] = set()
         matched_d: set[int] = set()
+        # Detecciones consumidas por matches rechazados — no son matched
+        # en el sentido de generar un hit, pero el caller las trata como
+        # matched para no spawnear tracks nuevos desde ellas.
+        consumed_d: set[int] = set()
+        ratio = self.ambiguous_match_ratio
+        ratio_on = ratio < 1.0
+
         for r, c in zip(row_ind, col_ind):
             if cost[r, c] >= INF:
                 continue
-            matches.append((int(r), int(c)))
-            matched_t.add(int(r))
-            matched_d.add(int(c))
+            r = int(r)
+            c = int(c)
+            best = cost[r, c]
+
+            if ratio_on:
+                # 2nd-best detección para el track r (excluyendo c).
+                row_copy = cost[r].copy()
+                row_copy[c] = INF
+                second_row = float(row_copy.min())
+                # 2nd-best track para la detección c (excluyendo r).
+                col_copy = cost[:, c].copy()
+                col_copy[r] = INF
+                second_col = float(col_copy.min())
+                ambiguous = False
+                # Si el 2do-mejor existe (no es INF) y está dentro del
+                # ratio del best, el match es ambiguo.
+                if (
+                    second_row < INF / 2
+                    and best > ratio * second_row
+                ):
+                    ambiguous = True
+                if (
+                    not ambiguous
+                    and second_col < INF / 2
+                    and best > ratio * second_col
+                ):
+                    ambiguous = True
+                if ambiguous:
+                    consumed_d.add(c)
+                    continue
+
+            matches.append((r, c))
+            matched_t.add(r)
+            matched_d.add(c)
+
+        # Marcar detecciones consumidas como matched a nivel del caller
+        # para que NO entren a unmatched_d y por ende no spawneen tracks.
+        matched_d.update(consumed_d)
         return matches, matched_t, matched_d
 
     def _pending_match_ref(self, track: Track) -> np.ndarray:
@@ -570,6 +673,13 @@ class EuclideanTracker:
 
     def _register(self, centroid: np.ndarray) -> int:
         tid = self._next_id
+        # Skip IDs ya en uso por algún track vivo — defense contra
+        # colisión en el rollover. En condiciones normales el while
+        # corre 0 veces (los tracks viejos hace rato murieron antes
+        # de que el contador cicle 65536 veces); solo entra si el
+        # max_track_id está bajado artificialmente (tests).
+        while tid in self._tracks:
+            tid = (tid + 1) % self.max_track_id
         centroid = np.asarray(centroid, dtype=float)
         self._tracks[tid] = Track(
             track_id=tid,
@@ -578,7 +688,7 @@ class EuclideanTracker:
             hits=1,
             kalman=self._make_kalman(centroid),
         )
-        self._next_id += 1
+        self._next_id = (tid + 1) % self.max_track_id
         return tid
 
     def _record_hit(self, track: Track, centroid: np.ndarray) -> None:

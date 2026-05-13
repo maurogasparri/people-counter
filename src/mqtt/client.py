@@ -6,6 +6,7 @@ Se integra con MessageBuffer para resiliencia ante pérdida de conectividad.
 
 import json
 import logging
+import random
 import ssl
 import threading
 import time
@@ -18,9 +19,13 @@ from src.mqtt.buffer import MessageBuffer
 
 logger = logging.getLogger(__name__)
 
-# Parámetros de reconexión (se pasan al reconnect_delay_set built-in de paho)
+# Parámetros de reconexión. paho 2.x maneja el backoff internamente con
+# jitter (random.uniform en _reconnect_wait) entre min y max — efectivamente
+# exponencial con spread, ~suficiente para que una flota no haga DDoS al
+# broker tras un outage del backend. Max 60s para que el recovery se sienta
+# rápido cuando el outage termina, balanceado con el costo del retry.
 RECONNECT_MIN_DELAY = 1  # segundos
-RECONNECT_MAX_DELAY = 120  # segundos
+RECONNECT_MAX_DELAY = 60  # segundos
 
 
 class MQTTClient:
@@ -145,11 +150,51 @@ class MQTTClient:
         with self._conn_lock:
             return self._reconnect_ts
 
-    def connect(self) -> None:
+    def connect(self, startup_jitter_seconds: float = 0.0) -> None:
         """Conecta al broker MQTT.
 
         No-bloqueante: arranca el network loop en un thread background.
+
+        Args:
+            startup_jitter_seconds: Si >0, esperá entre 0 y este valor de
+                segundos (uniform random) antes de iniciar el connect.
+                Anti thundering-herd cuando la flota entera bootea después
+                de un outage (regional incident, mass restart del retail
+                chain) — staggerea los initial TLS handshakes contra IoT
+                Core para no DDoSearlo. La espera corre en un thread
+                background, así connect() retorna inmediatamente y el
+                pipeline puede arrancar sin bloqueo (los eventos se
+                bufferean local hasta que la conexión finalice).
         """
+        if startup_jitter_seconds > 0:
+            delay = random.uniform(0.0, float(startup_jitter_seconds))
+
+            def _delayed_connect() -> None:
+                time.sleep(delay)
+                try:
+                    self._client.connect(self.endpoint, self.port, keepalive=60)
+                    self._client.loop_start()
+                    logger.info(
+                        "MQTT connecting to %s:%d (after %.1fs startup jitter)",
+                        self.endpoint,
+                        self.port,
+                        delay,
+                    )
+                except Exception:
+                    logger.exception(
+                        "MQTT connect failed after %.1fs jitter", delay
+                    )
+
+            threading.Thread(
+                target=_delayed_connect, daemon=True, name="mqtt-connect"
+            ).start()
+            logger.info(
+                "MQTT connect scheduled with %.1fs startup jitter "
+                "(anti thundering-herd)",
+                delay,
+            )
+            return
+
         try:
             self._client.connect(self.endpoint, self.port, keepalive=60)
             self._client.loop_start()

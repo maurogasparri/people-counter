@@ -106,6 +106,78 @@ class TestMQTTClientConstruction:
         assert pending[0][2]["count"] == 42
 
     @patch("src.mqtt.client.mqtt.Client")
+    def test_connect_immediate_when_no_jitter(self, mock_mqtt_cls):
+        """Sin startup_jitter, connect() llama a paho client inmediatamente
+        en el thread del caller (back-compat)."""
+        from src.mqtt.client import MQTTClient
+
+        mock_client = MagicMock()
+        mock_mqtt_cls.return_value = mock_client
+
+        tmpdir = tempfile.mkdtemp()
+        cert, key, ca = self._make_certs(tmpdir)
+        buffer = MessageBuffer(str(Path(tmpdir) / "buf.db"))
+        client = MQTTClient(
+            device_id="test-001",
+            endpoint="test.iot.us-east-1.amazonaws.com",
+            port=8883,
+            cert_path=cert,
+            key_path=key,
+            ca_path=ca,
+            buffer=buffer,
+        )
+
+        client.connect()  # default jitter=0
+        mock_client.connect.assert_called_once()
+        mock_client.loop_start.assert_called_once()
+
+    @patch("src.mqtt.client.mqtt.Client")
+    def test_connect_with_jitter_uses_background_thread(self, mock_mqtt_cls):
+        """Con startup_jitter > 0, connect() retorna inmediatamente y
+        schedulea el real connect en un thread background. El thread
+        completa el connect después del sleep."""
+        import threading as _threading
+        import time as _time
+        from src.mqtt.client import MQTTClient
+
+        mock_client = MagicMock()
+        mock_mqtt_cls.return_value = mock_client
+
+        tmpdir = tempfile.mkdtemp()
+        cert, key, ca = self._make_certs(tmpdir)
+        buffer = MessageBuffer(str(Path(tmpdir) / "buf.db"))
+        client = MQTTClient(
+            device_id="test-001",
+            endpoint="test.iot.us-east-1.amazonaws.com",
+            port=8883,
+            cert_path=cert,
+            key_path=key,
+            ca_path=ca,
+            buffer=buffer,
+        )
+
+        # Patch random.uniform a un valor chico para no esperar mucho.
+        with patch("src.mqtt.client.random.uniform", return_value=0.05):
+            t0 = _time.time()
+            client.connect(startup_jitter_seconds=10.0)
+            elapsed_sync = _time.time() - t0
+            # connect() debe retornar casi instantáneo (thread bg).
+            assert elapsed_sync < 0.5, (
+                f"connect() debió retornar inmediato, tardó {elapsed_sync:.2f}s"
+            )
+
+            # Esperar a que el thread bg complete (poll hasta que connect
+            # del client mock se haya llamado).
+            deadline = _time.time() + 2.0
+            while _time.time() < deadline:
+                if mock_client.connect.called:
+                    break
+                _time.sleep(0.05)
+
+        mock_client.connect.assert_called_once()
+        mock_client.loop_start.assert_called_once()
+
+    @patch("src.mqtt.client.mqtt.Client")
     def test_publish_event_adds_metadata(self, mock_mqtt_cls):
         """publish_event wraps data with device_id and timestamp."""
         from src.mqtt.client import MQTTClient

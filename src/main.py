@@ -243,6 +243,7 @@ def build_mqtt(
     buffer = MessageBuffer(
         db_path=buf_cfg["db_path"],
         max_age_hours=buf_cfg["max_age_hours"],
+        max_backlog=int(buf_cfg.get("max_backlog", 50000)),
     )
 
     if no_mqtt:
@@ -615,10 +616,24 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         num_disparities=sgbm_num_disp,
         block_size=int(sgbm_cfg["block_size"]),
     )
+    # WLS post-filter (defense-in-depth contra holes en bordes de
+    # disparity). Rellena los pixels donde el matcher derecho discrepa
+    # del izquierdo — sin WLS esos pixels quedan inválidos y, cuando un
+    # bbox de cabeza cae sobre la zona afectada, el percentile_75 del
+    # blob queda noisy, sesgando la altura derivada. ON por default;
+    # apagar solo si el budget de FPS no lo permite en el target.
+    wls_cfg = sgbm_cfg.get("wls") or {}
+    wls_enabled = bool(wls_cfg.get("enabled", True))
+    wls_lambda = float(wls_cfg.get("lambda", 4000.0))
+    wls_sigma = float(wls_cfg.get("sigma", 1.0))
     logger.info(
-        "SGBM: downscale=%d, num_disparities=%d (effective at downscaled res)",
+        "SGBM: downscale=%d, num_disparities=%d (effective at downscaled res), "
+        "WLS=%s (lambda=%.0f, sigma=%.2f)",
         sgbm_downscale,
         sgbm_num_disp,
+        "on" if wls_enabled else "off",
+        wls_lambda,
+        wls_sigma,
     )
 
     # --- Construir tracker + counter ---
@@ -656,6 +671,29 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             tracker_cfg.get(
                 "pending_velocity_decay",
                 sm_cfg.get("pending_velocity_decay", 0.5),
+            )
+        ),
+        # Grace window antes de empezar el decay. Default 0 mantiene el
+        # comportamiento legacy (decay desde el primer miss). Producción:
+        # 3 frames cubre oclusiones cortas (carrito que pasa, motion blur
+        # esporádico) preservando velocidad real para que el reid binde.
+        pending_grace_frames=int(
+            tracker_cfg.get(
+                "pending_grace_frames",
+                sm_cfg.get("pending_grace_frames", 0),
+            )
+        ),
+        # Ratio test post-Hungarian (Lowe-style). 1.0 = off; 0.8 producción
+        # = rechaza matches donde el 2do-mejor está dentro del 25% del
+        # best. Anti-ID-swap en cruces: si dos tracks compiten por la
+        # misma detección con costos similares, ambos pasan a PENDING
+        # en vez de hacer el asignamiento ambiguo. El depth gate sigue
+        # actuando como guardia primario; el ratio test es defense-in-
+        # depth para cruces a misma altura.
+        ambiguous_match_ratio=float(
+            tracker_cfg.get(
+                "ambiguous_match_ratio",
+                sm_cfg.get("ambiguous_match_ratio", 1.0),
             )
         ),
     )
@@ -837,7 +875,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             logger.warning("Shadow queue llena — descartando request de reconcile")
 
     mqtt_client.on_connected = _on_mqtt_connected
-    mqtt_client.connect()
+    # Startup jitter anti thundering-herd cuando la flota entera bootea
+    # post-outage. 30s default es razonable: la Pi tarda más en bootear,
+    # los eventos se bufferean local hasta que el connect finalice.
+    startup_jitter = float(
+        config.get("mqtt", {}).get("startup_jitter_seconds", 30.0)
+    )
+    mqtt_client.connect(startup_jitter_seconds=startup_jitter)
 
     try:
         mqtt_client.subscribe_shadow_delta(device_id, _shadow_delta_handler)
@@ -918,6 +962,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     telem_fps_start = time.time()
     last_hours_check = 0.0
     last_purge = time.time()
+    last_vacuum = time.time()
+    last_ble_watchdog = time.time()
     last_watchdog = 0.0
     within_hours = True  # asumimos abierto hasta el primer check
     profile_enabled = bool(getattr(args, "profile", False))
@@ -1340,6 +1386,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     sgbm=sgbm,
                     downscale=sgbm_downscale,
                     use_clahe=False,
+                    use_wls_filter=wls_enabled,
+                    wls_lambda=wls_lambda,
+                    wls_sigma=wls_sigma,
                 )
                 depth_map = disparity_to_depth(disparity, focal_length_px, baseline_mm)
                 if viewer_depth_due:
@@ -1764,7 +1813,44 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # --- Mantenimiento del buffer (cada 60s, no cada frame) ---
             if now - last_purge >= 60.0:
                 buffer.purge_old()
+                buffer.enforce_backlog_limit()
                 last_purge = now
+
+            # --- VACUUM diario para reclaim de espacio post-purges ---
+            # SQLite no libera páginas eliminadas hasta VACUUM explícito;
+            # sin esto el archivo crece sin reflejarlo en row count
+            # (semana = ~3-5MB acumulado en producción típica). VACUUM
+            # es I/O heavy (~100-500ms) — daily timing evita impacto en
+            # runtime; cae junto al checkpoint del WAL.
+            if now - last_vacuum >= 86400.0:  # 24h
+                buffer.vacuum()
+                last_vacuum = now
+
+            # --- BLE watchdog ---
+            # ``is_running`` solo dice si el thread está vivo, no si está
+            # progresando — bleak/D-Bus pueden wedgear (call stuck en
+            # internals) y el thread queda alive pero sin advance. El
+            # heartbeat del scanner avanza cada ~0.5s en operación
+            # normal; si pasa >60s sin tick, asumimos wedge y
+            # restarteamos. Recovery transparente sin afectar al
+            # pipeline de visión.
+            if ble_scanner is not None and now - last_ble_watchdog >= 30.0:
+                last_ble_watchdog = now
+                try:
+                    if ble_scanner.is_running and not ble_scanner.is_healthy(60.0):
+                        logger.warning("ble_scanner_wedged_restarting")
+                        try:
+                            ble_scanner.stop()
+                        except Exception:
+                            logger.exception("ble_scanner stop en watchdog falló")
+                        try:
+                            ble_scanner.start()
+                        except Exception:
+                            logger.exception(
+                                "ble_scanner restart falló — BLE queda offline"
+                            )
+                except Exception:
+                    logger.exception("ble_scanner watchdog crash")
 
             # --- Keepalive del watchdog de systemd (cada 60s; WatchdogSec=300) ---
             if now - last_watchdog >= 60.0:

@@ -250,11 +250,12 @@ def _install_common_patches(
         lambda *a, **k: {"backend": MagicMock(), "type": "opencv"},
     )
 
-    # Disparity: fixed map for predictable depth.
+    # Disparity: fixed map for predictable depth. **kwargs absorbe los
+    # nuevos params (use_wls_filter, wls_lambda, wls_sigma) sin que el
+    # mock necesite tracking de la signature de compute_disparity.
     monkeypatch.setattr(
         "src.main.compute_disparity",
-        lambda left, right, sgbm=None, downscale=1, use_clahe=True:
-            _fixed_disparity_map(),
+        lambda *args, **kwargs: _fixed_disparity_map(),
     )
 
     # Detector: scripted per-frame detections. Pad with [] so the loop can
