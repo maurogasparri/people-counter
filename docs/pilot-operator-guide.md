@@ -368,8 +368,10 @@ ir a sección 5.
 Desde la laptop, con las credenciales AWS del operador:
 
 ```bash
-# Ver logs del Lambda de dedup (último minuto)
-aws --profile people-counter-field logs tail /aws/lambda/people-counter-dedup \
+# Ver logs de la Lambda persist_event (último minuto).
+# La Lambda inserta cada mensaje del device en Postgres; errores acá
+# significan DB down, password rotada, o conn timeout.
+aws --profile people-counter-field logs tail /aws/lambda/people-counter-persist-event-dev \
   --since 1m --follow
 ```
 

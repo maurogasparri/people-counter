@@ -24,11 +24,14 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
                    | MQTT (TLS + X.509)
                    v
 +---------------------------------------------+
-|              AWS Cloud                       |
-|  IoT Core → Timestream (series temporales)   |
-|          → Lambda (WiFi/BLE dedup)           |
-|          → DynamoDB (hashes dedup)           |
-|          → API Gateway → QuickSight          |
+|              AWS Cloud (PoC, 1 device)       |
+|  IoT Core  ──► Lambda persist_event ──┐      |
+|  (3 rules)                            ▼      |
+|                              EC2 t3.micro    |
+|                              ├ Postgres 16   |
+|                              └ Grafana OSS   |
+|                                              |
+|  S3 bucket ◄── pg_dump diario (cron)         |
 +---------------------------------------------+
 ```
 
@@ -59,7 +62,8 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**.
 - **BLE**: bleak (D-Bus de BlueZ), escaneo pasivo.
 - **Hashing**: SHA-256 truncado a 16 bytes. **Nunca MACs crudas**.
-- **Dedup**: L1 intra-protocolo (SQLite por día), L2 cross-protocolo (ventana 2s + ΔRSSI ≤5dBm), L3 inter-cámara (Lambda + DynamoDB).
+- **Dedup**: L1 intra-protocolo (SQLite por día), L2 cross-protocolo (ventana 2s + ΔRSSI ≤5dBm) — todo local en el device. L3 inter-cámara queda reservado para deploys multi-cam future work (no aplica al PoC con 1 device/sucursal).
+- **Publish**: en vez de mandar hashes, el `WifiBlePublisher` (`src/wifi_ble/publisher.py`) emite un único summary por ventana (default 15 min) con `{passersby, shoppers}` post-L2 dedup. Privacy stronger + Lambda más simple que dedup individual.
 
 ### Comunicación
 
@@ -76,7 +80,8 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Cloud (AWS)
 
-- IoT Core (broker + rules) → Timestream (conteo) + Lambda (dedup L3) + DynamoDB (hashes) + API Gateway → QuickSight.
+- **PoC (1 device)**: IoT Core (broker + 3 rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`) → Postgres 16 en EC2 t3.micro (free tier). Grafana OSS en la misma EC2 lee el Postgres. pg_dump diario a S3. **Sin Timestream** (no está en AWS Free Plan). **Sin Lambda dedup L3** (innecesaria con 1 device/sucursal).
+- **Multi-device futuro**: cuando se agregue 2+ cámaras por sucursal, reintroducir L3 (Lambda + DynamoDB de hashes) y separar Postgres a RDS si el volumen lo exige.
 
 ## Convenciones de código
 
@@ -101,7 +106,7 @@ people-counter/
 │   ├── tracking/       <- tracker (Kalman + state machine), counter (ROI + line crossings)
 │   ├── wifi_ble/       <- wifi_probe, ble_scan, hasher, dedup
 │   ├── mqtt/           <- client (AWS IoT), buffer (SQLite outbox)
-│   ├── cloud/          <- lambda_dedup (L3 inter-cam)
+│   ├── cloud/          <- persist_event Lambda (IoT Rules → Postgres)
 │   ├── status/         <- led, health, monitor (background thread)
 │   ├── config/         <- loader (deep-merge example + per-device) + hardware (HardwareParams dataclass)
 │   └── main.py         <- orquestador del pipeline
@@ -138,7 +143,7 @@ people-counter/
 | S6 | Tracking + counting | **DONE** — tracker Kalman + counter ROI/línea (E2E validado) |
 | S7 | WiFi/BLE | **DONE** — nexmon + bleak, hashing + dedup L1/L2 |
 | S8 | MQTT | **DONE** — IoT Core + buffer SQLite + replay |
-| S9 | Cloud | **DONE** — CloudFormation + Lambda dedup L3 |
+| S9 | Cloud | **DONE** — CloudFormation + Lambda persist_event + EC2 Postgres/Grafana |
 | S10 | Integración | **DONE** — pipeline E2E en RPi5 |
 | S11 | Piloto | PENDIENTE — deploy 3 locales |
 | S12 | Estabilización | PENDIENTE — post-piloto |

@@ -1,346 +1,596 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  People Counter — Cloud infrastructure.
-  IoT Core, Timestream, DynamoDB, Lambda dedup L3, IAM roles.
+  People Counter — Cloud infrastructure (PoC, 1 device).
+  IoT Core (3 rules) -> Lambda persist_event -> Postgres en EC2 + Grafana.
+  No usa Timestream (no incluido en AWS Free Plan).
+  No usa Lambda dedup L3 (innecesaria con 1 device por sucursal).
 
 Parameters:
   Environment:
     Type: String
-    Default: prod
+    Default: dev
     AllowedValues: [dev, staging, prod]
-  TimestreamRetentionHoursMemory:
-    Type: Number
-    Default: 168  # 7 days
-    Description: Hours to keep data in memory store
-  TimestreamRetentionDaysMagnetic:
-    Type: Number
-    Default: 365
-    Description: Days to keep data in magnetic store
-  DedupTTLDays:
-    Type: Number
-    Default: 7
-    Description: Days to keep dedup hashes in DynamoDB
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: >
+      Existing EC2 key pair name for SSH access to the data/dashboards box.
+      Crear con: aws ec2 create-key-pair --key-name people-counter-dev --query
+      'KeyMaterial' --output text > ~/.ssh/people-counter-dev.pem
+
+  AdminCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: >
+      CIDR autorizado para SSH (22), Grafana (3000) y Postgres (5432) a la
+      instancia. Default 0.0.0.0/0 es laxo — restringir a tu IP pública
+      (https://checkip.amazonaws.com) para producción.
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small, t4g.micro, t4g.small]
+    Description: >
+      t3.micro entra en free tier (750h/mes 12 meses). t4g.micro es más
+      barato post-free-tier (ARM) pero requiere AMI ARM y psycopg compilado
+      a la arquitectura.
+
   AlarmNotificationTopicArn:
     Type: String
     Default: ""
     Description: >
-      Optional SNS topic ARN used as AlarmActions for all CloudWatch alarms.
-      Leave empty to create alarms that fire silently (visible only in the console).
+      Optional SNS topic ARN para las CloudWatch alarms. Vacío = alarmas
+      silenciosas (solo visibles en consola).
     AllowedPattern: "^$|^arn:aws:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$"
+
+  PostgresInitialPassword:
+    Type: String
+    NoEcho: true
+    Description: >
+      Password inicial del rol Postgres "people_counter". Se escribe a SSM
+      Parameter Store y la Lambda lo lee de ahí. Cambiarlo requiere actualizar
+      SSM y reiniciar la EC2 con `sudo -u postgres psql`.
+    MinLength: 16
+    AllowedPattern: "^[A-Za-z0-9!@#$%^&*_+=-]+$"
 
 Conditions:
   HasAlarmNotificationTopic: !Not [!Equals [!Ref AlarmNotificationTopicArn, ""]]
 
+Mappings:
+  # AMI Ubuntu 24.04 LTS amd64 por región. Refrescar con:
+  # aws ec2 describe-images --owners 099720109477 --filters \
+  #   "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*" \
+  #   --query 'sort_by(Images,&CreationDate)[-1].ImageId' --region <REGION>
+  RegionMap:
+    us-east-1:
+      Ubuntu2404: ami-0e2c8caa4b6378d8c
+    us-east-2:
+      Ubuntu2404: ami-0c80e2b6ccb9ad6d1
+    us-west-2:
+      Ubuntu2404: ami-05f991c49d264708f
+    sa-east-1:
+      Ubuntu2404: ami-0eaeb7d23a6a73b18
+
 Resources:
 
   # =========================================================================
-  # IoT Core
+  # IoT Core — policy + thing type + rules
   # =========================================================================
 
   IoTDevicePolicy:
     Type: AWS::IoT::Policy
     Properties:
-      PolicyName: people-counter-device-policy
+      PolicyName: !Sub "people-counter-device-policy-${Environment}"
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Action:
-              - iot:Connect
+            Action: [iot:Connect]
             Resource:
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/${!iot:Connection.Thing.ThingName}"
           - Effect: Allow
-            Action:
-              - iot:Publish
+            Action: [iot:Publish]
             Resource:
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/counting"
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/wifi_ble"
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/telemetry"
           - Effect: Allow
-            Action:
-              - iot:Subscribe
+            Action: [iot:Subscribe]
             Resource:
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topicfilter/$aws/things/${!iot:Connection.Thing.ThingName}/shadow/*"
           - Effect: Allow
-            Action:
-              - iot:Receive
+            Action: [iot:Receive]
             Resource:
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/things/${!iot:Connection.Thing.ThingName}/shadow/*"
 
   IoTThingType:
     Type: AWS::IoT::ThingType
     Properties:
-      ThingTypeName: people-counter
+      ThingTypeName: !Sub "people-counter-${Environment}"
       ThingTypeProperties:
         ThingTypeDescription: People Counter edge device (RPi5 + Hailo-8L)
-        SearchableAttributes:
-          - store_id
-          - firmware_version
+        SearchableAttributes: [store_id, firmware_version]
       Tags:
-        - Key: Project
-          Value: people-counter
-        - Key: Environment
-          Value: !Ref Environment
-
-  # =========================================================================
-  # IoT Rules — route MQTT messages to backends
-  # =========================================================================
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
 
   IoTRuleCounting:
     Type: AWS::IoT::TopicRule
     Properties:
-      RuleName: people_counter_counting
+      RuleName: !Sub "people_counter_counting_${Environment}"
       TopicRulePayload:
         Sql: "SELECT * FROM 'store/+/counting'"
         Actions:
-          - Timestream:
-              DatabaseName: !Ref TimestreamDatabase
-              TableName: !GetAtt TimestreamCountingTable.Name
-              RoleArn: !GetAtt IoTTimestreamRole.Arn
-              Dimensions:
-                - Name: device_id
-                  Value: "${device_id}"
-                - Name: store_id
-                  Value: "${topic(2)}"
-                - Name: direction
-                  Value: "${data.direction}"
-              Timestamp:
-                Value: "${timestamp()}"
-                Unit: MILLISECONDS
-        RuleDisabled: false
+          - Lambda:
+              FunctionArn: !GetAtt PersistEventLambda.Arn
+        ErrorAction:
+          CloudwatchLogs:
+            LogGroupName: !Ref IoTRuleErrorLogGroup
+            RoleArn: !GetAtt IoTRuleErrorLogRole.Arn
 
   IoTRuleTelemetry:
     Type: AWS::IoT::TopicRule
     Properties:
-      RuleName: people_counter_telemetry
+      RuleName: !Sub "people_counter_telemetry_${Environment}"
       TopicRulePayload:
         Sql: "SELECT * FROM 'store/+/telemetry'"
         Actions:
-          - Timestream:
-              DatabaseName: !Ref TimestreamDatabase
-              TableName: !GetAtt TimestreamTelemetryTable.Name
-              RoleArn: !GetAtt IoTTimestreamRole.Arn
-              Dimensions:
-                - Name: device_id
-                  Value: "${device_id}"
-                - Name: store_id
-                  Value: "${topic(2)}"
-              Timestamp:
-                Value: "${timestamp()}"
-                Unit: MILLISECONDS
-        RuleDisabled: false
+          - Lambda:
+              FunctionArn: !GetAtt PersistEventLambda.Arn
+        ErrorAction:
+          CloudwatchLogs:
+            LogGroupName: !Ref IoTRuleErrorLogGroup
+            RoleArn: !GetAtt IoTRuleErrorLogRole.Arn
 
   IoTRuleWifiBle:
     Type: AWS::IoT::TopicRule
     Properties:
-      RuleName: people_counter_wifi_ble
+      RuleName: !Sub "people_counter_wifi_ble_${Environment}"
       TopicRulePayload:
         Sql: "SELECT * FROM 'store/+/wifi_ble'"
         Actions:
           - Lambda:
-              FunctionArn: !GetAtt DedupLambda.Arn
-        RuleDisabled: false
+              FunctionArn: !GetAtt PersistEventLambda.Arn
+        ErrorAction:
+          CloudwatchLogs:
+            LogGroupName: !Ref IoTRuleErrorLogGroup
+            RoleArn: !GetAtt IoTRuleErrorLogRole.Arn
 
-  # =========================================================================
-  # Timestream
-  # =========================================================================
-
-  TimestreamDatabase:
-    Type: AWS::Timestream::Database
+  IoTRuleErrorLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      DatabaseName: !Sub "people-counter-${Environment}"
-      Tags:
-        - Key: Project
-          Value: people-counter
-        - Key: Environment
-          Value: !Ref Environment
+      LogGroupName: !Sub "/aws/iot/people-counter-rule-errors-${Environment}"
+      RetentionInDays: 14
 
-  TimestreamCountingTable:
-    Type: AWS::Timestream::Table
-    Properties:
-      DatabaseName: !Ref TimestreamDatabase
-      TableName: counting
-      RetentionProperties:
-        MemoryStoreRetentionPeriodInHours: !Ref TimestreamRetentionHoursMemory
-        MagneticStoreRetentionPeriodInDays: !Ref TimestreamRetentionDaysMagnetic
-      Tags:
-        - Key: Project
-          Value: people-counter
-        - Key: Environment
-          Value: !Ref Environment
-
-  TimestreamTelemetryTable:
-    Type: AWS::Timestream::Table
-    Properties:
-      DatabaseName: !Ref TimestreamDatabase
-      TableName: telemetry
-      RetentionProperties:
-        MemoryStoreRetentionPeriodInHours: !Ref TimestreamRetentionHoursMemory
-        MagneticStoreRetentionPeriodInDays: !Ref TimestreamRetentionDaysMagnetic
-      Tags:
-        - Key: Project
-          Value: people-counter
-        - Key: Environment
-          Value: !Ref Environment
-
-  # =========================================================================
-  # DynamoDB — WiFi/BLE dedup L3 (inter-camera)
-  # =========================================================================
-
-  DedupTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: !Sub "people-counter-dedup-${Environment}"
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: store_date
-          AttributeType: S
-        - AttributeName: hash
-          AttributeType: S
-      KeySchema:
-        - AttributeName: store_date
-          KeyType: HASH
-        - AttributeName: hash
-          KeyType: RANGE
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-      Tags:
-        - Key: Project
-          Value: people-counter
-        - Key: Environment
-          Value: !Ref Environment
-
-  # =========================================================================
-  # Lambda — Dedup L3
-  # =========================================================================
-
-  DedupLambdaRole:
+  IoTRuleErrorLogRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "people-counter-dedup-lambda-${Environment}"
+      RoleName: !Sub "people-counter-iot-rule-error-${Environment}"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
+            Principal: {Service: iot.amazonaws.com}
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: DynamoDBAccess
+        - PolicyName: write-error-logs
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action:
-                  - dynamodb:PutItem
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                Resource: !GetAtt DedupTable.Arn
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt IoTRuleErrorLogGroup.Arn
 
-  DedupLambda:
+  # =========================================================================
+  # SSM Parameter Store — credenciales DB (la Lambda + la EC2 leen de acá)
+  # =========================================================================
+
+  PgPasswordParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/people-counter/${Environment}/pg_password"
+      Type: String
+      Value: !Ref PostgresInitialPassword
+      Description: >
+        Password del rol people_counter en Postgres. CloudFormation no soporta
+        SecureString para parámetros nuevos directamente; convertir post-deploy:
+          aws ssm put-parameter --name /people-counter/dev/pg_password \
+            --type SecureString --overwrite --value '<pwd>'
+
+  # =========================================================================
+  # Lambda persist_event — IoT Rules -> Postgres
+  # =========================================================================
+
+  PersistEventLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "people-counter-persist-event-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: read-pg-password
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ssm:GetParameter]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/people-counter/${Environment}/pg_password"
+
+  PersistEventLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "people-counter-dedup-${Environment}"
+      FunctionName: !Sub "people-counter-persist-event-${Environment}"
       Runtime: python3.13
-      Handler: lambda_dedup.handler
-      Code:
-        ZipFile: |
-          # Placeholder — deploy actual code from src/cloud/lambda_dedup.py
-          # Use: scripts/deploy_lambda.sh <environment>
-          def handler(event, context):
-              return {"statusCode": 501, "body": "Deploy lambda_dedup.py"}
-      Role: !GetAtt DedupLambdaRole.Arn
+      Handler: persist_event.handler
+      Role: !GetAtt PersistEventLambdaRole.Arn
       Timeout: 30
-      MemorySize: 128
+      MemorySize: 256
       Environment:
         Variables:
-          DEDUP_TABLE_NAME: !Ref DedupTable
-          DEDUP_TTL_DAYS: !Ref DedupTTLDays
+          PG_HOST: !Ref DataInstanceEIP
+          PG_PORT: "5432"
+          PG_DB: people_counter
+          PG_USER: people_counter
+          PG_PASSWORD_SSM_PATH: !Ref PgPasswordParameter
+      Code:
+        ZipFile: |
+          # Placeholder — deploy actual code from src/cloud/persist_event.py
+          # con: scripts/deploy_lambda.sh <environment>
+          # La Lambda real necesita la layer de psycopg (ver scripts/build_psycopg_layer.sh).
+          def handler(event, context):
+              return {"statusCode": 501, "body": "Deploy persist_event.py + psycopg layer"}
       Tags:
-        - Key: Project
-          Value: people-counter
-        - Key: Environment
-          Value: !Ref Environment
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
 
-  DedupLambdaPermission:
+  PersistEventLambdaPermissionCounting:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref DedupLambda
+      FunctionName: !Ref PersistEventLambda
       Action: lambda:InvokeFunction
       Principal: iot.amazonaws.com
-      SourceArn: !GetAtt IoTRuleWifiBle.Arn
+      SourceArn: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rule/people_counter_counting_${Environment}"
+
+  PersistEventLambdaPermissionTelemetry:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PersistEventLambda
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rule/people_counter_telemetry_${Environment}"
+
+  PersistEventLambdaPermissionWifiBle:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PersistEventLambda
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rule/people_counter_wifi_ble_${Environment}"
 
   # =========================================================================
-  # CloudWatch alarms — minimum signal for production
+  # S3 bucket — backups diarios de Postgres
   # =========================================================================
 
-  DedupLambdaErrorAlarm:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "people-counter-backups-${Environment}-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-backups
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  # =========================================================================
+  # EC2 — Postgres + Grafana + nginx self-managed
+  # =========================================================================
+
+  DataInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "people-counter-data-instance-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: backup-and-config
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:ListBucket]
+                Resource:
+                  - !Sub "arn:aws:s3:::${BackupBucket}"
+                  - !Sub "arn:aws:s3:::${BackupBucket}/*"
+              - Effect: Allow
+                Action: [ssm:GetParameter]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/people-counter/${Environment}/*"
+
+  DataInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "people-counter-data-instance-${Environment}"
+      Roles: [!Ref DataInstanceRole]
+
+  DataInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Postgres + Grafana + SSH para people-counter
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminCidr
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: !Ref AdminCidr
+          Description: Grafana
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref AdminCidr
+          Description: HTTPS (nginx + Lets Encrypt)
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !Ref AdminCidr
+          Description: Postgres (DBeaver + Lambda)
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  DataInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", Ubuntu2404]
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref DataInstanceProfile
+      SecurityGroupIds: [!Ref DataInstanceSecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Bootstrap del data box — corre una sola vez al primer boot.
+          # Logs en /var/log/userdata.log.
+          set -euo pipefail
+          exec > >(tee /var/log/userdata.log) 2>&1
+          echo "[$(date -Is)] userdata start"
+
+          export DEBIAN_FRONTEND=noninteractive
+
+          # --- Swap 2 GB ---
+          # t3.micro tiene 1 GB de RAM. Postgres + Grafana 13 + apt-get
+          # install en paralelo pueden picar más que eso. Swap evita OOM kills
+          # silenciosos durante el bootstrap (y en runtime cuando Grafana
+          # carga ~57 plugins en init).
+          fallocate -l 2G /swapfile
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo "/swapfile none swap sw 0 0" >> /etc/fstab
+
+          apt-get update
+          # Ubuntu 24.04 (Noble) removió awscli v1 de los repos — instalamos v2 oficial.
+          apt-get install -y postgresql-16 postgresql-client-16 nginx jq curl gnupg unzip
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp/
+          /tmp/aws/install
+          rm -rf /tmp/awscliv2.zip /tmp/aws
+          /usr/local/bin/aws --version
+
+          # --- Grafana OSS desde repo oficial ---
+          # La GPG key viene en ASCII armored; apt necesita binary, por eso el
+          # dearmor. Pinear versión exacta + hold para que `apt upgrade`
+          # accidental no rompa el setup (Grafana 13.x es lo testeado en
+          # t3.micro con swap).
+          mkdir -p /etc/apt/keyrings
+          curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" \
+            > /etc/apt/sources.list.d/grafana.list
+          apt-get update
+          apt-get install -y grafana=13.0.1-01
+          apt-mark hold grafana
+
+          # Sacar los provisioning samples que vienen con el paquete deb —
+          # tienen secciones deleteDatasources/deleteDashboards que fallan
+          # si referencian recursos que no existen.
+          rm -f /etc/grafana/provisioning/datasources/sample.yaml
+          rm -f /etc/grafana/provisioning/dashboards/sample.yaml
+          rm -f /etc/grafana/provisioning/notifiers/sample.yaml
+          rm -f /etc/grafana/provisioning/plugins/sample.yaml
+          rm -f /etc/grafana/provisioning/alerting/sample.yaml
+
+          # systemd drop-in: GC un poco más agresivo (GOGC=50) y apagar
+          # subsystems que no usamos en PoC (plugin admin, live websockets,
+          # analytics phone-home).
+          mkdir -p /etc/systemd/system/grafana-server.service.d
+          cat > /etc/systemd/system/grafana-server.service.d/memory-tuning.conf <<'OVR_EOF'
+          [Service]
+          Environment=GOGC=50
+          Environment=GF_PLUGINS_PLUGIN_ADMIN_ENABLED=false
+          Environment=GF_LIVE_MAX_CONNECTIONS=0
+          Environment=GF_ANALYTICS_REPORTING_ENABLED=false
+          Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
+          Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+          OVR_EOF
+          systemctl daemon-reload
+
+          # --- Postgres: rol + DB ---
+          PG_PASSWORD=$(aws ssm get-parameter \
+            --name "/people-counter/${Environment}/pg_password" \
+            --with-decryption --region "${AWS::Region}" \
+            --query "Parameter.Value" --output text)
+
+          sudo -u postgres psql <<SQL
+          CREATE USER people_counter WITH PASSWORD '$PG_PASSWORD';
+          CREATE DATABASE people_counter OWNER people_counter;
+          SQL
+
+          # Permitir conexiones desde fuera (la Lambda + DBeaver).
+          PG_VERSION=16
+          sed -i "s/^#listen_addresses = .*/listen_addresses = '*'/" \
+            /etc/postgresql/$PG_VERSION/main/postgresql.conf
+          echo "host all all 0.0.0.0/0 scram-sha-256" >> /etc/postgresql/$PG_VERSION/main/pg_hba.conf
+          systemctl restart postgresql
+
+          # --- Aplicar schema (inline; espejo de infra/postgres/schema.sql) ---
+          cat > /tmp/schema.sql <<'SCHEMA_EOF'
+          CREATE TABLE IF NOT EXISTS counting_events (
+              id BIGSERIAL PRIMARY KEY,
+              device_id TEXT NOT NULL, store_id TEXT NOT NULL,
+              event_time TIMESTAMPTZ NOT NULL,
+              ingest_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              direction TEXT NOT NULL CHECK (direction IN ('in','out')),
+              track_id INTEGER, confidence REAL,
+              height_class TEXT CHECK (height_class IN ('adult','child','unknown')),
+              CONSTRAINT counting_events_uniq UNIQUE (device_id,event_time,track_id,direction)
+          );
+          CREATE INDEX IF NOT EXISTS idx_counting_store_time ON counting_events (store_id,event_time DESC);
+          CREATE INDEX IF NOT EXISTS idx_counting_device_time ON counting_events (device_id,event_time DESC);
+
+          CREATE TABLE IF NOT EXISTS telemetry (
+              id BIGSERIAL PRIMARY KEY,
+              device_id TEXT NOT NULL, store_id TEXT NOT NULL,
+              sample_time TIMESTAMPTZ NOT NULL,
+              ingest_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              cpu_temp_c REAL, hailo_temp_c REAL, disk_used_pct REAL,
+              uptime_s INTEGER, fps REAL,
+              p50_latency_ms REAL, p99_latency_ms REAL,
+              detection_rate_per_min REAL, active_tracks INTEGER,
+              buffer_pending INTEGER, mqtt_connected BOOLEAN,
+              total_in INTEGER, total_out INTEGER,
+              wifi_probe_ok BOOLEAN, ble_scanner_ok BOOLEAN,
+              schedule_error TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_telemetry_device_time ON telemetry (device_id,sample_time DESC);
+
+          CREATE TABLE IF NOT EXISTS wifi_ble_summaries (
+              id BIGSERIAL PRIMARY KEY,
+              device_id TEXT NOT NULL, store_id TEXT NOT NULL,
+              period_start TIMESTAMPTZ NOT NULL, period_end TIMESTAMPTZ NOT NULL,
+              ingest_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              passersby INTEGER NOT NULL DEFAULT 0,
+              shoppers INTEGER NOT NULL DEFAULT 0,
+              CONSTRAINT wifi_ble_summaries_uniq UNIQUE (device_id,period_start,period_end),
+              CONSTRAINT shoppers_le_passersby CHECK (shoppers <= passersby)
+          );
+          CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_time ON wifi_ble_summaries (store_id,period_start DESC);
+          SCHEMA_EOF
+
+          PGPASSWORD=$PG_PASSWORD psql -h localhost -U people_counter -d people_counter -f /tmp/schema.sql
+
+          # --- Grafana: datasource Postgres provisioned ---
+          # uid fijo "people-counter-pg" para que los dashboards lo encuentren
+          # sin depender del UID random que asigna Grafana al provisioning.
+          cat > /etc/grafana/provisioning/datasources/postgres.yaml <<DS_EOF
+          apiVersion: 1
+          datasources:
+            - name: PeopleCounter
+              uid: people-counter-pg
+              type: postgres
+              url: localhost:5432
+              user: people_counter
+              database: people_counter
+              isDefault: true
+              jsonData:
+                sslmode: disable
+                postgresVersion: 1600
+              secureJsonData:
+                password: "$PG_PASSWORD"
+          DS_EOF
+
+          systemctl enable --now grafana-server
+          systemctl enable --now nginx
+
+          # --- Cron de backup diario a S3 (3:00 UTC) ---
+          cat > /usr/local/bin/pc-backup.sh <<'BK_EOF'
+          #!/bin/bash
+          set -e
+          DATE=$(date -u +%Y%m%d-%H%M%S)
+          PG_PASSWORD=$(aws ssm get-parameter --name "/people-counter/${Environment}/pg_password" --with-decryption --region "${AWS::Region}" --query "Parameter.Value" --output text)
+          PGPASSWORD=$PG_PASSWORD pg_dump -h localhost -U people_counter -d people_counter -Fc \
+            | aws s3 cp - "s3://${BackupBucket}/postgres/pc-$DATE.dump"
+          BK_EOF
+          chmod +x /usr/local/bin/pc-backup.sh
+          echo "0 3 * * * root /usr/local/bin/pc-backup.sh" > /etc/cron.d/people-counter-backup
+
+          echo "[$(date -Is)] userdata complete"
+
+      Tags:
+        - {Key: Name, Value: !Sub "people-counter-data-${Environment}"}
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  DataInstanceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref DataInstance
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  # =========================================================================
+  # CloudWatch alarms (las 3 críticas — el resto se puede agregar después)
+  # =========================================================================
+
+  PersistEventLambdaErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "people-counter-dedup-lambda-errors-${Environment}"
-      AlarmDescription: Dedup L3 Lambda is erroring — hashes may not be deduplicated
+      AlarmName: !Sub "people-counter-persist-event-errors-${Environment}"
+      AlarmDescription: >
+        Lambda persist_event acumuló errores en los últimos 15 min.
+        Probable: Postgres caído, password rotada sin actualizar SSM, EC2 down.
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
         - Name: FunctionName
-          Value: !Ref DedupLambda
+          Value: !Ref PersistEventLambda
       Statistic: Sum
       Period: 300
-      EvaluationPeriods: 1
-      Threshold: 1
+      EvaluationPeriods: 3
+      Threshold: 5
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
       AlarmActions: !If
         - HasAlarmNotificationTopic
         - [!Ref AlarmNotificationTopicArn]
         - !Ref AWS::NoValue
-      OKActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-
-  DedupLambdaThrottleAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "people-counter-dedup-lambda-throttles-${Environment}"
-      AlarmDescription: Dedup L3 Lambda is being throttled — IoT messages may be dropped
-      Namespace: AWS/Lambda
-      MetricName: Throttles
-      Dimensions:
-        - Name: FunctionName
-          Value: !Ref DedupLambda
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-      OKActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-
-  # -------------------------------------------------------------------------
-  # Additional alarms added for pilot operations
-  # -------------------------------------------------------------------------
 
   IoTCoreDisconnectAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "people-counter-iot-disconnects-${Environment}"
       AlarmDescription: >
-        Fires when the fleet-wide MQTT disconnect rate stays elevated for more
-        than 15 minutes. Uses AWS/IoT Disconnect.Success (count of disconnects
-        for any reason). This is a fleet-level alarm — per-device alarms need
-        a Dimensions entry with ClientId and are therefore created out-of-band
-        by provisioning automation, not here.
+        Tasa fleet-wide de MQTT disconnects elevada por más de 15 min. Indica
+        que el device tiene problemas de conectividad o el cert se invalidó.
       Namespace: AWS/IoT
       MetricName: Disconnect.Success
       Statistic: Sum
@@ -353,411 +603,54 @@ Resources:
         - HasAlarmNotificationTopic
         - [!Ref AlarmNotificationTopicArn]
         - !Ref AWS::NoValue
-      OKActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
 
-  TimestreamWriteErrorAlarm:
+  DataInstanceStatusAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "people-counter-timestream-write-errors-${Environment}"
+      AlarmName: !Sub "people-counter-data-instance-status-${Environment}"
       AlarmDescription: >
-        Fires when Timestream WriteRecords reports user or system errors —
-        IoT rule is dropping counting/telemetry records.
-      Metrics:
-        - Id: user_errors
-          MetricStat:
-            Metric:
-              Namespace: AWS/Timestream
-              MetricName: UserErrors
-              Dimensions:
-                - Name: DatabaseName
-                  Value: !Ref TimestreamDatabase
-                - Name: Operation
-                  Value: WriteRecords
-            Period: 300
-            Stat: Sum
-          ReturnData: false
-        - Id: system_errors
-          MetricStat:
-            Metric:
-              Namespace: AWS/Timestream
-              MetricName: SystemErrors
-              Dimensions:
-                - Name: DatabaseName
-                  Value: !Ref TimestreamDatabase
-                - Name: Operation
-                  Value: WriteRecords
-            Period: 300
-            Stat: Sum
-          ReturnData: false
-        - Id: total_errors
-          Expression: "user_errors + system_errors"
-          Label: Timestream WriteRecords errors
-          ReturnData: true
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-      OKActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-
-  DynamoDBDedupThrottleAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "people-counter-dedup-ddb-throttles-${Environment}"
-      AlarmDescription: >
-        Fires when the DynamoDB dedup table records throttled read or write
-        requests — dedup L3 may be skipping records or retrying excessively.
-      Metrics:
-        - Id: read_throttles
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: ReadThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref DedupTable
-            Period: 300
-            Stat: Sum
-          ReturnData: false
-        - Id: write_throttles
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref DedupTable
-            Period: 300
-            Stat: Sum
-          ReturnData: false
-        - Id: total_throttles
-          Expression: "read_throttles + write_throttles"
-          Label: DynamoDB dedup throttles
-          ReturnData: true
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-      AlarmActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-      OKActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-
-  DedupLambdaDurationAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "people-counter-dedup-lambda-duration-${Environment}"
-      AlarmDescription: >
-        Fires if Lambda p95 duration exceeds 20s. Function timeout is 30s —
-        p95 above 20s is the warning band before hard timeouts start.
-      Namespace: AWS/Lambda
-      MetricName: Duration
+        EC2 con Postgres + Grafana falló los status checks. Sin ella el cloud
+        backend está abajo (Lambda no puede insertar y dashboards no responden).
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
       Dimensions:
-        - Name: FunctionName
-          Value: !Ref DedupLambda
-      ExtendedStatistic: p95
+        - Name: InstanceId
+          Value: !Ref DataInstance
+      Statistic: Maximum
       Period: 300
       EvaluationPeriods: 2
-      Threshold: 20000
+      Threshold: 0
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions: !If
         - HasAlarmNotificationTopic
         - [!Ref AlarmNotificationTopicArn]
         - !Ref AWS::NoValue
-      OKActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-
-  LowIngestionRateAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "people-counter-low-ingestion-${Environment}"
-      AlarmDescription: >
-        Fires when the Timestream counting table receives fewer than 10
-        SuccessfulRequestLatency samples (i.e. successful WriteRecords calls)
-        per hour. Assumption: operating hours are 08:00-22:00 UTC; outside
-        that window the alarm will fire but should be treated as informational.
-        TODO: convert to AWS::CloudWatch::CompositeAlarm gated by a scheduled
-        enable/disable once the pilot is stable.
-      Namespace: AWS/Timestream
-      MetricName: SuccessfulRequestLatency
-      Dimensions:
-        - Name: DatabaseName
-          Value: !Ref TimestreamDatabase
-        - Name: TableName
-          Value: !GetAtt TimestreamCountingTable.Name
-        - Name: Operation
-          Value: WriteRecords
-      Statistic: SampleCount
-      Period: 3600
-      EvaluationPeriods: 1
-      Threshold: 10
-      ComparisonOperator: LessThanThreshold
-      TreatMissingData: breaching
-      AlarmActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-      OKActions: !If
-        - HasAlarmNotificationTopic
-        - [!Ref AlarmNotificationTopicArn]
-        - !Ref AWS::NoValue
-
-  # =========================================================================
-  # CloudWatch Dashboard — operations overview
-  # =========================================================================
-
-  OperationsDashboard:
-    Type: AWS::CloudWatch::Dashboard
-    Properties:
-      DashboardName: !Sub "people-counter-${Environment}-overview"
-      DashboardBody: !Sub |
-        {
-          "widgets": [
-            {
-              "type": "text",
-              "x": 0, "y": 0, "width": 24, "height": 2,
-              "properties": {
-                "markdown": "# People Counter — ${Environment}\nFleet operations overview. Device-level health metrics (CPU temp, Hailo temp, disk free, RAM) are stored in **Timestream** (`people-counter-${Environment}.telemetry`) and are not plotted as CloudWatch metrics. See the Timestream console or the **Device health (Timestream)** note below for the queries to run."
-              }
-            },
-            {
-              "type": "text",
-              "x": 0, "y": 2, "width": 24, "height": 4,
-              "properties": {
-                "markdown": "## Device health (Timestream)\n\nRun these in the Timestream query editor against database `people-counter-${Environment}`:\n\n- **Connected devices (last 5min):** `SELECT COUNT(DISTINCT device_id) FROM telemetry WHERE time > ago(5m)`\n- **Avg CPU temp:** `SELECT AVG(measure_value::double) FROM telemetry WHERE measure_name = 'cpu_temp_c' AND time > ago(15m)`\n- **Avg Hailo temp:** `SELECT AVG(measure_value::double) FROM telemetry WHERE measure_name = 'hailo_temp_c' AND time > ago(15m)`\n- **Avg disk free (MB):** `SELECT AVG(measure_value::double) FROM telemetry WHERE measure_name = 'disk_free_mb' AND time > ago(15m)`\n- **Avg memory available (MB):** `SELECT AVG(measure_value::double) FROM telemetry WHERE measure_name = 'mem_available_mb' AND time > ago(15m)`\n- **Frame latency p50/p95:** `SELECT APPROX_PERCENTILE(measure_value::double, 0.5), APPROX_PERCENTILE(measure_value::double, 0.95) FROM telemetry WHERE measure_name = 'frame_latency_ms' AND time > ago(15m)`\n- **MQTT disconnects (sum):** `SELECT SUM(measure_value::bigint) FROM telemetry WHERE measure_name = 'mqtt_disconnects' AND time > ago(1h)`"
-              }
-            },
-            {
-              "type": "metric",
-              "x": 0, "y": 6, "width": 12, "height": 6,
-              "properties": {
-                "title": "IoT Core — connections & messages",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/IoT", "Connect.Success", { "stat": "Sum", "label": "Connect.Success" } ],
-                  [ ".", "Disconnect.Success", { "stat": "Sum", "label": "Disconnect.Success" } ],
-                  [ ".", "PublishIn.Success", { "stat": "Sum", "label": "PublishIn.Success" } ]
-                ],
-                "period": 300
-              }
-            },
-            {
-              "type": "metric",
-              "x": 12, "y": 6, "width": 12, "height": 6,
-              "properties": {
-                "title": "IoT Rules — counting / telemetry / wifi_ble",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/IoT", "RuleMessageThrottled", "RuleName", "people_counter_counting", { "stat": "Sum" } ],
-                  [ "AWS/IoT", "TopicMatch", "RuleName", "people_counter_counting", { "stat": "Sum" } ],
-                  [ "AWS/IoT", "TopicMatch", "RuleName", "people_counter_telemetry", { "stat": "Sum" } ],
-                  [ "AWS/IoT", "TopicMatch", "RuleName", "people_counter_wifi_ble", { "stat": "Sum" } ],
-                  [ "AWS/IoT", "RuleExecutionFailure", "RuleName", "people_counter_counting", { "stat": "Sum" } ]
-                ],
-                "period": 300
-              }
-            },
-            {
-              "type": "text",
-              "x": 0, "y": 12, "width": 24, "height": 1,
-              "properties": { "markdown": "## Pipeline performance" }
-            },
-            {
-              "type": "metric",
-              "x": 0, "y": 13, "width": 12, "height": 6,
-              "properties": {
-                "title": "Dedup Lambda — invocations / errors / throttles",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/Lambda", "Invocations", "FunctionName", "${DedupLambda}", { "stat": "Sum" } ],
-                  [ ".", "Errors", ".", ".", { "stat": "Sum" } ],
-                  [ ".", "Throttles", ".", ".", { "stat": "Sum" } ]
-                ],
-                "period": 300
-              }
-            },
-            {
-              "type": "metric",
-              "x": 12, "y": 13, "width": 12, "height": 6,
-              "properties": {
-                "title": "Dedup Lambda — duration (avg / p95 / max)",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/Lambda", "Duration", "FunctionName", "${DedupLambda}", { "stat": "Average" } ],
-                  [ "...", { "stat": "p95" } ],
-                  [ "...", { "stat": "Maximum" } ]
-                ],
-                "period": 300,
-                "annotations": {
-                  "horizontal": [
-                    { "value": 20000, "label": "p95 alarm 20s", "color": "#d13212" },
-                    { "value": 30000, "label": "timeout 30s", "color": "#b7472a" }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "text",
-              "x": 0, "y": 19, "width": 24, "height": 1,
-              "properties": { "markdown": "## Counting activity" }
-            },
-            {
-              "type": "metric",
-              "x": 0, "y": 20, "width": 12, "height": 6,
-              "properties": {
-                "title": "Counting rule — records ingested (Timestream WriteRecords)",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/Timestream", "SuccessfulRequestLatency", "DatabaseName", "${TimestreamDatabase}", "TableName", "${TimestreamCountingTable.Name}", "Operation", "WriteRecords", { "stat": "SampleCount", "label": "WriteRecords count" } ]
-                ],
-                "period": 300,
-                "annotations": {
-                  "horizontal": [
-                    { "value": 10, "label": "LowIngestionRate threshold (per hr)", "color": "#d13212" }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "text",
-              "x": 12, "y": 20, "width": 12, "height": 6,
-              "properties": {
-                "markdown": "### Counts per minute by store\n\nPer-store counts are dimensions in Timestream, not CloudWatch. Pin the following query into Timestream:\n\n```\nSELECT BIN(time, 1m) AS minute, store_id, direction, COUNT(*) AS events\nFROM \"people-counter-${Environment}\".counting\nWHERE time > ago(1h)\nGROUP BY BIN(time, 1m), store_id, direction\nORDER BY minute DESC\n```\n\nUse the ingress/egress dimension to split bars."
-              }
-            },
-            {
-              "type": "text",
-              "x": 0, "y": 26, "width": 24, "height": 1,
-              "properties": { "markdown": "## Infra health" }
-            },
-            {
-              "type": "metric",
-              "x": 0, "y": 27, "width": 8, "height": 6,
-              "properties": {
-                "title": "Timestream — WriteRecords errors",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/Timestream", "UserErrors", "DatabaseName", "${TimestreamDatabase}", "Operation", "WriteRecords", { "stat": "Sum" } ],
-                  [ ".", "SystemErrors", ".", ".", ".", ".", { "stat": "Sum" } ]
-                ],
-                "period": 300
-              }
-            },
-            {
-              "type": "metric",
-              "x": 8, "y": 27, "width": 8, "height": 6,
-              "properties": {
-                "title": "DynamoDB dedup — consumed capacity",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${DedupTable}", { "stat": "Sum" } ],
-                  [ ".", "ConsumedWriteCapacityUnits", ".", ".", { "stat": "Sum" } ],
-                  [ ".", "ReadThrottleEvents", ".", ".", { "stat": "Sum" } ],
-                  [ ".", "WriteThrottleEvents", ".", ".", { "stat": "Sum" } ]
-                ],
-                "period": 300
-              }
-            },
-            {
-              "type": "metric",
-              "x": 16, "y": 27, "width": 8, "height": 6,
-              "properties": {
-                "title": "IoT Core — active connections (proxy)",
-                "region": "${AWS::Region}",
-                "view": "timeSeries",
-                "stacked": false,
-                "metrics": [
-                  [ "AWS/IoT", "Connect.Success", { "stat": "Sum", "label": "Connect.Success" } ],
-                  [ ".", "Disconnect.Success", { "stat": "Sum", "label": "Disconnect.Success" } ]
-                ],
-                "period": 300
-              }
-            }
-          ]
-        }
-
-  # =========================================================================
-  # IAM — IoT Core → Timestream
-  # =========================================================================
-
-  IoTTimestreamRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "people-counter-iot-timestream-${Environment}"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: iot.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: TimestreamWrite
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - timestream:WriteRecords
-                Resource:
-                  - !GetAtt TimestreamCountingTable.Arn
-                  - !GetAtt TimestreamTelemetryTable.Arn
-              - Effect: Allow
-                Action:
-                  - timestream:DescribeEndpoints
-                Resource: "*"
-
-# =========================================================================
-# Outputs
-# =========================================================================
 
 Outputs:
-  IoTEndpoint:
-    Description: IoT Core data endpoint (use with provision.py --endpoint)
-    Value: !Sub "${AWS::AccountId}.iot.${AWS::Region}.amazonaws.com"
+  IoTEndpointHint:
+    Description: >
+      El endpoint MQTT no es output del stack (lo expone AWS por cuenta).
+      Obtener con: aws iot describe-endpoint --endpoint-type iot:Data-ATS
+      Cargar en config.yaml -> mqtt.endpoint de cada device.
+    Value: "aws iot describe-endpoint --endpoint-type iot:Data-ATS --query endpointAddress --output text"
 
-  TimestreamDatabase:
-    Description: Timestream database name
-    Value: !Ref TimestreamDatabase
+  DataInstancePublicIp:
+    Description: IP pública (Elastic IP) de la EC2 con Postgres + Grafana.
+    Value: !Ref DataInstanceEIP
 
-  DedupTableName:
-    Description: DynamoDB dedup table name
-    Value: !Ref DedupTable
+  GrafanaURL:
+    Description: URL de Grafana. Login inicial admin/admin — cambiar al primer acceso.
+    Value: !Sub "http://${DataInstanceEIP}:3000"
 
-  DedupLambdaArn:
-    Description: Dedup Lambda ARN
-    Value: !GetAtt DedupLambda.Arn
+  PostgresEndpoint:
+    Description: Endpoint para conectar DBeaver / psql.
+    Value: !Sub "${DataInstanceEIP}:5432 (db=people_counter, user=people_counter)"
 
-  OperationsDashboardURL:
-    Description: URL for the operations CloudWatch dashboard
-    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=people-counter-${Environment}-overview"
+  BackupBucketName:
+    Description: S3 bucket donde van los pg_dump diarios.
+    Value: !Ref BackupBucket
+
+  SshCommand:
+    Description: Comando SSH para entrar al box.
+    Value: !Sub "ssh -i ~/.ssh/${KeyPairName}.pem ubuntu@${DataInstanceEIP}"

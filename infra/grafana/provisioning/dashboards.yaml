@@ -1,0 +1,16 @@
+# Provisioning config para que Grafana cargue los dashboards al startup.
+# Copiar a /etc/grafana/provisioning/dashboards/people-counter.yaml en la EC2,
+# y los JSONs a /var/lib/grafana/dashboards/.
+apiVersion: 1
+
+providers:
+  - name: people-counter
+    orgId: 1
+    folder: People Counter
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
