@@ -36,6 +36,37 @@ _LINE_COLOR_BY_LABEL = {
 }
 _LINE_COLOR_FALLBACK = (255, 255, 255)
 
+# Hysteresis sobre el flip CONFIRMED -> PENDING en el display:
+# antes de mostrar al track como naranja necesitamos verlo en
+# PENDING por al menos este número de misses consecutivos. Sin
+# hysteresis, un solo frame de miss del detector hace que el
+# color cambie y vuelva instantáneamente al frame siguiente,
+# dando la sensación al operador de que el tracking se está
+# rompiendo cuando en realidad es ruido normal del detector.
+# 5 frames @ 12 fps = ~400ms de pérdida sostenida antes del flip,
+# tiempo suficiente para que oclusiones cortas no se vean como
+# fallas visuales.
+_PENDING_DISPLAY_HYSTERESIS_FRAMES = 5
+
+# Ventana de la mediana móvil de head_height_mm que se muestra en el
+# label. La altura derivada de SGBM tiene jitter natural de ~1-2cm
+# frame-a-frame por ruido del matching estéreo; mostrar el último
+# sample crudo amplifica ese ruido visualmente. La mediana sobre los
+# últimos N samples lo achata a <0.5cm de fluctuación. 10 samples ~=
+# 0.8s a 12 fps, suficiente para responder a cambios reales de altura
+# (persona sentándose, agachándose) sin transmitir el ruido per-frame.
+_HEIGHT_DISPLAY_MEDIAN_WINDOW = 10
+
+# Ventana de la mediana de width/height del bbox que se muestra. El
+# detector emite tamaños ligeramente distintos cada frame (ruido del
+# modelo + cabezas parcialmente visibles que cambian su área); sin
+# smoothing el rectángulo se ve "respirando" incluso con el sujeto
+# quieto. Mediana componente-a-componente sobre los últimos N samples
+# da un width/height estable. La POSICIÓN del centro se mantiene en el
+# sample más reciente para que el bbox siga snappy al sujeto cuando
+# camina (sin lag perceptible).
+_BBOX_DISPLAY_MEDIAN_WINDOW = 10
+
 
 def annotate_left(
     frame: np.ndarray,
@@ -73,39 +104,141 @@ def annotate_left(
     # Diferir el import así un import circular en init parcial no
     # vuela el módulo viewer.
     from src.tracking.tracker import CONFIRMED, PENDING, CANDIDATE
-    state_colour = {
+    base_state_colour = {
         CONFIRMED: _COLOR_CONFIRMED,
         PENDING: _COLOR_PENDING,
-        CANDIDATE: _COLOR_CANDIDATE,
+        # CANDIDATE: deliberadamente fuera del mapping — los tracks
+        # candidate son tentativos (1 sola detección, sin confirmar)
+        # y aparecen/desaparecen rápido cuando el detector flickerea
+        # sobre clutter. Mostrarlos como "ghosts" grises ruido visual
+        # al operador. El operador solo ve tracks ya comprometidos
+        # (CONFIRMED o re-id en PENDING desde CONFIRMED).
     }
     # Fuentes más grandes así el operador puede leer el overlay
     # mientras camina bajo las cámaras durante un check de piloto (el
     # live viewer está pensado para debug on-site, no para archivar).
     for tid, track in tracks.items():
-        colour = state_colour.get(getattr(track, "state", None))
-        if colour is None:
+        state = getattr(track, "state", None)
+        base_colour = base_state_colour.get(state)
+        if base_colour is None:
             continue
         positions = getattr(track, "positions", None)
         if not positions:
             continue
-        cx, cy = int(positions[-1][0]), int(positions[-1][1])
-        cv2.circle(out, (cx, cy), 10, colour, -1)
-        cv2.putText(out, f"#{tid}", (cx + 14, cy - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, colour, 2,
-                    cv2.LINE_AA)
-        # Label de altura de la metadata de detección más reciente del track.
+
+        # Hysteresis sobre el flip CONFIRMED -> PENDING: si el track
+        # está recién entrando a PENDING (poco disappeared), seguimos
+        # mostrando verde para que el operador no vea flickeo
+        # naranja-verde en cada miss aislado del detector. Solo
+        # después de sustained PENDING (>= threshold) flipea a
+        # naranja.
+        disappeared = int(getattr(track, "disappeared", 0) or 0)
+        if state == PENDING and disappeared < _PENDING_DISPLAY_HYSTERESIS_FRAMES:
+            display_colour = _COLOR_CONFIRMED
+        else:
+            display_colour = base_colour
+
+        # Si el track tiene un bbox cacheado en la historia, lo
+        # dibujamos también. Esto persiste el rectángulo visualmente
+        # durante PENDING (el detector pudo no haber emitido bbox
+        # este frame, pero el último bbox conocido sigue siendo
+        # razonable como visual hint). El rectángulo gris fino de
+        # detecciones raw arriba se sigue dibujando cuando hay
+        # detección este frame; el del track persiste a través de
+        # gaps cortos del detector.
+        #
+        # Smoothing: width/height del bbox como mediana de los últimos
+        # N samples (filtra el "respira" del detector), pero el centro
+        # del bbox se ancla en el sample más reciente para que la caja
+        # siga al sujeto sin lag perceptible cuando camina. Median sobre
+        # width/height da estabilidad de tamaño; latest sobre el centro
+        # da responsiveness a movimiento.
         meta = getattr(track, "meta", None)
         history = meta.get("detection_history") if isinstance(meta, dict) else None
+        bbox = None
         if history:
-            last = history[-1]
-            head_mm = last.get("head_height_mm")
-            cls = last.get("height_class") or "unknown"
-            if isinstance(head_mm, (int, float)) and head_mm > 0:
+            recent = history[-_BBOX_DISPLAY_MEDIAN_WINDOW:]
+            bbox_samples = [
+                rec.get("bbox") for rec in recent
+                if isinstance(rec.get("bbox"), (list, tuple))
+                and len(rec["bbox"]) == 4
+            ]
+            if bbox_samples:
+                widths = sorted(
+                    float(b[2]) - float(b[0]) for b in bbox_samples
+                )
+                heights = sorted(
+                    float(b[3]) - float(b[1]) for b in bbox_samples
+                )
+                n = len(bbox_samples)
+                median_w = widths[n // 2]
+                median_h = heights[n // 2]
+                latest = bbox_samples[-1]
+                cx_bbox = (float(latest[0]) + float(latest[2])) / 2.0
+                cy_bbox = (float(latest[1]) + float(latest[3])) / 2.0
+                bbox = (
+                    cx_bbox - median_w / 2.0,
+                    cy_bbox - median_h / 2.0,
+                    cx_bbox + median_w / 2.0,
+                    cy_bbox + median_h / 2.0,
+                )
+        # Determinar la posición de display del círculo (#NN label
+        # + height label). Si hay un bbox cacheado, anclamos el
+        # marker al centro del bbox displayed — durante PENDING esto
+        # mantiene círculo + bbox visualmente juntos en la última
+        # posición observada en vez de "dispararse" siguiendo la
+        # extrapolación del Kalman (que es para el matching interno,
+        # no para mostrar al operador). Si no hay bbox aún (track
+        # nuevo sin metadata), cae al positions[-1].
+        if bbox is not None:
+            x1, y1, x2, y2 = (int(v) for v in bbox)
+            cv2.rectangle(out, (x1, y1), (x2, y2), display_colour, 2)
+            cx_disp = (x1 + x2) // 2
+            cy_disp = (y1 + y2) // 2
+        else:
+            cx_disp = int(positions[-1][0])
+            cy_disp = int(positions[-1][1])
+
+        cv2.circle(out, (cx_disp, cy_disp), 10, display_colour, -1)
+        cv2.putText(out, f"#{tid}", (cx_disp + 14, cy_disp - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, display_colour, 2,
+                    cv2.LINE_AA)
+        cx, cy = cx_disp, cy_disp  # alias para el label de altura abajo
+        # Label de altura — mediana sobre los últimos N samples para
+        # suavizar el jitter de ~1-2cm del SGBM frame-a-frame. Si la
+        # historia es corta (<2 samples), cae al último valor crudo
+        # — sin suficiente ventana la mediana no aporta nada.
+        if history:
+            recent = history[-_HEIGHT_DISPLAY_MEDIAN_WINDOW:]
+            head_samples = [
+                float(rec.get("head_height_mm"))
+                for rec in recent
+                if isinstance(rec.get("head_height_mm"), (int, float))
+                and rec.get("head_height_mm") > 0
+            ]
+            cls_samples = [
+                rec.get("height_class")
+                for rec in recent
+                if rec.get("height_class")
+            ]
+            if head_samples:
+                head_samples.sort()
+                head_mm = head_samples[len(head_samples) // 2]
+            else:
+                head_mm = None
+            # Para height_class: voto mayoritario sobre la misma ventana.
+            # Estabiliza el label adult/child/unknown contra flips espurios
+            # cuando la altura mediana ronda el threshold 1.55m.
+            if cls_samples:
+                cls = max(set(cls_samples), key=cls_samples.count)
+            else:
+                cls = "unknown"
+            if head_mm is not None:
                 label = f"{head_mm/1000:.2f}m {cls}"
             else:
                 label = cls
             cv2.putText(out, label, (cx + 14, cy + 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.85, colour, 2,
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.85, display_colour, 2,
                         cv2.LINE_AA)
 
     _draw_counter_overlay(out, counter, fps)
