@@ -1,9 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  People Counter — Cloud infrastructure (PoC, 1 device).
+  People Counter - Cloud infrastructure (PoC, 1 device).
   IoT Core (3 rules) -> Lambda persist_event -> Postgres en EC2 + Grafana.
-  No usa Timestream (no incluido en AWS Free Plan).
-  No usa Lambda dedup L3 (innecesaria con 1 device por sucursal).
 
 Parameters:
   Environment:
@@ -94,6 +92,9 @@ Resources:
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/counting"
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/wifi_ble"
               - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/store/*/telemetry"
+              # Shadow update: el cliente publica el estado reported acá
+              # cada vez que reconcilia (on connect) o tras aplicar un delta.
+              - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/$aws/things/${!iot:Connection.Thing.ThingName}/shadow/*"
           - Effect: Allow
             Action: [iot:Subscribe]
             Resource:
@@ -517,9 +518,12 @@ Resources:
               type: postgres
               url: localhost:5432
               user: people_counter
-              database: people_counter
               isDefault: true
               jsonData:
+                # Grafana 11+ movió "database" desde top-level a jsonData.
+                # En versiones viejas era 'database: people_counter' como key
+                # raíz; ahora el datasource queda sin DB y rechaza queries.
+                database: people_counter
                 sslmode: disable
                 postgresVersion: 1600
               secureJsonData:

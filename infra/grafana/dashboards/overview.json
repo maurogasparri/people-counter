@@ -22,7 +22,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT date_trunc('hour', event_time) AS time, SUM(CASE WHEN direction='in' THEN 1 ELSE 0 END) AS \"in\", SUM(CASE WHEN direction='out' THEN 1 ELSE 0 END) AS \"out\" FROM counting_events WHERE $__timeFilter(event_time) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT event_bucket AS time, SUM(CASE WHEN direction='ingress' THEN 1 ELSE 0 END) AS \"in\", SUM(CASE WHEN direction='egress' THEN 1 ELSE 0 END) AS \"out\" FROM counting_events WHERE $__timeFilter(event_time) GROUP BY 1 ORDER BY 1"
         }
       ]
     },
@@ -38,7 +38,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "WITH ins AS (SELECT date_trunc('hour', event_time) AS h, COUNT(*) AS n FROM counting_events WHERE direction='in' AND $__timeFilter(event_time) GROUP BY 1), p AS (SELECT date_trunc('hour', period_start) AS h, SUM(passersby) AS pb FROM wifi_ble_summaries WHERE $__timeFilter(period_start) GROUP BY 1) SELECT COALESCE(ins.h, p.h) AS time, CASE WHEN p.pb > 0 THEN ins.n::float / p.pb ELSE NULL END AS turn_in_rate FROM ins FULL OUTER JOIN p ON ins.h = p.h ORDER BY 1"
+          "rawSql": "WITH ins AS (SELECT event_bucket AS b, COUNT(*) AS n FROM counting_events WHERE direction='ingress' AND $__timeFilter(event_time) GROUP BY 1), p AS (SELECT period_bucket AS b, SUM(passersby) AS pb FROM wifi_ble_summaries WHERE $__timeFilter(period_start) GROUP BY 1) SELECT COALESCE(ins.b, p.b) AS time, CASE WHEN p.pb > 0 THEN ins.n::float / p.pb ELSE NULL END AS turn_in_rate FROM ins FULL OUTER JOIN p ON ins.b = p.b ORDER BY 1"
         }
       ]
     },
@@ -68,7 +68,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT 'Passersby' AS metric, COALESCE(SUM(passersby), 0) AS value FROM wifi_ble_summaries WHERE period_start > NOW() - INTERVAL '24 hours' UNION ALL SELECT 'Shoppers', COALESCE(SUM(shoppers), 0) FROM wifi_ble_summaries WHERE period_start > NOW() - INTERVAL '24 hours' UNION ALL SELECT 'In real', COUNT(*) FROM counting_events WHERE direction='in' AND event_time > NOW() - INTERVAL '24 hours'"
+          "rawSql": "SELECT 'Passersby' AS metric, COALESCE(SUM(passersby), 0) AS value FROM wifi_ble_summaries WHERE period_start > NOW() - INTERVAL '24 hours' UNION ALL SELECT 'Shoppers', COALESCE(SUM(shoppers), 0) FROM wifi_ble_summaries WHERE period_start > NOW() - INTERVAL '24 hours' UNION ALL SELECT 'In real', COUNT(*) FROM counting_events WHERE direction='ingress' AND event_time > NOW() - INTERVAL '24 hours'"
         }
       ]
     },
@@ -81,9 +81,13 @@
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            {"options": {"0": {"text": "OFF"}, "1": {"text": "ON"}}, "type": "value"}
+            {"options": {"0": {"text": "OFF"}, "1": {"text": "ON"}, "2": {"text": "N/A"}}, "type": "value"}
           ],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 1},
+            {"color": "blue", "value": 2}
+          ]},
           "color": {"mode": "thresholds"}
         },
         "overrides": []
@@ -100,17 +104,17 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT 'MQTT' AS metric, CASE WHEN mqtt_connected THEN 1 ELSE 0 END AS value FROM telemetry ORDER BY sample_time DESC LIMIT 1"
+          "rawSql": "SELECT 'MQTT' AS metric, CASE WHEN mqtt_connected IS NULL THEN 2 WHEN mqtt_connected THEN 1 ELSE 0 END AS value FROM telemetry ORDER BY sample_time DESC LIMIT 1"
         },
         {
           "refId": "B",
           "format": "table",
-          "rawSql": "SELECT 'WiFi probe' AS metric, CASE WHEN wifi_probe_ok THEN 1 ELSE 0 END AS value FROM telemetry ORDER BY sample_time DESC LIMIT 1"
+          "rawSql": "SELECT 'WiFi probe' AS metric, CASE WHEN wifi_probe_ok IS NULL THEN 2 WHEN wifi_probe_ok THEN 1 ELSE 0 END AS value FROM telemetry ORDER BY sample_time DESC LIMIT 1"
         },
         {
           "refId": "C",
           "format": "table",
-          "rawSql": "SELECT 'BLE scanner' AS metric, CASE WHEN ble_scanner_ok THEN 1 ELSE 0 END AS value FROM telemetry ORDER BY sample_time DESC LIMIT 1"
+          "rawSql": "SELECT 'BLE scanner' AS metric, CASE WHEN ble_scanner_ok IS NULL THEN 2 WHEN ble_scanner_ok THEN 1 ELSE 0 END AS value FROM telemetry ORDER BY sample_time DESC LIMIT 1"
         }
       ]
     },

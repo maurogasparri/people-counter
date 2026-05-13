@@ -68,7 +68,13 @@ class WiFiProbeCapture:
         channels_5: Optional[list[int]] = None,
     ) -> None:
         self.interface = interface
-        self.mon_interface = f"{interface}mon"
+        # En RPi5 con CYW43455 + nexmon, el chip solo soporta una vif a
+        # la vez — airmon-ng falla al crear ``wlan0mon`` como vif paralelo
+        # con "Operation not supported (-95)". El approach correcto es
+        # convertir la propia ``wlan0`` a monitor mode (mon_interface ==
+        # interface). En arquitecturas con soporte dual-vif (Pi 3/4 con
+        # algunos drivers más viejos), se puede sobreescribir manualmente.
+        self.mon_interface = interface
         self.on_probe = on_probe
         self.hop_interval = hop_interval
         self.channels = (channels_24 or CHANNELS_24GHZ) + (channels_5 or CHANNELS_5GHZ)
@@ -97,70 +103,123 @@ class WiFiProbeCapture:
             and not self._stop_event.is_set()
         )
 
-    def setup_monitor_mode(self) -> None:
-        """Crea la interfaz monitor vía airmon-ng.
+    # Timeout para los subprocess de setup. Si nexmon/brcmfmac crashearon,
+    # airmon-ng e iw se cuelgan esperando respuesta del driver. Sin el
+    # timeout, el pipeline entero queda bloqueado en build_wifi_ble antes
+    # de llegar a mqtt_client.connect(). Con el timeout, levantamos
+    # TimeoutExpired → RuntimeError → build_wifi_ble lo cachea en su
+    # try/except y degrada (pipeline sigue sin WiFi probing).
+    _SUBPROCESS_TIMEOUT_S = 15.0
 
-        Requiere privilegios root y firmware con parches nexmon.
-        Crea wlan0mon a partir de wlan0.
+    def setup_monitor_mode(self) -> None:
+        """Pone la interfaz wlan0 en monitor mode.
+
+        Approach específico para RPi5 + CYW43455 + nexmon: el chip solo
+        soporta una vif simultánea, así que en vez de crear un wlan0mon
+        paralelo con airmon-ng (que tira EOPNOTSUPP -95), convertimos la
+        propia wlan0 a monitor mode con ``iw set type``. El ``airmon-ng
+        check kill`` previo sigue siendo necesario para matar NM/wpa que
+        bloquean el cambio de type con EBUSY -16.
 
         Raises:
-            RuntimeError: Si airmon-ng falla.
+            RuntimeError: Si rfkill/iw falla, no está instalado, o se
+                cuelga (driver/firmware no responde dentro del timeout).
         """
         try:
-            # Mata procesos que interfieren
+            # rfkill soft-block: systemd-rfkill restaura el estado anterior
+            # del WiFi al boot. Si el device booteó con WiFi deshabilitado
+            # (raspi-config nonint do_boot_behaviour B1 sin asociar a una
+            # red), phy0 queda soft-blocked y los comandos iw se cuelgan
+            # esperando respuesta del driver. Best-effort: si rfkill no
+            # está instalado o el comando falla, seguimos.
+            try:
+                subprocess.run(
+                    ["rfkill", "unblock", "wifi"],
+                    capture_output=True,
+                    timeout=self._SUBPROCESS_TIMEOUT_S,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                logger.warning("rfkill unblock falló — continuando")
+
+            # Mata NetworkManager + wpa_supplicant. Sin esto, ``iw set
+            # type monitor`` falla con EBUSY (-16) porque NM tiene la
+            # interface tomada para el flow managed.
             subprocess.run(
                 ["airmon-ng", "check", "kill"],
                 capture_output=True,
+                timeout=self._SUBPROCESS_TIMEOUT_S,
             )
 
-            # Arranca monitor mode — crea wlan0mon
-            result = subprocess.run(
-                ["airmon-ng", "start", self.interface],
-                check=True,
+            # Bajar la interface, cambiar type, subirla. ``iw set type``
+            # requiere la interface DOWN para no chocar con el station
+            # mode actual.
+            for cmd in (
+                ["ip", "link", "set", self.interface, "down"],
+                ["iw", "dev", self.interface, "set", "type", "monitor"],
+                ["ip", "link", "set", self.interface, "up"],
+            ):
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self._SUBPROCESS_TIMEOUT_S,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"Comando falló: {' '.join(cmd)} — "
+                        f"exit={result.returncode} "
+                        f"stderr={result.stderr.strip()!r}"
+                    )
+
+            # Verifica que el type sea monitor
+            verify = subprocess.run(
+                ["iw", "dev", self.interface, "info"],
                 capture_output=True,
                 text=True,
+                timeout=self._SUBPROCESS_TIMEOUT_S,
             )
+            if verify.returncode != 0 or "type monitor" not in verify.stdout:
+                raise RuntimeError(
+                    f"Interface {self.interface} no quedó en monitor mode. "
+                    f"iw info: {verify.stdout!r}"
+                )
             logger.info(
                 "monitor_mode_enabled",
-                extra={
-                    "interface": self.interface,
-                    "mon_interface": self.mon_interface,
-                },
+                extra={"interface": self.interface},
             )
-
-            # Verifica que la interfaz monitor exista
-            verify = subprocess.run(
-                ["iw", "dev", self.mon_interface, "info"],
-                capture_output=True,
-                text=True,
-            )
-            if verify.returncode != 0:
-                raise RuntimeError(
-                    f"Monitor interface {self.mon_interface} not created. "
-                    f"airmon-ng output: {result.stdout}"
-                )
 
         except FileNotFoundError as e:
             raise RuntimeError(
                 f"Required tool not found: {e}. "
-                "Install with: sudo apt install aircrack-ng"
+                "Install with: sudo apt install aircrack-ng iw"
             ) from e
-        except subprocess.CalledProcessError as e:
+        except subprocess.TimeoutExpired as e:
             raise RuntimeError(
-                f"Failed to start monitor mode: {e.stderr}"
+                f"Monitor mode setup timed out after {self._SUBPROCESS_TIMEOUT_S}s "
+                f"(driver/firmware not responding). Last command: {e.cmd}. "
+                "Likely cause: nexmon firmware crashed — reboot to recover."
             ) from e
 
     def teardown_monitor_mode(self) -> None:
         """Detiene monitor mode y restaura la interfaz como managed."""
         try:
-            subprocess.run(
-                ["airmon-ng", "stop", self.mon_interface],
-                capture_output=True,
-            )
-            # Restaura el manejo por NetworkManager
+            # Revertir el flow del setup: down → set type managed → up.
+            for cmd in (
+                ["ip", "link", "set", self.interface, "down"],
+                ["iw", "dev", self.interface, "set", "type", "managed"],
+                ["ip", "link", "set", self.interface, "up"],
+            ):
+                subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=self._SUBPROCESS_TIMEOUT_S,
+                )
+            # Restaura el manejo por NetworkManager (puede no estar
+            # instalado en headless — best-effort).
             subprocess.run(
                 ["nmcli", "dev", "set", self.interface, "managed", "yes"],
                 capture_output=True,
+                timeout=self._SUBPROCESS_TIMEOUT_S,
             )
             logger.info("monitor_mode_stopped")
         except Exception:
@@ -213,11 +272,17 @@ class WiFiProbeCapture:
                     ["iw", "dev", self.mon_interface, "set", "channel", str(channel)],
                     check=True,
                     capture_output=True,
+                    timeout=self._SUBPROCESS_TIMEOUT_S,
                 )
                 self._current_channel = channel
             except subprocess.CalledProcessError:
                 logger.debug(
                     "channel_set_failed", extra={"channel": channel}
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "channel_set_timeout — driver no responde",
+                    extra={"channel": channel},
                 )
             except FileNotFoundError:
                 logger.error(

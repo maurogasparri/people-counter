@@ -246,26 +246,26 @@ detection:
 # silenciosamente — así se modela un gate one-way (una puerta es IN-only,
 # la otra OUT-only, o ambas direcciones en la misma línea).
 #
-# Ejemplos:
+# Ejemplos (coords sobre el frame canonical 1152×648):
 #   * Una puerta, ambas direcciones cuentan (entrada de retail típica):
 #       counter:
-#         roi: { x_min: 100, x_max: 540, y_min: 180, y_max: 300 }
+#         roi: { x_min: 356, x_max: 796, y_min: 264, y_max: 384 }
 #         lines:
-#           - from: [100, 240]
-#             to:   [540, 240]
+#           - from: [356, 324]
+#             to:   [796, 324]
 #             labels:
 #               top_to_bottom: ingress
 #               bottom_to_top: egress
 #
 #   * Dos puertas físicamente separadas (una IN, otra OUT):
 #       counter:
-#         roi: { x_min: 100, x_max: 540, y_min: 100, y_max: 400 }
+#         roi: { x_min: 200, x_max: 952, y_min: 224, y_max: 424 }
 #         lines:
-#           - from: [120, 250]      # mitad izquierda — gate IN
-#             to:   [320, 250]
+#           - from: [220, 324]      # mitad izquierda — gate IN
+#             to:   [560, 324]
 #             labels: { top_to_bottom: ingress }
-#           - from: [340, 250]      # mitad derecha — gate OUT
-#             to:   [540, 250]
+#           - from: [592, 324]      # mitad derecha — gate OUT
+#             to:   [932, 324]
 #             labels: { bottom_to_top: egress }
 #
 # Las líneas tienen que ser axis-aligned (horizontal: mismo y, vertical:
@@ -273,14 +273,17 @@ detection:
 # top_to_bottom / bottom_to_top; las verticales usan left_to_right /
 # right_to_left.
 counter:
+  # ROI centrado en frame 1152×648 (canonical). 440×120 px cubre el ancho
+  # típico de una puerta de retail mounted a 2.5-3m; el operador después
+  # ajusta per-site con scripts/roi_picker.py una vez instalado el equipo.
   roi:
-    x_min: 100
-    x_max: 540
-    y_min: 180
-    y_max: 300
+    x_min: 356
+    x_max: 796
+    y_min: 264
+    y_max: 384
   lines:
-    - from: [100, 240]
-      to:   [540, 240]
+    - from: [356, 324]
+      to:   [796, 324]
       labels:
         top_to_bottom: ingress
         bottom_to_top: egress

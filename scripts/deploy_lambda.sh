@@ -51,11 +51,13 @@ SIZE=$(stat -c%s "${TMPDIR}/lambda.zip" 2>/dev/null || stat -f%z "${TMPDIR}/lamb
 echo "Package size: $((SIZE / 1024)) KB"
 
 echo "Deploying ${FUNCTION_NAME}..."
+# NO usamos --publish para evitar que se acumulen Lambda versions
+# numeradas a cada deploy. Para PoC con 1 device la IoT Rule invoca
+# $LATEST directamente, no hace falta versioning.
 aws lambda update-function-code \
   --function-name "${FUNCTION_NAME}" \
   --zip-file "fileb://${TMPDIR}/lambda.zip" \
-  --publish \
   --output table \
-  --query '{Function:FunctionName,Version:Version,LastModified:LastModified,Size:CodeSize}'
+  --query '{Function:FunctionName,LastModified:LastModified,Size:CodeSize}'
 
 echo "Done."

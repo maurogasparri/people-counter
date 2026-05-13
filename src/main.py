@@ -409,6 +409,10 @@ def _build_telemetry_state(
         state["tracker_pending"] = None
 
     try:
+        state["mqtt_connected"] = mqtt_client.connected
+    except Exception:
+        state["mqtt_connected"] = None
+    try:
         state["mqtt_disconnect_count"] = mqtt_client.disconnect_count
     except Exception:
         state["mqtt_disconnect_count"] = None
@@ -794,7 +798,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # Cualquier falla acá (firmware nexmon ausente, BlueZ caído, sin permisos)
     # la pesca ``build_wifi_ble`` internamente y degrada — el pipeline de visión
     # no se cae por culpa del subsistema de probing.
-    wifi_ble = build_wifi_ble(config, mqtt_client)
+    if getattr(args, "no_wifi_ble", False):
+        logger.info("wifi_ble override por --no-wifi-ble — saltando subsistema")
+        wifi_ble = None
+    else:
+        wifi_ble = build_wifi_ble(config, mqtt_client)
     wifi_ble_publisher: WifiBlePublisher | None = None
     wifi_capture: WiFiProbeCapture | None = None
     ble_scanner: BLEScanner | None = None
@@ -875,7 +883,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     # --- Timer de telemetría ---
     telem_interval = telem_cfg.get("interval_seconds", 300)
-    last_telem = time.time()
+    # Inicializamos last_telem en el pasado (now - interval) para que la
+    # primera iteración del loop dispare un publish inmediato. Sirve como
+    # signal "el servicio arrancó" + permite validar el path device→cloud
+    # desde el primer minuto sin esperar el interval completo (que puede
+    # ser 1h en producción).
+    last_telem = time.time() - telem_interval
 
     # --- Shutdown gracioso ---
     running = True
@@ -1031,10 +1044,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # --- Chequear operating hours cada 60 segundos ---
             # --ignore-schedule bypasea el gate enteramente — útil para runs
             # de PoC y sesiones de debug donde el config de operating_hours
-            # de otra forma pausaría el pipeline.
+            # de otra forma pausaría el publishing de counting events.
             ignore_schedule = getattr(args, "ignore_schedule", False)
             now = time.time()
             if now - last_hours_check >= 60.0:
+                prev_within = within_hours
                 if ignore_schedule:
                     within_hours = True
                 elif schedule_invalid:
@@ -1046,45 +1060,79 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     within_hours = is_within_operating_hours(
                         config, day_name, dt.hour, dt.minute
                     )
+                # Log de transiciones — visibles en INFO así un operador ve
+                # claramente cuándo el counting se pausa/resume. Solo aplica
+                # cuando el gate de schedule está activo (no si --ignore-schedule
+                # o si el schedule es inválido — esos casos tienen otros logs
+                # dedicados al startup).
+                if (
+                    not ignore_schedule
+                    and not schedule_invalid
+                    and prev_within != within_hours
+                ):
+                    dt = datetime.now()
                     if not within_hours:
-                        logger.debug(
-                            "Fuera de operating hours (%s %02d:%02d) — paused",
-                            day_name,
+                        logger.info(
+                            "operating_hours: FUERA de horario (%s %02d:%02d) — "
+                            "pipeline sigue corriendo (capture+detect+viewer), "
+                            "publishing de counting events PAUSADO hasta el "
+                            "próximo bloque del schedule",
+                            dt.strftime("%A").lower(),
+                            dt.hour,
+                            dt.minute,
+                        )
+                    else:
+                        logger.info(
+                            "operating_hours: DENTRO de horario (%s %02d:%02d) — "
+                            "resumiendo publishing de counting events",
+                            dt.strftime("%A").lower(),
                             dt.hour,
                             dt.minute,
                         )
                 last_hours_check = now
 
-            # --- Chequear si counting está enabled (toggle del cloud) ---
-            if not is_counting_enabled(config) or not within_hours:
+            # --- Gate hard: schedule inválido + fail_closed ---
+            # Solo este caso pausa el pipeline entero. Razón: sin un schedule
+            # válido no podemos distinguir "fuera de horas" de "config rota",
+            # así que en fail_closed paramos todo y forzamos a ops a empujar un
+            # config válido por shadow antes de seguir.
+            if schedule_invalid and invalid_mode == "fail_closed":
                 # Mantener telemetría + watchdog vivos así ops puede re-pushear config.
-                if schedule_invalid and invalid_mode == "fail_closed":
-                    telem_now = time.time()
-                    if telem_now - last_telem >= telem_interval:
-                        telem = collect_telemetry(
-                            _build_telemetry_state(
-                                frame_latencies_ms,
-                                detection_counts,
-                                detection_window_start_ts,
-                                config.get("vision", {}).get("fps"),
-                                tracker,
-                                mqtt_client,
-                                buffer,
-                                wifi_capture=wifi_capture,
-                                ble_scanner=ble_scanner,
-                            )
+                telem_now = time.time()
+                if telem_now - last_telem >= telem_interval:
+                    telem = collect_telemetry(
+                        _build_telemetry_state(
+                            frame_latencies_ms,
+                            detection_counts,
+                            detection_window_start_ts,
+                            config.get("vision", {}).get("fps"),
+                            tracker,
+                            mqtt_client,
+                            buffer,
+                            wifi_capture=wifi_capture,
+                            ble_scanner=ble_scanner,
                         )
-                        telem["error"] = "invalid_schedule"
-                        telem["schedule_error_detail"] = config.get(
-                            "_schedule_error", ""
-                        )
-                        mqtt_client.publish_event("telemetry", telem)
-                        last_telem = telem_now
-                    if telem_now - last_watchdog >= 60.0:
-                        sd_notify("WATCHDOG=1")
-                        last_watchdog = telem_now
+                    )
+                    telem["error"] = "invalid_schedule"
+                    telem["schedule_error_detail"] = config.get(
+                        "_schedule_error", ""
+                    )
+                    mqtt_client.publish_event("telemetry", telem)
+                    last_telem = telem_now
+                if telem_now - last_watchdog >= 60.0:
+                    sd_notify("WATCHDOG=1")
+                    last_watchdog = telem_now
                 time.sleep(1.0)
                 continue
+
+            # --- Gate soft: counting events ---
+            # Cuando counting_enabled=false (toggle del shadow) o estamos fuera
+            # de operating_hours, el pipeline sigue procesando frames normalmente
+            # (capture+detect+track+viewer) — solo se suprime la generación de
+            # eventos de conteo y su publish. Razón: queremos seguir viendo el
+            # live stream y la telemetría para diagnóstico, y queremos que el
+            # tracker mantenga state coherente cuando reabra el horario.
+            counting_active = is_counting_enabled(config) and within_hours
 
             t_iter_start = time.perf_counter()
             t_capture_start = t_iter_start
@@ -1482,7 +1530,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 best_frame_mgr.gc(set(tracks.keys()))
 
             # --- Conteo ---
-            events = counter.check_all(tracks)
+            # Solo evaluamos line crossings cuando counting_active. Fuera de
+            # horario o con counting_enabled=false, skipeamos check_all así el
+            # counter NO incrementa total_in/total_out — preserva los counters
+            # del bloque de operating_hours actual sin contaminación de movimientos
+            # pre-apertura / post-cierre. El tracker sigue corriendo arriba (los
+            # tracks se actualizan en el viewer), pero no se generan eventos.
+            if counting_active:
+                events = counter.check_all(tracks)
+            else:
+                events = []
             t_track_end = time.perf_counter()
 
             # --- Log de profiling ---
@@ -1558,6 +1615,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 if best_frame_path is not None:
                     payload["best_frame_path"] = best_frame_path
                 mqtt_client.publish_event("counting", payload)
+                logger.info(
+                    "counting_event_published direction=%s track_id=%d "
+                    "total_in=%d total_out=%d height=%s conf=%.2f",
+                    event.direction,
+                    event.track_id,
+                    counter.total_in,
+                    counter.total_out,
+                    event.height_class,
+                    float(event.confidence) if event.confidence is not None else 0.0,
+                )
 
             # --- Tracking de FPS ---
             frame_count += 1
@@ -1644,6 +1711,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 telem["total_in"] = counter.total_in
                 telem["total_out"] = counter.total_out
                 mqtt_client.publish_event("telemetry", telem)
+                logger.info(
+                    "telemetry_published mqtt=%s wifi=%s ble=%s fps=%.1f "
+                    "in=%d out=%d cpu=%s hailo=%s backlog=%s",
+                    telem.get("mqtt_connected"),
+                    telem.get("wifi_probe_ok"),
+                    telem.get("ble_scanner_ok"),
+                    float(telem.get("fps") or 0.0),
+                    telem.get("total_in") or 0,
+                    telem.get("total_out") or 0,
+                    telem.get("cpu_temp_c"),
+                    telem.get("hailo_temp_c"),
+                    telem.get("buffer_backlog_messages"),
+                )
                 last_telem = now
                 telem_frame_count = 0
                 telem_fps_start = now
@@ -1732,6 +1812,14 @@ def main() -> None:
         "AWS). Todos los publishes se loggean a stdout en vez de transmitirse. "
         "El pipeline corre end-to-end así los eventos detect / track / count "
         "son visibles en los logs.",
+    )
+    parser.add_argument(
+        "--no-wifi-ble",
+        action="store_true",
+        help="Skipea el subsistema WiFi/BLE (captura + dedup + publisher) sin "
+        "tocar el config. Útil para bring-up en hardware donde nexmon todavía "
+        "no está cargado o el firmware brcmfmac está en mal estado y "
+        "airmon-ng se cuelga. Override de wifi_ble.enabled del config.",
     )
     parser.add_argument(
         "--ignore-schedule",

@@ -117,6 +117,13 @@ fuente visual de estado.
 ```bash
 sudo raspi-config nonint do_boot_behaviour B1
 
+# Preferir IPv4 en getaddrinfo. Si la red del local no rutea IPv6
+# (caso típico de ISPs residenciales/comerciales sin IPv6 nativo),
+# getaddrinfo devuelve la AAAA primero y paho-mqtt intenta IPv6 →
+# el SYN no llega a ningún lado y el cliente cuelga ~60-130s antes
+# de fallback a IPv4. Descomentar esta línea invierte la preferencia.
+sudo sed -i 's|^#precedence ::ffff:0:0/96  100|precedence ::ffff:0:0/96  100|' /etc/gai.conf
+
 sudo apt install -y watchdog
 sudo sed -i 's/^#watchdog-device/watchdog-device/' /etc/watchdog.conf
 sudo sed -i 's/^#max-load-1/max-load-1/' /etc/watchdog.conf
@@ -504,3 +511,18 @@ sale del entorno controlado.
   `sudo apt install python3-picamera2`.
 - **"Unknown error 524" en airmon-ng**: es esperado con nexmon en RPi5,
   no afecta la captura.
+- **`airmon-ng start wlan0` se cuelga indefinidamente**: phy0 está
+  soft-blocked por rfkill. Diagnóstico:
+  `sudo rfkill list wifi` → `Soft blocked: yes`. Fix:
+  `sudo rfkill unblock wifi`. El pipeline lo hace automáticamente en
+  `setup_monitor_mode()` desde el commit que agregó rfkill unblock,
+  pero si rebooteás con WiFi disabled en raspi-config, conviene tenerlo
+  como step explícito antes del primer arranque del wifi-monitor service.
+- **MQTT cuelga al arrancar el pipeline**: si los logs llegan hasta
+  `MQTT client initialized` y se quedan ahí sin loguear `MQTT connecting
+  to ...`, el cliente está intentando IPv6 sin route. Verificar con
+  `ping -6 -c 2 <endpoint>` (típicamente "Network is unreachable") y
+  con `getent ahosts <endpoint> | head -1` (devuelve la AAAA primero
+  en vez de la A). Aplicar la fix de gai.conf del paso 4:
+  `sudo sed -i 's|^#precedence ::ffff:0:0/96  100|precedence ::ffff:0:0/96  100|' /etc/gai.conf`
+  y reiniciar el pipeline.

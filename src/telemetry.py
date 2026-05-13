@@ -12,10 +12,8 @@ schema downstream se mantiene estable — los consumers pueden distinguir entre
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import statistics
-import subprocess
 import time
 from typing import Any
 
@@ -72,40 +70,32 @@ def _read_mem_available_mb() -> int | None:
     return None
 
 
-# La temperatura del die de Hailo aparece en el output de `hailortcli fw-control identify`
-# en una línea similar a: "Die temperature: 45.3 C". El label varía entre versiones
-# de HailoRT ("Die Temperature", "Chip Temperature") así que matcheamos con flexibilidad.
-_HAILO_TEMP_RE = re.compile(
-    r"(?:die|chip)\s+temperature\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
-    re.IGNORECASE,
-)
-
-
 def _read_hailo_temp() -> float | None:
-    """Consulta hailortcli por la temperatura del die. Devuelve None ante cualquier falla."""
-    try:
-        result = subprocess.run(
-            ["hailortcli", "fw-control", "identify"],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-        logger.debug("hailortcli not available: %s", e)
-        return None
-    except Exception:
-        logger.exception("hailortcli invocation failed")
-        return None
+    """Lee la temperatura del chip Hailo via la SDK Python.
 
+    Usa ``hailo_platform.Device().control.get_chip_temperature()`` que
+    devuelve un ``TemperatureInfo`` con ``ts0_temperature`` y
+    ``ts1_temperature`` (los dos sensores del die). Tomamos el max
+    como métrica conservadora — eso es lo que pega throttling primero.
+
+    El CLI ``hailortcli fw-control identify`` NO incluye temperatura en
+    HailoRT 4.23+ (cambió en versiones anteriores), así que no lo
+    usamos como fallback. Devuelve None ante cualquier falla así un
+    sample de telemetría malo no rompe la emisión.
+    """
     try:
-        output = (result.stdout or "") + "\n" + (result.stderr or "")
-        match = _HAILO_TEMP_RE.search(output)
-        if match is None:
-            return None
-        return float(match.group(1))
+        import hailo_platform as hp
+    except ImportError:
+        logger.debug("hailo_platform not available")
+        return None
+    try:
+        device = hp.Device()
+        info = device.control.get_chip_temperature()
+        ts0 = float(info.ts0_temperature)
+        ts1 = float(info.ts1_temperature)
+        return max(ts0, ts1)
     except Exception:
-        logger.exception("Failed to parse hailortcli output")
+        logger.exception("Failed to read Hailo chip temperature")
         return None
 
 
@@ -217,6 +207,7 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
     telemetry["tracker_pending_count"] = state.get("tracker_pending")
 
     # --- Health MQTT ---
+    telemetry["mqtt_connected"] = state.get("mqtt_connected")
     telemetry["mqtt_disconnect_count"] = state.get("mqtt_disconnect_count")
     reconnect_ts = state.get("mqtt_reconnect_ts")
     if reconnect_ts is None:

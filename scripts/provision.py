@@ -77,7 +77,7 @@ def cmd_create(args: argparse.Namespace) -> None:
 
     # --- Registrar IoT Thing ---
     if not args.skip_aws:
-        _create_iot_thing(device_id, cert_dir, args.endpoint)
+        _create_iot_thing(device_id, cert_dir, args.endpoint, args.policy_name)
     else:
         logger.warning("Skipping AWS IoT registration (--skip-aws)")
         # Crear archivos de cert placeholder para testing
@@ -101,11 +101,13 @@ def cmd_create(args: argparse.Namespace) -> None:
     logger.info("Device %s provisioned at %s", device_id, device_dir)
 
 
-def _create_iot_thing(device_id: str, cert_dir: Path, endpoint: str) -> None:
+def _create_iot_thing(
+    device_id: str, cert_dir: Path, endpoint: str, policy_name: str
+) -> None:
     """Registra el IoT thing y genera certificados via AWS CLI."""
     try:
         _create_thing(device_id)
-        _issue_cert(device_id, cert_dir)
+        _issue_cert(device_id, cert_dir, policy_name)
     except FileNotFoundError:
         logger.error("AWS CLI not found. Install with: pip install awscli")
         sys.exit(1)
@@ -131,11 +133,17 @@ def _create_thing(device_id: str) -> None:
             raise
 
 
-def _issue_cert(device_id: str, cert_dir: Path) -> None:
+def _issue_cert(device_id: str, cert_dir: Path, policy_name: str) -> None:
     """Genera keys + cert, attachea policy, attachea al thing. El thing tiene que existir.
 
     Escribe device.pem.crt / device.pem.key / device.pem.pub /
     AmazonRootCA1.pem / cert_arn.txt en cert_dir.
+
+    Args:
+        policy_name: Nombre de la IoT policy a attachear al cert. Tiene que
+            matchear con la creada por CloudFormation (por default
+            ``people-counter-device-policy-${Environment}`` — pasar el sufijo
+            del environment correspondiente).
     """
     cert_dir.mkdir(parents=True, exist_ok=True)
 
@@ -157,7 +165,7 @@ def _issue_cert(device_id: str, cert_dir: Path) -> None:
     subprocess.run(
         [
             "aws", "iot", "attach-policy",
-            "--policy-name", "people-counter-device-policy",
+            "--policy-name", policy_name,
             "--target", cert_arn,
         ],
         check=True, capture_output=True,
@@ -396,30 +404,29 @@ def cmd_list(args: argparse.Namespace) -> None:
 
 
 def _ssh(host: str, command: str) -> None:
-    """Corre un comando en un host remoto via SSH."""
+    """Corre un comando en un host remoto via SSH.
+
+    NO capturamos stdout/stderr/stdin para que el prompt interactivo de
+    password (cuando el host no tiene key auth setup) llegue al usuario.
+    El trade-off: si el comando falla, no podemos loguear el stderr
+    formateado — pero el output llega directo al terminal igual.
+    """
     try:
-        subprocess.run(
-            ["ssh", host, command],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        subprocess.run(["ssh", host, command], check=True)
     except subprocess.CalledProcessError as e:
-        logger.error("SSH error on '%s': %s", command, e.stderr.strip())
+        logger.error("SSH command failed (rc=%d): %s", e.returncode, command)
         raise
 
 
 def _scp(local: str, remote: str) -> None:
-    """Copia un archivo a un host remoto via SCP."""
+    """Copia un archivo a un host remoto via SCP.
+
+    Sin capture_output por la misma razón que :func:`_ssh`.
+    """
     try:
-        subprocess.run(
-            ["scp", local, remote],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        subprocess.run(["scp", local, remote], check=True)
     except subprocess.CalledProcessError as e:
-        logger.error("SCP error: %s", e.stderr.strip())
+        logger.error("SCP failed (rc=%d): %s -> %s", e.returncode, local, remote)
         raise
 
 
@@ -436,6 +443,15 @@ def main() -> None:
         "--endpoint",
         default="xxxxx.iot.us-east-1.amazonaws.com",
         help="Endpoint de AWS IoT Core",
+    )
+    p_create.add_argument(
+        "--policy-name",
+        default="people-counter-device-policy-dev",
+        help=(
+            "Nombre de la IoT policy a attachear al cert. CloudFormation "
+            "crea 'people-counter-device-policy-<Environment>'; default "
+            "asume Environment=dev."
+        ),
     )
     p_create.add_argument("--skip-aws", action="store_true", help="Saltea el registro de AWS IoT")
     p_create.add_argument("--force", action="store_true", help="Sobreescribe el existente")

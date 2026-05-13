@@ -75,12 +75,14 @@ try {
     Write-Host "Package size: $sizeKB KB"
 
     Write-Host "Deploying $functionName..."
+    # NO usamos --publish para evitar que se acumulen Lambda versions
+    # numeradas a cada deploy. Para PoC con 1 device la IoT Rule invoca
+    # $LATEST directamente, no hace falta versioning.
     aws lambda update-function-code `
         --function-name $functionName `
         --zip-file "fileb://$zipPath" `
-        --publish `
         --output table `
-        --query '{Function:FunctionName,Version:Version,LastModified:LastModified,Size:CodeSize}'
+        --query '{Function:FunctionName,LastModified:LastModified,Size:CodeSize}'
     if ($LASTEXITCODE -ne 0) {
         Fail "aws lambda update-function-code failed (exit $LASTEXITCODE)"
     }

@@ -12,9 +12,11 @@ datasources:
     type: postgres
     url: localhost:5432
     user: people_counter
-    database: people_counter
     isDefault: true
     jsonData:
+      # Grafana 11+ movió "database" desde top-level a jsonData. En versiones
+      # viejas era 'database: people_counter' como key raíz.
+      database: people_counter
       sslmode: disable
       postgresVersion: 1600
       timescaledb: false

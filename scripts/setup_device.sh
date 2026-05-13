@@ -42,6 +42,14 @@ info "Step 4: Configuring system..."
 info "  Disabling desktop (headless mode)"
 raspi-config nonint do_boot_behaviour B1
 
+# IPv4 precedence cuando la red no tiene IPv6 routable.
+# Sin esto, getaddrinfo devuelve la AAAA primero y paho-mqtt (y otros
+# clientes) intenta IPv6 → SYN al vacío → cuelgue ~60-130s antes de
+# caer en fallback a IPv4. Descomentar la línea de gai.conf invierte la
+# preferencia: IPv4 primero, IPv6 si está disponible y es preferida.
+info "  Preferring IPv4 in getaddrinfo (gai.conf) — avoids paho hang on IPv6-less networks"
+sed -i 's|^#precedence ::ffff:0:0/96  100|precedence ::ffff:0:0/96  100|' /etc/gai.conf
+
 info "  Installing and enabling watchdog"
 apt install -y watchdog
 sed -i 's/^#watchdog-device/watchdog-device/' /etc/watchdog.conf
@@ -107,6 +115,14 @@ fi
 
 dpkg -i --force-overwrite "/tmp/$NEXMON_FW"
 dpkg -i "/tmp/$NEXMON_DKMS"
+
+# rfkill: si el device booteó con WiFi disabled (default cuando se hace
+# raspi-config nonint do_boot_behaviour B1 sin asociar a una red),
+# phy0 queda soft-blocked y airmon-ng se cuelga al iniciar el pipeline.
+# Desbloqueamos persistentemente — el ExecStartPre del wifi-monitor
+# service también lo hace en runtime para máxima resiliencia.
+apt install -y rfkill
+rfkill unblock wifi
 
 # =========================================================================
 # Step 7: Project dependencies

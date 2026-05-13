@@ -371,7 +371,7 @@ class MQTTClient:
                 except Exception:
                     logger.exception("on_connected hook raised")
         else:
-            logger.error("MQTT connect failed: rc=%d", rc)
+            logger.error("MQTT connect failed: rc=%s", rc)
 
     def _on_disconnect(
         self,
@@ -387,7 +387,7 @@ class MQTTClient:
             return
         with self._conn_lock:
             self._disconnect_count += 1
-        logger.warning("MQTT disconnected: rc=%d (paho will reconnect)", rc)
+        logger.warning("MQTT disconnected: rc=%s (paho will reconnect)", rc)
 
     def _on_publish(
         self,
