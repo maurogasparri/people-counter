@@ -54,6 +54,10 @@ def fake_pg(monkeypatch):
 
 
 def test_counting_event_inserts(fake_pg):
+    """Schema actual del INSERT (8 columnas):
+        0=device_id, 1=store_id, 2=event_time, 3=event_bucket,
+        4=direction, 5=track_id, 6=confidence, 7=height_class.
+    """
     from src.cloud.persist_event import handler
 
     event = {
@@ -77,8 +81,14 @@ def test_counting_event_inserts(fake_pg):
     params = call_args[0][1]
     assert "INSERT INTO counting_events" in sql
     assert params[0] == "store-001-cam-01"
-    assert params[1] == "store-001"  # store_id inferido
-    assert params[3] == "in"  # direction
+    assert params[1] == "store-001"  # store_id inferido del device_id
+    # params[2] = event_time (timestamp serializado).
+    # params[3] = event_bucket — None cuando el cliente no lo manda.
+    assert params[3] is None
+    assert params[4] == "in"  # direction
+    assert params[5] == 42  # track_id
+    assert params[6] == 0.87  # confidence
+    assert params[7] == "adult"  # height_class
 
 
 def test_telemetry_event_inserts(fake_pg):
@@ -104,6 +114,14 @@ def test_telemetry_event_inserts(fake_pg):
 
 
 def test_wifi_ble_event_inserts(fake_pg):
+    """Schema actual del INSERT (7 columnas):
+        0=device_id, 1=store_id, 2=period_start, 3=period_end,
+        4=period_bucket, 5=passersby, 6=shoppers.
+
+    ``period_bucket`` se agregó después del schema original — falla del
+    test legacy era esperar passersby/shoppers en posiciones 4/5 cuando
+    ahora están en 5/6.
+    """
     from src.cloud.persist_event import handler
 
     event = {
@@ -124,8 +142,11 @@ def test_wifi_ble_event_inserts(fake_pg):
     sql = call_args[0][0]
     params = call_args[0][1]
     assert "INSERT INTO wifi_ble_summaries" in sql
-    assert params[4] == 160  # passersby
-    assert params[5] == 27   # shoppers
+    assert params[0] == "store-001-cam-01"
+    assert params[1] == "store-001"
+    # params[4] = period_bucket (default = period_start cuando no viene).
+    assert params[5] == 160  # passersby
+    assert params[6] == 27   # shoppers
 
 
 def test_unknown_type_returns_400(fake_pg):

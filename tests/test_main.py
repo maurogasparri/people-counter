@@ -418,36 +418,44 @@ def test_run_pipeline_no_calibration(mock_build_cap, mock_load_model, mock_mqtt_
 @patch("src.main.load_model")
 @patch("src.main.build_capture")
 def test_run_pipeline_counting_disabled(mock_build_cap, mock_load_model, mock_mqtt_cls):
-    """When counting_enabled=False, pipeline sleeps without processing."""
-    mock_mqtt_cls.return_value = MagicMock()
+    """Con ``counting_enabled=False`` el pipeline sigue procesando frames
+    (capture + detect + track + viewer) — solo se suprime la emisión de
+    counting events vía MQTT. Razón: queremos seguir viendo el live
+    stream + telemetría para diagnóstico, y el tracker mantiene state
+    coherente para cuando se reabre el horario / re-habilite el toggle.
+    Soft gate, no hard pause."""
+    mock_mqtt = MagicMock()
+    mock_mqtt_cls.return_value = mock_mqtt
 
+    # Mock infer con ndarray vacío (shape canónico YOLOv8 sin
+    # detections). Postprocess no encuentra nada arriba del threshold
+    # y devuelve lista vacía sin crashear en la comparación de scores.
     mock_backend = MagicMock()
+    mock_backend.infer.return_value = np.zeros((1, 84, 0), dtype=np.float32)
     mock_load_model.return_value = {"backend": mock_backend, "type": "opencv"}
 
-    # Capture that would work, but shouldn't be called
     dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-    mock_build_cap.return_value = _make_mock_capture([(dummy, dummy)] * 10)
+    mock_build_cap.return_value = _make_mock_capture([(dummy, dummy)] * 3)
 
     tmpdir = tempfile.mkdtemp()
     config = _make_pipeline_config(tmpdir)
     config["cloud_defaults"]["counting_enabled"] = False
     args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
 
-    sleep_count = [0]
+    run_pipeline(config, args)
 
-    def _fake_sleep(seconds):
-        sleep_count[0] += 1
-        if sleep_count[0] >= 2:
-            raise KeyboardInterrupt()
+    # Pipeline procesa los frames — infer se llama (soft gate).
+    assert mock_backend.infer.call_count >= 1
 
-    with patch("src.main.time.sleep", side_effect=_fake_sleep):
-        with patch("src.main.signal.signal"):
-            try:
-                run_pipeline(config, args)
-            except KeyboardInterrupt:
-                pass
-
-    mock_backend.infer.assert_not_called()
+    # NO se publica ningún counting event vía publish_event("counting", ...).
+    counting_publishes = [
+        c for c in mock_mqtt.publish_event.call_args_list
+        if c.args and c.args[0] == "counting"
+    ]
+    assert len(counting_publishes) == 0, (
+        f"Counting events emitidos con counting_enabled=False: "
+        f"{counting_publishes}"
+    )
 
 
 @patch("src.mqtt.client.mqtt.Client")

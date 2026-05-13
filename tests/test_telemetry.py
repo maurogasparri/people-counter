@@ -1,13 +1,39 @@
 """Tests para src/telemetry.py — observability del device + runtime."""
 from __future__ import annotations
 
-import subprocess
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.telemetry import collect_telemetry
+
+
+def _fake_hailo_module(
+    ts0_temp: float, ts1_temp: float, *, raise_on: str | None = None
+):
+    """Construye un MagicMock con shape del módulo ``hailo_platform``
+    para inyectar en ``sys.modules``. ``raise_on``:
+        ``None`` -> happy path, devuelve ts0/ts1 del TemperatureInfo.
+        ``"device"`` -> ``hp.Device()`` raisea RuntimeError.
+        ``"temp"``  -> ``device.control.get_chip_temperature()`` raisea.
+    """
+    mod = MagicMock()
+    if raise_on == "device":
+        mod.Device.side_effect = RuntimeError("device init failed")
+        return mod
+    device = MagicMock()
+    if raise_on == "temp":
+        device.control.get_chip_temperature.side_effect = RuntimeError(
+            "temp read failed"
+        )
+    else:
+        info = MagicMock()
+        info.ts0_temperature = ts0_temp
+        info.ts1_temperature = ts1_temp
+        device.control.get_chip_temperature.return_value = info
+    mod.Device.return_value = device
+    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -154,73 +180,75 @@ def test_reconnect_ts_invalid_yields_none():
 
 
 # ---------------------------------------------------------------------------
-# Hailo probe — mocked subprocess
+# Hailo probe — mocked vía hailo_platform SDK (post-b2e4112)
 # ---------------------------------------------------------------------------
+#
+# El probe usa ``hailo_platform.Device().control.get_chip_temperature()``
+# que devuelve un ``TemperatureInfo`` con ``ts0_temperature`` /
+# ``ts1_temperature`` (los dos sensores del die). Tomamos el max como
+# métrica conservadora (eso es lo que dispara el throttling primero).
+#
+# Inyectamos el módulo fake en ``sys.modules`` así el ``import
+# hailo_platform`` interno del telemetry lo levanta. ``patch.dict`` cierra
+# bien post-test para no contaminar otros suites.
 
 
-def test_hailo_probe_parses_die_temperature():
-    fake_output = (
-        "HailoRT Information\n"
-        "Firmware version: 4.23.0\n"
-        "Die Temperature: 45.3 C\n"
-        "Board serial: 123456\n"
-    )
-    completed = MagicMock()
-    completed.stdout = fake_output
-    completed.stderr = ""
-    completed.returncode = 0
-    with patch("src.telemetry.subprocess.run", return_value=completed):
+def test_hailo_probe_returns_max_of_two_sensors():
+    """ts1 > ts0 → reporta ts1 (el más caliente)."""
+    fake = _fake_hailo_module(45.3, 50.1)
+    with patch.dict("sys.modules", {"hailo_platform": fake}):
         telem = collect_telemetry({})
-    assert telem["hailo_temp_c"] == pytest.approx(45.3)
+    assert telem["hailo_temp_c"] == pytest.approx(50.1)
 
 
-def test_hailo_probe_parses_integer_temperature():
-    completed = MagicMock()
-    completed.stdout = "Chip temperature: 52 C"
-    completed.stderr = ""
-    completed.returncode = 0
-    with patch("src.telemetry.subprocess.run", return_value=completed):
+def test_hailo_probe_max_picks_ts0_when_hotter():
+    """Caso inverso: ts0 > ts1 → reporta ts0. Asegura que la lógica
+    no está hardcoded a un sensor."""
+    fake = _fake_hailo_module(58.7, 42.0)
+    with patch.dict("sys.modules", {"hailo_platform": fake}):
+        telem = collect_telemetry({})
+    assert telem["hailo_temp_c"] == pytest.approx(58.7)
+
+
+def test_hailo_probe_handles_integer_temperatures():
+    """Los sensores pueden reportar ints o floats — el ``float()`` cast
+    interno tiene que normalizar a float."""
+    fake = _fake_hailo_module(52, 48)
+    with patch.dict("sys.modules", {"hailo_platform": fake}):
         telem = collect_telemetry({})
     assert telem["hailo_temp_c"] == pytest.approx(52.0)
+    assert isinstance(telem["hailo_temp_c"], float)
 
 
 def test_hailo_probe_not_installed_yields_none():
-    with patch(
-        "src.telemetry.subprocess.run",
-        side_effect=FileNotFoundError("hailortcli"),
-    ):
+    """``hailo_platform`` no instalado (Windows dev, devices sin Hailo)
+    → import falla → None. Inyectamos ``None`` en ``sys.modules`` que
+    fuerza ImportError en el próximo ``import hailo_platform``."""
+    with patch.dict("sys.modules", {"hailo_platform": None}):
         telem = collect_telemetry({})
     assert telem["hailo_temp_c"] is None
     # Key MUST still be present.
     assert "hailo_temp_c" in telem
 
 
-def test_hailo_probe_timeout_yields_none():
-    with patch(
-        "src.telemetry.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="hailortcli", timeout=5),
-    ):
+def test_hailo_probe_device_construction_fails_yields_none():
+    """``hp.Device()`` raisea (Hailo no detectado, permisos, etc.) →
+    catch interno → None."""
+    fake = _fake_hailo_module(0.0, 0.0, raise_on="device")
+    with patch.dict("sys.modules", {"hailo_platform": fake}):
         telem = collect_telemetry({})
     assert telem["hailo_temp_c"] is None
 
 
-def test_hailo_probe_unexpected_exception_yields_none():
-    with patch(
-        "src.telemetry.subprocess.run",
-        side_effect=RuntimeError("boom"),
-    ):
+def test_hailo_probe_get_temperature_raises_yields_none():
+    """``get_chip_temperature()`` raisea (firmware viejo, chip wedged) →
+    None, sin afectar el resto del payload de telemetría."""
+    fake = _fake_hailo_module(0.0, 0.0, raise_on="temp")
+    with patch.dict("sys.modules", {"hailo_platform": fake}):
         telem = collect_telemetry({})
     assert telem["hailo_temp_c"] is None
-
-
-def test_hailo_probe_no_match_in_output_yields_none():
-    completed = MagicMock()
-    completed.stdout = "Firmware: ok\nBoard serial: 123"
-    completed.stderr = ""
-    completed.returncode = 0
-    with patch("src.telemetry.subprocess.run", return_value=completed):
-        telem = collect_telemetry({})
-    assert telem["hailo_temp_c"] is None
+    # Otras keys de telemetría siguen presentes.
+    assert EXPECTED_KEYS.issubset(telem.keys())
 
 
 # ---------------------------------------------------------------------------
