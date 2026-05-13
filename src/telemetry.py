@@ -19,8 +19,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Keys de cuya presencia depende el downstream (regla de telemetría de Timestream).
-# Agregar campos es seguro; renombrar rompería los consumers.
+# Keys de cuya presencia depende el downstream (IoT Rule → Lambda persist_event
+# → Postgres). Agregar campos es seguro; renombrar rompería los consumers.
 _STATE_DEPENDENT_KEYS = (
     "frame_latency_p50_ms",
     "frame_latency_p95_ms",
@@ -180,7 +180,7 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
     state = state or {}
     telemetry: dict[str, Any] = {}
 
-    # --- Probes de OS (mantener nombres estables para los consumers de Timestream) ---
+    # --- Probes de OS (mantener nombres estables para Lambda persist_event → Postgres) ---
     telemetry["uptime_s"] = _read_uptime()
     telemetry["cpu_temp_c"] = _read_cpu_temp()
     telemetry["disk_free_mb"] = _read_disk_free_mb()

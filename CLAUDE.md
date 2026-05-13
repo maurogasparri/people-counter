@@ -80,8 +80,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Cloud (AWS)
 
-- **PoC (1 device)**: IoT Core (broker + 3 rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`) → Postgres 16 en EC2 t3.micro (free tier). Grafana OSS en la misma EC2 lee el Postgres. pg_dump diario a S3. **Sin Timestream** (no está en AWS Free Plan). **Sin Lambda dedup L3** (innecesaria con 1 device/sucursal).
-- **Multi-device futuro**: cuando se agregue 2+ cámaras por sucursal, reintroducir L3 (Lambda + DynamoDB de hashes) y separar Postgres a RDS si el volumen lo exige.
+- **PoC actual (1 device)**: IoT Core (broker + 3 rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`) → Postgres 16 self-hosted en EC2 t3.micro (free tier) + Grafana OSS en la misma EC2 leyendo el Postgres. pg_dump diario a S3. Lambda dedup L3 no aplica con 1 device/sucursal (L1+L2 local cubre el caso).
+- **Producción (rollout de flota)**: Postgres self-hosted → RDS Postgres (Multi-AZ + backups gestionados); Grafana OSS → Amazon Managed Grafana (SSO + alerting + IAM integration). Trigger es el pase de PoC a producción — no por volumen (la t3.micro escala razonable hasta ~50 devices), sino por operabilidad y SLA.
+- **Multi-cam por sucursal**: cuando se agregue 2+ cámaras por local, reintroducir L3 (Lambda + DynamoDB de hashes). El dedup L1+L2 local cubre monocam pero no inter-cam.
 
 ## Convenciones de código
 

@@ -228,8 +228,8 @@ diseño del data model + permisos IAM.**
 | Dashboards funcionales (Grafana OSS en la misma EC2) | T10e | — | — | — | T10b | **Pendiente** |
 
 > Total medido: ~2.0h. El stack del PoC consolidó en Postgres self-hosted +
-> Grafana OSS sobre EC2 free tier (Timestream queda fuera del Free Plan;
-> reintroducción evaluable cuando el volumen lo justifique). La Lambda dedup
+> Grafana OSS sobre EC2 free tier. Para producción se migra a RDS Postgres +
+> Amazon Managed Grafana (operabilidad y SLA, no volumen). La Lambda dedup
 > L3 inter-cámara queda reservada para deploys multi-cam future work — con
 > 1 device/sucursal el dedup L1+L2 local cubre todo. El "dashboard funcional"
 > en Grafana queda pendiente de construcción con datos reales del piloto.

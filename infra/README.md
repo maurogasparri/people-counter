@@ -14,9 +14,8 @@ RPi5 ──MQTT/TLS──► IoT Core ──┬─► Rule "counting"   ─┐
 ```
 
 **Decisiones de scope** (PoC con 1 device):
-- **Sin Timestream**: no está en el AWS Free Plan; usar Postgres self-hosted en EC2 free tier.
+- **Postgres self-hosted en EC2 t3.micro** (no RDS): $0 los primeros 12 meses, ~$8/mes después. Grafana OSS en la misma instancia para ahorrar otra VM. Para producción se migra a RDS Postgres + Amazon Managed Grafana (operabilidad y SLA, no volumen — la t3.micro escala hasta ~50 devices).
 - **Sin Lambda dedup L3**: innecesaria con 1 device/sucursal (el dedup L1+L2 local cubre todo). Reintroducir cuando haya 2+ devices por sucursal.
-- **Postgres self-hosted en EC2** (no RDS): $0 los primeros 12 meses, ~$8/mes después. Grafana OSS en la misma instancia para ahorrar otra VM.
 - **Payload de WiFi/BLE reducido**: el device manda counts agregados (`passersby`, `shoppers`), no hashes individuales — privacidad mejor y payload chico.
 
 ---

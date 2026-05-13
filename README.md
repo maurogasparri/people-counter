@@ -341,7 +341,6 @@ scripts/
 │                          # Thresholds factory: ±0.5°/1.0°/0.5°/2mm/2mm.
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── roi_picker.py          # Seleccionador de ROI + línea virtual
-├── export_events.py       # Export de eventos desde el buffer local
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
 ├── deploy_lambda.sh       # Packaging del Lambda persist_event (psycopg binary + handler)
 ├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock
