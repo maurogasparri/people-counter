@@ -54,9 +54,12 @@ def fake_pg(monkeypatch):
 
 
 def test_counting_event_inserts(fake_pg):
-    """Schema actual del INSERT (8 columnas):
-        0=device_id, 1=store_id, 2=event_time, 3=event_bucket,
-        4=direction, 5=track_id, 6=confidence, 7=height_class.
+    """Schema actual del INSERT (17 columnas) — ver _insert_counting.
+        0=device_id, 1=store_id, 2=event_ts, 3=event_bucket, 4=direction,
+        5=track_id, 6=confidence, 7=position_y,
+        8=height_class, 9=height_m, 10=head_depth_m,
+        11=total_in, 12=total_out,
+        13=scaling_factor, 14=scaled_in, 15=scaled_out, 16=best_frame_path.
     """
     from src.cloud.persist_event import handler
 
@@ -74,21 +77,23 @@ def test_counting_event_inserts(fake_pg):
     result = handler(event, None)
 
     assert result["statusCode"] == 200
-    # Verifica que ejecutó un INSERT a counting_events.
+    # Verifica que ejecutó un INSERT a count_events (tabla nueva post-bootstrap).
     assert fake_pg["cursor"].execute.called
     call_args = fake_pg["cursor"].execute.call_args
     sql = call_args[0][0]
     params = call_args[0][1]
-    assert "INSERT INTO counting_events" in sql
+    assert "INSERT INTO count_events" in sql
     assert params[0] == "store-001-cam-01"
     assert params[1] == "store-001"  # store_id inferido del device_id
-    # params[2] = event_time (timestamp serializado).
+    # params[2] = event_ts (datetime UTC desde event_time o envelope timestamp).
     # params[3] = event_bucket — None cuando el cliente no lo manda.
     assert params[3] is None
-    assert params[4] == "in"  # direction
-    assert params[5] == 42  # track_id
-    assert params[6] == 0.87  # confidence
-    assert params[7] == "adult"  # height_class
+    assert params[4] == "in"          # direction
+    assert params[5] == 42            # track_id
+    assert params[6] == 0.87          # confidence
+    # params[7] = position_y (None aca, no viene en el payload)
+    assert params[7] is None
+    assert params[8] == "adult"       # height_class
 
 
 def test_telemetry_event_inserts(fake_pg):
@@ -141,7 +146,7 @@ def test_wifi_ble_event_inserts(fake_pg):
     call_args = fake_pg["cursor"].execute.call_args
     sql = call_args[0][0]
     params = call_args[0][1]
-    assert "INSERT INTO wifi_ble_summaries" in sql
+    assert "INSERT INTO wifi_ble_summary" in sql
     assert params[0] == "store-001-cam-01"
     assert params[1] == "store-001"
     # params[4] = period_bucket (default = period_start cuando no viene).

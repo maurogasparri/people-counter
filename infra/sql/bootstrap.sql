@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- WiFi/BLE subsystem health
     wifi_probe_ok                 BOOLEAN,
     ble_scanner_ok                BOOLEAN,
+    -- Stitching ratio del dedup: groups / hashes en el dia (1.0 = sin stitch
+    -- efectivo, baja a medida que MAC rotations se mergean en el mismo group).
+    wifi_ble_stitching_ratio      REAL,
     -- Schedule / error state (mando 'error' del payload + detalle largo)
     error                         TEXT,
     schedule_error_detail         TEXT,
@@ -152,6 +155,89 @@ SELECT
     COUNT(*)         AS cams_reporting
 FROM wifi_ble_summary
 GROUP BY period_bucket, store_id;
+
+-- =============================================================================
+-- Counting agregado por bucket del device (analytics.bucket_seconds, 15min default)
+-- =============================================================================
+-- event_bucket es la columna que el device alinea al multiplo del epoch segun
+-- analytics.bucket_seconds (15min por default). Agrupar por esa columna mantiene
+-- semantica device-correcta: cambiar el bucket via shadow no requiere recomputar
+-- nada, y rows viejos preservan su bucket original.
+
+CREATE OR REPLACE VIEW counting_by_bucket AS
+SELECT
+    store_id,
+    event_bucket,
+    COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
+    COUNT(*) FILTER (WHERE direction = 'out') AS outs,
+    COUNT(*) FILTER (WHERE direction = 'in')
+      - COUNT(*) FILTER (WHERE direction = 'out') AS net
+FROM count_events
+WHERE event_bucket IS NOT NULL
+GROUP BY store_id, event_bucket;
+
+-- =============================================================================
+-- Turn-in rate por bucket: gente que entro / gente que paso cerca
+-- =============================================================================
+-- Une counting (ins) con WiFi/BLE (passersby/shoppers). Usa wifi_ble_store_traffic
+-- (MAX por store) para multi-cam dedup. FULL OUTER JOIN preserva buckets donde
+-- solo una fuente reporto (e.g., WiFi/BLE OFF en el device, o un bucket sin
+-- transito que no genero counting events).
+
+CREATE OR REPLACE VIEW turn_in_rate_by_bucket AS
+WITH ins AS (
+    SELECT store_id, event_bucket, COUNT(*) AS ins
+    FROM count_events
+    WHERE direction = 'in' AND event_bucket IS NOT NULL
+    GROUP BY store_id, event_bucket
+)
+SELECT
+    COALESCE(i.store_id, w.store_id)          AS store_id,
+    COALESCE(i.event_bucket, w.period_bucket) AS bucket,
+    COALESCE(i.ins, 0)                        AS ins,
+    COALESCE(w.passersby, 0)                  AS passersby,
+    COALESCE(w.shoppers, 0)                   AS shoppers,
+    CASE WHEN COALESCE(w.passersby, 0) > 0
+         THEN i.ins::float / w.passersby
+         ELSE NULL END                        AS turn_in_rate,
+    CASE WHEN COALESCE(w.shoppers, 0) > 0
+         THEN i.ins::float / w.shoppers
+         ELSE NULL END                        AS conversion_rate
+FROM ins i
+FULL OUTER JOIN wifi_ble_store_traffic w
+    ON w.store_id = i.store_id AND w.period_bucket = i.event_bucket;
+
+-- =============================================================================
+-- Rollups hourly encima de los views de bucket
+-- =============================================================================
+-- Para reportes diarios donde 15min es demasiado fino y para charts de Grafana
+-- de "ultimas 24h" sin aliasing.
+
+CREATE OR REPLACE VIEW counting_hourly AS
+SELECT
+    store_id,
+    date_trunc('hour', event_bucket) AS hour,
+    SUM(ins)  AS ins,
+    SUM(outs) AS outs,
+    SUM(net)  AS net
+FROM counting_by_bucket
+GROUP BY store_id, date_trunc('hour', event_bucket);
+
+CREATE OR REPLACE VIEW turn_in_rate_hourly AS
+SELECT
+    store_id,
+    date_trunc('hour', bucket) AS hour,
+    SUM(ins)       AS ins,
+    SUM(passersby) AS passersby,
+    SUM(shoppers)  AS shoppers,
+    CASE WHEN SUM(passersby) > 0
+         THEN SUM(ins)::float / SUM(passersby)
+         ELSE NULL END  AS turn_in_rate,
+    CASE WHEN SUM(shoppers) > 0
+         THEN SUM(ins)::float / SUM(shoppers)
+         ELSE NULL END  AS conversion_rate
+FROM turn_in_rate_by_bucket
+GROUP BY store_id, date_trunc('hour', bucket);
 
 -- =============================================================================
 -- View agregada: count events + sales por hora por store

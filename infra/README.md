@@ -1,299 +1,245 @@
 # Infra AWS — People Counter (PoC)
 
-Stack cloud que recibe mensajes del dispositivo edge, los persiste en Postgres, y los expone en Grafana.
+Stack cloud que recibe mensajes del dispositivo edge, los persiste en Postgres
+(RDS), y los expone en Grafana (App Runner). Todo en `us-east-1`.
 
 ```
 RPi5 ──MQTT/TLS──► IoT Core ──┬─► Rule "counting"   ─┐
-                              ├─► Rule "telemetry"  ─┼─► Lambda persist_event ─► Postgres
-                              ├─► Rule "wifi_ble"   ─┘                          (EC2 t3.micro)
+                              ├─► Rule "telemetry"  ─┼─► Lambda persist_event ─► RDS Postgres 16
+                              ├─► Rule "wifi_ble"   ─┘      (IAM auth)            (db.t4g.micro)
                               │
                               └─► Shadow $aws/things ◄─► dispositivo (operating_hours, counting_enabled)
 
-                                              EC2 ── Grafana OSS ──► dashboards
-                                                  └── cron pg_dump ──► S3 bucket
+                                                            App Runner ─── Grafana 13 ──► dashboards
+                                                            (custom domain)       ▲
+                                                                                  │
+                                                                  Postgres datasource (RDS)
 ```
 
 **Decisiones de scope** (PoC con 1 device):
-- **Postgres self-hosted en EC2 t3.micro** (no RDS): $0 los primeros 12 meses, ~$8/mes después. Grafana OSS en la misma instancia para ahorrar otra VM. Para producción se migra a RDS Postgres + Amazon Managed Grafana (operabilidad y SLA, no volumen — la t3.micro escala hasta ~50 devices).
-- **Sin Lambda dedup L3**: innecesaria con 1 device/sucursal (el dedup L1+L2 local cubre todo). Reintroducir cuando haya 2+ devices por sucursal.
-- **Payload de WiFi/BLE reducido**: el device manda counts agregados (`passersby`, `shoppers`), no hashes individuales — privacidad mejor y payload chico.
+
+- **RDS Postgres + App Runner Grafana**, no self-hosted en EC2 — operabilidad >
+  costo: snapshots automaticos, parche de SO/DB managed, restart sin perder
+  state, scaling vertical sin downtime. App Runner sirve Grafana con custom
+  domain + ACM auto-renovado.
+- **Lambda fuera de VPC, IAM auth a RDS** — sin VPC connector ($7-14/mo de VPC
+  endpoints). La Lambda usa `rds.generate_db_auth_token` para autenticar como
+  el DB user `lambda_writer` (sin password almacenado).
+- **Sin Lambda dedup L3** — innecesaria con 1 device/sucursal. El dedup local
+  L1+L2 cubre monocam. Reintroducir cuando haya 2+ cams por store.
+- **Payload WiFi/BLE reducido** — el device manda `{passersby, shoppers}` post
+  L2 dedup, no hashes individuales. Privacidad + payload chico.
 
 ---
 
-## 1) Topics MQTT y schemas de payload
+## 1) Topics MQTT
 
-Los topics se interpolan en el dispositivo con `{store_id}` (ver `config/config.example.yaml → mqtt.topics`).
+Los topics se interpolan en el dispositivo con `{store_id}` (ver
+`config/config.example.yaml → mqtt.topics`). Los 3 son consumidos por la misma
+Lambda; el `type` dentro del envelope discrimina la tabla destino.
 
-### `store/{store_id}/counting` — eventos de cruce de línea
+| Topic | Cadencia | Tabla destino |
+|---|---|---|
+| `store/{store_id}/counting`  | Tiempo real (por cruce de linea)        | `count_events`     |
+| `store/{store_id}/telemetry` | `telemetry.interval_seconds` (300s def) | `telemetry`        |
+| `store/{store_id}/wifi_ble`  | `wifi_ble.probe_interval_seconds` (15min def) | `wifi_ble_summary` |
 
-Publicado en tiempo real cuando un track completa el cruce.
+Shape del envelope (de `src.mqtt.client.MQTTClient.publish_event`):
 
 ```json
 {
   "device_id": "store-pilot-01-cam-01",
   "timestamp": 1762963200.123,
-  "type": "counting",
-  "data": {
-    "track_id": 42,
-    "direction": "in",          // "in" | "out"
-    "confidence": 0.87,
-    "height_class": "adult"     // "adult" | "child" | "unknown"
-  }
+  "type":      "counting",
+  "data":      { ... shape per type ... }
 }
 ```
 
-→ Rule `IoTRuleCounting` → Lambda `persist_event` → tabla `counting_events`.
+El shape exacto del `data` por tipo esta documentado en
+[`src/cloud/persist_event.py`](../src/cloud/persist_event.py) (cada `_insert_*`
+mapea field por field) y en [`sql/bootstrap.sql`](sql/bootstrap.sql) (columnas
+de cada tabla).
 
-### `store/{store_id}/telemetry` — salud del dispositivo
+**Reglas duras**:
+- Nunca MACs crudas — hashing local en el device antes de bufferear.
+- Hashes nunca salen del device — solo agregados `{passersby, shoppers}`.
 
-Cadencia default `3600s` (1h, configurable via `telemetry.interval_seconds`).
+### Shadow — `$aws/things/{device_id}/shadow/update`
 
-```json
-{
-  "device_id": "store-pilot-01-cam-01",
-  "timestamp": 1762963200.0,
-  "type": "telemetry",
-  "data": {
-    "cpu_temp_c": 56.4,
-    "hailo_temp_c": 48.2,
-    "disk_used_pct": 31.0,
-    "uptime_s": 142800,
-    "fps": 14.8,
-    "frame_latency_p50_ms": 62.0,
-    "frame_latency_p95_ms": 145.0,
-    "detection_rate_per_min": 12.3,
-    "tracker_confirmed_count": 3,
-    "buffer_backlog_messages": 0,
-    "mqtt_connected": true,
-    "total_in": 187,
-    "total_out": 184,
-    "wifi_probe_ok": true,
-    "ble_scanner_ok": false
-  }
-}
-```
-
-→ Rule `IoTRuleTelemetry` → Lambda → tabla `telemetry`.
-
-### `store/{store_id}/wifi_ble` — resúmenes de probing (cada 15 min)
-
-Cadencia `wifi_ble.probe_interval_seconds` (default 900s = 15min). Solo se publica si la ventana produjo detecciones (passersby > 0).
-
-```json
-{
-  "device_id": "store-pilot-01-cam-01",
-  "timestamp": 1762963200.0,
-  "type": "wifi_ble",
-  "data": {
-    "period_start": 1762962300,
-    "period_end":   1762963200,
-    "passersby":    160,
-    "shoppers":      27
-  }
-}
-```
-
-- **passersby** (RSSI ≥ `wifi_ble.rssi_passerby_threshold`, default -75 dBm): pasó por la zona.
-- **shoppers** (RSSI ≥ `wifi_ble.rssi_shopper_threshold`, default -55 dBm): muy cerca / probable entrada.
-- Combina WiFi+BLE post-L2 dedup local: un MAC detectado por ambos cuenta 1 vez.
-- **`in` real** = `counting_events.direction='in'` (cámaras). El turn-in rate se calcula en Grafana como `ins / passersby`.
-
-→ Rule `IoTRuleWifiBle` → Lambda → tabla `wifi_ble_summaries`.
-
-**Reglas duras:**
-- **Nunca MACs crudas.** Hashing en el device antes de bufferear.
-- **Los hashes no salen del device.** Solo agregados al cloud.
-
-### Shadow — `$aws/things/{device_id}/shadow/update` (y `/delta`)
-
-Pusheable desde la nube (whitelist en `src/config/loader.py` — solo 2 keys):
+Pusheable desde la nube (whitelist en `src/config/loader.py → CLOUD_OVERRIDABLE`):
 
 ```json
 { "state": { "desired": { "counting_enabled": false, "operating_hours": { ... } } } }
 ```
 
-El resto (thresholds, geometría, modelo) se cambia editando `config.yaml` per-device y reiniciando.
+Solo `counting_enabled` + `operating_hours`. El resto (thresholds, geometria,
+modelo) se cambia editando `/etc/people-counter/config.yaml` per-device.
 
 ---
 
 ## 2) Recursos del stack
 
-| Recurso | Propósito |
-|---------|-----------|
-| `IoTDevicePolicy` | Permisos por device — connect, publish a sus 3 topics, subscribe al shadow propio. |
-| `IoTThingType: people-counter-<env>` | Atributos searcheables (`store_id`, `firmware_version`). |
-| 3× `AWS::IoT::TopicRule` | Routing MQTT → Lambda. Error action → CloudWatch Logs. |
-| `PersistEventLambda` | Python 3.13, recibe envelope estándar, inserta en Postgres vía psycopg. |
-| `PgPasswordParameter` (SSM) | Password DB, leído por la Lambda y por la EC2 al boot. |
-| `DataInstance` (EC2 t3.micro Ubuntu 24.04) | Postgres 16 + Grafana OSS + nginx + cron de backup. UserData inline bootstrapea todo. |
-| `DataInstanceEIP` | IP pública estable (no cambia al reiniciar). |
-| `BackupBucket` (S3) | Recibe `pg_dump -Fc` diario, lifecycle 30 días. |
-| 3 alarmas CloudWatch | Lambda errors, IoT disconnects, EC2 status checks. |
+Definidos en [`cloudformation/people-counter.yaml`](cloudformation/people-counter.yaml).
+
+| Recurso | Proposito |
+|---|---|
+| `VPC` + 2 public subnets + IGW   | Red para RDS (App Runner y Lambda van fuera de VPC). |
+| `RdsInstance` (db.t4g.micro)     | Postgres 16, IAM auth + `rds.force_ssl=1`, PubliclyAccessible para Lambda + DBeaver. |
+| `RdsMasterSecret`                | Password autogenerado en Secrets Manager (master user `people_counter`). |
+| `RdsSecurityGroup`               | 5432 abierto a `AdminCidr` (DBeaver) + `0.0.0.0/0` (Lambda) — TLS + IAM gatekeep. |
+| `IoTDevicePolicy`                | Connect, publish a los 3 topics, subscribe al shadow propio. |
+| `IoTThingType`                   | `people-counter-${env}` con atributos `store_id`, `firmware_version`. |
+| `IoTTopicRule` x3                | Routing MQTT → Lambda. Error action → CloudWatch Logs. |
+| `PersistEventLambda`             | Python 3.13, 256MB, IAM auth a RDS. Code: `src/cloud/persist_event.py`. |
+| `GrafanaEcrRepo`                 | `:latest` pushed por `deploy.ps1`. `EmptyOnDelete: true` para teardown limpio. |
+| `GrafanaService` (App Runner)    | Grafana OSS 13 (oficial Docker image). Default egress, no VPC connector. |
+| `GrafanaInstanceRole/AccessRole` | Permisos para que App Runner pulle de ECR + corra el container. |
+| `AlertTopic` (SNS)               | Subs por email a alarmas (Lambda errors, IoT disconnect, App Runner health). |
+
+---
 
 ## 3) Schema de Postgres
 
-Definido en `infra/postgres/schema.sql`. 3 tablas independientes:
+Definido en [`sql/bootstrap.sql`](sql/bootstrap.sql). 4 tablas + 6 views.
 
-| Tabla | Granularidad | Retención |
-|-------|--------------|-----------|
-| `counting_events` | 1 row por cruce de línea | Indefinida (lifecycle manual) |
-| `telemetry` | 1 row por sample (default 1h) | Indefinida |
-| `wifi_ble_summaries` | 1 row por ventana (default 15 min) | Indefinida |
+| Tabla | Granularidad | Idempotencia |
+|---|---|---|
+| `count_events`     | 1 row por cruce de linea          | `UNIQUE (device_id, event_ts, track_id, direction)` |
+| `telemetry`        | 1 row por sample (5min def)       | sin constraint — duplicados aceptables |
+| `wifi_ble_summary` | 1 row por ventana (15min def)     | `UNIQUE (device_id, period_start, period_end)` |
+| `sales`            | 1 row por venta (futuro POS API)  | `UNIQUE (store_id, external_id)` |
 
-Más 2 views útiles (`v_counting_hourly`, `v_turn_in_rate_hourly`) que pre-arman queries comunes.
+Views (todas en `bootstrap.sql`):
+
+- **`wifi_ble_store_traffic`** — agrega `wifi_ble_summary` por `(store_id, period_bucket)` con `MAX(passersby)` y `MAX(shoppers)`. Multi-cam dedup read-time: cuando un store tiene 2+ cams, las ventanas de WiFi/BLE solapan (~30-50m vs ~3-5m de vision), tomar el MAX usa la cam que mejor lo vio como estimador. Con 1 cam/store, MAX == el row de esa cam.
+- **`counting_by_bucket`** — `ins / outs / net` por `(store_id, event_bucket)`. `event_bucket` es la columna que el device alinea al multiplo de `analytics.bucket_seconds` (15min def) — cambiar el bucket via shadow no requiere recomputar nada.
+- **`turn_in_rate_by_bucket`** — `counting_by_bucket` ⨝ `wifi_ble_store_traffic` por bucket, calcula `turn_in_rate = ins / passersby` y `conversion_rate = ins / shoppers`. FULL OUTER JOIN preserva buckets donde solo una fuente reporto.
+- **`counting_hourly`** / **`turn_in_rate_hourly`** — rollups por hora encima de las dos anteriores. Para reportes diarios donde 15min es demasiado fino.
+- **`store_hourly_summary`** — counting + sales por hora por store. Conversion rate = ventas / personas. Util cuando `sales` empiece a tener datos via API Gateway.
+
+### DB users + auth
+
+- `people_counter` (master) — desde DBeaver, password en Secrets Manager.
+- `lambda_writer` — sin password, `GRANT rds_iam` para auth via IAM token. La Lambda role tiene `rds-db:connect` sobre este user.
+- DB separada `grafana` — owner `people_counter`, solo para state interno de Grafana (users, dashboards, sessions).
 
 ---
 
 ## 4) Deploy
 
+Orchestrado por [`deploy.ps1`](deploy.ps1) en 6 fases con `-StartFromPhase` para
+resumir interrupciones.
+
 ### Pre-requisitos
 
-```bash
-# Verificar credenciales y región.
-aws sts get-caller-identity
-aws configure get region    # Debería decir us-east-1
-
-# Crear un key pair para SSH a la EC2.
-aws ec2 create-key-pair --key-name people-counter-dev \
-  --query 'KeyMaterial' --output text > ~/.ssh/people-counter-dev.pem
-chmod 600 ~/.ssh/people-counter-dev.pem
+```powershell
+aws sts get-caller-identity            # debe ser tu cuenta target
+aws configure get region               # us-east-1
+docker info                            # daemon corriendo (push a ECR + bootstrap SQL via docker psql)
 ```
 
-### Pasos
+App Runner requiere **plan pago de AWS** (no Free Account). Si la cuenta esta
+en Free, hay que upgradear desde la consola — sin costo fijo, solo pay-as-you-go.
+
+### Run
 
 ```powershell
-# 1) Deploy del stack. Tarda ~5-8 min (la EC2 corre userdata en paralelo).
-aws cloudformation deploy `
-  --template-file infra/cloudformation/people-counter.yaml `
-  --stack-name people-counter-dev `
-  --capabilities CAPABILITY_NAMED_IAM `
-  --parameter-overrides `
-      Environment=dev `
-      KeyPairName=people-counter-dev `
-      PostgresInitialPassword=$(openssl rand -base64 24)
-
-# 2) Reemplazar el placeholder de Lambda con el código real + psycopg layer.
-scripts/deploy_lambda.sh dev
-
-# 3) Aprovisionar el primer dispositivo (cert + thing + attach a policy).
-py scripts/provision.py create `
-  --device-id store-pilot-01-cam-01 `
-  --store-id store-pilot-01 `
-  --out /etc/people-counter/certs/
+.\infra\deploy.ps1
 ```
 
-### Outputs del stack
+Fases:
 
-```bash
-aws cloudformation describe-stacks --stack-name people-counter-dev \
-  --query 'Stacks[0].Outputs' --output table
+1. **[1/6]** CFN deploy core — VPC + RDS + IoT + Lambda stub + ECR (sin App Runner).
+2. **[2/6]** Push imagen `grafana/grafana:latest` a ECR + bootstrap SQL via `docker run postgres:16 psql`.
+3. **[3/6]** CFN deploy con `DeployAppRunner=true` — agrega App Runner Service apuntando al ECR.
+4. **[4/6]** `aws apprunner associate-custom-domain` + **pause manual** para agregar CNAMEs (validation records + final CNAME → DNSTarget) en tu DNS provider. Loop hasta que custom domain → `ACTIVE`.
+5. **[5/6]** `aws apprunner update-service` con `RuntimeEnvironmentVariables` (Postgres backend para Grafana). El CFN no acepta env vars dinamicas con secret refs en early validation, asi que se setean por CLI post-deploy.
+6. **[6/6]** Poll hasta que App Runner Service → `RUNNING`.
+
+El unico step manual es el DNS — los CNAMEs hay que agregarlos en el DNS provider externo (gasparri.com.ar no esta en Route53). El script printea exactamente que records y donde, y pausea con `Read-Host`.
+
+### Deploy del codigo real de Lambda
+
+CFN crea el Lambda con un stub inline. Para deployar el codigo real:
+
+```powershell
+.\scripts\deploy_lambda.ps1 -Environment dev
 ```
 
-Devuelve:
-- `IoTEndpointHint` — comando para obtener el endpoint MQTT (cargar en `config.yaml → mqtt.endpoint`).
-- `DataInstancePublicIp` — IP estática de la EC2.
-- `GrafanaURL` — `http://<ip>:3000`, login inicial `admin`/`admin`.
-- `PostgresEndpoint` — para conectar DBeaver/psql.
-- `SshCommand` — comando SSH listo.
+Empaqueta `src/cloud/persist_event.py` + `psycopg[binary]` (manylinux x86_64) y
+hace `aws lambda update-function-code`.
 
-### Convertir el password a SecureString (recomendado post-deploy)
+### Aprovisionar un device
 
-CloudFormation no acepta `SecureString` en parámetros nuevos, así que el password vive como `String` plano en SSM hasta que lo convertís manualmente:
+```powershell
+py scripts\provision.py --thing-name store-pilot-01-cam-01
+```
 
-```bash
-aws ssm put-parameter \
-  --name /people-counter/dev/pg_password \
-  --type SecureString \
-  --overwrite \
-  --value "$(aws ssm get-parameter --name /people-counter/dev/pg_password --query Parameter.Value --output text)"
+Crea el cert X.509, attach a la policy, y descarga el cert + key a
+`provisioned/<thing-name>/` (gitignored).
+
+---
+
+## 5) Verificar end-to-end
+
+```powershell
+# 1) Publicar un evento de prueba al topic real (bypassea el device)
+aws iot-data publish `
+    --topic "store/test-cam/counting" `
+    --payload "fileb://test-event.json" `
+    --cli-binary-format raw-in-base64-out
+
+# 2) Confirmar que cae en Postgres
+$secret = (aws secretsmanager get-secret-value `
+    --secret-id (aws cloudformation describe-stacks `
+        --stack-name people-counter-dev `
+        --query "Stacks[0].Outputs[?OutputKey=='RdsMasterSecretArn'].OutputValue" `
+        --output text) `
+    --query SecretString --output text) | ConvertFrom-Json
+$host = aws cloudformation describe-stacks --stack-name people-counter-dev `
+    --query "Stacks[0].Outputs[?OutputKey=='RdsEndpoint'].OutputValue" --output text
+docker run --rm -e PGPASSWORD=$($secret.password) -e PGSSLMODE=require postgres:16 `
+    psql -h $host -U $secret.username -d people_counter `
+    -c "SELECT COUNT(*), MAX(event_ts) FROM count_events;"
+
+# 3) Abrir Grafana en https://grafana.<your-domain> y queriar count_events
 ```
 
 ---
 
-## 5) Setup post-deploy
+## 6) Resiliencia
 
-### Cargar dashboards de Grafana
-
-Los dashboards están en `infra/grafana/dashboards/`. Vía SSH:
-
-```bash
-ssh -i ~/.ssh/people-counter-dev.pem ubuntu@<IP>
-sudo mkdir -p /var/lib/grafana/dashboards
-sudo cp /path/to/repo/infra/grafana/dashboards/*.json /var/lib/grafana/dashboards/
-sudo cp /path/to/repo/infra/grafana/provisioning/dashboards.yaml \
-  /etc/grafana/provisioning/dashboards/people-counter.yaml
-sudo systemctl restart grafana-server
-```
-
-O alternativamente: importar los JSON desde la UI de Grafana (`+ → Import`).
-
-### Configurar HTTPS (opcional para PoC)
-
-nginx ya está instalado pero sin config. Para Grafana detrás de HTTPS con Let's Encrypt:
-
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d <tu-dominio>.com
-```
-
-Hay que tener un dominio apuntando al EIP. Para PoC alcanza con `http://<ip>:3000` directo.
+- **Sin conectividad del device** — buffer SQLite local persiste publishes. Replay al reconectar, marca enviado solo tras PUBACK.
+- **Lambda fallida** — IoT Rule loguea a CloudWatch (`/aws/iot/people-counter-rule-errors-${env}`). IoT reintenta 1 vez built-in; despues drop. Alarma `PersistEventLambdaErrorAlarm` dispara con >0 errors / 5min.
+- **RDS** — Multi-AZ desactivado para PoC ($13/mo vs $26). Daily snapshot (`BackupRetentionPeriod` default 7d, configurable). Restore via `aws rds restore-db-instance-to-point-in-time`.
+- **App Runner** — auto-restarts si el container se cae (`HealthCheckConfiguration: Protocol HTTP / Path /api/health`). Rolling redeploy en cada `update-service` (~2-3 min).
+- **Teardown / re-create** — `aws cloudformation delete-stack` borra todo. ECR esta marcado `EmptyOnDelete: true` para no atascarse en imagenes pendientes.
 
 ---
 
-## 6) Cómo verificar end-to-end
+## 7) Costos PoC (1 device, us-east-1)
 
-```bash
-# 1) En el device — confirmar que está publicando.
-journalctl -u people-counter -f | grep -E "publish|wifi_ble|telemetry"
+| Recurso | $/mes | Notas |
+|---|---|---|
+| RDS db.t4g.micro (single-AZ) | ~$13 | Storage 20GB gp3 incluido. |
+| App Runner (1 vCPU / 2GB)    | ~$5  | Pay-per-request post-traffic; idle scale-down OFF para 100% uptime. |
+| IoT Core                     | <$1  | $1/M msgs — PoC genera centavos. |
+| Lambda                       | $0   | 1M invocations + 400k GB-s free **forever**. |
+| Secrets Manager              | $0.40| 1 secret. |
+| CloudWatch                   | $0   | 5 GB logs + 10 metrics free forever. |
+| **Total estimado**           | **~$20/mo** | Post free tier. |
 
-# 2) En AWS — verificar que IoT recibe los mensajes (rule activations).
-aws logs tail /aws/iot/people-counter-rule-errors-dev --since 10m
-# (debería estar vacío si todo funciona)
-
-# 3) Conectarse a Postgres y ver los rows.
-psql -h <IP> -U people_counter -d people_counter -c \
-  "SELECT COUNT(*), MAX(event_time) FROM counting_events;"
-
-# 4) Abrir Grafana en http://<IP>:3000 — el dashboard "People Counter — Overview"
-#    debería mostrar datos recientes.
-```
+**Producción (flota)**: migrar RDS a Multi-AZ (~$26 + storage), considerar
+Amazon Managed Grafana (SSO + IAM-integrated, ~$9/user/mo) en vez de OSS, y
+reintroducir Lambda dedup L3 con DynamoDB cuando haya 2+ cams por store.
 
 ---
 
-## 7) Resiliencia
+## 8) Proximos pasos
 
-- **Sin conectividad del device**: buffer SQLite local (`/var/lib/people-counter/buffer.sqlite`) persiste publishes. Al reconectar, `MQTTClient.replay_buffer` los drena en orden y marca enviado solo tras PUBACK.
-- **Reconexión MQTT**: paho con backoff exponencial (`reconnect_delay_set 1-120s`). Shadow se reconcilia en el hook `on_connected`.
-- **Lambda fallida**: IoT Rule tiene `ErrorAction` que loguea a CloudWatch. Alarma `PersistEventLambdaErrorAlarm` dispara después de 15 min de errors elevados.
-- **Postgres corrupto / EC2 reventada**: backup diario en S3 (`postgres/pc-<timestamp>.dump`). Restore con `pg_restore -d people_counter <dump>` toma ~5 min.
-- **EC2 reboot**: Postgres + Grafana son `systemctl enable`d → arrancan solos. Grafana mantiene dashboards (SQLite local en `/var/lib/grafana/`).
-- **EC2 reemplazo total**: el EIP no cambia (asociación se mantiene). Re-deploy del stack reconstruye todo desde userdata. Restore manual del backup más reciente de S3.
-
----
-
-## 8) Costos (PoC con 1 device)
-
-| Período | Costo estimado | Notas |
-|---------|---------------|-------|
-| Año 1 | **$0** | Todo en free tier 12 meses + créditos. |
-| Año 2+ | **~$8-12 USD/mes** | EC2 t3.micro on-demand ($7.5) + EBS 30GB gp3 (~$2.5) + EIP ($0 mientras esté attached). |
-
-Servicios que cuestan según uso, dentro del free tier:
-- IoT Core: $1/millón msgs (PoC = pocos centavos).
-- Lambda: 1M invocations + 400k GB-s free **forever**.
-- CloudWatch: 10 metrics + 3 dashboards + 5 GB logs free forever.
-- S3: 5 GB free 12 meses, después ~$0.023/GB.
-- SSM Parameter Store: gratis hasta 10k parámetros estándar.
-
-**Si se escala a flota de devices**: el cost driver pasa a ser IoT Core (msgs) y Postgres (storage). A ~50 devices, considerar:
-- Migrar Postgres a RDS db.t4g.micro (~$13/mes + storage).
-- Reintroducir Lambda dedup L3 con DynamoDB (~$0 free tier por mucho tiempo).
-
----
-
-## 9) Próximos pasos sugeridos
-
-- **Producción**: VPC dedicada con private subnets para Postgres, NAT gateway para egress de Lambda. Hoy todo está en VPC default por simplicidad.
-- **HTTPS**: nginx + Let's Encrypt + dominio (paso 5).
-- **Backups offsite**: replicar S3 bucket a otra región con S3 replication.
-- **Métricas custom**: emitir CloudWatch metrics desde la Lambda (rows insertados, latencia de query) para tener dashboards de operación además de los de negocio.
+- Construir dashboards en Grafana UI sobre las views (`counting_by_bucket`,
+  `turn_in_rate_hourly`, `store_hourly_summary`).
+- API Gateway para ingest de sales desde POS externo (tabla `sales` ya
+  preparada con `UNIQUE (store_id, external_id)` para idempotencia).
+- Migracion a Route53 delegated subdomain (`tfg.gasparri.com.ar` NS → R53)
+  para que CFN gestione DNS records y el deploy sea 100% sin pausa.

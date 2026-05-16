@@ -32,6 +32,7 @@ _STATE_DEPENDENT_KEYS = (
     "buffer_backlog_messages",
     "wifi_probe_ok",
     "ble_scanner_ok",
+    "wifi_ble_stitching_ratio",
 )
 
 
@@ -229,6 +230,14 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
     # Permite distinguir "no aplica" de "está caído" en las alertas de Grafana.
     telemetry["wifi_probe_ok"] = state.get("wifi_probe_ok")
     telemetry["ble_scanner_ok"] = state.get("ble_scanner_ok")
+
+    # --- Stitching ratio del dedup WiFi/BLE ---
+    # groups / hashes en la ventana del dia: 1.0 = sin stitch (cada MAC su
+    # propio "visitor"), 0.5 = mitad de los hashes se mergearon (avg 2/grupo).
+    # Canary para ver si la flota corre con OS que defeatean las reglas (Apple
+    # H1+ con seqnum reset, BLE off, etc) — en ese caso ratio == 1 sostenido y
+    # los counts estaran inflados; calibrar contra la cam.
+    telemetry["wifi_ble_stitching_ratio"] = state.get("wifi_ble_stitching_ratio")
 
     # Garantiza que toda key dependiente de state exista aunque algo arriba
     # haya raiseado antes de asignarla.

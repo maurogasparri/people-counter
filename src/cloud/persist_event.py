@@ -212,6 +212,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                  mqtt_connected, mqtt_disconnect_count,
                  seconds_since_last_reconnect, buffer_backlog_messages,
                  wifi_probe_ok, ble_scanner_ok,
+                 wifi_ble_stitching_ratio,
                  error, schedule_error_detail)
             VALUES (%s, %s, %s,
                     %s, %s, %s,
@@ -223,6 +224,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                     %s, %s,
                     %s, %s,
                     %s, %s,
+                    %s,
                     %s, %s)
             """,
             (
@@ -248,6 +250,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                 data.get("buffer_backlog_messages"),
                 data.get("wifi_probe_ok"),
                 data.get("ble_scanner_ok"),
+                data.get("wifi_ble_stitching_ratio"),
                 data.get("error"),
                 data.get("schedule_error_detail"),
             ),

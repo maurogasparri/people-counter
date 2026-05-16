@@ -407,6 +407,26 @@ wifi_ble:
   cross_protocol_window_seconds: 2  # Ventana de dedup WiFi+BLE same-device.
   cross_protocol_rssi_delta: 5      # |Delta RSSI| max para match cross-protocol.
 
+  # --- Stitching de MACs randomizadas ---
+  # iOS/Android rotan la MAC en probes cada ~2-15min para anti-tracking. Sin
+  # stitching cada rotacion infla el conteo. Las dos reglas siguientes mergean
+  # hashes en el mismo grupo de identidad. Privacy: seqnum y raw MACs quedan
+  # SOLO en SQLite local del device, nunca van por MQTT (el publisher manda
+  # counts agregados, no hashes ni seqnums).
+  seqnum_stitching:
+    enabled: true                   # Regla 1: continuidad del seqnum 802.11.
+    window_seconds: 30              # Stitch dos MACs si su ultima observacion
+                                    # cae en esta ventana.
+    max_delta: 100                  # Maxima distancia (mod 4096) entre seqnums.
+                                    # 100 ≈ 10s de actividad de un chip activo.
+    rssi_delta: 5                   # Tolerancia de RSSI para el match.
+  ble_anchor:
+    enabled: true                   # Regla 3: BLE como ancla de identidad
+                                    # durante la vida de un RPA.
+    window_seconds: 900             # 15min ≈ vida tipica de un iOS BLE RPA.
+                                    # Nuevas MACs WiFi con RSSI compatible al
+                                    # BLE ancla durante ese tiempo se mergean.
+
 
 # =============================================================================
 # MQTT — AWS IoT Core (certs per-device + endpoint, shape de topic fleet-wide)

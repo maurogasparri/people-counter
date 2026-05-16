@@ -294,12 +294,20 @@ def build_wifi_ble(
         os.path.dirname(config["buffer"]["db_path"]),
         "wifi_ble_dedup.sqlite",
     )
+    seqnum_cfg = wifi_cfg.get("seqnum_stitching", {}) or {}
+    ble_anchor_cfg = wifi_cfg.get("ble_anchor", {}) or {}
     dedup = DedupEngine(
         db_path=dedup_db,
         cross_window_seconds=float(
             wifi_cfg.get("cross_protocol_window_seconds", 2.0)
         ),
         cross_rssi_delta=float(wifi_cfg.get("cross_protocol_rssi_delta", 5.0)),
+        seqnum_stitch_enabled=bool(seqnum_cfg.get("enabled", True)),
+        seqnum_stitch_window_seconds=float(seqnum_cfg.get("window_seconds", 30.0)),
+        seqnum_max_delta=int(seqnum_cfg.get("max_delta", 100)),
+        seqnum_rssi_delta=float(seqnum_cfg.get("rssi_delta", 5.0)),
+        ble_anchor_enabled=bool(ble_anchor_cfg.get("enabled", True)),
+        ble_anchor_window_seconds=float(ble_anchor_cfg.get("window_seconds", 900.0)),
     )
 
     wifi_capture: WiFiProbeCapture | None = None
@@ -307,7 +315,9 @@ def build_wifi_ble(
 
     def _on_probe(event: ProbeEvent) -> None:
         try:
-            dedup.process_detection(event.mac, "wifi", event.rssi)
+            dedup.process_detection(
+                event.mac, "wifi", event.rssi, seqnum=event.seqnum
+            )
         except Exception:
             logger.exception("dedup wifi process_detection falló")
 
@@ -397,6 +407,7 @@ def _build_telemetry_state(
     buffer: MessageBuffer,
     wifi_capture: "WiFiProbeCapture | None" = None,
     ble_scanner: "BLEScanner | None" = None,
+    dedup: "DedupEngine | None" = None,
 ) -> dict[str, Any]:
     """Toma snapshot del estado runtime del pipeline al dict que espera
     :func:`collect_telemetry`. Cada lookup está wrappeado así un solo probe
@@ -440,6 +451,15 @@ def _build_telemetry_state(
     wifi_ok, ble_ok = _wifi_ble_health(wifi_capture, ble_scanner)
     state["wifi_probe_ok"] = wifi_ok
     state["ble_scanner_ok"] = ble_ok
+
+    # Canary del dedup: groups/hashes en la ventana del dia. 1.0 = sin stitch
+    # efectivo. Util para diagnosticar si las reglas estan agarrando.
+    if dedup is not None:
+        try:
+            state["wifi_ble_stitching_ratio"] = dedup.get_stitching_ratio()
+        except Exception:
+            logger.exception("dedup.get_stitching_ratio failed")
+            state["wifi_ble_stitching_ratio"] = None
 
     return state
 
@@ -850,8 +870,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     wifi_ble_publisher: WifiBlePublisher | None = None
     wifi_capture: WiFiProbeCapture | None = None
     ble_scanner: BLEScanner | None = None
+    dedup: DedupEngine | None = None
     if wifi_ble is not None:
-        _dedup, wifi_ble_publisher, wifi_capture, ble_scanner = wifi_ble
+        dedup, wifi_ble_publisher, wifi_capture, ble_scanner = wifi_ble
 
     # --- Wiring de los shadow delta ------------------------------------------
     # Los deltas llegan en el thread de red de paho; la queue es el handoff
@@ -1189,6 +1210,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             buffer,
                             wifi_capture=wifi_capture,
                             ble_scanner=ble_scanner,
+                            dedup=dedup,
                         )
                     )
                     telem["error"] = "invalid_schedule"
@@ -1811,6 +1833,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         buffer,
                         wifi_capture=wifi_capture,
                         ble_scanner=ble_scanner,
+                        dedup=dedup,
                     )
                 )
                 telem["fps"] = telem_frame_count / max(telem_elapsed, 1)

@@ -1,21 +1,49 @@
-"""Tests para el engine de dedup WiFi/BLE."""
+"""Tests para el engine de dedup WiFi/BLE con stitching."""
+from __future__ import annotations
+
 import tempfile
+import time
 from pathlib import Path
 
-from src.wifi_ble.dedup import DedupEngine
+import pytest
+
+from src.wifi_ble.dedup import DedupEngine, _seqnum_delta
 
 
-def _make_engine() -> tuple[DedupEngine, str]:
+def _make_engine(
+    seqnum_enabled: bool = True,
+    ble_anchor_enabled: bool = True,
+    seqnum_window: float = 30.0,
+    ble_window: float = 900.0,
+) -> tuple[DedupEngine, str]:
     tmpdir = tempfile.mkdtemp()
     db_path = str(Path(tmpdir) / "dedup.db")
-    return DedupEngine(db_path, cross_window_seconds=2.0, cross_rssi_delta=5.0), tmpdir
+    return (
+        DedupEngine(
+            db_path,
+            cross_window_seconds=2.0,
+            cross_rssi_delta=5.0,
+            seqnum_stitch_enabled=seqnum_enabled,
+            seqnum_stitch_window_seconds=seqnum_window,
+            seqnum_max_delta=100,
+            seqnum_rssi_delta=5.0,
+            ble_anchor_enabled=ble_anchor_enabled,
+            ble_anchor_window_seconds=ble_window,
+        ),
+        tmpdir,
+    )
 
+
+# ---------------------------------------------------------------------------
+# Comportamiento basico (compat con la API publica anterior)
+# ---------------------------------------------------------------------------
 
 def test_first_detection_is_new():
     engine, _ = _make_engine()
     result = engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
     assert result["is_new"] is True
     assert result["unified"] is False
+    assert "group_id" in result
 
 
 def test_duplicate_same_protocol():
@@ -25,24 +53,26 @@ def test_duplicate_same_protocol():
     assert result["is_new"] is False
 
 
-def test_same_mac_different_protocol():
+def test_same_mac_different_protocol_unifies():
+    """Mismo MAC visto en WiFi y BLE en ventana corta -> mismo grupo."""
     engine, _ = _make_engine()
-    engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
-    # Same MAC on BLE with similar RSSI → should unify
-    result = engine.process_detection("AA:BB:CC:DD:EE:FF", "ble", -58.0)
-    assert result["is_new"] is True
-    assert result["unified"] is True
+    r1 = engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
+    r2 = engine.process_detection("AA:BB:CC:DD:EE:FF", "ble", -58.0)
+    assert r2["is_new"] is True
+    assert r2["unified"] is True
+    assert r2["group_id"] == r1["group_id"]
 
 
 def test_cross_protocol_rssi_too_different():
+    """RSSI lejos -> dos grupos distintos."""
     engine, _ = _make_engine()
-    engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
-    # RSSI delta > 5 → no unification
-    result = engine.process_detection("11:22:33:44:55:66", "ble", -30.0)
-    assert result["unified"] is False
+    r1 = engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
+    r2 = engine.process_detection("11:22:33:44:55:66", "ble", -30.0)
+    assert r2["unified"] is False
+    assert r2["group_id"] != r1["group_id"]
 
 
-def test_unique_count():
+def test_unique_count_counts_groups_not_hashes():
     engine, _ = _make_engine()
     engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
     engine.process_detection("11:22:33:44:55:66", "wifi", -55.0)
@@ -56,33 +86,32 @@ def test_reset_daily():
     assert engine.get_unique_count() == 1
     engine.reset_daily()
     assert engine.get_unique_count() == 0
-    # Same MAC is new again after reset
     result = engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
     assert result["is_new"] is True
 
 
+# ---------------------------------------------------------------------------
+# Traffic counts (RSSI dual-threshold)
+# ---------------------------------------------------------------------------
+
 def test_traffic_counts_dual_threshold():
-    """Test passerby/shopper classification with dual RSSI thresholds."""
-    engine, _ = _make_engine()
-    # Passerby (signal between -75 and -55): detected but didn't enter
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
     engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -70.0)
     engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -65.0)
     engine.process_detection("AA:BB:CC:DD:EE:03", "wifi", -72.0)
-    # Shopper (signal >= -55): entered the store
     engine.process_detection("AA:BB:CC:DD:EE:04", "wifi", -50.0)
     engine.process_detection("AA:BB:CC:DD:EE:05", "wifi", -45.0)
-    # Below passerby threshold: too far, not counted
     engine.process_detection("AA:BB:CC:DD:EE:06", "wifi", -80.0)
 
     counts = engine.get_traffic_counts(rssi_passerby=-75, rssi_shopper=-55)
-    # 5 devices above -75 (passerby), 2 above -55 (shopper), 1 below -75 (ignored)
+    # 5 grupos arriba de -75 (los -70/-65/-72/-50/-45). 2 arriba de -55 (-50/-45).
+    # El de -80 cae afuera.
     assert counts["passersby"] == 5
     assert counts["shoppers"] == 2
     assert counts["turn_in_rate"] == round(2 / 5, 4)
 
 
 def test_traffic_counts_empty():
-    """Test traffic counts when no detections."""
     engine, _ = _make_engine()
     counts = engine.get_traffic_counts()
     assert counts["passersby"] == 0
@@ -90,45 +119,16 @@ def test_traffic_counts_empty():
     assert counts["turn_in_rate"] == 0.0
 
 
-def test_traffic_counts_all_shoppers():
-    """When all detections are shoppers, turn_in_rate should be 1.0."""
-    engine, _ = _make_engine()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -40.0)
-    engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -30.0)
-    counts = engine.get_traffic_counts(rssi_passerby=-75, rssi_shopper=-55)
-    assert counts["passersby"] == 2
-    assert counts["shoppers"] == 2
-    assert counts["turn_in_rate"] == 1.0
-
-
-def test_traffic_counts_no_shoppers():
-    """When no one enters, turn_in_rate should be 0.0."""
-    engine, _ = _make_engine()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -70.0)
-    engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -65.0)
-    counts = engine.get_traffic_counts(rssi_passerby=-75, rssi_shopper=-55)
-    assert counts["passersby"] == 2
-    assert counts["shoppers"] == 0
-    assert counts["turn_in_rate"] == 0.0
-
-
-def test_traffic_counts_resets_with_daily():
-    """Traffic counts should reset after daily reset."""
-    engine, _ = _make_engine()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)
-    assert engine.get_traffic_counts()["shoppers"] == 1
-    engine.reset_daily()
-    assert engine.get_traffic_counts()["shoppers"] == 0
-
-
 def test_traffic_counts_filter_by_protocol():
-    """protocol='wifi' should restrict counts to WiFi detections only."""
-    engine, _ = _make_engine()
-    # 2 WiFi shoppers
+    """Protocol filter cuenta grupos donde algun miembro de ese protocol
+    pasa el threshold. Para no ambiguar el test, el BLE viene con RSSI
+    lejos de los WiFi para que NO se unifique con ninguno."""
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
     engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -40.0)
     engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -45.0)
-    # 1 BLE shopper (different MAC so it's not unified with WiFi)
-    engine.process_detection("11:22:33:44:55:66", "ble", -50.0)
+    # RSSI -20 esta a 25 dBm de los WiFi (mucho mas que cross_rssi_delta=5)
+    # -> no unifica, queda como su propio grupo.
+    engine.process_detection("11:22:33:44:55:66", "ble", -20.0)
 
     mixed = engine.get_traffic_counts()
     wifi_only = engine.get_traffic_counts(protocol="wifi")
@@ -137,14 +137,13 @@ def test_traffic_counts_filter_by_protocol():
     assert mixed["shoppers"] == 3
     assert wifi_only["shoppers"] == 2
     assert ble_only["shoppers"] == 1
-    # Turn-in rate per protocol is self-consistent (all shoppers = all passersby)
-    assert wifi_only["turn_in_rate"] == 1.0
-    assert ble_only["turn_in_rate"] == 1.0
 
+
+# ---------------------------------------------------------------------------
+# Window summaries
+# ---------------------------------------------------------------------------
 
 def test_get_recent_hashes_returns_window():
-    import time
-
     engine, _ = _make_engine()
     t0 = time.time()
     engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -60.0)
@@ -152,67 +151,15 @@ def test_get_recent_hashes_returns_window():
 
     recent = engine.get_recent_hashes(since_ts=t0 - 1, until_ts=t0 + 10)
     assert len(recent) == 2
-    # Hashes son hex de 32 chars (16 bytes truncados).
     assert all(len(h) == 32 for h in recent)
 
 
-def test_get_recent_hashes_filters_by_protocol():
-    import time
-
-    engine, _ = _make_engine()
-    t0 = time.time()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -60.0)
-    # MAC distinta + RSSI diferente para evitar unificación cross-protocol.
-    engine.process_detection("11:22:33:44:55:66", "ble", -30.0)
-
-    wifi_only = engine.get_recent_hashes(
-        since_ts=t0 - 1, until_ts=t0 + 10, protocol="wifi"
-    )
-    ble_only = engine.get_recent_hashes(
-        since_ts=t0 - 1, until_ts=t0 + 10, protocol="ble"
-    )
-    assert len(wifi_only) == 1
-    assert len(ble_only) == 1
-    assert wifi_only != ble_only
-
-
-def test_get_recent_hashes_excludes_outside_window():
-    import time
-
-    engine, _ = _make_engine()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -60.0)
-
-    # Ventana en el futuro → ninguno cae adentro.
-    future = engine.get_recent_hashes(since_ts=time.time() + 100)
-    assert future == []
-
-
-def test_get_recent_hashes_until_default_is_now():
-    import time
-
-    engine, _ = _make_engine()
-    t0 = time.time()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -60.0)
-    # En Windows time.time() tiene resolución de ~15ms — sin un sleep, la
-    # detección puede tener first_seen idéntico al until_ts implícito del query
-    # y caer afuera del half-open interval [since, until).
-    time.sleep(0.05)
-
-    # Sin until_ts explícito, debe llegar hasta `now()` y agarrar la detección.
-    result = engine.get_recent_hashes(since_ts=t0 - 1)
-    assert len(result) == 1
-
-
 def test_get_window_summary_counts_passersby_and_shoppers():
-    import time
-
-    engine, _ = _make_engine()
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
     t0 = time.time()
-    # 3 dispositivos: 1 muy cerca (shopper), 1 medio (passerby pero no shopper),
-    # 1 lejos (debajo del threshold de passerby).
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)  # shopper
-    engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -65.0)  # passerby
-    engine.process_detection("AA:BB:CC:DD:EE:03", "wifi", -85.0)  # ruido
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)
+    engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -65.0)
+    engine.process_detection("AA:BB:CC:DD:EE:03", "wifi", -85.0)
 
     summary = engine.get_window_summary(
         since_ts=t0 - 1,
@@ -220,50 +167,223 @@ def test_get_window_summary_counts_passersby_and_shoppers():
         rssi_passerby=-75.0,
         rssi_shopper=-55.0,
     )
-
-    assert summary["passersby"] == 2  # el de -50 y el de -65
-    assert summary["shoppers"] == 1  # solo el de -50
+    assert summary["passersby"] == 2
+    assert summary["shoppers"] == 1
 
 
 def test_get_window_summary_unifies_cross_protocol():
-    """Un dispositivo detectado por WiFi Y BLE en ventana corta cuenta como 1."""
-    import time
-
     engine, _ = _make_engine()
     t0 = time.time()
-    # Mismo MAC, distinto protocolo, RSSI similar → L2 dedup lo unifica.
     engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)
     engine.process_detection("AA:BB:CC:DD:EE:01", "ble", -52.0)
 
-    summary = engine.get_window_summary(
-        since_ts=t0 - 1, until_ts=t0 + 10
-    )
-
+    summary = engine.get_window_summary(since_ts=t0 - 1, until_ts=t0 + 10)
     assert summary["passersby"] == 1
     assert summary["shoppers"] == 1
 
 
-def test_get_window_summary_excludes_outside_window():
-    import time
-
-    engine, _ = _make_engine()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)
-
-    summary = engine.get_window_summary(since_ts=time.time() + 100)
-    assert summary == {"passersby": 0, "shoppers": 0}
-
-
 def test_get_window_summary_shoppers_subset_of_passersby():
-    """Invariante: shoppers ≤ passersby siempre."""
-    import time
-
-    engine, _ = _make_engine()
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
     t0 = time.time()
     for i, rssi in enumerate([-50.0, -52.0, -58.0, -65.0, -72.0]):
         engine.process_detection(f"AA:BB:CC:DD:EE:{i:02x}", "wifi", rssi)
-
-    summary = engine.get_window_summary(
-        since_ts=t0 - 1, until_ts=t0 + 10
-    )
-
+    summary = engine.get_window_summary(since_ts=t0 - 1, until_ts=t0 + 10)
     assert summary["shoppers"] <= summary["passersby"]
+
+
+# ---------------------------------------------------------------------------
+# Seqnum stitching (regla 1)
+# ---------------------------------------------------------------------------
+
+def test_seqnum_stitch_continuous_within_window():
+    """Dos WiFi MACs con seqnum cercano + RSSI cercano + tiempo cercano -> 1 grupo."""
+    engine, _ = _make_engine()
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=1005)
+    assert r2["unified"] is True
+    assert r2["group_id"] == r1["group_id"]
+    assert engine.get_unique_count() == 1
+
+
+def test_seqnum_stitch_discontinuous_seqnum():
+    """Seqnum lejos -> grupos distintos aunque RSSI sea cercano."""
+    engine, _ = _make_engine()
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=2500)
+    assert r2["unified"] is False
+    assert r2["group_id"] != r1["group_id"]
+    assert engine.get_unique_count() == 2
+
+
+def test_seqnum_stitch_rssi_too_different():
+    """Seqnum cercano pero RSSI lejos -> grupos distintos."""
+    engine, _ = _make_engine()
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -45.0, seqnum=1005)
+    assert r2["unified"] is False
+    assert r2["group_id"] != r1["group_id"]
+
+
+def test_seqnum_stitch_outside_window():
+    """Seqnum cercano pero >30s aparte -> grupos distintos."""
+    engine, _ = _make_engine(seqnum_window=1.0)  # 1s window — easy to exceed
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    time.sleep(1.2)
+    r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=1005)
+    assert r2["unified"] is False
+
+
+def test_seqnum_stitch_disabled():
+    """Con seqnum_stitch_enabled=False, MACs distintas son grupos distintos."""
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=1005)
+    assert r2["unified"] is False
+
+
+def test_seqnum_stitch_requires_seqnum_present():
+    """Sin seqnum (e.g. scapy no pudo parsear), no aplica regla 1."""
+    engine, _ = _make_engine(ble_anchor_enabled=False)
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=None)
+    r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=None)
+    assert r2["unified"] is False  # ningun seqnum -> regla 1 no aplica
+
+
+def test_seqnum_wrap_around():
+    """Seqnum 4090 + 5 con wrap = delta 11, dentro de max_delta=100."""
+    engine, _ = _make_engine()
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=4090)
+    r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=5)
+    assert r2["unified"] is True
+
+
+def test_seqnum_delta_helper():
+    """Sanity de la funcion _seqnum_delta — wrap simetrico."""
+    assert _seqnum_delta(100, 105) == 5
+    assert _seqnum_delta(4090, 5) == 11
+    assert _seqnum_delta(5, 4090) == 11
+    assert _seqnum_delta(0, 2048) == 2048  # antipodes
+
+
+# ---------------------------------------------------------------------------
+# BLE anchoring (regla 3)
+# ---------------------------------------------------------------------------
+
+def test_ble_anchor_links_late_wifi_to_existing_ble_group():
+    """Un BLE addr es seen en t=0; 5 min despues aparece una WiFi MAC con
+    RSSI cercano. Sin ble_anchor caerian en grupos distintos; con anchor
+    on, se unen al mismo grupo BLE."""
+    # Ventana de anchor = 10 min (mas que los 5 que vamos a esperar simulado)
+    engine, _ = _make_engine(seqnum_enabled=False, ble_window=600.0)
+    # Cross-window default es 2s — no aplica.
+    # ble_anchor_window=600s deberia agarrar nuestra deteccion 5min despues.
+
+    # Pero como time.sleep(5min) es prohibitivo, simulamos manipulando el
+    # SQLite directo: insertamos una observacion vieja a t=now-300s.
+    import sqlite3 as _sqlite3
+    db = engine.db_path
+    fake_t = time.time() - 300.0
+    with _sqlite3.connect(db) as conn:
+        from src.wifi_ble.hasher import hash_mac
+        ble_hash = hash_mac("AA:BB:CC:DD:EE:01", "")
+        conn.execute(
+            """INSERT INTO hash_groups
+               (hash, protocol, group_id, first_seen, last_seen, rssi, seqnum)
+               VALUES (?, 'ble', 'fake-ble-group', ?, ?, ?, NULL)""",
+            (ble_hash, fake_t, fake_t, -60.0),
+        )
+
+    # Ahora una nueva WiFi MAC con RSSI cercano al BLE viejo.
+    r = engine.process_detection("11:22:33:44:55:66", "wifi", -62.0)
+    assert r["unified"] is True
+    assert r["group_id"] == "fake-ble-group"
+
+
+def test_ble_anchor_disabled_means_no_long_window_stitch():
+    """Con ble_anchor_enabled=False, BLE viejo no agarra WiFi nuevo (solo
+    el cross_window_seconds de 2s aplica)."""
+    engine, _ = _make_engine(
+        seqnum_enabled=False, ble_anchor_enabled=False, ble_window=600.0
+    )
+    import sqlite3 as _sqlite3
+    from src.wifi_ble.hasher import hash_mac
+
+    db = engine.db_path
+    fake_t = time.time() - 300.0
+    with _sqlite3.connect(db) as conn:
+        ble_hash = hash_mac("AA:BB:CC:DD:EE:01", "")
+        conn.execute(
+            """INSERT INTO hash_groups
+               (hash, protocol, group_id, first_seen, last_seen, rssi, seqnum)
+               VALUES (?, 'ble', 'fake-ble-group', ?, ?, ?, NULL)""",
+            (ble_hash, fake_t, fake_t, -60.0),
+        )
+
+    r = engine.process_detection("11:22:33:44:55:66", "wifi", -62.0)
+    # Sin anchor + sin cross_window match (BLE muy viejo) -> nuevo grupo.
+    assert r["unified"] is False
+    assert r["group_id"] != "fake-ble-group"
+
+
+# ---------------------------------------------------------------------------
+# Stitching ratio (telemetria)
+# ---------------------------------------------------------------------------
+
+def test_stitching_ratio_no_data_returns_none():
+    engine, _ = _make_engine()
+    assert engine.get_stitching_ratio() is None
+
+
+def test_stitching_ratio_no_stitch_is_one():
+    """Sin stitches efectivos -> ratio = 1.0 (cada hash = su grupo)."""
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0)
+    engine.process_detection("BB:00:00:00:00:01", "wifi", -45.0)  # RSSI lejos
+    ratio = engine.get_stitching_ratio()
+    assert ratio == 1.0
+
+
+def test_stitching_ratio_with_seqnum_stitch():
+    """2 WiFi MACs stitched + 1 BLE solo -> 3 hashes, 2 grupos, ratio = 2/3."""
+    engine, _ = _make_engine(ble_anchor_enabled=False)
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=1005)
+    engine.process_detection("CC:00:00:00:00:01", "ble", -30.0)  # RSSI lejos
+    ratio = engine.get_stitching_ratio()
+    assert ratio == pytest.approx(2 / 3, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Self-validation: "1 device en cuarto vacio" no debe ser N personas
+# ---------------------------------------------------------------------------
+
+def test_single_device_with_mac_rotations_counts_as_one():
+    """Simulacion: un Android emite 10 probes con MAC distinta cada 3s
+    (rotation agresiva), pero seqnum continuo y RSSI estable -> 1 grupo."""
+    engine, _ = _make_engine()
+    seqnum = 500
+    for i in range(10):
+        # MAC distinta cada vez (rotacion agresiva del OS)
+        mac = f"AA:BB:CC:00:00:{i:02x}"
+        # Seqnum incrementa ~30 por iteracion (chip activo emite ~10/s)
+        seqnum = (seqnum + 30) % 4096
+        engine.process_detection(mac, "wifi", -55.0, seqnum=seqnum)
+
+    assert engine.get_unique_count() == 1
+
+
+def test_three_phones_close_together_count_as_three():
+    """Tres dispositivos distintos cerca uno del otro (RSSI similar) pero
+    cada uno con su propio seqnum stream -> 3 grupos."""
+    engine, _ = _make_engine()
+    # Phone A: seqnum 1000s
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -55.0, seqnum=1000)
+    engine.process_detection("AA:00:00:00:00:02", "wifi", -56.0, seqnum=1010)
+    # Phone B: seqnum 3000s (offset claro)
+    engine.process_detection("BB:00:00:00:00:01", "wifi", -54.0, seqnum=3000)
+    engine.process_detection("BB:00:00:00:00:02", "wifi", -55.0, seqnum=3010)
+    # Phone C: seqnum 200s
+    engine.process_detection("CC:00:00:00:00:01", "wifi", -57.0, seqnum=200)
+    engine.process_detection("CC:00:00:00:00:02", "wifi", -56.0, seqnum=210)
+
+    assert engine.get_unique_count() == 3

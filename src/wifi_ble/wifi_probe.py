@@ -34,13 +34,21 @@ DEFAULT_HOP_INTERVAL = 0.3  # segundos por canal
 
 @dataclass
 class ProbeEvent:
-    """Probe request WiFi capturado."""
+    """Probe request WiFi capturado.
+
+    ``seqnum`` (12 bits, top 12 del campo 802.11 Sequence Control) lo usa el
+    DedupEngine para hacer stitching de MACs randomizadas del mismo chip — el
+    seqnum es un contador del chip que tipicamente es continuo cross-MAC-change
+    (Android y la mayoria de Apple H1 pre-iPhone 12). ``None`` si scapy no
+    pudo parsear el campo (frame malformado o sin Dot11 header).
+    """
 
     mac: str
     rssi: float
     ssid: str
     channel: int
     timestamp: float
+    seqnum: int | None = None
 
 
 class WiFiProbeCapture:
@@ -347,12 +355,25 @@ class WiFiProbeCapture:
                 except (AttributeError, UnicodeDecodeError):
                     pass
 
+            # Sequence number: campo Sequence Control de 16 bits — top 12 son
+            # seqnum, bottom 4 son fragnum. Lo usa DedupEngine para hacer
+            # stitching de MACs randomizadas (el seqnum es del chip, no de la
+            # MAC, asi que tipicamente es continuo cross-rotation).
+            seqnum: int | None = None
+            try:
+                sc = dot11.SC
+                if sc is not None:
+                    seqnum = int(sc) >> 4
+            except (AttributeError, TypeError):
+                pass
+
             event = ProbeEvent(
                 mac=mac,
                 rssi=rssi,
                 ssid=ssid,
                 channel=self._current_channel,
                 timestamp=time.time(),
+                seqnum=seqnum,
             )
 
             self._probe_count += 1

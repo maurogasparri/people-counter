@@ -62,8 +62,14 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**.
 - **BLE**: bleak (D-Bus de BlueZ), escaneo pasivo.
 - **Hashing**: SHA-256 truncado a 16 bytes. **Nunca MACs crudas**.
-- **Dedup**: L1 intra-protocolo (SQLite por día), L2 cross-protocolo (ventana 2s + ΔRSSI ≤5dBm) — todo local en el device. L3 inter-cámara queda reservado para deploys multi-cam future work (no aplica al PoC con 1 device/sucursal).
-- **Publish**: en vez de mandar hashes, el `WifiBlePublisher` (`src/wifi_ble/publisher.py`) emite un único summary por ventana (default 15 min) con `{passersby, shoppers}` post-L2 dedup. Privacy stronger + Lambda más simple que dedup individual.
+- **Dedup → hash groups con stitching** (`src/wifi_ble/dedup.py`): los hashes se asocian a un `group_id` por identidad del dispositivo. Cada call de `process_detection` aplica 3 reglas en orden y joina al grupo más reciente que matchee:
+  1. **Seqnum continuity (WiFi-only)** — el seqnum 802.11 (12 bits, del header `dot11.SC >> 4`) es contador del chip y tiende a ser continuo cross-MAC-rotation. Match: Δseqnum ≤ `max_delta` (default 100, considerando wrap mod 4096) + ΔRSSI ≤ 5dBm + Δt ≤ 30s. Defeated por Apple H1+ (iPhone 12+) que resetea seqnum on MAC change; sigue funcionando en Android.
+  2. **Cross-protocol L2 (short window)** — WiFi MAC y BLE addr observados dentro de `cross_protocol_window_seconds` (default 2s) con ΔRSSI ≤ 5dBm = mismo dispositivo. Es el L2 histórico.
+  3. **BLE anchoring (long window)** — durante la vida de un BLE RPA (~15min iOS), nuevas WiFi MACs con RSSI compatible se mergean al grupo del BLE existente. Cubre el caso "WiFi rota cada 2min, BLE cada 15min" donde la regla 2 (2s) no alcanza.
+  Los counts publicados (`passersby`, `shoppers`) son `DISTINCT group_id`, no distinct hashes. L3 inter-cámara queda reservado para deploys multi-cam (no aplica al PoC con 1 device/sucursal).
+- **Privacy del stitching**: el seqnum y los timestamps quedan SOLO en `wifi_ble_dedup.sqlite` local (rotado diario via `reset_daily`). El MQTT publish sigue mandando counts agregados, nunca hashes ni seqnums ni MACs crudas.
+- **Stitching canary**: `dedup.get_stitching_ratio()` = `groups / hashes` del día. 1.0 = ningún stitch (cada hash es su propio "visitor"), 0.5 = mitad de los hashes se mergearon. Va en el payload de telemetry (`wifi_ble_stitching_ratio`) y la columna homónima de la tabla `telemetry` — canary para detectar si la flota corre con OS que defeatean las reglas.
+- **Publish**: el `WifiBlePublisher` (`src/wifi_ble/publisher.py`) emite un único summary por ventana (default 15 min) con `{passersby, shoppers}` post-stitching. Privacy stronger + Lambda más simple que dedup individual.
 
 ### Comunicación
 
