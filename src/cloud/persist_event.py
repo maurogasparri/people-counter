@@ -1,9 +1,7 @@
-"""AWS Lambda: persiste eventos del device en PostgreSQL.
+"""AWS Lambda: persiste eventos del device en Postgres (RDS).
 
-Invocada por las 3 Topic Rules de IoT Core (counting, telemetry, wifi_ble).
-El payload del device incluye ``type`` que determina la tabla destino.
-
-Schema del event esperado (envelope estándar de :class:`src.mqtt.client.MQTTClient`):
+Invocada por las 3 Topic Rules de IoT Core (counting / telemetry / wifi_ble).
+El payload del device viene del envelope estandar de :class:`src.mqtt.client.MQTTClient`:
 
     {
         "device_id":  "store-pilot-01-cam-01",
@@ -12,21 +10,33 @@ Schema del event esperado (envelope estándar de :class:`src.mqtt.client.MQTTCli
         "data":       { ... shape dependiente del type ... }
     }
 
-``store_id`` se infiere del ``device_id`` (prefijo antes del último ``-cam-``).
+``store_id`` se infiere del ``device_id`` (prefijo antes del ultimo ``-cam-``).
 
-Variables de entorno:
-    PG_HOST:     endpoint de Postgres (EC2 interna o RDS).
-    PG_PORT:     5432 default.
-    PG_DB:       people_counter default.
-    PG_USER:     people_counter default.
-    PG_PASSWORD_SSM_PATH: path en SSM Parameter Store (SecureString) con la pwd.
-                          Default ``/people-counter/dev/pg_password``.
+Auth a RDS: IAM database authentication. La Lambda corre con un role que
+tiene ``rds-db:connect`` sobre el DB user ``lambda_writer`` (configurado en
+el CFN). Cada conexion genera un token corto (~15 min de validez) via
+``rds.generate_db_auth_token`` y lo usa como password. Postgres valida el
+token contra IAM, sin password almacenado.
+
+Variables de entorno (seteadas por CFN):
+    PG_HOST:    endpoint de RDS.
+    PG_PORT:    5432 default.
+    PG_DB:      people_counter default.
+    PG_USER:    lambda_writer default (DB user con grant rds_iam).
+    PG_REGION:  region para generar el token IAM (= region de RDS).
+    SSL_ROOT_CERT_PATH: path al bundle de Amazon RDS CA (default empacado
+                       con la Lambda en /opt/rds-ca-bundle.pem si usas
+                       Layer; o /var/task/rds-ca-bundle.pem si lo zippeas
+                       con el code). Si la key falta y el archivo default
+                       no existe, conectamos con sslmode=require sin
+                       verificacion de CA (RDS force_ssl=1 igual encripta).
 
 Errores conocidos NO se re-raisean (sino IoT Core reintenta la regla):
-    - JSON malformado del device → loguear y descartar.
-    - Constraint violation (duplicate, check failed) → loguear y descartar.
+    - JSON malformado del device --> loguear y descartar.
+    - Constraint violation (duplicate, check failed) --> loguear y descartar.
 
-Errores transitorios (conexión rota, timeout) SÍ se re-raisean para reintento.
+Errores transitorios (conexion rota, timeout, token expirado) SI se
+re-raisean para reintento via IoT (max 1 retry para topic rules sin DLQ).
 """
 
 from __future__ import annotations
@@ -35,48 +45,66 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Conexiones se cachean entre invocaciones del mismo container Lambda (warm
-# start). El SDK de boto3 también se cachea. cold start ~500ms, warm <50ms.
+# start). Tokens IAM caducan a los 15min; cuando eso pasa, la query falla y
+# nos reconectamos transparente.
 _pg_conn = None
-_pg_password: str | None = None
 
 
-def _get_password() -> str:
-    """Lee el password de SSM Parameter Store (SecureString)."""
-    global _pg_password
-    if _pg_password is not None:
-        return _pg_password
+def _generate_iam_token() -> str:
+    """Genera un token IAM de RDS para autenticacion (~15min de validez)."""
     import boto3
 
-    ssm_path = os.environ.get(
-        "PG_PASSWORD_SSM_PATH", "/people-counter/dev/pg_password"
+    region = os.environ.get("PG_REGION", "us-east-1")
+    host = os.environ["PG_HOST"]
+    port = int(os.environ.get("PG_PORT", "5432"))
+    user = os.environ.get("PG_USER", "lambda_writer")
+
+    rds = boto3.client("rds", region_name=region)
+    return rds.generate_db_auth_token(
+        DBHostname=host,
+        Port=port,
+        DBUsername=user,
+        Region=region,
     )
-    client = boto3.client("ssm")
-    resp = client.get_parameter(Name=ssm_path, WithDecryption=True)
-    _pg_password = resp["Parameter"]["Value"]
-    return _pg_password
+
+
+def _ssl_root_cert() -> str | None:
+    """Devuelve el path al bundle de CA si existe, sino None.
+
+    Si esta seteado SSL_ROOT_CERT_PATH se usa eso. Sino, intenta paths
+    convencionales (Layer /opt/ o code /var/task/). Si nada existe,
+    None y conectamos con sslmode=require (encripta pero no verifica).
+    """
+    env_path = os.environ.get("SSL_ROOT_CERT_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+    for path in ("/opt/rds-ca-bundle.pem", "/var/task/rds-ca-bundle.pem"):
+        if os.path.exists(path):
+            return path
+    return None
 
 
 def _get_connection():
-    """Devuelve la conexión Postgres cacheada, o la abre si no existe.
+    """Devuelve la conexion Postgres cacheada, o la abre si no existe.
 
-    Si la conexión está rota (psycopg.OperationalError al hacer la query),
-    se cierra y se re-abre en la siguiente invocación.
+    Si la conexion esta rota (token expirado, network blip), se cierra y
+    se re-abre en la siguiente invocacion.
     """
     global _pg_conn
     if _pg_conn is not None:
         try:
-            # Healthcheck barato: SELECT 1
             with _pg_conn.cursor() as cur:
                 cur.execute("SELECT 1")
             return _pg_conn
         except Exception:
-            logger.warning("pg_connection_stale — reabriendo")
+            logger.warning("pg_connection_stale_reconnecting")
             try:
                 _pg_conn.close()
             except Exception:
@@ -85,33 +113,43 @@ def _get_connection():
 
     import psycopg
 
-    _pg_conn = psycopg.connect(
-        host=os.environ["PG_HOST"],
-        port=int(os.environ.get("PG_PORT", "5432")),
-        dbname=os.environ.get("PG_DB", "people_counter"),
-        user=os.environ.get("PG_USER", "people_counter"),
-        password=_get_password(),
-        connect_timeout=5,
-        autocommit=True,
-    )
+    sslmode = "verify-full" if _ssl_root_cert() else "require"
+    conn_kwargs: dict[str, Any] = {
+        "host": os.environ["PG_HOST"],
+        "port": int(os.environ.get("PG_PORT", "5432")),
+        "dbname": os.environ.get("PG_DB", "people_counter"),
+        "user": os.environ.get("PG_USER", "lambda_writer"),
+        "password": _generate_iam_token(),
+        "sslmode": sslmode,
+        # 15s para tolerar el cold start: import psycopg + boto3 + DNS + TCP +
+        # SSL handshake suelen tomar 3-8s la primera vez; 5s era marginal.
+        "connect_timeout": 15,
+        "autocommit": True,
+    }
+    root_cert = _ssl_root_cert()
+    if root_cert:
+        conn_kwargs["sslrootcert"] = root_cert
+
+    _pg_conn = psycopg.connect(**conn_kwargs)
     return _pg_conn
 
 
 def _infer_store_id(device_id: str) -> str:
-    """``store-001-cam-01`` → ``store-001``.
+    """``store-001-cam-01`` --> ``store-001``.
 
-    Convención: device_id = ``<store_id>-cam-<n>``. Si no matchea, devuelve
-    el device_id entero como fallback — la fila igual se persiste, solo que
-    el ``store_id`` no agrupa con sus hermanos.
+    Convencion: device_id = ``<store_id>-cam-<n>``. Si no matchea, devuelve
+    el device_id entero como fallback.
     """
     if "-cam-" in device_id:
         return device_id.rsplit("-cam-", 1)[0]
     return device_id
 
 
-def _ts_to_pg(epoch: float | int) -> str:
-    """epoch seconds → ISO 8601 UTC para Postgres TIMESTAMPTZ."""
-    return time.strftime("%Y-%m-%d %H:%M:%S+00", time.gmtime(float(epoch)))
+def _ts(epoch: float | int | None) -> datetime | None:
+    """epoch seconds --> datetime UTC para Postgres TIMESTAMPTZ (None passthrough)."""
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(float(epoch), tz=timezone.utc)
 
 
 def _insert_counting(conn, event: dict[str, Any]) -> None:
@@ -120,21 +158,39 @@ def _insert_counting(conn, event: dict[str, Any]) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO counting_events
-                (device_id, store_id, event_time, event_bucket, direction,
-                 track_id, confidence, height_class)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (device_id, event_time, track_id, direction) DO NOTHING
+            INSERT INTO count_events
+                (device_id, store_id, event_ts, event_bucket, direction,
+                 track_id, confidence, position_y,
+                 height_class, height_m, head_depth_m,
+                 total_in, total_out,
+                 scaling_factor, scaled_in, scaled_out,
+                 best_frame_path)
+            VALUES (%s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s,
+                    %s, %s, %s,
+                    %s)
+            ON CONFLICT (device_id, event_ts, track_id, direction) DO NOTHING
             """,
             (
                 device_id,
                 _infer_store_id(device_id),
-                _ts_to_pg(event["timestamp"]),
-                _ts_to_pg(data.get("event_bucket")) if data.get("event_bucket") else None,
+                _ts(data.get("event_time", event.get("timestamp"))),
+                _ts(data.get("event_bucket")),
                 data["direction"],
                 data.get("track_id"),
                 data.get("confidence"),
+                data.get("position_y"),
                 data.get("height_class"),
+                data.get("height_m"),
+                data.get("head_depth_m"),
+                data.get("total_in"),
+                data.get("total_out"),
+                data.get("scaling_factor"),
+                data.get("scaled_in"),
+                data.get("scaled_out"),
+                data.get("best_frame_path"),
             ),
         )
 
@@ -146,39 +202,54 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT INTO telemetry
-                (device_id, store_id, sample_time,
-                 cpu_temp_c, hailo_temp_c, disk_used_pct, uptime_s, fps,
-                 p50_latency_ms, p99_latency_ms, detection_rate_per_min,
-                 active_tracks, buffer_pending, mqtt_connected,
+                (device_id, store_id, event_ts,
+                 uptime_s, cpu_temp_c, hailo_temp_c,
+                 disk_free_mb, mem_available_mb,
+                 fps, frame_latency_p50_ms, frame_latency_p95_ms,
+                 detection_rate_per_min,
+                 tracker_confirmed_count, tracker_pending_count,
                  total_in, total_out,
-                 wifi_probe_ok, ble_scanner_ok, schedule_error)
+                 mqtt_connected, mqtt_disconnect_count,
+                 seconds_since_last_reconnect, buffer_backlog_messages,
+                 wifi_probe_ok, ble_scanner_ok,
+                 error, schedule_error_detail)
             VALUES (%s, %s, %s,
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s,
                     %s, %s, %s,
                     %s, %s,
-                    %s, %s, %s)
+                    %s, %s, %s,
+                    %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s)
             """,
             (
                 device_id,
                 _infer_store_id(device_id),
-                _ts_to_pg(event["timestamp"]),
+                _ts(event.get("timestamp")),
+                data.get("uptime_s"),
                 data.get("cpu_temp_c"),
                 data.get("hailo_temp_c"),
-                data.get("disk_used_pct"),
-                data.get("uptime_s"),
+                data.get("disk_free_mb"),
+                data.get("mem_available_mb"),
                 data.get("fps"),
                 data.get("frame_latency_p50_ms"),
                 data.get("frame_latency_p95_ms"),
                 data.get("detection_rate_per_min"),
                 data.get("tracker_confirmed_count"),
-                data.get("buffer_backlog_messages"),
-                data.get("mqtt_connected"),
+                data.get("tracker_pending_count"),
                 data.get("total_in"),
                 data.get("total_out"),
+                data.get("mqtt_connected"),
+                data.get("mqtt_disconnect_count"),
+                data.get("seconds_since_last_reconnect"),
+                data.get("buffer_backlog_messages"),
                 data.get("wifi_probe_ok"),
                 data.get("ble_scanner_ok"),
                 data.get("error"),
+                data.get("schedule_error_detail"),
             ),
         )
 
@@ -186,15 +257,12 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
 def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
     data = event["data"]
     device_id = event["device_id"]
-    # period_bucket: el publisher manda el bucket pre-alineado (== period_start
-    # con el alineamiento al epoch del commit 8c797de). Si por alguna razón no
-    # viene (cliente viejo), fallback al period_start crudo así Postgres no
-    # rechaza el NOT NULL — la query downstream queda equivalente al period_start.
+    # period_bucket default == period_start (publisher manda ambos pre-alineados).
     period_bucket = data.get("period_bucket", data["period_start"])
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO wifi_ble_summaries
+            INSERT INTO wifi_ble_summary
                 (device_id, store_id, period_start, period_end, period_bucket,
                  passersby, shoppers)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -203,9 +271,9 @@ def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
             (
                 device_id,
                 _infer_store_id(device_id),
-                _ts_to_pg(data["period_start"]),
-                _ts_to_pg(data["period_end"]),
-                _ts_to_pg(period_bucket),
+                _ts(data["period_start"]),
+                _ts(data["period_end"]),
+                _ts(period_bucket),
                 data["passersby"],
                 data["shoppers"],
             ),
@@ -222,15 +290,16 @@ _DISPATCH = {
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Handler de Lambda — invocado por las 3 IoT Topic Rules.
 
-    Errores de validación se descartan (return 200) para que IoT no reintente.
-    Errores transitorios de DB se re-raisean para que IoT reintente vía DLQ.
+    Errores de validacion se descartan (return 200) para que IoT no reintente.
+    Errores transitorios de DB se re-raisean para que IoT reintente.
     """
     try:
         event_type = event.get("type")
         if event_type not in _DISPATCH:
             logger.warning(
-                "persist_event_unknown_type",
-                extra={"type": event_type, "device_id": event.get("device_id")},
+                "persist_event_unknown_type type=%s device_id=%s",
+                event_type,
+                event.get("device_id"),
             )
             return {"statusCode": 400, "body": "unknown event type"}
 
@@ -242,28 +311,25 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         _DISPATCH[event_type](conn, event)
 
         logger.info(
-            "persist_event_ok",
-            extra={
-                "type": event_type,
-                "device_id": event["device_id"],
-            },
+            "persist_event_ok type=%s device_id=%s",
+            event_type,
+            event["device_id"],
         )
         return {"statusCode": 200, "body": "ok"}
 
     except KeyError as e:
-        # Payload malformado — descartar sin retry.
         logger.warning(
-            "persist_event_malformed",
-            extra={"missing_key": str(e), "event_type": event.get("type")},
+            "persist_event_malformed missing_key=%s event_type=%s",
+            e,
+            event.get("type"),
         )
         return {"statusCode": 400, "body": f"missing key: {e}"}
     except (ValueError, TypeError) as e:
-        # Tipos incorrectos (ej. timestamp no parseable) — descartar.
-        logger.warning("persist_event_value_error", extra={"error": str(e)})
+        logger.warning("persist_event_value_error error=%s", e)
         return {"statusCode": 400, "body": str(e)}
     except Exception:
-        # Errores transitorios (conn rota, timeout, deadlock). Cerramos la
-        # conexión para forzar reconexión + re-raise para IoT retry/DLQ.
+        # Errores transitorios (conn rota, timeout, deadlock, token expirado).
+        # Cerramos la conexion para forzar reconexion + re-raise para retry.
         global _pg_conn
         if _pg_conn is not None:
             try:

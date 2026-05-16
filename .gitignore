@@ -74,6 +74,15 @@ Thumbs.db
 # Use this for downloaded reports, screenshots, pasted outputs, etc.
 /debug/
 
+# Provisioning outputs per device (certs X.509 + per-thing config). Sensible.
+/provisioned/
+
+# Ad-hoc Lambda / IoT / CFN test artifacts en la raiz del repo (smoke tests,
+# describe-stacks dumps, etc.). Si necesitas algo permanente, va a /debug/.
+/test-event.json
+/test-output.json
+/cs-details.json
+
 # Training workspace — sites.yaml con IPs + matrices, captures rectificadas,
 # manifests, clips. Pesado y/o sensible. Trackear sólo el README y el
 # template del YAML.
