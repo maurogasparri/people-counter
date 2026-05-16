@@ -7,7 +7,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales, basado en 
 - **Cuenta personas** que entran y salen de un local en tiempo real usando profundidad por cámara estéreo + YOLOv8n en acelerador Hailo-8L
 - **Detecta tráfico exterior** vía captura pasiva de probe requests WiFi y advertising BLE
 - **Clasifica tráfico** con umbrales duales de RSSI: transeúntes (-75 dBm) vs compradores (-55 dBm), calculando Turn In Rate
-- **Deduplica** señales WiFi/BLE entre protocolos (L1+L2 en dispositivo). La L3 inter-cámara queda reservada para deploys multi-cam por local (no aplica al PoC con 1 device/sucursal).
+- **Deduplica** WiFi/BLE local en el device via hash groups con stitching: seqnum continuity 802.11 (anti MAC-randomization), cross-protocol L2 (WiFi+BLE simultáneo), y BLE anchoring (durante la vida de un RPA ~15min). Los counts publicados son distinct grupos, no distinct hashes. La L3 inter-cámara queda reservada para deploys multi-cam por local (no aplica al PoC con 1 device/sucursal).
 - **Transmite metadatos** a AWS vía MQTT con buffer local SQLite para resiliencia offline
 - **Respeta horarios operativos** vía AWS IoT Device Shadow (configuración pushada desde la nube)
 
@@ -29,13 +29,14 @@ Cada unidad consiste en:
 
 ```
 Dispositivo edge (por puerta)         AWS Cloud (PoC, 1 device)
-+--------------------------+         +-------------------------+
-| Capture → Rectify → SGBM |  MQTT   | IoT Core (3 IoT Rules)  |
-| YOLOv8n → Track → Count  |--TLS-->| → Lambda persist_event  |
-| WiFi/BLE → Hash → Dedup  |  QoS1  | → Postgres 16 (EC2)     |
-| SQLite buffer (72h)      |         | → Grafana OSS (EC2)     |
-+--------------------------+         | pg_dump diario → S3     |
-                                     +-------------------------+
++--------------------------+         +-------------------------------+
+| Capture → Rectify → SGBM |  MQTT   | IoT Core (3 IoT Rules)        |
+| YOLOv8n → Track → Count  |--TLS-->| → Lambda persist_event         |
+| WiFi/BLE → Hash → Stitch |  QoS1  |    (IAM auth a RDS, out-VPC)   |
+| SQLite buffer + dedup    |         | → RDS Postgres 16 (db.t4g.μ)  |
++--------------------------+         | → App Runner Grafana 13       |
+                                     |    (custom domain HTTPS)      |
+                                     +-------------------------------+
 ```
 
 ### Procesos en el edge
@@ -86,7 +87,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
-| Infra cloud | CloudFormation | IoT Core (broker + 3 IoT Rules SQL) + Lambda persist_event + EC2 t3.micro con Postgres 16 + Grafana OSS + pg_dump diario a S3 |
+| Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 6 fases) | VPC + RDS Postgres 16 (db.t4g.micro, IAM auth + force_ssl) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + App Runner Grafana 13 (custom domain `grafana.tfg.gasparri.com.ar`) + SNS alarms. ~$20/mo PoC. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
 | Deployment | Listo | provision.py (create/deploy/harvest/reprovision), servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
 | Disaster recovery | Listo | `harvest` baja `calibration.npz` al workstation; `reprovision` revoca cert viejo en IoT Core y emite uno nuevo. Certs nunca se respaldan — rotan en cada restore |
 | Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup-guide.md). Guía para operadores en campo (docs/pilot-operator-guide.md) |
@@ -311,9 +312,9 @@ Defense-in-depth runtime (independiente del modelo):
 src/
 ├── vision/          # Captura estéreo (picamera2), calibración ChArUco, profundidad SGBM + WLS, detección YOLOv8n (Hailo + OpenCV), world_coords para altura de cabeza, report HTML
 ├── tracking/        # Tracker euclidiano 3D + contador por línea virtual / ROI con height_class por track
-├── wifi_ble/        # Captura de probes WiFi (nexmon), scan BLE (bleak), hashing de MAC, dedup (L1+L2)
+├── wifi_ble/        # Captura de probes WiFi (nexmon + seqnum 802.11), scan BLE (bleak), hashing, dedup a hash groups con stitching (seqnum continuity + cross-protocol L2 + BLE anchoring)
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
-├── cloud/           # Lambda persist_event (IoT Rules → Postgres en EC2)
+├── cloud/           # Lambda persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
 ├── config/          # Loader (deep-merge defaults + per-device + IoT Shadow) + hardware (HardwareParams dataclass — sensor/lens/bracket/charuco/ae_lock leídos del config, hardware-agnostic)
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
@@ -342,7 +343,7 @@ scripts/
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── roi_picker.py          # Seleccionador de ROI + línea virtual
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
-├── deploy_lambda.sh       # Packaging del Lambda persist_event (psycopg binary + handler)
+├── deploy_lambda.ps1      # Packaging del Lambda persist_event (psycopg binary + handler). Versión .sh tambien disponible.
 ├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock
 ├── capture_baseline_frames.py  # Captura frames rectificados de la Pi para validation bench (no training)
 ├── training/
@@ -365,7 +366,10 @@ config/
 ├── people-counter-reset.*        # Timer de reset diario de dedup (04:00)
 └── logrotate.conf                # Rotación de logs
 infra/
-└── cloudformation/people-counter.yaml  # Stack completo de AWS
+├── README.md                              # Walkthrough del deploy + costos + verificación E2E
+├── cloudformation/people-counter.yaml     # Stack completo de AWS
+├── deploy.ps1                             # Orquestador 6 fases (RDS + IoT + Lambda + ECR + App Runner + Grafana env vars). -StartFromPhase para resumir
+└── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_summary / telemetry / sales + 6 views + lambda_writer con rds_iam)
 docs/
 ├── setup-guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
 ├── lab-calibration-guide.md      # Protocolo de foco + calibración en lab (universal para la flota)

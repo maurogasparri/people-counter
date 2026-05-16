@@ -23,16 +23,26 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 +------------------+---------------------------+
                    | MQTT (TLS + X.509)
                    v
-+---------------------------------------------+
-|              AWS Cloud (PoC, 1 device)       |
-|  IoT Core  ──► Lambda persist_event ──┐      |
-|  (3 rules)                            ▼      |
-|                              EC2 t3.micro    |
-|                              ├ Postgres 16   |
-|                              └ Grafana OSS   |
-|                                              |
-|  S3 bucket ◄── pg_dump diario (cron)         |
-+---------------------------------------------+
++--------------------------------------------------+
+|              AWS Cloud (PoC, 1 device)            |
+|                                                   |
+|  IoT Core (3 Topic Rules) ──► Lambda             |
+|                               persist_event       |
+|                               (out of VPC,        |
+|                                IAM auth a RDS)    |
+|                                       │           |
+|                                       ▼           |
+|                              RDS Postgres 16      |
+|                              (db.t4g.micro,       |
+|                               force_ssl)          |
+|                                       ▲           |
+|                                       │ datasource|
+|  App Runner ── Grafana 13 ────────────┘           |
+|  (custom domain HTTPS,                            |
+|   ACM auto-renewed)                               |
+|                                                   |
+|  CloudFormation orquesta TODO (infra/deploy.ps1)  |
++--------------------------------------------------+
 ```
 
 ## Hardware por unidad
@@ -55,7 +65,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Profundidad**: SGBM + matcher derecho + WLS filter. `vision.num_disparities: auto` deriva el rango desde `mounting_height_m`.
 - **Detección**: YOLOv8n fine-tuneado (cenital), HEF para Hailo-8L. NMS on-chip. VStream API con scheduler ROUND_ROBIN. Modelo activo: `people-counter-detector`. Pipeline detallado en `scripts/training/README.md`.
 - **Tracking**: euclidiano 3D (x, y, profundidad) con Kalman per-track + state machine corta (CANDIDATE → CONFIRMED → PENDING → LOST).
-- **Conteo**: línea virtual + ROI rectangular. Track entra al ROI → cruza línea → sale del ROI = evento ingress/egress. Publicación inmediata vía MQTT.
+- **Conteo**: línea virtual + ROI rectangular. Track entra al ROI → cruza línea → sale del ROI = evento `direction='in'` o `'out'` (terminología canónica fleet-wide, schema y MQTT). Publicación inmediata vía MQTT.
 
 ### Captura WiFi/BLE
 
@@ -86,9 +96,10 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Cloud (AWS)
 
-- **PoC actual (1 device)**: IoT Core (broker + 3 rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`) → Postgres 16 self-hosted en EC2 t3.micro (free tier) + Grafana OSS en la misma EC2 leyendo el Postgres. pg_dump diario a S3. Lambda dedup L3 no aplica con 1 device/sucursal (L1+L2 local cubre el caso).
-- **Producción (rollout de flota)**: Postgres self-hosted → RDS Postgres (Multi-AZ + backups gestionados); Grafana OSS → Amazon Managed Grafana (SSO + alerting + IAM integration). Trigger es el pase de PoC a producción — no por volumen (la t3.micro escala razonable hasta ~50 devices), sino por operabilidad y SLA.
-- **Multi-cam por sucursal**: cuando se agregue 2+ cámaras por local, reintroducir L3 (Lambda + DynamoDB de hashes). El dedup L1+L2 local cubre monocam pero no inter-cam.
+- **PoC actual (1 device, deployado)**: IoT Core (broker + 3 Topic Rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`, fuera de VPC, IAM auth a RDS via `rds.generate_db_auth_token`) → RDS Postgres 16 (db.t4g.micro, single-AZ, IAM auth + `rds.force_ssl=1`). Grafana 13 en App Runner (image desde ECR, custom domain `grafana.tfg.gasparri.com.ar` con ACM auto-renewed) lee el mismo RDS como datasource. Orquestado por CloudFormation (`infra/cloudformation/people-counter.yaml`) + `infra/deploy.ps1` (6 fases con `-StartFromPhase`). Schema en `infra/sql/bootstrap.sql`. Lambda dedup L3 no aplica con 1 device/sucursal (el stitching local del device cubre el caso).
+- **Producción (rollout de flota)**: RDS single-AZ → Multi-AZ ($26/mo en vez de $13). Considerar Amazon Managed Grafana (SSO + IAM-integrated, $9/user) en vez de OSS si se integra a auth corporativa. Migrar DNS a Route53 delegated subdomain para que CFN gestione DNS records y deploy sea 100% sin pause (hoy hay un único step manual: agregar CNAMEs en el DNS provider externo).
+- **Costos PoC ~$20/mo**: RDS db.t4g.micro $13 + App Runner 1vCPU/2GB $5 + IoT/Lambda/SecretsManager/CloudWatch <$2.
+- **Multi-cam por sucursal**: cuando se agregue 2+ cámaras por local, reintroducir L3 (Lambda + DynamoDB de hashes). El stitching local del device cubre monocam pero no inter-cam.
 
 ## Convenciones de código
 

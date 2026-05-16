@@ -268,7 +268,8 @@ counter:
 ```
 
 **`counter.line`** — línea virtual de cruce dentro del ROI. Cuando un track
-cruza la línea, dispara un evento ingress o egress.
+cruza la línea, dispara un evento con `direction='in'` (entrando) o `'out'`
+(saliendo).
 
 ```yaml
 counter:
@@ -379,8 +380,8 @@ Cada evento de conteo del dispositivo debería generar una invocación del
 Lambda. Si ves invocations pero con errores de parsing, avisar a ingeniería.
 
 Alternativa: pedir a ingeniería que te arme una query saved en Postgres
-(Grafana panel o psql directo) del estilo `SELECT * FROM counting WHERE
-device_id = '<id>' ORDER BY event_time DESC LIMIT 20`.
+(Grafana panel o DBeaver directo) del estilo `SELECT * FROM count_events
+WHERE device_id = '<id>' ORDER BY event_ts DESC LIMIT 20`.
 
 ### 4.2. Caminata de test
 
@@ -393,7 +394,7 @@ Con el servicio corriendo y el tail de logs abierto en paralelo:
 
 ```bash
 # En la segunda SSH, tail del log filtrando eventos de conteo
-sudo journalctl -u people-counter -f | grep -E "ingress|egress"
+sudo journalctl -u people-counter -f | grep "counting_event_published"
 ```
 
 Criterio de éxito del piloto día 1:

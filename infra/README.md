@@ -25,10 +25,11 @@ RPi5 ──MQTT/TLS──► IoT Core ──┬─► Rule "counting"   ─┐
 - **Lambda fuera de VPC, IAM auth a RDS** — sin VPC connector ($7-14/mo de VPC
   endpoints). La Lambda usa `rds.generate_db_auth_token` para autenticar como
   el DB user `lambda_writer` (sin password almacenado).
-- **Sin Lambda dedup L3** — innecesaria con 1 device/sucursal. El dedup local
-  L1+L2 cubre monocam. Reintroducir cuando haya 2+ cams por store.
+- **Sin Lambda dedup L3** — innecesaria con 1 device/sucursal. El stitching
+  local del device (hash groups con 3 reglas: seqnum continuity + cross-protocol
+  L2 + BLE anchoring) cubre monocam. Reintroducir cuando haya 2+ cams por store.
 - **Payload WiFi/BLE reducido** — el device manda `{passersby, shoppers}` post
-  L2 dedup, no hashes individuales. Privacidad + payload chico.
+  stitching, no hashes individuales. Privacidad + payload chico.
 
 ---
 
@@ -108,6 +109,14 @@ Definido en [`sql/bootstrap.sql`](sql/bootstrap.sql). 4 tablas + 6 views.
 | `telemetry`        | 1 row por sample (5min def)       | sin constraint — duplicados aceptables |
 | `wifi_ble_summary` | 1 row por ventana (15min def)     | `UNIQUE (device_id, period_start, period_end)` |
 | `sales`            | 1 row por venta (futuro POS API)  | `UNIQUE (store_id, external_id)` |
+
+**Columnas notables de `telemetry`**: ademas de OS metrics (`cpu_temp_c`,
+`hailo_temp_c`, `disk_free_mb`, etc) y pipeline metrics (`fps`,
+`frame_latency_p50/p95_ms`, `tracker_confirmed_count`, etc), tiene
+**`wifi_ble_stitching_ratio`** = `groups / hashes` del dia del device. 1.0 =
+ningun stitch efectivo. Canary para detectar si la flota corre con OS que
+defeatean el stitching (Apple H1+ con seqnum reset, BLE off, etc). Query:
+`SELECT device_id, AVG(wifi_ble_stitching_ratio) FROM telemetry WHERE event_ts > now() - interval '1 day' GROUP BY device_id;`
 
 Views (todas en `bootstrap.sql`):
 

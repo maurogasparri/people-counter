@@ -62,7 +62,7 @@ activo promedio, 50% de los días con doble turno).
 | M3 | Setup tools UX completo | ✓ Done (05-12) |
 | M4 | Detector fine-tuned corriendo en Hailo | ✓ Done (05-08) |
 | M5 | Pipeline E2E con conteo validado | ✓ Done (05-08) |
-| — | Dashboards funcionales (Grafana OSS sobre Postgres) | **⊘ Pendiente** (CFN desplegado, dashboards no construidos) |
+| — | Dashboards funcionales (App Runner Grafana 13 sobre RDS Postgres) | **⊘ Pendiente** (CFN desplegado + datasource configurado, dashboards no construidos) |
 
 ### Iteraciones de diseño exploradas
 
@@ -113,7 +113,7 @@ Totales por agrupación (medidos del repo):
 |------------|-----------|-------|--------------|
 | **Soporte** | Adquisición + ensamblaje + config | 8.0 | 9% |
 | **Dev** | Scripts calib + Detección + WiFi/BLE + MQTT | 59.2 | 66% |
-| **Infra (AWS)** | IoT Core + Lambda persist_event + EC2 (Postgres + Grafana) | 2.0 | 2% |
+| **Infra (AWS)** | IoT Core + Lambda persist_event + RDS Postgres + App Runner Grafana | 3.0 | 3% |
 | **Pruebas** | Per-módulo + integración E2E | ~5.0 | 6% |
 | **Cross-cutting** | Config system + Docs + Cleanup | 13.1 | 15% |
 | **Pre-history** | Bundle pre-existente del initial commit | ~40 | (no medido) |
@@ -222,17 +222,21 @@ diseño del data model + permisos IAM.**
 | Sub-tarea | T-code | Horas | Inicio | Fin | Predecesoras | Estado |
 |-----------|--------|-------|--------|-----|--------------|--------|
 | IoT Core + certificados X.509 (Thing registry, policies, MQTT topics) | T10a | 0.5 | 04-24 | 05-08 | T09 | OK |
-| Lambda persist_event + Postgres 16 en EC2 t3.micro (free tier) | T10b | 0.5 | 04-24 | 05-08 | T10a | OK |
+| Lambda persist_event + RDS Postgres 16 (IAM auth, out of VPC) | T10b | 0.5 | 04-24 | 05-15 | T10a | OK |
 | 3 IoT Rules SQL (counting / wifi_ble / telemetry → Lambda) | T10c | 0.8 | 04-24 | 05-08 | T10b | OK |
 | CloudWatch (logging + métricas básicas) | T10d | 0.2 | 04-24 | 05-08 | T10a | OK (mínimo) |
-| Dashboards funcionales (Grafana OSS en la misma EC2) | T10e | — | — | — | T10b | **Pendiente** |
+| App Runner Grafana 13 + custom domain HTTPS (`grafana.tfg.gasparri.com.ar`) | T10e | 1.0 | 05-13 | 05-15 | T10b | OK |
+| Dashboards funcionales (queries sobre views de bootstrap.sql) | T10f | — | — | — | T10e | **Pendiente** (post-piloto, con datos reales) |
 
-> Total medido: ~2.0h. El stack del PoC consolidó en Postgres self-hosted +
-> Grafana OSS sobre EC2 free tier. Para producción se migra a RDS Postgres +
-> Amazon Managed Grafana (operabilidad y SLA, no volumen). La Lambda dedup
-> L3 inter-cámara queda reservada para deploys multi-cam future work — con
-> 1 device/sucursal el dedup L1+L2 local cubre todo. El "dashboard funcional"
-> en Grafana queda pendiente de construcción con datos reales del piloto.
+> Total medido: ~3.0h. El stack del PoC consolidó en **RDS Postgres 16
+> (db.t4g.micro) + App Runner Grafana 13**, no en EC2 self-hosted — la
+> diferencia de operabilidad (snapshots managed, parche de SO/DB, restart sin
+> perder state, ACM auto-renewed para HTTPS) justificó los ~$8/mo extra vs
+> free tier. Producción mantiene la misma arquitectura, solo cambia a RDS
+> Multi-AZ. La Lambda dedup L3 inter-cámara queda reservada para deploys
+> multi-cam — con 1 device/sucursal el stitching local del device cubre todo.
+> El "dashboard funcional" en Grafana queda pendiente de construcción con
+> datos reales del piloto.
 
 ---
 
@@ -454,7 +458,7 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
 2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Con el modelo de distorsión definido upfront y el sensor mode canónico documentado, son 3-4h. Para sensors/lenses nuevos presupuestar 1.5× del baseline consolidado.
 3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-ROI) probablemente cueste 6-10h cada uno.
 4. **Detector "barato" en horas locales pero caro en wall-clock** — 11h directas, pero hay 20+ días de calendario entre captura → label → train → compile porque cada etapa tiene wait externo (Roboflow labeling humano, Kaggle queue, Hailo compile en Docker).
-5. **Infra AWS hands-on muy bajo (2h)** porque CloudFormation declarativo. Pero los **dashboards funcionales no están** — para un piloto real presupuestar 3-5h adicionales armando dashboards en Grafana OSS conectado al Postgres del PoC.
+5. **Infra AWS hands-on bajo (~3h)** porque CloudFormation declarativo + `infra/deploy.ps1` orquesta las 6 fases (CFN core → push imagen → bootstrap SQL → CFN App Runner → custom domain → env vars). Pero los **dashboards funcionales no están** — para un piloto real presupuestar 3-5h adicionales armando dashboards en Grafana 13 sobre las views de `bootstrap.sql`.
 6. **Cross-cutting suma ~13h (15% del total medido)** — config + docs + cleanup. Para próximos proyectos similares, presupuestar 15-20% extra sobre las feature stories.
 7. **Pre-history reutilizable** — el skeleton del T00 (módulos, tests, pyproject, systemd units) es casi proyecto-agnóstico para edge devices similares y se podría usar como template para acortar el T00 de un proyecto análogo a 5-10h en vez de 40.
 8. **Pruebas embebidas vs. dedicadas** — el 90% de las pruebas en este proyecto fueron interleaved con el desarrollo (validated-on-hardware commits). Para un cronograma formal con QA separado, presupuestar +20% sobre las horas de dev para una fase de Pruebas explícita.
@@ -643,7 +647,7 @@ genuinamente nuevo que hay que hacer.**
 | T07 | Status LED + health monitor | 1.5 | |
 | T08 | Config system (HardwareParams + naming canónico desde día 1) | 3 | Sin back-compat shims = -2h vs medido |
 | T09 | MQTT cliente + buffer + shadow | 1.5 | |
-| T10 | Infra AWS (CFN + IoT Core + Lambda + EC2 Postgres + Grafana) | 2 | |
+| T10 | Infra AWS (CFN + IoT Core + Lambda IAM auth + RDS Postgres + App Runner Grafana) | 3 | |
 | T11 | Provisioning + disaster recovery | 2 | |
 | T12 | Detector — captura multi-site | 3 | |
 | T13 | Detector — labeling + training | 2.5 | Trabajo activo. (Wall-clock adicional: ~1-2 días de espera externa) |
@@ -671,7 +675,7 @@ setup_device.sh, focus_assist, calibrate, roi_picker).
 | **Foco con lab protocol universal** (mount a 2.0m, target a 1.5m, ambos lentes, esmalte transparente al seam para fijar) | **1-2h** | +15-20min touch-dry / 30-60min cure full | Los lens M12 tienen play mecánico, casi siempre iterás 2-3 ciclos de foco. Llave dedicada durante el foco, se retira antes de pintar. |
 | **Calibración estéreo** (wizard browser-driven, ChArUco A3 a 1.0/2.0/3.0m, ~20 poses con coverage gates) | **1.5-2h** | — | Si alguna pose falla coverage o gate de re-detect, se re-corre. Validar con diagnose_depth.py (error <5% a 2m). |
 | **Provisioning del device** (flash SD con OS, ejecutar setup_device.sh, escribir /etc/people-counter/config.yaml, dropear calib.npz + HEF + certs X.509, enable services) | 2.5h | — | Mayormente wait por installs apt |
-| **ROI + líneas de conteo** (`roi_picker.py` en el local final, definir ROI rectangular + línea virtual con etiquetas ingress/egress) | 1h | — | Necesita la Pi montada en su posición real |
+| **ROI + líneas de conteo** (`roi_picker.py` en el local final, definir ROI rectangular + línea virtual con etiquetas `in`/`out`) | 1h | — | Necesita la Pi montada en su posición real |
 | **Validación E2E** (walk-through con personas, verificar eventos MQTT, dashboard cloud recibiendo, tunear thresholds si hace falta) | **2-4h** | — | Primera vez aparecen issues de ROI/thresholds que requieren tuning iterativo. 2h es el caso happy-path, 4h con tuning normal. |
 | **TOTAL operaciones PoC** | **~14-18h** | **+ ~30min cure del esmalte** | |
 
