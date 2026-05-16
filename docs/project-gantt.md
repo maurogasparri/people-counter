@@ -5,11 +5,11 @@ con la estructura formal del plan de proyecto. Sirve como input para
 herramientas de project management (MS Project, GanttProject, etc.) y
 como referencia para estimar tareas similares a futuro.
 
-**Período medido**: 2026-04-02 → 2026-05-12 (41 días calendario, 28
+**Período medido**: 2026-04-02 → 2026-05-15 (44 días calendario, 31
 activos).
-**Esfuerzo medido**: 89.5h efectivas (51 sesiones detectadas por gaps
-≥ 1.5h entre commits) + ~40h estimadas del bundle pre-existente que
-trajo el initial commit. **Total ≈ 130h**.
+**Esfuerzo medido**: ~100h efectivas en 55 sesiones (gaps ≥ 1.5h entre
+commits) + ~40h estimadas del bundle pre-existente que trajo el initial
+commit. **Total ≈ 140-145h**.
 **Modalidad**: solo developer, sesiones partidas mañana/noche (3.2h/día
 activo promedio, 50% de los días con doble turno).
 
@@ -20,7 +20,7 @@ activo promedio, 50% de los días con doble turno).
 > de error está principalmente en el trabajo previo al primer commit de
 > cada sesión (research, debug manual en la Pi sin commit aún).
 >
-> **Datos medidos vs. proyecciones**. Las **89.5h del PoC actual** salen
+> **Datos medidos vs. proyecciones**. Las **~100h del PoC actual** salen
 > de timestamps reales — son datos. El **escenario optimizado** y el
 > **greenfield desde cero** son **proyecciones** basadas en asunciones
 > explícitas. Las proyecciones incluyen un buffer de +15% sobre la
@@ -35,22 +35,23 @@ activo promedio, 50% de los días con doble turno).
 
 ### PoC entregado (datos medidos)
 
-- **89.5h efectivas en 41 días calendario** (2026-04-02 → 2026-05-12),
-  28 días activos, 51 sesiones partidas mañana/noche detectadas.
+- **~100h efectivas en 44 días calendario** (2026-04-02 → 2026-05-15),
+  31 días activos, 55 sesiones partidas mañana/noche detectadas.
 - **+ ~40-60h estimadas del skeleton bundleado** en el initial commit
   (20 módulos en `src/` + ~130 tests + pyproject + main.py).
-- **Total real del proyecto: ~130-150h hands-on**.
+- **Total real del proyecto: ~140-160h hands-on**.
 
 ### Distribución del esfuerzo medido
 
 | Bloque | % del esfuerzo |
 |--------|--------------:|
-| Visión + calibración | **48%** |
-| Misc cross-cutting | 14% |
-| Detector (training + Hailo + tracker + counter) | 13% |
-| Tracking | 5% |
-| Docs + config + cleanup | 12% |
-| Infra (WiFi/BLE + MQTT + Cloud + Status LED + Provisioning) | 9% |
+| Visión + calibración | **43%** |
+| Misc cross-cutting | 13% |
+| Detector (training + Hailo + tracker + counter) | 11% |
+| Tracking | 4% |
+| Docs + config + cleanup | 11% |
+| Infra (WiFi/BLE + MQTT + Cloud bring-up + Status LED + Provisioning) | **15%** |
+| Stitching post-MAC-randomization | 3% |
 
 ### Hitos del PoC
 
@@ -62,6 +63,8 @@ activo promedio, 50% de los días con doble turno).
 | M3 | Setup tools UX completo | ✓ Done (05-12) |
 | M4 | Detector fine-tuned corriendo en Hailo | ✓ Done (05-08) |
 | M5 | Pipeline E2E con conteo validado | ✓ Done (05-08) |
+| **M6** | **Stack cloud desplegado E2E: device → IoT → Lambda IAM auth → RDS → Grafana HTTPS** | **✓ Done (05-15)** |
+| **M7** | **Dedup WiFi/BLE robusto a MAC randomization: hash groups con 3 reglas de stitching** | **✓ Done (05-15)** |
 | — | Dashboards funcionales (App Runner Grafana 13 sobre RDS Postgres) | **⊘ Pendiente** (CFN desplegado + datasource configurado, dashboards no construidos) |
 
 ### Iteraciones de diseño exploradas
@@ -111,11 +114,12 @@ Totales por agrupación (medidos del repo):
 
 | Agrupación | Sub-items | Horas | % del medido |
 |------------|-----------|-------|--------------|
-| **Soporte** | Adquisición + ensamblaje + config | 8.0 | 9% |
-| **Dev** | Scripts calib + Detección + WiFi/BLE + MQTT | 59.2 | 66% |
-| **Infra (AWS)** | IoT Core + Lambda persist_event + RDS Postgres + App Runner Grafana | 3.0 | 3% |
-| **Pruebas** | Per-módulo + integración E2E | ~5.0 | 6% |
-| **Cross-cutting** | Config system + Docs + Cleanup | 13.1 | 15% |
+| **Soporte** | Adquisición + ensamblaje + config | 8.0 | 8% |
+| **Dev** | Scripts calib + Detección + WiFi/BLE + MQTT | 59.2 | 59% |
+| **Infra (AWS)** | CFN inicial + bring-up real (RDS + App Runner + IAM auth + custom domain + schema alignment) | **~10.0** | **10%** |
+| **Stitching** | Diseño del dedup en hash groups (seqnum + cross-protocol + BLE anchor) + tests | **~3.5** | **3%** |
+| **Pruebas** | Per-módulo + integración E2E | ~5.0 | 5% |
+| **Cross-cutting** | Config system + Docs + Cleanup | ~15.0 | 15% |
 | **Pre-history** | Bundle pre-existente del initial commit | ~40 | (no medido) |
 | **Post-cursada** | Piloto + ajustes + rollout | — | (fuera de scope) |
 
@@ -199,11 +203,38 @@ Totales por agrupación (medidos del repo):
 > style desde día 1, presupuestar **1-1.5h en lugar de 3h** para esta
 > sub-tarea.
 
-#### 2.3. WiFi/BLE + deduplicación (2.0h)
+#### 2.3. WiFi/BLE + deduplicación (5.5h)
 
 | Sub-tarea | T-code | Horas | Inicio | Fin | Predecesoras |
 |-----------|--------|-------|--------|-----|--------------|
-| WiFi/BLE capture (nexmon + bleak) + hashing + dedup L1/L2 | T06 | 2.0 | 04-02 | 04-07 | T01 |
+| Captura WiFi/BLE (nexmon + bleak) + hashing + scaffolding del dedup engine | T06 | 2.0 | 04-02 | 04-07 | T01 |
+| **Análisis de MAC randomization + diseño del modelo de dedup robusto** (técnicas evaluadas: PNL clustering, seqnum tracking, timing fingerprinting, BLE anchoring, channel timing analysis; selección + implementación de las 3 reglas que balancean accuracy vs privacy) | T20 | **~3.5** | 05-15 | 05-15 | T06, T17 |
+
+> **T20 — análisis del problema y selección de técnicas**: iOS/Android
+> randomizan la MAC en probes cada ~2-15min como contramedida
+> anti-tracking. Sin stitching, cada rotación cuenta como visitante nuevo
+> e infla el conteo 3-15×. El análisis evaluó 5 técnicas publicadas
+> (PNL clustering, sequence number tracking, timing fingerprinting, BLE
+> anchoring, channel timing analysis) con trade-offs documentados de
+> accuracy vs privacy regression vs costo de implementación.
+>
+> El modelo final usa **3 reglas complementarias** sobre el abstracto
+> `hash_groups`: (1) **seqnum continuity 802.11** — el seqnum del chip
+> tiende a ser continuo cross-MAC-change (defeated por Apple H1+ con
+> reset, funciona en Android); (2) **cross-protocol L2 short window** —
+> WiFi+BLE simultáneo con RSSI compatible; (3) **BLE anchoring long
+> window** — durante la vida de un BLE RPA (~15min iOS), MACs WiFi con
+> RSSI compatible se asocian al grupo. PNL clustering y timing
+> fingerprinting se rechazaron — el primero por cruzar la línea de
+> "fingerprinting comportamental" del producto (vendemos privacy-first),
+> el segundo por signal débil.
+>
+> Privacy preservada en todos los layers: seqnum y timestamps quedan SOLO
+> en SQLite local (rotado diario), lo único que sale del device por MQTT
+> sigue siendo `{passersby, shoppers}` post-stitching. Se agregó canary
+> `wifi_ble_stitching_ratio` (groups/hashes del día) en telemetry para
+> monitorear efectividad del stitching en la flota (ratio sostenido en
+> 1.0 = stitching no agarra, indica calibrar contra ground-truth cam).
 
 #### 2.4. Comunicación MQTT (2.0h)
 
@@ -213,30 +244,31 @@ Totales por agrupación (medidos del repo):
 
 ---
 
-### 3. Desarrollo del proyecto — Infra (2.0h hands-on + dashboards pendiente)
+### 3. Desarrollo del proyecto — Infra (~10h hands-on + dashboards pendiente)
 
-**Recursos AWS — todo definido en `infra/cloudformation/people-counter.yaml`.
-Las horas hands-on son bajas porque el stack es declarativo; el grueso fue
-diseño del data model + permisos IAM.**
+**Recursos AWS — todo definido en `infra/cloudformation/people-counter.yaml`
++ `infra/deploy.ps1` (orquestador 6 fases) + `infra/sql/bootstrap.sql`. El
+trabajo se distribuyó en dos bloques: arquitectura + diseño detallado del
+stack (04-24 → 05-08), y deployment cuidadoso fase-por-fase con validación
+intermedia (05-13 → 05-15).**
 
 | Sub-tarea | T-code | Horas | Inicio | Fin | Predecesoras | Estado |
 |-----------|--------|-------|--------|-----|--------------|--------|
-| IoT Core + certificados X.509 (Thing registry, policies, MQTT topics) | T10a | 0.5 | 04-24 | 05-08 | T09 | OK |
-| Lambda persist_event + RDS Postgres 16 (IAM auth, out of VPC) | T10b | 0.5 | 04-24 | 05-15 | T10a | OK |
-| 3 IoT Rules SQL (counting / wifi_ble / telemetry → Lambda) | T10c | 0.8 | 04-24 | 05-08 | T10b | OK |
-| CloudWatch (logging + métricas básicas) | T10d | 0.2 | 04-24 | 05-08 | T10a | OK (mínimo) |
-| App Runner Grafana 13 + custom domain HTTPS (`grafana.tfg.gasparri.com.ar`) | T10e | 1.0 | 05-13 | 05-15 | T10b | OK |
-| Dashboards funcionales (queries sobre views de bootstrap.sql) | T10f | — | — | — | T10e | **Pendiente** (post-piloto, con datos reales) |
+| Análisis y diseño de arquitectura cloud (IoT Core + certs X.509 + 3 IoT Topic Rules + esqueleto del CFN) | T10a | ~2 | 04-24 | 05-08 | T09 | OK |
+| **Diseño detallado del stack**: análisis de trade-offs RDS vs EC2 (operabilidad managed vs $$ free tier), App Runner vs EC2 self-hosted Grafana (ACM auto-renewed vs Let's Encrypt manual), Lambda VPC vs out-of-VPC con IAM auth (VPC endpoints $$ vs `rds.generate_db_auth_token`). Resultado: VPC + RDS db.t4g.micro + IAM auth + App Runner Grafana + ECR + alarmas SNS. | T10b | **~3** | 05-13 | 05-14 | T10a | OK |
+| **Deployment phaseado**: `infra/deploy.ps1` 6 fases (CFN core → push imagen Grafana a ECR → bootstrap SQL → CFN App Runner → custom domain HTTPS → env vars), con validación intermedia por fase y `-StartFromPhase` para resumir interrupciones de red. | T10c | **~3** | 05-13 | 05-15 | T10b | OK |
+| **Lambda persist_event**: diseño del data flow (envelope estándar `{device_id, timestamp, type, data}` → dispatch por tipo → INSERT idempotente en Postgres), auth via `rds.generate_db_auth_token` (token IAM corto, sin password almacenado), packaging con psycopg[binary] manylinux x86_64 para Linux runtime. | T10d | **~1.5** | 05-15 | 05-15 | T10c | OK |
+| **`bootstrap.sql` (schema + 6 views)**: count_events / wifi_ble_summary / telemetry / sales como tablas raw + view multi-cam dedup (`wifi_ble_store_traffic` con MAX por store) + views analíticas (`counting_by_bucket`, `turn_in_rate_by_bucket`, rollups hourly) + view de conversion (`store_hourly_summary` con sales join). | T10e | **~0.5** | 05-15 | 05-15 | T10c | OK |
+| Dashboards funcionales (queries sobre las 6 views de bootstrap.sql) | T10f | — | — | — | T10e | **⊘ Pendiente** (post-piloto, con datos reales) |
 
-> Total medido: ~3.0h. El stack del PoC consolidó en **RDS Postgres 16
-> (db.t4g.micro) + App Runner Grafana 13**, no en EC2 self-hosted — la
-> diferencia de operabilidad (snapshots managed, parche de SO/DB, restart sin
-> perder state, ACM auto-renewed para HTTPS) justificó los ~$8/mo extra vs
-> free tier. Producción mantiene la misma arquitectura, solo cambia a RDS
-> Multi-AZ. La Lambda dedup L3 inter-cámara queda reservada para deploys
-> multi-cam — con 1 device/sucursal el stitching local del device cubre todo.
-> El "dashboard funcional" en Grafana queda pendiente de construcción con
-> datos reales del piloto.
+> **Total: ~10h** distribuidas entre análisis arquitectural (T10a + T10b
+> = ~5h), deployment cuidadoso (T10c = ~3h), y refinamiento de capas
+> downstream (T10d + T10e = ~2h). El stack consolidado: **RDS Postgres 16
+> (db.t4g.micro, ~$13/mo) + App Runner Grafana 13 ($5/mo) + Lambda out-of-VPC
+> con IAM auth** ofrece operabilidad managed (snapshots automáticos, parche
+> de SO/DB, restart sin perder state, ACM auto-renewed para HTTPS) por
+> ~$20/mo total. Producción mantiene la misma arquitectura, solo cambia
+> RDS single-AZ → Multi-AZ.
 
 ---
 
@@ -270,7 +302,7 @@ a futuro, presupuestar ~20% del total.**
 |-----------|--------|-------|--------|-----|
 | Config system (loader, deep-merge, HardwareParams, back-compat renames) | T08 | 5.0 | 04-08 | 05-12 |
 | Docs (setup-guide, lab-calibration-guide, pilot-operator-guide, privacy, project-gantt) | T17 | 3.6 | 04-07 | 05-12 |
-| Refactoring + cleanup (hardware-agnostic, training_data/ unify, dead code, ruff sweeps) | T19 | 4.5 | 05-02 | 05-12 |
+| Higiene del repo (consolidación hardware-agnostic, unificación de training_data/, ruff sweeps) | T19 | 4.5 | 05-02 | 05-12 |
 
 ---
 
@@ -318,6 +350,8 @@ referencia.
 | M3 | Setup tools UX completo (wizards en browser, AE lock canónico, dual-pass) | 05-12 | T05 | Dev |
 | M4 | Detector fine-tuned corriendo en Hailo | 05-08 | T14 | Dev / Pruebas detección |
 | M5 | Pipeline E2E con conteo validado | 05-08 | T16 | Pruebas integral |
+| **M6** | **Stack cloud desplegado E2E** (CFN aplicado + Lambda IAM auth + RDS schema + Grafana HTTPS) | **05-15** | **T10c+d+e** | **Infra (AWS)** |
+| **M7** | **Dedup robusto** (hash groups con 3 reglas de stitching: seqnum + cross-protocol L2 + BLE anchor) | **05-15** | **T20** | **Stitching** |
 
 ---
 
@@ -330,10 +364,10 @@ T00 ──┬─→ T01 ──┬─→ T02 → T03 ──┬─→ T04 ──�
       │         │                │              ↑
       │         │                └─→ T12 → T13 → T14 ────┘  (detector pipeline)
       │         │
-      │         ├─→ T06 (wifi_ble — independiente)
+      │         ├─→ T06 ──→ T20 (stitching, post-payload-shape definition)
       │         ├─→ T07 (status led — independiente)
       │         ├─→ T08 (config — cross-cutting)
-      │         └─→ T09 → T10a/b/c/d (mqtt → cloud)
+      │         └─→ T09 → T10a → T10b → T10c → T10d → T10e (mqtt → cloud bring-up)
       │              ↓
       │              └─→ T11 (provisioning)
       │
@@ -344,17 +378,35 @@ T00 ──┬─→ T01 ──┬─→ T02 → T03 ──┬─→ T04 ──�
 
 ### Camino crítico
 
-`T00 → T01 → T02 → T03 → T04 → T15 → T16` = pipeline mínimo viable.
+`T00 → T01 → T02 → T03 → T04 → T15 → T16` = pipeline mínimo viable (M5).
 
 Suma del camino crítico: **40 + 3.5 + 4 + 12 + 5 + 3 + 1.7 ≈ 69h**.
 
-Las 53h restantes son ramas en paralelo que no bloquean el E2E:
+Las ~31h restantes (hasta M5) son ramas en paralelo que no bloquean el E2E:
 
-- WiFi/BLE (T06) — vía propia, output va a MQTT
+- WiFi/BLE captura inicial (T06) — vía propia, output va a MQTT
 - Status LED (T07) — vía propia, sin downstream
 - MQTT/Cloud/Provisioning (T09 → T10 → T11) — pipeline de publishing
 - Setup tools UX (T05) — paralelo al detector, no bloquea runtime
 - Detector (T12 → T13 → T14) — más caro en wall-clock que en horas reales por el ciclo Roboflow → Kaggle → Hailo (cada etapa tiene wait externo)
+
+**M6 y M7** quedan fuera del camino crítico mínimo porque las ramas de
+infra cloud y dedup robusto corren en paralelo al pipeline E2E:
+
+- **M6 — stack cloud E2E** (T10a→e, ~10h): la cadena de análisis
+  arquitectural → diseño detallado → deployment phaseado → Lambda con
+  IAM auth → schema + views está fuera del camino crítico del E2E del
+  device (que termina en M5), pero es prerequisito para que el piloto
+  produzca data persistida + visualizable. Para futuros proyectos con
+  stack similar, presupuestar **8-12h** para esta cadena — la fase de
+  análisis de trade-offs (RDS vs EC2, App Runner vs self-hosted, IAM
+  auth vs SSM password) es donde se va el grueso del tiempo, no en la
+  redacción del YAML.
+- **M7 — dedup robusto** (T20, ~3.5h): análisis del problema de MAC
+  randomization (5 técnicas evaluadas con trade-offs) + selección de 3
+  reglas + implementación + tests. Es prerequisito para que los counts
+  WiFi/BLE del piloto sean confiables (sin stitching el inflation es
+  3-15×, números no defendibles ante el cliente).
 
 ---
 
@@ -394,22 +446,26 @@ gantt
     Cliente + buffer + shadow (T09)       :done, t09, 2026-04-24, 17d
 
     section Infra AWS
-    IoT Core + X.509 (T10a)               :done, t10a, 2026-04-24, 15d
-    Lambda persist_event + Postgres (T10b):done, t10b, 2026-04-24, 15d
-    3 IoT Rules SQL (T10c)                :done, t10c, 2026-04-24, 15d
-    CloudWatch (T10d)                     :done, t10d, 2026-04-24, 15d
-    Dashboards Grafana (T10e)             :crit, t10e, 2026-05-13, 7d
+    Arquitectura + IoT Core (T10a)        :done, t10a, 2026-04-24, 15d
+    Diseño detallado RDS + App Runner (T10b) :done, t10b, 2026-05-13, 2d
+    Deployment phaseado del stack (T10c)  :done, t10c, 2026-05-13, 3d
+    Lambda IAM auth + psycopg (T10d)      :done, t10d, 2026-05-15, 1d
+    Schema + views analíticas (T10e)      :done, t10e, 2026-05-15, 1d
+    Dashboards Grafana (T10f)             :crit, t10f, 2026-05-16, 7d
+
+    section WiFi/BLE robusto
+    Análisis MAC randomization + stitching (T20) :done, t20, 2026-05-15, 1d
 
     section Pruebas
     Integral PoC (T18 + E2E)              :done, t18, 2026-05-06, 7d
 
     section Cross-cutting
     Config + back-compat (T08)            :done, t08, 2026-04-08, 35d
-    Docs (T17)                            :done, t17, 2026-04-07, 36d
-    Cleanup + refactor (T19)              :done, t19, 2026-05-02, 11d
+    Docs (T17)                            :done, t17, 2026-04-07, 39d
+    Higiene del repo (T19)                :done, t19, 2026-05-02, 11d
 
     section Post-cursada
-    Piloto 2 sucursales                   :pilot, after t10e, 28d
+    Piloto 2 sucursales                   :pilot, after t10f, 28d
     Ajustes post-piloto                   :adjust, after pilot, 14d
     Rollout 30 locales                    :rollout, after adjust, 90d
 ```
@@ -428,6 +484,8 @@ semana del     vis    det    trk    cfg    docs   otros    TOTAL
 27-Abr        8.5h   4.0h   0.5h   1.5h   0.8h    2.9h    18.2h   ← detector + setup tools
 04-May        7.1h   4.4h   2.6h   1.1h    -      5.2h    19.4h   ← detector + tracking + runtime
 11-May        1.5h   1.0h   0.5h   1.3h   0.4h    1.1h     5.8h   (cleanup)
+                                                       cloud   stitch
+11-May (cont)  -      -      -      -     0.5h    7.0h   3.5h   11.0h   ← deployment del stack cloud (05-13/15) + dedup robusto WiFi/BLE (05-15)
 ```
 
 ## Patrón diario detectado
@@ -458,7 +516,7 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
 2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Con el modelo de distorsión definido upfront y el sensor mode canónico documentado, son 3-4h. Para sensors/lenses nuevos presupuestar 1.5× del baseline consolidado.
 3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-ROI) probablemente cueste 6-10h cada uno.
 4. **Detector "barato" en horas locales pero caro en wall-clock** — 11h directas, pero hay 20+ días de calendario entre captura → label → train → compile porque cada etapa tiene wait externo (Roboflow labeling humano, Kaggle queue, Hailo compile en Docker).
-5. **Infra AWS hands-on bajo (~3h)** porque CloudFormation declarativo + `infra/deploy.ps1` orquesta las 6 fases (CFN core → push imagen → bootstrap SQL → CFN App Runner → custom domain → env vars). Pero los **dashboards funcionales no están** — para un piloto real presupuestar 3-5h adicionales armando dashboards en Grafana 13 sobre las views de `bootstrap.sql`.
+5. **Infra AWS ~10h con análisis arquitectural dominando el costo** — del total, ~5h fueron análisis de trade-offs (RDS vs EC2, App Runner vs self-hosted, Lambda VPC vs IAM auth out-of-VPC) + diseño detallado del CFN; ~3h deployment phaseado con validación intermedia; ~2h refinamiento de capas downstream (Lambda + schema). `infra/deploy.ps1` orquesta las 6 fases (CFN core → push imagen → bootstrap SQL → CFN App Runner → custom domain → env vars Grafana). Para un proyecto análogo con stack similar, presupuestar **8-12h** repartidas en este balance (análisis dominante, deployment apoyado en CFN declarativo). Los **dashboards funcionales no están** — para piloto real presupuestar 3-5h adicionales armando dashboards en Grafana 13 sobre las views de `bootstrap.sql`.
 6. **Cross-cutting suma ~13h (15% del total medido)** — config + docs + cleanup. Para próximos proyectos similares, presupuestar 15-20% extra sobre las feature stories.
 7. **Pre-history reutilizable** — el skeleton del T00 (módulos, tests, pyproject, systemd units) es casi proyecto-agnóstico para edge devices similares y se podría usar como template para acortar el T00 de un proyecto análogo a 5-10h en vez de 40.
 8. **Pruebas embebidas vs. dedicadas** — el 90% de las pruebas en este proyecto fueron interleaved con el desarrollo (validated-on-hardware commits). Para un cronograma formal con QA separado, presupuestar +20% sobre las horas de dev para una fase de Pruebas explícita.
@@ -867,6 +925,65 @@ paralelizar.
 
 (Para el resumen del PoC entregado, hitos cumplidos e iteraciones de
 diseño exploradas, ver **Resumen ejecutivo** al inicio del doc.)
+
+---
+
+## Próximos pasos sugeridos antes del piloto
+
+Trabajos pendientes prioritarios identificados durante el cierre del PoC,
+ordenados por gating del piloto. No son sub-tareas del PoC actual (que
+queda entregable con M5+M6+M7); son inputs para el planning del piloto.
+
+### 1. Pre-piloto (~6-8h, 1 semana antes del deploy)
+
+- **Dashboards Grafana básicos (3-5h)** sobre las 6 views ya
+  preparadas en `bootstrap.sql`. 3-4 paneles canónicos: counting por
+  hora, turn-in rate diario, device health (CPU/Hailo temp + MQTT
+  status + buffer backlog), telemetry trend. Sin esto, el piloto
+  funciona pero el cliente no tiene visualización del valor que está
+  generando.
+- **Test de integración local contra Postgres real** (1-2h) que
+  invoque la Lambda code real contra un Postgres local con el schema
+  de `bootstrap.sql` aplicado. Cubre el escenario "device emite
+  payload → Lambda persiste → row legible" sin mocks de psycopg.
+- **Baseline de `inflation_ratio` WiFi/BLE en lab** (1-2h). Smoke
+  test con la cam midiendo X personas + el WiFi/BLE reportando Y
+  passersby + el stitching shippeando ratio Z. Esto da el rango
+  esperable de `wifi_ble_stitching_ratio` que el operador del piloto
+  debería ver en los dashboards.
+
+### 2. Día de deploy del piloto (~6h hands-on)
+
+- Visita técnica al local: ensamblar enclosure si va externo, montar
+  la Pi (~1h).
+- Foco con el lab protocol universal + esmalte transparente para fijar
+  el lens M12 (~1h hands-on + 30min cure).
+- Calibración stereo con el wizard (~1h).
+- ROI + línea con `roi_picker.py` montado en la posición real (~1h).
+- Validación E2E con walks manuales y tuning iterativo de thresholds
+  (~2h).
+
+### 3. Operación monitoreada (2-3 semanas)
+
+- Daily check de los dashboards (passersby/ins ratio razonable,
+  `wifi_ble_stitching_ratio` estable en un rango calibrado, ausencia
+  de spikes raros en telemetry).
+- Spot check de eventos de conteo vs observación humana en 3-4
+  ventanas puntuales (~15min cada una) para validar accuracy del
+  detector + tracker + counter end-to-end.
+
+### 4. Inputs adicionales para producción (no gating del piloto)
+
+- **Runbook operativo day-2**: qué hacer si el LED queda en rojo, cómo
+  re-provisionar un cert vencido, cómo restart-ear un device remoto
+  vía AWS IoT Device Shadow, cómo bajar `pg_dump` del RDS para análisis
+  offline. `docs/pilot-operator-guide.md` cubre el setup inicial pero
+  no la operación continua.
+- **Wiring humano del alarming**: SNS topic configurado en el CFN; falta
+  definir quién recibe los emails, si hay escalation y SLA de respuesta.
+- **Política de retention del RDS**: para piloto el storage crece sin
+  problema; para producción a 30 locales decidir si archivar a S3 los
+  rows > 90 días o solo retención por billing.
 
 ---
 
