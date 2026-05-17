@@ -37,9 +37,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 |                               force_ssl)          |
 |                                       ▲           |
 |                                       │ datasource|
-|  App Runner ── Grafana 13 ────────────┘           |
+|  ECS Fargate + ALB ── Grafana 13 ─────┘           |
 |  (custom domain HTTPS,                            |
-|   ACM auto-renewed)                               |
+|   ACM cert auto-renewed)                          |
 |                                                   |
 |  CloudFormation orquesta TODO (infra/deploy.ps1)  |
 +--------------------------------------------------+
@@ -96,9 +96,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Cloud (AWS)
 
-- **PoC actual (1 device, deployado)**: IoT Core (broker + 3 Topic Rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`, fuera de VPC, IAM auth a RDS via `rds.generate_db_auth_token`) → RDS Postgres 16 (db.t4g.micro, single-AZ, IAM auth + `rds.force_ssl=1`). Grafana 13 en App Runner (image desde ECR, custom domain `grafana.tfg.gasparri.com.ar` con ACM auto-renewed) lee el mismo RDS como datasource. Orquestado por CloudFormation (`infra/cloudformation/people-counter.yaml`) + `infra/deploy.ps1` (6 fases con `-StartFromPhase`). Schema en `infra/sql/bootstrap.sql`. Lambda dedup L3 no aplica con 1 device/sucursal (el stitching local del device cubre el caso).
-- **Producción (rollout de flota)**: RDS single-AZ → Multi-AZ ($26/mo en vez de $13). Considerar Amazon Managed Grafana (SSO + IAM-integrated, $9/user) en vez de OSS si se integra a auth corporativa. Migrar DNS a Route53 delegated subdomain para que CFN gestione DNS records y deploy sea 100% sin pause (hoy hay un único step manual: agregar CNAMEs en el DNS provider externo).
-- **Costos PoC ~$20/mo**: RDS db.t4g.micro $13 + App Runner 1vCPU/2GB $5 + IoT/Lambda/SecretsManager/CloudWatch <$2.
+- **PoC actual (1 device, deployado)**: IoT Core (broker + 3 Topic Rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`, fuera de VPC, IAM auth a RDS via `rds.generate_db_auth_token`) → RDS Postgres 16 (db.t4g.micro, single-AZ, IAM auth + `rds.force_ssl=1`, `AutoMinorVersionUpgrade=true`). Grafana 13 en ECS Fargate detrás de ALB con ACM cert custom (image desde ECR, custom domain `grafana.tfg.gasparri.com.ar`) lee el mismo RDS como datasource. Orquestado por CloudFormation (`infra/cloudformation/people-counter.yaml`) + `infra/deploy.ps1` (5 fases con `-StartFromPhase`). El cert ACM se crea fuera de CFN para que el deploy no bloquee esperando validación DNS — el ARN entra al stack como parámetro. Schema en `infra/sql/bootstrap.sql`. Lambda dedup L3 no aplica con 1 device/sucursal (el stitching local del device cubre el caso).
+- **Producción (rollout de flota)**: RDS single-AZ → Multi-AZ ($26/mo en vez de $13). Considerar Amazon Managed Grafana (SSO + IAM-integrated, $9/user) en vez de OSS si se integra a auth corporativa. Migrar DNS a Route53 delegated subdomain para que CFN gestione DNS records (ALIAS al ALB) y el deploy sea 100% sin pause — hoy hay 2 steps manuales: agregar CNAMEs de validación ACM (permanentes) y el CNAME final al ALB en el DNS provider externo.
+- **Costos PoC ~$35/mo**: RDS db.t4g.micro $13 + Fargate task 0.5vCPU/1GB $18 + ALB $16 + ACM cert free + IoT/Lambda/SecretsManager/CloudWatch <$2. Al sumar 2+ services en el futuro (sales API, auth), se puede compartir el ALB via listener rules y amortizar el costo fijo del LB.
 - **Multi-cam por sucursal**: cuando se agregue 2+ cámaras por local, reintroducir L3 (Lambda + DynamoDB de hashes). El stitching local del device cubre monocam pero no inter-cam.
 
 ## Convenciones de código

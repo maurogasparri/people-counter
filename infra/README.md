@@ -1,7 +1,7 @@
 # Infra AWS — People Counter (PoC)
 
 Stack cloud que recibe mensajes del dispositivo edge, los persiste en Postgres
-(RDS), y los expone en Grafana (App Runner). Todo en `us-east-1`.
+(RDS), y los expone en Grafana (ECS Fargate + ALB). Todo en `us-east-1`.
 
 ```
 RPi5 ──MQTT/TLS──► IoT Core ──┬─► Rule "counting"   ─┐
@@ -10,18 +10,25 @@ RPi5 ──MQTT/TLS──► IoT Core ──┬─► Rule "counting"   ─┐
                               │
                               └─► Shadow $aws/things ◄─► dispositivo (operating_hours, counting_enabled)
 
-                                                            App Runner ─── Grafana 13 ──► dashboards
-                                                            (custom domain)       ▲
-                                                                                  │
-                                                                  Postgres datasource (RDS)
+                                            ALB (HTTPS, ACM cert) ──► ECS Fargate (Grafana 13) ──► dashboards
+                                            custom domain                                              ▲
+                                                                                                       │
+                                                                                       Postgres datasource (RDS)
 ```
 
 **Decisiones de scope** (PoC con 1 device):
 
-- **RDS Postgres + App Runner Grafana**, no self-hosted en EC2 — operabilidad >
-  costo: snapshots automaticos, parche de SO/DB managed, restart sin perder
-  state, scaling vertical sin downtime. App Runner sirve Grafana con custom
-  domain + ACM auto-renovado.
+- **RDS Postgres + ECS Fargate Grafana detrás de ALB**, no self-hosted en EC2 —
+  operabilidad > costo: snapshots automaticos, parche de SO/DB managed, restart
+  sin perder state, scaling vertical sin downtime. Fargate corre el container
+  oficial de Grafana 13; el ALB termina HTTPS con ACM cert custom (custom
+  domain `grafana.<DomainName>`) y forwardea a port 3000 del task.
+- **Cert ACM creado fuera de CFN** — `deploy.ps1` corre `aws acm
+  request-certificate` antes del deploy del Grafana stack y espera DNS
+  validation. El ARN entra al CFN como parametro. Razon: si el cert vive
+  adentro del stack con DnsValidation, `cloudformation deploy` bloquea
+  esperando que el operador agregue los CNAMEs — peor UX que pausar el
+  script con un Read-Host explicito.
 - **Lambda fuera de VPC, IAM auth a RDS** — sin VPC connector ($7-14/mo de VPC
   endpoints). La Lambda usa `rds.generate_db_auth_token` para autenticar como
   el DB user `lambda_writer` (sin password almacenado).
@@ -84,18 +91,23 @@ Definidos en [`cloudformation/people-counter.yaml`](cloudformation/people-counte
 
 | Recurso | Proposito |
 |---|---|
-| `VPC` + 2 public subnets + IGW   | Red para RDS (App Runner y Lambda van fuera de VPC). |
-| `RdsInstance` (db.t4g.micro)     | Postgres 16, IAM auth + `rds.force_ssl=1`, PubliclyAccessible para Lambda + DBeaver. |
+| `VPC` + 2 public subnets + IGW   | Red para RDS, ALB y tasks ECS (Lambda va fuera de VPC). |
+| `RdsInstance` (db.t4g.micro)     | Postgres 16.6, IAM auth + `rds.force_ssl=1` + `AutoMinorVersionUpgrade=true`, PubliclyAccessible para Lambda + DBeaver. |
 | `RdsMasterSecret`                | Password autogenerado en Secrets Manager (master user `people_counter`). |
-| `RdsSecurityGroup`               | 5432 abierto a `AdminCidr` (DBeaver) + `0.0.0.0/0` (Lambda) — TLS + IAM gatekeep. |
+| `RdsSecurityGroup`               | 5432 abierto a `AdminCidr` (DBeaver) + `0.0.0.0/0` (Lambda + Fargate tasks) — TLS + IAM gatekeep. |
 | `IoTDevicePolicy`                | Connect, publish a los 3 topics, subscribe al shadow propio. |
 | `IoTThingType`                   | `people-counter-${env}` con atributos `store_id`, `firmware_version`. |
 | `IoTTopicRule` x3                | Routing MQTT → Lambda. Error action → CloudWatch Logs. |
 | `PersistEventLambda`             | Python 3.13, 256MB, IAM auth a RDS. Code: `src/cloud/persist_event.py`. |
 | `GrafanaEcrRepo`                 | `:latest` pushed por `deploy.ps1`. `EmptyOnDelete: true` para teardown limpio. |
-| `GrafanaService` (App Runner)    | Grafana OSS 13 (oficial Docker image). Default egress, no VPC connector. |
-| `GrafanaInstanceRole/AccessRole` | Permisos para que App Runner pulle de ECR + corra el container. |
-| `AlertTopic` (SNS)               | Subs por email a alarmas (Lambda errors, IoT disconnect, App Runner health). |
+| `GrafanaCluster` (ECS)           | Capacity provider FARGATE. |
+| `GrafanaTaskDefinition`          | Cpu/Memory parametrizados, env vars + secret de RDS bakeados, log driver `awslogs`. |
+| `GrafanaService` (ECS)           | DesiredCount=1, MinimumHealthyPercent=0 (rolling deploy con downtime corto en PoC single-instance), AssignPublicIp=ENABLED. |
+| `GrafanaAlb` (ALB)               | internet-facing, application LB, en las 2 public subnets. |
+| `GrafanaListenerHttps`           | 443/HTTPS con SslPolicy TLS13-1-2-2021-06 y cert ACM (param `GrafanaCertArn`). |
+| `GrafanaListenerHttp`            | 80/HTTP -> redirect 301 a HTTPS (defense in depth aparte de force_ssl en Grafana). |
+| `GrafanaTaskExecutionRole`       | Pull de ECR + write a CloudWatch + inyecta password del Secrets Manager al container. |
+| `AlertTopic` (SNS)               | Subs por email a alarmas (Lambda errors, IoT disconnect, RDS CPU/storage/conn, ALB 5xx, ECS tasks down). |
 
 ---
 
@@ -136,8 +148,9 @@ Views (todas en `bootstrap.sql`):
 
 ## 4) Deploy
 
-Orchestrado por [`deploy.ps1`](deploy.ps1) en 6 fases con `-StartFromPhase` para
-resumir interrupciones.
+Orchestrado por [`deploy.ps1`](deploy.ps1) en 5 fases con `-StartFromPhase`
+para resumir interrupciones. Tiene 2 pausas manuales (CNAMEs de validacion
+ACM + CNAME final al ALB).
 
 ### Pre-requisitos
 
@@ -147,9 +160,6 @@ aws configure get region               # us-east-1
 docker info                            # daemon corriendo (push a ECR + bootstrap SQL via docker psql)
 ```
 
-App Runner requiere **plan pago de AWS** (no Free Account). Si la cuenta esta
-en Free, hay que upgradear desde la consola — sin costo fijo, solo pay-as-you-go.
-
 ### Run
 
 ```powershell
@@ -158,14 +168,15 @@ en Free, hay que upgradear desde la consola — sin costo fijo, solo pay-as-you-
 
 Fases:
 
-1. **[1/6]** CFN deploy core — VPC + RDS + IoT + Lambda stub + ECR (sin App Runner).
-2. **[2/6]** Push imagen `grafana/grafana:latest` a ECR + bootstrap SQL via `docker run postgres:16 psql`.
-3. **[3/6]** CFN deploy con `DeployAppRunner=true` — agrega App Runner Service apuntando al ECR.
-4. **[4/6]** `aws apprunner associate-custom-domain` + **pause manual** para agregar CNAMEs (validation records + final CNAME → DNSTarget) en tu DNS provider. Loop hasta que custom domain → `ACTIVE`.
-5. **[5/6]** `aws apprunner update-service` con `RuntimeEnvironmentVariables` (Postgres backend para Grafana). El CFN no acepta env vars dinamicas con secret refs en early validation, asi que se setean por CLI post-deploy.
-6. **[6/6]** Poll hasta que App Runner Service → `RUNNING`.
+1. **[1/5]** CFN deploy core — VPC + RDS + IoT + Lambda stub + ECR (sin Grafana).
+2. **[2/5]** Push imagen `grafana/grafana:latest` a ECR + bootstrap SQL via `docker run postgres:16 psql`.
+3. **[3/5]** `aws acm request-certificate` (idempotente: reusa cert si ya existe para el FQDN). Printea los CNAMEs de validacion y **pausa con Read-Host**. Una vez agregados al DNS provider, `aws acm wait certificate-validated` polea hasta ISSUED (timeout 75min). Los CNAMEs de validacion deben quedar PERMANENTES en el DNS provider — ACM los re-checkea en cada renewal.
+4. **[4/5]** CFN deploy con `DeployGrafana=true` + el cert ARN como parametro. Crea cluster ECS, task definition, ALB, target group, 2 listeners (443 HTTPS forward + 80 HTTP redirect), 2 SGs y service. CFN espera a que el service estabilice antes de marcar `UPDATE_COMPLETE`. Toda env var de Grafana (incluido el password del RDS via Secrets Manager) ya esta bakeada en la task definition — no hay `update-service` post-deploy.
+5. **[5/5]** Printea el ALB DNS Name y **pausa con Read-Host** para que el operador agregue el CNAME `grafana.<DomainName>` -> ALB DNS Name. Despues hace best-effort de `Resolve-DnsName` para confirmar propagacion (no falla si TTL todavia no propago).
 
-El unico step manual es el DNS — los CNAMEs hay que agregarlos en el DNS provider externo (gasparri.com.ar no esta en Route53). El script printea exactamente que records y donde, y pausea con `Read-Host`.
+Tiempo end-to-end ~15-25 min, dominado por validacion DNS (puede tardar segundos o minutos segun el TTL del provider). Phase 4 ~5-8 min para que CFN cree el ALB y el ECS service estabilice.
+
+La URL final `https://grafana.<DomainName>` queda en el output `GrafanaUrl` del stack y `deploy.ps1` la imprime al cierre.
 
 ### Deploy del codigo real de Lambda
 
@@ -211,7 +222,7 @@ docker run --rm -e PGPASSWORD=$($secret.password) -e PGSSLMODE=require postgres:
     psql -h $host -U $secret.username -d people_counter `
     -c "SELECT COUNT(*), MAX(event_ts) FROM count_events;"
 
-# 3) Abrir Grafana en https://grafana.<your-domain> y queriar count_events
+# 3) Abrir Grafana en https://grafana.<DomainName> y queriar count_events
 ```
 
 ---
@@ -221,8 +232,9 @@ docker run --rm -e PGPASSWORD=$($secret.password) -e PGSSLMODE=require postgres:
 - **Sin conectividad del device** — buffer SQLite local persiste publishes. Replay al reconectar, marca enviado solo tras PUBACK.
 - **Lambda fallida** — IoT Rule loguea a CloudWatch (`/aws/iot/people-counter-rule-errors-${env}`). IoT reintenta 1 vez built-in; despues drop. Alarma `PersistEventLambdaErrorAlarm` dispara con >0 errors / 5min.
 - **RDS** — Multi-AZ desactivado para PoC ($13/mo vs $26). Daily snapshot (`BackupRetentionPeriod` default 7d, configurable). Restore via `aws rds restore-db-instance-to-point-in-time`.
-- **App Runner** — auto-restarts si el container se cae (`HealthCheckConfiguration: Protocol HTTP / Path /api/health`). Rolling redeploy en cada `update-service` (~2-3 min).
-- **Teardown / re-create** — `aws cloudformation delete-stack` borra todo. ECR esta marcado `EmptyOnDelete: true` para no atascarse en imagenes pendientes.
+- **ECS Fargate** — ECS scheduler reinicia el task si crashea. ALB health check (`/api/health` cada 30s) saca de rotacion targets unhealthy. Rolling deploy en cada CFN update (~30s downtime con MinimumHealthyPercent=0 en PoC single-instance; en prod subir a 100% + DesiredCount=2).
+- **Cert ACM** — auto-renewed por AWS si los CNAMEs de validacion siguen presentes en el DNS provider. Si los borrás, el cert muere a los 13 meses. Documentado en `deploy.ps1` Phase 3.
+- **Teardown / re-create** — `aws cloudformation delete-stack` borra todo el stack (ALB + listeners + target group + ECS service + SGs + cluster). El cert ACM NO se borra (vive fuera del stack); para limpieza full hay que correr `aws acm delete-certificate --certificate-arn <arn>` manualmente. ECR esta marcado `EmptyOnDelete: true` para no atascarse en imagenes pendientes.
 
 ---
 
@@ -230,17 +242,22 @@ docker run --rm -e PGPASSWORD=$($secret.password) -e PGSSLMODE=require postgres:
 
 | Recurso | $/mes | Notas |
 |---|---|---|
-| RDS db.t4g.micro (single-AZ) | ~$13 | Storage 20GB gp3 incluido. |
-| App Runner (1 vCPU / 2GB)    | ~$5  | Pay-per-request post-traffic; idle scale-down OFF para 100% uptime. |
-| IoT Core                     | <$1  | $1/M msgs — PoC genera centavos. |
-| Lambda                       | $0   | 1M invocations + 400k GB-s free **forever**. |
-| Secrets Manager              | $0.40| 1 secret. |
-| CloudWatch                   | $0   | 5 GB logs + 10 metrics free forever. |
-| **Total estimado**           | **~$20/mo** | Post free tier. |
+| RDS db.t4g.micro (single-AZ)    | ~$13  | Storage 20GB gp3 incluido. |
+| Fargate task (0.5 vCPU / 1 GB)  | ~$18  | 24/7 single-instance. |
+| ALB                             | ~$16  | $0.0225/h fixed + LCU (PoC = LCU ~$0.5/mo). Costo amortizable agregando services al mismo LB via listener rules. |
+| ACM cert                        | $0    | AWS-managed, auto-renewed mientras los CNAMEs de validacion sigan en el DNS provider. |
+| IoT Core                        | <$1   | $1/M msgs — PoC genera centavos. |
+| Lambda                          | $0    | 1M invocations + 400k GB-s free **forever**. |
+| Secrets Manager                 | $0.40 | 1 secret. |
+| CloudWatch                      | $0    | 5 GB logs + 10 metrics free forever. |
+| **Total estimado**              | **~$35/mo** | Post free tier. |
 
 **Producción (flota)**: migrar RDS a Multi-AZ (~$26 + storage), considerar
 Amazon Managed Grafana (SSO + IAM-integrated, ~$9/user/mo) en vez de OSS, y
 reintroducir Lambda dedup L3 con DynamoDB cuando haya 2+ cams por store.
+Cuando se agregue 2da app (sales API, auth service), reutilizar el mismo ALB
+via listener rules (host-header o path-based) en vez de provisionar otro
+($16/mo de ahorro por service).
 
 ---
 
@@ -251,4 +268,5 @@ reintroducir Lambda dedup L3 con DynamoDB cuando haya 2+ cams por store.
 - API Gateway para ingest de sales desde POS externo (tabla `sales` ya
   preparada con `UNIQUE (store_id, external_id)` para idempotencia).
 - Migracion a Route53 delegated subdomain (`tfg.gasparri.com.ar` NS → R53)
-  para que CFN gestione DNS records y el deploy sea 100% sin pausa.
+  para que CFN gestione DNS records (ALIAS record al ALB) y el deploy sea
+  100% sin pausa.

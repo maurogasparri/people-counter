@@ -296,7 +296,7 @@ GRANT SELECT ON count_events, wifi_ble_summary, telemetry TO lambda_writer;
 -- Owner = people_counter (master) para que pueda crear/modificar tablas
 -- propias de Grafana en su primer arranque.
 --
--- App Runner se conecta como master user (people_counter) a la DB "grafana"
+-- ECS Fargate (Grafana) se conecta como master user (people_counter) a la DB "grafana"
 -- usando el password del Secrets Manager. Como datasource para queriar
 -- events, Grafana conecta de vuelta a "people_counter" como master.
 --

@@ -65,7 +65,7 @@ activo promedio, 50% de los días con doble turno).
 | M5 | Pipeline E2E con conteo validado | ✓ Done (05-08) |
 | **M6** | **Stack cloud desplegado E2E: device → IoT → Lambda IAM auth → RDS → Grafana HTTPS** | **✓ Done (05-15)** |
 | **M7** | **Dedup WiFi/BLE robusto a MAC randomization: hash groups con 3 reglas de stitching** | **✓ Done (05-15)** |
-| — | Dashboards funcionales (App Runner Grafana 13 sobre RDS Postgres) | **⊘ Pendiente** (CFN desplegado + datasource configurado, dashboards no construidos) |
+| — | Dashboards funcionales (ECS Fargate Grafana 13 detrás de ALB sobre RDS Postgres) | **⊘ Pendiente** (CFN desplegado + datasource configurado, dashboards no construidos) |
 
 ### Iteraciones de diseño exploradas
 
@@ -116,7 +116,7 @@ Totales por agrupación (medidos del repo):
 |------------|-----------|-------|--------------|
 | **Soporte** | Adquisición + ensamblaje + config | 8.0 | 8% |
 | **Dev** | Scripts calib + Detección + WiFi/BLE + MQTT | 59.2 | 59% |
-| **Infra (AWS)** | CFN inicial + bring-up real (RDS + App Runner + IAM auth + custom domain + schema alignment) | **~10.0** | **10%** |
+| **Infra (AWS)** | CFN inicial + bring-up real (RDS + ECS Fargate + ALB + ACM + IAM auth + custom domain + schema alignment) | **~10.0** | **10%** |
 | **Stitching** | Diseño del dedup en hash groups (seqnum + cross-protocol + BLE anchor) + tests | **~3.5** | **3%** |
 | **Pruebas** | Per-módulo + integración E2E | ~5.0 | 5% |
 | **Cross-cutting** | Config system + Docs + Cleanup | ~15.0 | 15% |
@@ -247,28 +247,31 @@ Totales por agrupación (medidos del repo):
 ### 3. Desarrollo del proyecto — Infra (~10h hands-on + dashboards pendiente)
 
 **Recursos AWS — todo definido en `infra/cloudformation/people-counter.yaml`
-+ `infra/deploy.ps1` (orquestador 6 fases) + `infra/sql/bootstrap.sql`. El
++ `infra/deploy.ps1` (orquestador 5 fases) + `infra/sql/bootstrap.sql`. El
 trabajo se distribuyó en dos bloques: arquitectura + diseño detallado del
 stack (04-24 → 05-08), y deployment cuidadoso fase-por-fase con validación
-intermedia (05-13 → 05-15).**
+intermedia (05-13 → 05-17).**
 
 | Sub-tarea | T-code | Horas | Inicio | Fin | Predecesoras | Estado |
 |-----------|--------|-------|--------|-----|--------------|--------|
 | Análisis y diseño de arquitectura cloud (IoT Core + certs X.509 + 3 IoT Topic Rules + esqueleto del CFN) | T10a | ~2 | 04-24 | 05-08 | T09 | OK |
-| **Diseño detallado del stack**: análisis de trade-offs RDS vs EC2 (operabilidad managed vs $$ free tier), App Runner vs EC2 self-hosted Grafana (ACM auto-renewed vs Let's Encrypt manual), Lambda VPC vs out-of-VPC con IAM auth (VPC endpoints $$ vs `rds.generate_db_auth_token`). Resultado: VPC + RDS db.t4g.micro + IAM auth + App Runner Grafana + ECR + alarmas SNS. | T10b | **~3** | 05-13 | 05-14 | T10a | OK |
-| **Deployment phaseado**: `infra/deploy.ps1` 6 fases (CFN core → push imagen Grafana a ECR → bootstrap SQL → CFN App Runner → custom domain HTTPS → env vars), con validación intermedia por fase y `-StartFromPhase` para resumir interrupciones de red. | T10c | **~3** | 05-13 | 05-15 | T10b | OK |
+| **Diseño detallado del stack**: análisis de trade-offs RDS vs EC2 (operabilidad managed vs $$ free tier), Grafana managed hosting (App Runner vs ECS Express Mode vs Fargate + ALB manual vs EC2 self-hosted) ponderando operabilidad + portabilidad a cuentas AWS futuras + simplicidad de IaC + valor de custom domain para entregable, Lambda VPC vs out-of-VPC con IAM auth (VPC endpoints $$ vs `rds.generate_db_auth_token`). Resultado: VPC + RDS db.t4g.micro + IAM auth + Fargate + ALB + ACM cert con custom domain `grafana.<DomainName>` + ECR + alarmas SNS. ECS Express Mode descartado por la limitación de AWS-managed domain (URL no presentable para TFG); App Runner descartado por sunset 2026-04 + no disponible en cuentas AWS futuras. | T10b | **~4** | 05-13 | 05-17 | T10a | OK |
+| **Deployment phaseado**: `infra/deploy.ps1` 5 fases (CFN core → push imagen Grafana a ECR + bootstrap SQL → ACM request-certificate + pause DNS validation → CFN deploy Fargate+ALB → pause CNAME final), con validación intermedia por fase y `-StartFromPhase` para resumir interrupciones de red. 2 pauses manuales aceptadas por simplicidad operacional (mejor que CFN bloqueando con timeout de hora+). | T10c | **~3** | 05-13 | 05-17 | T10b | OK |
 | **Lambda persist_event**: diseño del data flow (envelope estándar `{device_id, timestamp, type, data}` → dispatch por tipo → INSERT idempotente en Postgres), auth via `rds.generate_db_auth_token` (token IAM corto, sin password almacenado), packaging con psycopg[binary] manylinux x86_64 para Linux runtime. | T10d | **~1.5** | 05-15 | 05-15 | T10c | OK |
 | **`bootstrap.sql` (schema + 6 views)**: count_events / wifi_ble_summary / telemetry / sales como tablas raw + view multi-cam dedup (`wifi_ble_store_traffic` con MAX por store) + views analíticas (`counting_by_bucket`, `turn_in_rate_by_bucket`, rollups hourly) + view de conversion (`store_hourly_summary` con sales join). | T10e | **~0.5** | 05-15 | 05-15 | T10c | OK |
 | Dashboards funcionales (queries sobre las 6 views de bootstrap.sql) | T10f | — | — | — | T10e | **⊘ Pendiente** (post-piloto, con datos reales) |
 
-> **Total: ~10h** distribuidas entre análisis arquitectural (T10a + T10b
-> = ~5h), deployment cuidadoso (T10c = ~3h), y refinamiento de capas
-> downstream (T10d + T10e = ~2h). El stack consolidado: **RDS Postgres 16
-> (db.t4g.micro, ~$13/mo) + App Runner Grafana 13 ($5/mo) + Lambda out-of-VPC
-> con IAM auth** ofrece operabilidad managed (snapshots automáticos, parche
-> de SO/DB, restart sin perder state, ACM auto-renewed para HTTPS) por
-> ~$20/mo total. Producción mantiene la misma arquitectura, solo cambia
-> RDS single-AZ → Multi-AZ.
+> **Total: ~10.5h** distribuidas entre análisis arquitectural (T10a + T10b
+> = ~6h), deployment cuidadoso (T10c = ~3h), y refinamiento de capas
+> downstream (T10d + T10e = ~2h). El stack consolidado: **RDS Postgres 16.6
+> (db.t4g.micro, ~$13/mo) + ECS Fargate Grafana 13 (0.5vCPU/1GB, ~$18/mo)
+> + ALB con ACM cert custom (~$16/mo) + Lambda out-of-VPC con IAM auth**
+> ofrece operabilidad managed (snapshots automáticos, parche de SO/DB,
+> restart sin perder state, ACM auto-renewed, custom domain HTTPS
+> presentable) por ~$35/mo total. Producción mantiene la misma
+> arquitectura; solo cambia RDS single-AZ → Multi-AZ y, al sumar 2da app
+> (sales API/auth), se comparte el ALB via listener rules para amortizar
+> el costo fijo del LB.
 
 ---
 
@@ -399,7 +402,7 @@ infra cloud y dedup robusto corren en paralelo al pipeline E2E:
   device (que termina en M5), pero es prerequisito para que el piloto
   produzca data persistida + visualizable. Para futuros proyectos con
   stack similar, presupuestar **8-12h** para esta cadena — la fase de
-  análisis de trade-offs (RDS vs EC2, App Runner vs self-hosted, IAM
+  análisis de trade-offs (RDS vs EC2, managed hosting de Grafana, IAM
   auth vs SSM password) es donde se va el grueso del tiempo, no en la
   redacción del YAML.
 - **M7 — dedup robusto** (T20, ~3.5h): análisis del problema de MAC
@@ -447,8 +450,8 @@ gantt
 
     section Infra AWS
     Arquitectura + IoT Core (T10a)        :done, t10a, 2026-04-24, 15d
-    Diseño detallado RDS + App Runner (T10b) :done, t10b, 2026-05-13, 2d
-    Deployment phaseado del stack (T10c)  :done, t10c, 2026-05-13, 3d
+    Diseño detallado RDS + Fargate+ALB (T10b) :done, t10b, 2026-05-13, 4d
+    Deployment phaseado del stack (T10c)  :done, t10c, 2026-05-13, 4d
     Lambda IAM auth + psycopg (T10d)      :done, t10d, 2026-05-15, 1d
     Schema + views analíticas (T10e)      :done, t10e, 2026-05-15, 1d
     Dashboards Grafana (T10f)             :crit, t10f, 2026-05-16, 7d
@@ -516,7 +519,7 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
 2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Con el modelo de distorsión definido upfront y el sensor mode canónico documentado, son 3-4h. Para sensors/lenses nuevos presupuestar 1.5× del baseline consolidado.
 3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-ROI) probablemente cueste 6-10h cada uno.
 4. **Detector "barato" en horas locales pero caro en wall-clock** — 11h directas, pero hay 20+ días de calendario entre captura → label → train → compile porque cada etapa tiene wait externo (Roboflow labeling humano, Kaggle queue, Hailo compile en Docker).
-5. **Infra AWS ~10h con análisis arquitectural dominando el costo** — del total, ~5h fueron análisis de trade-offs (RDS vs EC2, App Runner vs self-hosted, Lambda VPC vs IAM auth out-of-VPC) + diseño detallado del CFN; ~3h deployment phaseado con validación intermedia; ~2h refinamiento de capas downstream (Lambda + schema). `infra/deploy.ps1` orquesta las 6 fases (CFN core → push imagen → bootstrap SQL → CFN App Runner → custom domain → env vars Grafana). Para un proyecto análogo con stack similar, presupuestar **8-12h** repartidas en este balance (análisis dominante, deployment apoyado en CFN declarativo). Los **dashboards funcionales no están** — para piloto real presupuestar 3-5h adicionales armando dashboards en Grafana 13 sobre las views de `bootstrap.sql`.
+5. **Infra AWS ~10.5h con análisis arquitectural dominando el costo** — del total, ~6h fueron análisis de trade-offs (RDS vs EC2, managed hosting de Grafana ponderando operabilidad + portabilidad cross-cuenta + custom domain como entregable, Lambda VPC vs IAM auth out-of-VPC) + diseño detallado del CFN; ~3h deployment phaseado con 2 pausas manuales para DNS (validación ACM + CNAME final); ~2h refinamiento de capas downstream (Lambda + schema). `infra/deploy.ps1` orquesta las 5 fases (CFN core → push imagen + bootstrap SQL → ACM cert + pause DNS → CFN Fargate+ALB → pause CNAME final). Para un proyecto análogo con stack similar, presupuestar **8-12h** repartidas en este balance (análisis dominante, deployment apoyado en CFN declarativo). Los **dashboards funcionales no están** — para piloto real presupuestar 3-5h adicionales armando dashboards en Grafana 13 sobre las views de `bootstrap.sql`.
 6. **Cross-cutting suma ~13h (15% del total medido)** — config + docs + cleanup. Para próximos proyectos similares, presupuestar 15-20% extra sobre las feature stories.
 7. **Pre-history reutilizable** — el skeleton del T00 (módulos, tests, pyproject, systemd units) es casi proyecto-agnóstico para edge devices similares y se podría usar como template para acortar el T00 de un proyecto análogo a 5-10h en vez de 40.
 8. **Pruebas embebidas vs. dedicadas** — el 90% de las pruebas en este proyecto fueron interleaved con el desarrollo (validated-on-hardware commits). Para un cronograma formal con QA separado, presupuestar +20% sobre las horas de dev para una fase de Pruebas explícita.
@@ -705,7 +708,7 @@ genuinamente nuevo que hay que hacer.**
 | T07 | Status LED + health monitor | 1.5 | |
 | T08 | Config system (HardwareParams + naming canónico desde día 1) | 3 | Sin back-compat shims = -2h vs medido |
 | T09 | MQTT cliente + buffer + shadow | 1.5 | |
-| T10 | Infra AWS (CFN + IoT Core + Lambda IAM auth + RDS Postgres + App Runner Grafana) | 3 | |
+| T10 | Infra AWS (CFN + IoT Core + Lambda IAM auth + RDS Postgres + ECS Fargate + ALB Grafana) | 3 | |
 | T11 | Provisioning + disaster recovery | 2 | |
 | T12 | Detector — captura multi-site | 3 | |
 | T13 | Detector — labeling + training | 2.5 | Trabajo activo. (Wall-clock adicional: ~1-2 días de espera externa) |

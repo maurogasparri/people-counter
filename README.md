@@ -34,7 +34,7 @@ Dispositivo edge (por puerta)         AWS Cloud (PoC, 1 device)
 | YOLOv8n → Track → Count  |--TLS-->| → Lambda persist_event         |
 | WiFi/BLE → Hash → Stitch |  QoS1  |    (IAM auth a RDS, out-VPC)   |
 | SQLite buffer + dedup    |         | → RDS Postgres 16 (db.t4g.μ)  |
-+--------------------------+         | → App Runner Grafana 13       |
++--------------------------+         | → ECS Fargate + ALB + Grafana |
                                      |    (custom domain HTTPS)      |
                                      +-------------------------------+
 ```
@@ -87,7 +87,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
-| Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 6 fases) | VPC + RDS Postgres 16 (db.t4g.micro, IAM auth + force_ssl) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + App Runner Grafana 13 (custom domain `grafana.tfg.gasparri.com.ar`) + SNS alarms. ~$20/mo PoC. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
+| Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 5 fases) | VPC + RDS Postgres 16.6 (db.t4g.micro, IAM auth + force_ssl + auto minor upgrades) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + ECS Fargate Grafana 13 detrás de ALB con ACM cert custom (`grafana.tfg.gasparri.com.ar`) + SNS alarms. ~$35/mo PoC. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
 | Deployment | Listo | provision.py (create/deploy/harvest/reprovision), servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
 | Disaster recovery | Listo | `harvest` baja `calibration.npz` al workstation; `reprovision` revoca cert viejo en IoT Core y emite uno nuevo. Certs nunca se respaldan — rotan en cada restore |
 | Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup-guide.md). Guía para operadores en campo (docs/pilot-operator-guide.md) |
@@ -368,7 +368,7 @@ config/
 infra/
 ├── README.md                              # Walkthrough del deploy + costos + verificación E2E
 ├── cloudformation/people-counter.yaml     # Stack completo de AWS
-├── deploy.ps1                             # Orquestador 6 fases (RDS + IoT + Lambda + ECR + App Runner + Grafana env vars). -StartFromPhase para resumir
+├── deploy.ps1                             # Orquestador 5 fases (RDS + IoT + Lambda + ECR + cert ACM + ECS Fargate + ALB Grafana + CNAME). -StartFromPhase para resumir
 └── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_summary / telemetry / sales + 6 views + lambda_writer con rds_iam)
 docs/
 ├── setup-guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)

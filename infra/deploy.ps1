@@ -3,19 +3,20 @@
     Deploy completo del stack people-counter en AWS.
 
 .DESCRIPTION
-    Orquesta el deploy en 2 fases del CFN + push de imagen Grafana a ECR +
-    asociación del custom domain de App Runner. Pausa cuando necesita acción
-    manual del usuario (correr SQL desde DBeaver + agregar CNAMEs al DNS
-    provider externo).
+    Orquesta el deploy en 5 fases del CFN + push de imagen Grafana a ECR +
+    cert ACM con validacion DNS + custom domain. Pausa cuando necesita
+    accion manual del usuario (correr SQL desde DBeaver es opcional - lo
+    cubre el bootstrap automatico - pero pegar CNAMEs en el DNS provider
+    externo si es manual).
 
 .PARAMETER Environment
     Sufijo del stack. Default: dev.
 
 .PARAMETER DomainName
-    Dominio raíz. Default: gasparri.com.ar.
+    Dominio raiz. Default: tfg.gasparri.com.ar.
 
 .PARAMETER GrafanaSubdomain
-    Subdominio para Grafana. Default: grafana → grafana.gasparri.com.ar.
+    Subdominio para Grafana. Default: grafana -> grafana.tfg.gasparri.com.ar.
 
 .PARAMETER AdminCidr
     CIDR autorizado a RDS desde el admin (DBeaver). Default: tu IP.
@@ -25,19 +26,19 @@
 
 .PARAMETER StartFromPhase
     Reanudar deploys interrumpidos:
-      1 = inicio (default)
-      2 = desde push de imagen (phase 1 OK)
-      3 = desde phase 2 / App Runner deploy (imagen pushed + SQL OK)
-      4 = desde associate-custom-domain (App Runner UP)
-      5 = desde set de env vars de Grafana (custom domain ACTIVE)
+      1 = inicio (default) - deploy core (RDS + IoT + Lambda + ECR + VPC)
+      2 = push imagen ECR + bootstrap SQL
+      3 = ACM request-certificate + pause DNS validation + wait ISSUED
+      4 = CFN deploy con DeployGrafana=true + cert ARN
+      5 = pause CNAME final + verificacion DNS
 
 .EXAMPLE
     .\infra\deploy.ps1
-    Deploy completo.
+    Deploy completo end-to-end.
 
 .EXAMPLE
     .\infra\deploy.ps1 -StartFromPhase 3
-    Reanudar desde el deploy de App Runner.
+    Reanudar desde el cert ACM (Phase 1+2 OK).
 #>
 
 param(
@@ -53,6 +54,7 @@ param(
 $ErrorActionPreference = "Stop"
 $STACK_NAME = "people-counter-$Environment"
 $REGION = "us-east-1"
+$FULL_DOMAIN = "$GrafanaSubdomain.$DomainName"
 
 # El script vive en infra/, asi que el template y el sql son relativos:
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -75,7 +77,10 @@ function Wait-ForUser {
 }
 
 function Invoke-CfnDeploy {
-    param([string]$DeployAppRunner)
+    param(
+        [string]$DeployGrafana,
+        [string]$CertArn = ""
+    )
     aws cloudformation deploy `
         --stack-name $STACK_NAME `
         --template-file $TEMPLATE `
@@ -86,7 +91,8 @@ function Invoke-CfnDeploy {
             GrafanaSubdomain=$GrafanaSubdomain `
             AdminCidr=$AdminCidr `
             AlertEmail=$AlertEmail `
-            DeployAppRunner=$DeployAppRunner
+            DeployGrafana=$DeployGrafana `
+            GrafanaCertArn=$CertArn
 }
 
 # === Pre-flight ===
@@ -96,20 +102,21 @@ if ($LASTEXITCODE -ne 0) { throw "Template invalido" }
 
 $ACCOUNT_ID = aws sts get-caller-identity --query Account --output text
 Write-Host "Account: $ACCOUNT_ID  Region: $REGION  Stack: $STACK_NAME"
+Write-Host "Domain final: https://$FULL_DOMAIN"
 
-# === [1/6] Phase 1: deploy core (sin App Runner) ===
+# === [1/5] Phase 1: deploy core (sin Grafana) ===
 if ($StartFromPhase -le 1) {
     Write-Host ""
-    Write-Host "[1/6] Phase 1: deploy core (RDS + IoT + Lambda stub + ECR + VPC)" -ForegroundColor Cyan
-    Invoke-CfnDeploy "false"
+    Write-Host "[1/5] Phase 1: deploy core (RDS + IoT + Lambda stub + ECR + VPC)" -ForegroundColor Cyan
+    Invoke-CfnDeploy -DeployGrafana "false"
     if ($LASTEXITCODE -ne 0) { throw "Phase 1 deploy fallo" }
-    Write-Host "[1/6] OK" -ForegroundColor Green
+    Write-Host "[1/5] OK" -ForegroundColor Green
 }
 
-# === [2/6] Push imagen Grafana a ECR ===
+# === [2/5] Push imagen Grafana a ECR + bootstrap SQL ===
 if ($StartFromPhase -le 2) {
     Write-Host ""
-    Write-Host "[2/6] Pusheando imagen Grafana a ECR..." -ForegroundColor Cyan
+    Write-Host "[2/5] Pusheando imagen Grafana a ECR..." -ForegroundColor Cyan
 
     $ECR_URI = Get-StackOutput "GrafanaEcrRepoUri"
     if (-not $ECR_URI) { throw "GrafanaEcrRepoUri no encontrado en outputs" }
@@ -141,11 +148,7 @@ if ($StartFromPhase -le 2) {
         $ErrorActionPreference = $prevEAP
     }
 
-    Write-Host "[2/6] OK" -ForegroundColor Green
-}
-
-# === Bootstrap SQL via docker postgres:16 (psql) ===
-if ($StartFromPhase -le 2) {
+    Write-Host "  Imagen pushed" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Corriendo bootstrap.sql contra RDS via docker..." -ForegroundColor Cyan
 
@@ -183,192 +186,139 @@ if ($StartFromPhase -le 2) {
         $ErrorActionPreference = $prevEAP
     }
 
-    Write-Host "  Bootstrap SQL OK" -ForegroundColor Green
+    Write-Host "[2/5] OK" -ForegroundColor Green
 }
 
-# === [3/6] Phase 2: deploy App Runner ===
+# === [3/5] ACM cert + DNS validation ===
+# Cert se crea FUERA de CFN para que el deploy no bloquee esperando DNS.
+# Una vez ISSUED, se pasa el ARN como parametro al CFN en Phase 4. ACM hace
+# DNS validation: agrega CNAMEs especificos al DNS provider y ACM checkea
+# que existan (re-checkea periodicamente para auto-renew, ergo deben quedar
+# permanentes en el DNS provider).
 if ($StartFromPhase -le 3) {
     Write-Host ""
-    Write-Host "[3/6] Phase 2: agregando App Runner..." -ForegroundColor Cyan
-    Invoke-CfnDeploy "true"
-    if ($LASTEXITCODE -ne 0) { throw "Phase 2 deploy fallo" }
-    Write-Host "[3/6] OK" -ForegroundColor Green
+    Write-Host "[3/5] Cert ACM para $FULL_DOMAIN..." -ForegroundColor Cyan
+
+    # Idempotente: reusar el cert si ya existe para este FQDN.
+    $existingCert = aws acm list-certificates --region $REGION `
+        --query "CertificateSummaryList[?DomainName=='$FULL_DOMAIN'].CertificateArn | [0]" `
+        --output text 2>$null
+
+    if ($existingCert -and $existingCert -ne "None") {
+        $CERT_ARN = $existingCert
+        Write-Host "  Cert existente encontrado: $CERT_ARN"
+    } else {
+        Write-Host "  Solicitando cert nuevo..."
+        $CERT_ARN = aws acm request-certificate `
+            --region $REGION `
+            --domain-name $FULL_DOMAIN `
+            --validation-method DNS `
+            --query CertificateArn --output text
+        if (-not $CERT_ARN) { throw "request-certificate no devolvio ARN" }
+        Write-Host "  Cert ARN: $CERT_ARN"
+        Start-Sleep 10  # ACM tarda en generar los validation records
+    }
+
+    # Status check antes de mostrar validation records
+    $certStatus = aws acm describe-certificate --certificate-arn $CERT_ARN `
+        --query "Certificate.Status" --output text
+
+    if ($certStatus -eq "ISSUED") {
+        Write-Host "  Cert ya esta ISSUED - skip pause de DNS" -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "DNS records de validacion a agregar en ${DomainName}:" -ForegroundColor Yellow
+        Write-Host "(deben quedar PERMANENTES en el DNS provider — ACM los re-checkea cada renewal)"
+        Write-Host ""
+
+        aws acm describe-certificate --certificate-arn $CERT_ARN `
+            --query "Certificate.DomainValidationOptions[].ResourceRecord.{Name:Name, Type:Type, Value:Value}" `
+            --output table
+
+        Wait-ForUser "Agrega esos CNAMEs en tu DNS provider"
+
+        Write-Host ""
+        Write-Host "  Esperando que ACM marque ISSUED..." -ForegroundColor Cyan
+        # `aws acm wait certificate-validated` polea cada 60s con timeout 75min.
+        aws acm wait certificate-validated --certificate-arn $CERT_ARN
+        if ($LASTEXITCODE -ne 0) {
+            throw "Cert no llego a ISSUED - verifica que los CNAMEs esten bien y reintenta con -StartFromPhase 3"
+        }
+    }
+
+    Write-Host "[3/5] OK - cert ISSUED" -ForegroundColor Green
+
+    # Persistir el ARN para Phase 4 si el script se reanuda
+    $env:GRAFANA_CERT_ARN = $CERT_ARN
+} else {
+    # Si arrancamos en Phase >=4, recuperar el cert desde ACM por nombre de domain
+    $CERT_ARN = aws acm list-certificates --region $REGION `
+        --query "CertificateSummaryList[?DomainName=='$FULL_DOMAIN'].CertificateArn | [0]" `
+        --output text
+    if (-not $CERT_ARN -or $CERT_ARN -eq "None") {
+        throw "No se encontro cert ACM para $FULL_DOMAIN — corre con -StartFromPhase 3"
+    }
 }
 
-# === [4/6] Associate custom domain ===
+# === [4/5] Phase 2: CFN deploy con Grafana + cert ===
 if ($StartFromPhase -le 4) {
     Write-Host ""
-    Write-Host "[4/6] Asociando custom domain..." -ForegroundColor Cyan
-
-    $SERVICE_ARN = Get-StackOutput "GrafanaServiceArn"
-    $FULL_DOMAIN = "$GrafanaSubdomain.$DomainName"
-
-    # Idempotente: skip si ya esta asociado
-    $existing = aws apprunner describe-custom-domains --service-arn $SERVICE_ARN `
-        --query "CustomDomains[?DomainName=='$FULL_DOMAIN'].DomainName" --output text 2>$null
-
-    if (-not $existing) {
-        Write-Host "  Asociando $FULL_DOMAIN..."
-        aws apprunner associate-custom-domain `
-            --service-arn $SERVICE_ARN `
-            --domain-name $FULL_DOMAIN `
-            --no-enable-www-subdomain | Out-Null
-        Start-Sleep 10   # AWS necesita un momento para generar validation records
-    } else {
-        Write-Host "  Custom domain ya asociado, refrescando validation records..."
-    }
-
-    Write-Host ""
-    Write-Host "DNS records a agregar en ${DomainName}:" -ForegroundColor Yellow
-    Write-Host ""
-
-    aws apprunner describe-custom-domains --service-arn $SERVICE_ARN `
-        --query "CustomDomains[?DomainName=='$FULL_DOMAIN'].CertificateValidationRecords[].{Type:Type, Name:Name, Value:Value, Status:Status}" `
-        --output table
-
-    $dnsTarget = aws apprunner describe-custom-domains --service-arn $SERVICE_ARN `
-        --query "DNSTarget" --output text
-
-    Write-Host ""
-    Write-Host "Y CNAME final para el subdominio:" -ForegroundColor Yellow
-    Write-Host "  Nombre:  $GrafanaSubdomain"
-    Write-Host "  Tipo:    CNAME"
-    Write-Host "  Valor:   $dnsTarget"
-
-    Wait-ForUser "Agrega esos CNAMEs en tu DNS provider (gasparri.com.ar)"
-
-    # Poll until ACTIVE — sigue siendo parte de [4/6] (la fase es "asociar
-    # custom domain"; ACTIVE es su definicion de done).
-    Write-Host ""
-    Write-Host "  Esperando que el custom domain pase a ACTIVE..." -ForegroundColor Cyan
-
-    $maxAttempts = 30
-    $attempt = 0
-    do {
-        $attempt++
-        $status = aws apprunner describe-custom-domains --service-arn $SERVICE_ARN `
-            --query "CustomDomains[?DomainName=='$FULL_DOMAIN'].Status" --output text
-        Write-Host "  [$attempt/$maxAttempts] Status: $status"
-
-        if ($status -eq "ACTIVE") { break }
-        if ($status -in @("CREATE_FAILED", "DELETE_FAILED")) {
-            throw "Custom domain en estado fallido: $status"
-        }
-
-        Start-Sleep 60
-    } while ($attempt -lt $maxAttempts)
-
-    if ($status -ne "ACTIVE") {
-        Write-Host "Timeout esperando ACTIVE - verifica DNS y volve a correr con -StartFromPhase 4" -ForegroundColor Yellow
-        exit 1
-    }
-
-    Write-Host "[4/6] OK" -ForegroundColor Green
+    Write-Host "[4/5] Phase 2: deploy ECS Fargate + ALB + Grafana..." -ForegroundColor Cyan
+    Write-Host "  (CFN espera a que el service estabilice, ~5-8 min)"
+    Invoke-CfnDeploy -DeployGrafana "true" -CertArn $CERT_ARN
+    if ($LASTEXITCODE -ne 0) { throw "Phase 2 deploy fallo" }
+    Write-Host "[4/5] OK" -ForegroundColor Green
 }
 
-# === [5/6] Setear env vars de Grafana (post-deploy) ===
-# El CFN no acepta RuntimeEnvironmentVariables con dynamic references via
-# early validation, asi que las seteamos por CLI ahora. Esto triggerea un
-# rolling redeploy del service (~2-3 min) que reinicia Grafana apuntando a
-# Postgres en RDS (en vez del SQLite default del image).
+# === [5/5] CNAME final ===
 if ($StartFromPhase -le 5) {
     Write-Host ""
-    Write-Host "[5/6] Configurando env vars de Grafana (Postgres backend)..." -ForegroundColor Cyan
+    Write-Host "[5/5] CNAME final $FULL_DOMAIN -> ALB..." -ForegroundColor Cyan
 
-    $SERVICE_ARN = Get-StackOutput "GrafanaServiceArn"
-    $ECR_URI     = Get-StackOutput "GrafanaEcrRepoUri"
-    $RDS_HOST    = Get-StackOutput "RdsEndpoint"
-    $RDS_PORT    = Get-StackOutput "RdsPort"
-    $SECRET_ARN  = Get-StackOutput "RdsMasterSecretArn"
+    $ALB_DNS = Get-StackOutput "GrafanaAlbDnsName"
+    if (-not $ALB_DNS) { throw "GrafanaAlbDnsName no encontrado en outputs" }
 
-    $secretJson = aws secretsmanager get-secret-value --secret-id $SECRET_ARN --query SecretString --output text
-    $secret     = $secretJson | ConvertFrom-Json
-
-    # AccessRoleArn del service: lo necesitamos para no romperlo en el update.
-    $serviceJson     = aws apprunner describe-service --service-arn $SERVICE_ARN --output json
-    $service         = $serviceJson | ConvertFrom-Json
-    $ACCESS_ROLE_ARN = $service.Service.SourceConfiguration.AuthenticationConfiguration.AccessRoleArn
-
-    $sourceConfig = @{
-        ImageRepository = @{
-            ImageIdentifier = "${ECR_URI}:latest"
-            ImageRepositoryType = "ECR"
-            ImageConfiguration = @{
-                Port = "3000"
-                RuntimeEnvironmentVariables = @{
-                    GF_DATABASE_TYPE                = "postgres"
-                    GF_DATABASE_HOST                = "${RDS_HOST}:${RDS_PORT}"
-                    GF_DATABASE_NAME                = "grafana"
-                    GF_DATABASE_USER                = "people_counter"
-                    GF_DATABASE_PASSWORD            = $secret.password
-                    GF_DATABASE_SSL_MODE            = "require"
-                    GF_SERVER_ROOT_URL              = "https://${GrafanaSubdomain}.${DomainName}"
-                    GF_SERVER_DOMAIN                = "${GrafanaSubdomain}.${DomainName}"
-                    GF_ANALYTICS_REPORTING_ENABLED  = "false"
-                    GF_ANALYTICS_CHECK_FOR_UPDATES  = "false"
-                    GF_AUTH_ANONYMOUS_ENABLED       = "false"
-                    GF_USERS_ALLOW_SIGN_UP          = "false"
-                }
-            }
-        }
-        AuthenticationConfiguration = @{
-            AccessRoleArn = $ACCESS_ROLE_ARN
-        }
-        AutoDeploymentsEnabled = $false
-    }
-
-    $sourceJson = $sourceConfig | ConvertTo-Json -Depth 10 -Compress
-
-    # AWS CLI no traga BOM. Escribimos UTF-8 sin BOM via .NET (PS 5.1
-    # Set-Content -Encoding utf8 mete BOM y rompe el parser).
-    $tempFile  = New-TemporaryFile
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::WriteAllText($tempFile.FullName, $sourceJson, $utf8NoBom)
-
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        aws apprunner update-service `
-            --service-arn $SERVICE_ARN `
-            --source-configuration "file://$($tempFile.FullName)" | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "apprunner update-service fallo" }
-    } finally {
-        $ErrorActionPreference = $prevEAP
-        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
-    }
-
-    # === [6/6] Poll until RUNNING (post-update) ===
     Write-Host ""
-    Write-Host "[6/6] Esperando que App Runner termine el rolling redeploy..." -ForegroundColor Cyan
+    Write-Host "Agregar al DNS provider:" -ForegroundColor Yellow
+    Write-Host "  Nombre:  $GrafanaSubdomain"
+    Write-Host "  Tipo:    CNAME"
+    Write-Host "  Valor:   $ALB_DNS"
+    Write-Host ""
 
-    $maxAttempts = 20
+    Wait-ForUser "Agrega el CNAME en tu DNS provider"
+
+    # Verificacion de resolucion DNS (best-effort, no falla si TTL todavia no propago)
+    Write-Host ""
+    Write-Host "  Verificando que $FULL_DOMAIN resuelva al ALB..." -ForegroundColor Cyan
+    $maxAttempts = 6
     $attempt = 0
     do {
         $attempt++
-        $svcStatus = aws apprunner describe-service --service-arn $SERVICE_ARN --query "Service.Status" --output text
-        Write-Host "  [$attempt/$maxAttempts] Status: $svcStatus"
-        if ($svcStatus -eq "RUNNING") { break }
-        if ($svcStatus -in @("CREATE_FAILED", "DELETE_FAILED", "PAUSED")) {
-            throw "Service en estado fallido: $svcStatus"
+        try {
+            $resolved = (Resolve-DnsName -Name $FULL_DOMAIN -Type CNAME -ErrorAction Stop -DnsOnly).NameHost
+            if ($resolved -and $resolved -like "*$ALB_DNS*") {
+                Write-Host "  Resuelto: $FULL_DOMAIN -> $resolved" -ForegroundColor Green
+                break
+            }
+            Write-Host "  [$attempt/$maxAttempts] Aun no propago (resolved: $resolved)"
+        } catch {
+            Write-Host "  [$attempt/$maxAttempts] Aun no propago (sin resolucion)"
         }
-        Start-Sleep 30
+        if ($attempt -lt $maxAttempts) { Start-Sleep 30 }
     } while ($attempt -lt $maxAttempts)
 
-    if ($svcStatus -ne "RUNNING") {
-        Write-Host "Timeout esperando RUNNING - revisa CloudWatch del service" -ForegroundColor Yellow
-        exit 1
-    }
-
-    Write-Host "[6/6] OK" -ForegroundColor Green
+    Write-Host "[5/5] OK" -ForegroundColor Green
 }
 
 # === Done ===
+$GRAFANA_URL = Get-StackOutput "GrafanaUrl"
+
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host "DEPLOY COMPLETO" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Grafana:        https://$GrafanaSubdomain.$DomainName"
+Write-Host "Grafana:        $GRAFANA_URL"
 Write-Host "Login inicial:  admin / admin (cambiar al primer login)"
 Write-Host ""
 Write-Host "Proximos pasos:"

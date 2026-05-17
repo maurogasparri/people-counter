@@ -2,7 +2,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   People Counter - Cloud infrastructure.
   IoT Core (3 rules) -> Lambda persist_event -> RDS Postgres.
-  Grafana en App Runner (Grafana OSS, imagen desde ECR privado).
+  Grafana en ECS Fargate + ALB + ACM cert (custom domain HTTPS,
+  imagen desde ECR privado). El cert se crea fuera de CFN por
+  deploy.ps1 (aws acm request-certificate) y entra al stack por
+  parametro para no bloquear el deploy esperando DNS validation.
   Lambda usa IAM database auth contra RDS (sin password en runtime).
   RDS publicly accessible con SG IP-allowlist para DBeaver desde admin.
 
@@ -81,44 +84,44 @@ Parameters:
         docker tag  grafana/grafana:latest <ecr-uri>:<tag>
         docker push <ecr-uri>:<tag>
 
-  AppRunnerCpu:
-    Type: String
-    Default: "0.25 vCPU"
-    AllowedValues:
-      ["0.25 vCPU", "0.5 vCPU", "1 vCPU", "2 vCPU", "4 vCPU"]
-
-  AppRunnerMemory:
-    Type: String
-    Default: "0.5 GB"
-    AllowedValues:
-      ["0.5 GB", "1 GB", "1.5 GB", "2 GB", "3 GB", "4 GB", "6 GB", "8 GB",
-       "10 GB", "12 GB"]
-
-  AppRunnerMinSize:
+  # Sizing del task Fargate para Grafana OSS. 512 CPU + 1024 MB cubre a 1-2
+  # usuarios concurrentes leyendo dashboards. Valid Fargate combinations:
+  # https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html
+  GrafanaCpu:
     Type: Number
-    Default: 1
-    MinValue: 1
-    MaxValue: 25
+    Default: 512
+    AllowedValues: [256, 512, 1024, 2048, 4096]
+    Description: vCPU del task Fargate (256 = 0.25 vCPU).
 
-  AppRunnerMaxSize:
+  GrafanaMemory:
     Type: Number
-    Default: 1
-    MinValue: 1
-    MaxValue: 25
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 3072, 4096, 5120, 6144, 7168, 8192]
+    Description: Memoria del task Fargate en MiB.
 
-  DeployAppRunner:
+  GrafanaCertArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN del cert ACM (ya validado) que el ALB usa para HTTPS. Creado
+      fuera de CFN por deploy.ps1 (aws acm request-certificate) para
+      evitar que el deploy bloquee esperando validacion DNS. Vacio en
+      el primer deploy (DeployGrafana=false); seteado en el segundo.
+
+  DeployGrafana:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
     Description: >
-      Set a "true" en el segundo deploy, DESPUES de pushear la imagen Grafana
-      a ECR y validar el cert ACM. Default "false" permite primer deploy
-      sin error de imagen inexistente.
+      Set a "true" en el segundo deploy, DESPUES de pushear la imagen
+      Grafana a ECR y de tener el cert ACM validado. Default "false"
+      permite primer deploy sin error de imagen inexistente / cert
+      faltante.
 
 Conditions:
 
-  DeployAppRunnerCondition:
-    !Equals [!Ref DeployAppRunner, "true"]
+  DeployGrafanaCondition:
+    !Equals [!Ref DeployGrafana, "true"]
 
   IsMultiAZ:
     !Equals [!Ref RdsMultiAZ, "true"]
@@ -127,9 +130,10 @@ Resources:
 
   # =========================================================================
   # Networking — VPC + 2 public subnets + IGW.
-  # Subnets son "public" en sentido routing (tienen route a IGW), pero los
-  # resources que viven adentro (RDS, App Runner VPC Connector ENIs) NO
-  # reciben public IP automático. RDS está PubliclyAccessible vía AWS DNS.
+  # Subnets son "public" en sentido routing (tienen route a IGW). RDS está
+  # PubliclyAccessible via AWS DNS. ECS Fargate tasks corren en estas
+  # subnets con AssignPublicIp=ENABLED (no requiere NAT/VPC endpoint).
+  # El ALB tambien vive aca (internet-facing).
   # =========================================================================
 
   Vpc:
@@ -326,7 +330,7 @@ Resources:
   RdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: RDS Postgres - ingress 5432 desde admin + App Runner + Lambda (via IAM auth)
+      GroupDescription: RDS Postgres - ingress 5432 desde admin + ECS Fargate + Lambda (via IAM auth)
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -390,7 +394,11 @@ Resources:
     Properties:
       DBInstanceIdentifier: !Sub "people-counter-${Environment}"
       Engine: postgres
-      EngineVersion: "16.4"
+      # 16.6+ por EOL de 16.4 (oct 2025). AutoMinorVersionUpgrade=true para
+      # que RDS aplique futuros minor patches dentro de la maintenance window
+      # sin requerir CFN update manual.
+      EngineVersion: "16.6"
+      AutoMinorVersionUpgrade: true
       DBInstanceClass: !Ref RdsInstanceClass
       AllocatedStorage: !Ref RdsAllocatedStorage
       MaxAllocatedStorage: !Ref RdsMaxAllocatedStorage
@@ -534,110 +542,257 @@ Resources:
         - {Key: Project, Value: people-counter}
         - {Key: Environment, Value: !Ref Environment}
 
-  # NOTA: el ACM cert NO se crea acá. App Runner gestiona su propio cert
-  # managed para el custom domain (Grafana). El futuro API stack creará su
-  # propio cert ACM para api.<DomainName>.
+  # NOTA: el cert ACM para Grafana se crea fuera de CFN (deploy.ps1 corre
+  # `aws acm request-certificate` + espera a que validate por DNS). El ARN
+  # entra al stack via parametro GrafanaCertArn. Razon: si el cert esta
+  # dentro del stack con DnsValidation, `cloudformation deploy` bloquea
+  # esperando que el operador agregue los CNAMEs de validacion en el DNS
+  # externo — peor UX que pausar el script con un Read-Host claro.
 
   # =========================================================================
-  # App Runner — Grafana OSS (solo se crea cuando DeployAppRunner=true)
+  # ECS Fargate + ALB — Grafana OSS (solo se crea cuando DeployGrafana=true)
   # =========================================================================
 
-  # Sin VPC Connector — App Runner se conecta a RDS por endpoint publico
-  # (mismo modelo que Lambda persist_event). Evita NAT/VPC endpoints.
+  # Sin VPC Connector — los tasks corren en public subnets con
+  # AssignPublicIp=ENABLED, conectan a RDS por endpoint publico (mismo
+  # modelo que Lambda persist_event). Evita NAT/VPC endpoints (~$30/mo).
 
-  GrafanaAutoScaling:
-    Type: AWS::AppRunner::AutoScalingConfiguration
-    Condition: DeployAppRunnerCondition
+  GrafanaCluster:
+    Type: AWS::ECS::Cluster
+    Condition: DeployGrafanaCondition
     Properties:
-      AutoScalingConfigurationName: !Sub "pc-grafana-${Environment}"
-      MaxConcurrency: 100
-      MinSize: !Ref AppRunnerMinSize
-      MaxSize: !Ref AppRunnerMaxSize
+      ClusterName: !Sub "people-counter-grafana-${Environment}"
+      CapacityProviders: [FARGATE]
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
       Tags:
         - {Key: Project, Value: people-counter}
         - {Key: Environment, Value: !Ref Environment}
 
-  GrafanaInstanceRole:
-    Type: AWS::IAM::Role
-    Condition: DeployAppRunnerCondition
+  GrafanaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployGrafanaCondition
     Properties:
-      RoleName: !Sub "people-counter-grafana-instance-${Environment}"
+      LogGroupName: !Sub "/ecs/people-counter-grafana-${Environment}"
+      RetentionInDays: 14
+
+  # Execution role: lo usa el agente de Fargate para pull de la imagen ECR +
+  # escribir CloudWatch Logs + inyectar secrets desde Secrets Manager al
+  # container al startup (NO lo ve el codigo de Grafana — Grafana solo ve
+  # la env var resuelta).
+  GrafanaTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: DeployGrafanaCondition
+    Properties:
+      RoleName: !Sub "people-counter-grafana-exec-${Environment}"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: {Service: tasks.apprunner.amazonaws.com}
+            Principal: {Service: ecs-tasks.amazonaws.com}
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
       Policies:
-        - PolicyName: read-grafana-config
+        - PolicyName: secrets-access
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Grafana lee config DB (Postgres) — credenciales del secret de RDS
               - Effect: Allow
                 Action: [secretsmanager:GetSecretValue]
                 Resource: !Ref RdsMasterSecret
 
-  GrafanaAccessRole:
+  # Task role: para llamadas AWS API en runtime desde Grafana. Vacio por
+  # ahora — Grafana OSS no llama AWS APIs. Placeholder para datasources
+  # tipo CloudWatch/Athena en el futuro.
+  GrafanaTaskRole:
     Type: AWS::IAM::Role
-    Condition: DeployAppRunnerCondition
+    Condition: DeployGrafanaCondition
     Properties:
-      RoleName: !Sub "people-counter-grafana-access-${Environment}"
+      RoleName: !Sub "people-counter-grafana-task-${Environment}"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: {Service: build.apprunner.amazonaws.com}
+            Principal: {Service: ecs-tasks.amazonaws.com}
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
 
-  GrafanaService:
-    Type: AWS::AppRunner::Service
-    Condition: DeployAppRunnerCondition
+  GrafanaTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: DeployGrafanaCondition
     Properties:
-      ServiceName: !Sub "people-counter-grafana-${Environment}"
-      SourceConfiguration:
-        AutoDeploymentsEnabled: false
-        AuthenticationConfiguration:
-          AccessRoleArn: !GetAtt GrafanaAccessRole.Arn
-        ImageRepository:
-          ImageRepositoryType: ECR
-          ImageIdentifier: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${GrafanaEcrRepo}:${GrafanaImageTag}"
-          ImageConfiguration:
-            Port: "3000"
-            # NOTA: env vars de Grafana se setean post-deploy via
-            # aws apprunner update-service (ver deploy.ps1 phase 3b).
-            # CFN early validation rechaza alguna combinacion de
-            # RuntimeEnvironmentVariables con dynamic references.
-      InstanceConfiguration:
-        Cpu: !Ref AppRunnerCpu
-        Memory: !Ref AppRunnerMemory
-        InstanceRoleArn: !GetAtt GrafanaInstanceRole.Arn
-      AutoScalingConfigurationArn: !Ref GrafanaAutoScaling
-      NetworkConfiguration:
-        EgressConfiguration:
-          EgressType: DEFAULT
-        IngressConfiguration:
-          IsPubliclyAccessible: true
-      HealthCheckConfiguration:
-        Protocol: HTTP
-        Path: /api/health
-        Interval: 20
-        Timeout: 5
-        HealthyThreshold: 1
-        UnhealthyThreshold: 5
+      Family: !Sub "people-counter-grafana-${Environment}"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: !Ref GrafanaCpu
+      Memory: !Ref GrafanaMemory
+      ExecutionRoleArn: !GetAtt GrafanaTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt GrafanaTaskRole.Arn
+      ContainerDefinitions:
+        - Name: grafana
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${GrafanaEcrRepo}:${GrafanaImageTag}"
+          Essential: true
+          PortMappings:
+            - {ContainerPort: 3000, Protocol: tcp}
+          Environment:
+            - {Name: GF_DATABASE_TYPE,                Value: postgres}
+            - {Name: GF_DATABASE_HOST,                Value: !Sub "${RdsInstance.Endpoint.Address}:${RdsInstance.Endpoint.Port}"}
+            - {Name: GF_DATABASE_NAME,                Value: grafana}
+            - {Name: GF_DATABASE_USER,                Value: people_counter}
+            - {Name: GF_DATABASE_SSL_MODE,            Value: require}
+            - {Name: GF_SERVER_ROOT_URL,              Value: !Sub "https://${GrafanaSubdomain}.${DomainName}"}
+            - {Name: GF_SERVER_DOMAIN,                Value: !Sub "${GrafanaSubdomain}.${DomainName}"}
+            - {Name: GF_ANALYTICS_REPORTING_ENABLED,  Value: "false"}
+            - {Name: GF_ANALYTICS_CHECK_FOR_UPDATES,  Value: "false"}
+            - {Name: GF_AUTH_ANONYMOUS_ENABLED,       Value: "false"}
+            - {Name: GF_USERS_ALLOW_SIGN_UP,          Value: "false"}
+          Secrets:
+            # Fargate inyecta el password del JSON del secret como env var
+            # GF_DATABASE_PASSWORD. La sintaxis ${ARN}:password:: extrae la
+            # key "password" del JSON; los `::` finales son version-stage
+            # / version-id vacios.
+            - Name: GF_DATABASE_PASSWORD
+              ValueFrom: !Sub "${RdsMasterSecret}:password::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref GrafanaLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: grafana
       Tags:
         - {Key: Project, Value: people-counter}
         - {Key: Environment, Value: !Ref Environment}
 
-  # NOTA: AWS::AppRunner::CustomDomainAssociation NO existe como resource CFN
-  # nativo. La asociación del custom domain se hace post-deploy con:
-  #   aws apprunner associate-custom-domain \
-  #     --service-arn <GrafanaServiceArn> \
-  #     --domain-name grafana.gasparri.com.ar
-  # Después AWS devuelve 2-3 CNAMEs de validación que van al DNS provider.
-  # Ver paso "Phase 2.5" en infra/README.md.
+  # SG del ALB: HTTPS 443 desde Internet + HTTP 80 (para redirect a HTTPS).
+  GrafanaAlbSg:
+    Type: AWS::EC2::SecurityGroup
+    Condition: DeployGrafanaCondition
+    Properties:
+      GroupDescription: ALB de Grafana - HTTPS desde Internet
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS desde Internet"}
+        - {IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: "HTTP - redirect a HTTPS"}
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  # SG del task ECS: solo acepta trafico desde el SG del ALB en port 3000.
+  GrafanaTaskSg:
+    Type: AWS::EC2::SecurityGroup
+    Condition: DeployGrafanaCondition
+    Properties:
+      GroupDescription: Tasks ECS de Grafana - solo desde ALB SG
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !GetAtt GrafanaAlbSg.GroupId
+          Description: "Grafana port - desde ALB SG"
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  GrafanaAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: DeployGrafanaCondition
+    Properties:
+      Name: !Sub "pc-grafana-${Environment}"
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnet1, !Ref PublicSubnet2]
+      SecurityGroups: [!GetAtt GrafanaAlbSg.GroupId]
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  GrafanaTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: DeployGrafanaCondition
+    Properties:
+      Name: !Sub "pc-grafana-tg-${Environment}"
+      Port: 3000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref Vpc
+      HealthCheckPath: /api/health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - {Key: deregistration_delay.timeout_seconds, Value: "30"}
+
+  # Listener HTTPS:443 con cert ACM. El cert lo crea deploy.ps1 fuera de CFN
+  # y se pasa por parametro GrafanaCertArn.
+  GrafanaListenerHttps:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: DeployGrafanaCondition
+    Properties:
+      LoadBalancerArn: !Ref GrafanaAlb
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref GrafanaCertArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GrafanaTargetGroup
+
+  # Listener HTTP:80 - redirect 301 a HTTPS para que Grafana nunca acepte
+  # plain HTTP (defense in depth, aparte de force_ssl en Grafana mismo).
+  GrafanaListenerHttp:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: DeployGrafanaCondition
+    Properties:
+      LoadBalancerArn: !Ref GrafanaAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: "443"
+            StatusCode: HTTP_301
+
+  GrafanaService:
+    Type: AWS::ECS::Service
+    Condition: DeployGrafanaCondition
+    DependsOn: [GrafanaListenerHttps, GrafanaListenerHttp]
+    Properties:
+      ServiceName: !Sub "people-counter-grafana-${Environment}"
+      Cluster: !Ref GrafanaCluster
+      TaskDefinition: !Ref GrafanaTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        # 0% para PoC single-instance: durante el rolling deploy se permite
+        # downtime corto (~30s) en vez de duplicar la capacidad. Para prod
+        # subir a 100% + DesiredCount >=2 (high availability).
+        MinimumHealthyPercent: 0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: [!Ref PublicSubnet1, !Ref PublicSubnet2]
+          SecurityGroups: [!GetAtt GrafanaTaskSg.GroupId]
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: grafana
+          ContainerPort: 3000
+          TargetGroupArn: !Ref GrafanaTargetGroup
+      HealthCheckGracePeriodSeconds: 90
+      PropagateTags: SERVICE
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  # NOTA: el CNAME final `${GrafanaSubdomain}.${DomainName}` -> `${GrafanaAlb.DNSName}`
+  # se agrega manualmente al DNS provider externo (gasparri.com.ar no esta en
+  # Route53). `deploy.ps1` printea el ALB DNS Name + cert validation records
+  # y pausa con Read-Host hasta confirmacion del operador.
 
   # =========================================================================
   # SNS + CloudWatch alarms
@@ -742,22 +897,42 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertTopic]
 
-  GrafanaServiceErrorAlarm:
+  GrafanaAlb5xxAlarm:
     Type: AWS::CloudWatch::Alarm
-    Condition: DeployAppRunnerCondition
+    Condition: DeployGrafanaCondition
     Properties:
       AlarmName: !Sub "people-counter-grafana-5xx-${Environment}"
-      AlarmDescription: App Runner Grafana 5xx responses sostenidos
-      Namespace: AWS/AppRunner
-      MetricName: "5xxStatusResponses"
+      AlarmDescription: ALB Grafana - 5xx responses del target sostenidos
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
       Dimensions:
-        - {Name: ServiceName, Value: !Sub "people-counter-grafana-${Environment}"}
+        # LoadBalancerFullName tiene el shape app/<name>/<id> que pide CloudWatch.
+        - {Name: LoadBalancer, Value: !GetAtt GrafanaAlb.LoadBalancerFullName}
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
       Threshold: 5
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+
+  GrafanaServiceTasksAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployGrafanaCondition
+    Properties:
+      AlarmName: !Sub "people-counter-grafana-tasks-${Environment}"
+      AlarmDescription: ECS service Grafana sin tasks RUNNING (deployment fallido o crash loop)
+      Namespace: AWS/ECS
+      MetricName: RunningTaskCount
+      Dimensions:
+        - {Name: ClusterName, Value: !Ref GrafanaCluster}
+        - {Name: ServiceName, Value: !GetAtt GrafanaService.Name}
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
       AlarmActions: [!Ref AlertTopic]
 
 Outputs:
@@ -809,23 +984,26 @@ Outputs:
     Export: {Name: !Sub "people-counter-${Environment}-GrafanaEcrRepoUri"}
 
   GrafanaServiceArn:
-    Condition: DeployAppRunnerCondition
-    Description: ARN del service - usar en associate-custom-domain post-deploy
-    Value: !GetAtt GrafanaService.ServiceArn
+    Condition: DeployGrafanaCondition
+    Description: ARN del ECS service de Grafana (debug/cli)
+    Value: !Ref GrafanaService
 
-  GrafanaServiceUrl:
-    Condition: DeployAppRunnerCondition
-    Description: URL default de App Runner (antes del custom domain)
-    Value: !Sub "https://${GrafanaService.ServiceUrl}"
+  GrafanaAlbDnsName:
+    Condition: DeployGrafanaCondition
+    Description: >
+      DNS name del ALB. Target del CNAME que el operador agrega al DNS provider
+      para que `${GrafanaSubdomain}.${DomainName}` resuelva al ALB. ACM cert
+      ya valido el subdominio en una fase previa del deploy.
+    Value: !GetAtt GrafanaAlb.DNSName
 
-  GrafanaServiceDnsTarget:
-    Condition: DeployAppRunnerCondition
-    Description: Target del CNAME para grafana.DomainName (despues de associate-custom-domain)
-    Value: !GetAtt GrafanaService.ServiceUrl
+  GrafanaAlbHostedZoneId:
+    Condition: DeployGrafanaCondition
+    Description: Hosted zone ID del ALB - util si en el futuro el DNS migra a Route53 (ALIAS record en vez de CNAME)
+    Value: !GetAtt GrafanaAlb.CanonicalHostedZoneID
 
   GrafanaUrl:
-    Condition: DeployAppRunnerCondition
-    Description: URL final una vez asociado el custom domain
+    Condition: DeployGrafanaCondition
+    Description: URL final HTTPS una vez agregado el CNAME al DNS provider
     Value: !Sub "https://${GrafanaSubdomain}.${DomainName}"
 
   AlertTopicArn:
