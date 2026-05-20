@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS count_events (
     bucket_15min    TIMESTAMPTZ,
     -- Rollups server-side derivados del event_ts. STORED para que sean indexables
     -- y los queries de Grafana hourly/daily no recomputen date_trunc en cada fila.
-    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', event_ts)) STORED,
-    bucket_day      DATE         GENERATED ALWAYS AS (date_trunc('day', event_ts)::date) STORED,
+    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
+    bucket_day      DATE         GENERATED ALWAYS AS ((TIMESTAMP 'epoch' + floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 86400) * INTERVAL '1 day')::date) STORED,
     direction       TEXT         NOT NULL CHECK (direction IN ('in', 'out')),
     track_id        INT,
     -- Score del detector (0-1). No se usa en views/dashboards regulares, se
@@ -76,8 +76,8 @@ CREATE TABLE IF NOT EXISTS wifi_ble_summary (
     -- Bucket de 15min device-aligned. Se llama bucket_15min para consistencia
     -- con count_events / pos_transactions (mismo nombre de columna -> JOINs faciles).
     bucket_15min    TIMESTAMPTZ  NOT NULL,
-    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', period_start)) STORED,
-    bucket_day      DATE         GENERATED ALWAYS AS (date_trunc('day', period_start)::date) STORED,
+    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
+    bucket_day      DATE         GENERATED ALWAYS AS ((TIMESTAMP 'epoch' + floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 86400) * INTERVAL '1 day')::date) STORED,
     passersby       INT          NOT NULL,                  -- post L2 dedup
     shoppers        INT          NOT NULL,                  -- en rango cercano (RSSI fuerte)
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- Rollup hourly server-side. Telemetry corre cada 5min, asi que 15min/day
     -- no aplican naturalmente; hourly es la granularidad util para dashboards
     -- de fleet ("CPU temp p95 por hora", "fps mediana por hora").
-    bucket_hour      TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', event_ts)) STORED,
+    bucket_hour      TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
     -- OS metrics
     uptime_s                      REAL,
     cpu_temp_c                    REAL,
@@ -163,12 +163,9 @@ CREATE TABLE IF NOT EXISTS pos_transactions (
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- Buckets generados server-side desde event_ts (el POS no conoce nuestro shadow).
     -- Mismos nombres que count_events/wifi_ble_summary -> JOINs por nombre de columna.
-    bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (
-        date_trunc('hour', event_ts) +
-        INTERVAL '15 min' * (date_part('minute', event_ts)::int / 15)
-    ) STORED,
-    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', event_ts)) STORED,
-    bucket_day      DATE         GENERATED ALWAYS AS (date_trunc('day', event_ts)::date) STORED,
+    bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 900) * 900)) STORED,
+    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
+    bucket_day      DATE         GENERATED ALWAYS AS ((TIMESTAMP 'epoch' + floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 86400) * INTERVAL '1 day')::date) STORED,
     -- Idempotencia: POS reintenta mismo transaction_id sin duplicar.
     UNIQUE (store_id, transaction_id)
 );

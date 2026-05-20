@@ -27,14 +27,6 @@ Parameters:
     Default: grafana
     Description: Subdominio para Grafana. URL final = <sub>.<domain>.
 
-  AdminCidr:
-    Type: String
-    Default: 181.171.27.186/32
-    Description: >
-      CIDR autorizado a conectar al RDS publico (puerto 5432) para DBeaver/psql.
-      Restringir a tu IP - NO usar 0.0.0.0/0.
-    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
-
   AlertEmail:
     Type: String
     Default: mauro@gasparri.com.ar
@@ -108,6 +100,14 @@ Parameters:
       evitar que el deploy bloquee esperando validacion DNS. Vacio en
       el primer deploy (DeployGrafana=false); seteado en el segundo.
 
+  ApiCertArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN del cert ACM regional (us-east-1) para el custom domain de la
+      POS API (api.<DomainName>). Creado fuera de CFN igual que el de
+      Grafana. Vacio = la API queda solo en la URL execute-api default.
+
   DeployGrafana:
     Type: String
     Default: "false"
@@ -125,6 +125,9 @@ Conditions:
 
   IsMultiAZ:
     !Equals [!Ref RdsMultiAZ, "true"]
+
+  HasApiCustomDomain:
+    !Not [!Equals [!Ref ApiCertArn, ""]]
 
 Resources:
 
@@ -330,19 +333,20 @@ Resources:
   RdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: RDS Postgres - ingress 5432 desde admin + ECS Fargate + Lambda (via IAM auth)
+      GroupDescription: RDS Postgres - ingress 5432 publico (auth IAM/password + TLS forzado)
       VpcId: !Ref Vpc
       SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          CidrIp: !Ref AdminCidr
-          Description: DBeaver/psql desde admin (IP allowlist)
+        # 5432 abierto a internet: el Lambda corre out-of-VPC (egress IP no
+        # fija) y DBeaver/psql admin conectan por el endpoint publico. La
+        # seguridad es IAM auth (Lambda, sin password) + master password
+        # random de 32 chars (admin) + force_ssl=1. Un IP-allowlist seria
+        # redundante mientras esta regla 0.0.0.0/0 exista. Para produccion:
+        # mover Lambda a la VPC y restringir 5432 al SG del Lambda/ECS.
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
           CidrIp: 0.0.0.0/0
-          Description: "Lambda out-of-VPC con IAM auth (TLS forzado)"
+          Description: "5432 publico - Lambda IAM auth + admin master password, TLS forzado"
       Tags:
         - {Key: Name, Value: !Sub "people-counter-rds-sg-${Environment}"}
         - {Key: Project, Value: people-counter}
@@ -611,6 +615,29 @@ Resources:
       StageName: "$default"
       AutoDeploy: true
       Tags: {Project: people-counter, Environment: !Ref Environment}
+
+  # Custom domain api.<DomainName> para la POS API. Solo se crea cuando se
+  # pasa ApiCertArn (cert ACM regional ya validado, fuera de CFN como el de
+  # Grafana). El ApiMapping con key vacia rutea el root del dominio al stage
+  # $default, asi api.<DomainName>/pos/transactions == la URL execute-api.
+  IngestPosDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Condition: HasApiCustomDomain
+    Properties:
+      DomainName: !Sub "api.${DomainName}"
+      DomainNameConfigurations:
+        - CertificateArn: !Ref ApiCertArn
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+      Tags: {Project: people-counter, Environment: !Ref Environment}
+
+  IngestPosApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: HasApiCustomDomain
+    Properties:
+      ApiId: !Ref IngestPosApi
+      DomainName: !Ref IngestPosDomainName
+      Stage: !Ref IngestPosStage
 
   IngestPosLambdaPermissionApiGw:
     Type: AWS::Lambda::Permission
@@ -1047,12 +1074,16 @@ Resources:
     Condition: DeployGrafanaCondition
     Properties:
       AlarmName: !Sub "people-counter-grafana-tasks-${Environment}"
-      AlarmDescription: ECS service Grafana sin tasks RUNNING (deployment fallido o crash loop)
-      Namespace: AWS/ECS
-      MetricName: RunningTaskCount
+      AlarmDescription: Grafana sin hosts sanos detras del ALB (task caido / health check falla / crash loop)
+      # HealthyHostCount del target group: es la senal correcta de "Grafana
+      # esta sirviendo". RunningTaskCount NO existe en AWS/ECS (solo en
+      # ECS/ContainerInsights, que esta disabled) -> antes la alarma no recibia
+      # datos y con TreatMissingData=breaching quedaba en ALARM permanente.
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
       Dimensions:
-        - {Name: ClusterName, Value: !Ref GrafanaCluster}
-        - {Name: ServiceName, Value: !GetAtt GrafanaService.Name}
+        - {Name: TargetGroup, Value: !GetAtt GrafanaTargetGroup.TargetGroupFullName}
+        - {Name: LoadBalancer, Value: !GetAtt GrafanaAlb.LoadBalancerFullName}
       Statistic: Minimum
       Period: 300
       EvaluationPeriods: 2
@@ -1143,6 +1174,16 @@ Outputs:
   IngestPosApiId:
     Value: !Ref IngestPosApi
     Export: {Name: !Sub "people-counter-${Environment}-IngestPosApiId"}
+
+  IngestPosCustomUrl:
+    Condition: HasApiCustomDomain
+    Description: URL del custom domain de la POS API (una vez agregado el CNAME)
+    Value: !Sub "https://api.${DomainName}/pos/transactions"
+
+  IngestPosDomainTarget:
+    Condition: HasApiCustomDomain
+    Description: Target del CNAME para api.<DomainName> (RegionalDomainName del API GW)
+    Value: !GetAtt IngestPosDomainName.RegionalDomainName
 
   AlertTopicArn:
     Value: !Ref AlertTopic

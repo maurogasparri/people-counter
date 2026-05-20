@@ -171,9 +171,13 @@ puede reintentar la misma ventana sin duplicar.
 
 ## Auth y transporte
 
-- **Endpoint**: `https://${ApiId}.execute-api.${Region}.amazonaws.com/pos/transactions`
-  (output del stack: `IngestPosApiUrl`)
-- **Protocolo**: HTTPS (TLS terminado por API Gateway)
+- **Endpoint** (custom domain): `https://api.${DomainName}/pos/transactions`
+  — ej. `https://api.tfg.gasparri.com.ar/pos/transactions` (output del stack:
+  `IngestPosCustomUrl`). Se crea cuando se pasa `ApiCertArn` al deploy; la
+  firma SigV4 funciona igual sobre el custom domain que sobre el default.
+- **Endpoint** (default, fallback): `https://${ApiId}.execute-api.${Region}.amazonaws.com/pos/transactions`
+  (output `IngestPosApiUrl`). Activo siempre, aunque no haya custom domain.
+- **Protocolo**: HTTPS (TLS terminado por API Gateway, cert ACM regional)
 - **Auth**: **AWS SigV4** (IAM) — el POS firma cada request con AccessKey +
   SecretKey de un IAM principal que tenga `execute-api:Invoke` sobre la API
 - **Sin auth válida**: API Gateway devuelve 403 antes de invocar la Lambda
@@ -298,13 +302,12 @@ un `transaction_id` distinto (ej. `POS-001-CORRECTED`).
 
 ### Bucket columns derivadas
 
-El POS solo manda `event_ts`. Server-side, Postgres deriva:
-
-- `bucket_15min` = `date_trunc('hour', event_ts) + INTERVAL '15 min' * (minute / 15)`
-- `bucket_hour` = `date_trunc('hour', event_ts)`
-- `bucket_day` = `date_trunc('day', event_ts)::date`
-
-como `GENERATED ALWAYS AS ... STORED` (calculadas en INSERT, indexables).
+El POS solo manda `event_ts`. Server-side, Postgres deriva `bucket_15min`,
+`bucket_hour` y `bucket_day` (UTC) como `GENERATED ALWAYS AS ... STORED`
+(calculadas en INSERT, indexables). Se computan con aritmética de epoch
+sobre un interval —`extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch'))`—
+porque `date_trunc`/`extract` directos sobre `timestamptz` son STABLE (no
+IMMUTABLE) y Postgres los rechaza en una generated column.
 Esto permite el JOIN con `count_events.bucket_15min` (que el device pre-calcula)
 sin recomputar nada en queries.
 
@@ -332,7 +335,7 @@ auth = AWS4Auth(
     "execute-api",
 )
 
-url = "https://abc123xyz.execute-api.us-east-1.amazonaws.com/pos/transactions"
+url = "https://api.tfg.gasparri.com.ar/pos/transactions"  # o la URL execute-api default
 
 tx = {
     "transaction_id": "POS-RECOLETA-20260518-001234",
@@ -366,9 +369,9 @@ const signer = new SignatureV4({
 
 const request = new HttpRequest({
     method: "POST",
-    hostname: "abc123xyz.execute-api.us-east-1.amazonaws.com",
+    hostname: "api.tfg.gasparri.com.ar",
     path: "/pos/transactions",
-    headers: { "content-type": "application/json", host: "abc123xyz.execute-api.us-east-1.amazonaws.com" },
+    headers: { "content-type": "application/json", host: "api.tfg.gasparri.com.ar" },
     body: JSON.stringify(tx),
 });
 

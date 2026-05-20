@@ -18,9 +18,6 @@
 .PARAMETER GrafanaSubdomain
     Subdominio para Grafana. Default: grafana -> grafana.tfg.gasparri.com.ar.
 
-.PARAMETER AdminCidr
-    CIDR autorizado a RDS desde el admin (DBeaver). Default: tu IP.
-
 .PARAMETER AlertEmail
     Email para SNS subs de alarmas.
 
@@ -28,9 +25,10 @@
     Reanudar deploys interrumpidos:
       1 = inicio (default) - deploy core (RDS + IoT + Lambda + ECR + VPC)
       2 = push imagen ECR + bootstrap SQL
-      3 = ACM request-certificate + pause DNS validation + wait ISSUED
-      4 = CFN deploy con DeployGrafana=true + cert ARN
-      5 = pause CNAME final + verificacion DNS
+      3 = ACM certs (grafana + api) + pause DNS validation + wait ISSUED
+      4 = CFN deploy con DeployGrafana=true + ambos cert ARNs
+      5 = pause CNAMEs finales (grafana -> ALB, api -> API GW) + verificacion
+      6 = crear datasource Postgres en Grafana via API (admin/admin)
 
 .EXAMPLE
     .\infra\deploy.ps1
@@ -45,9 +43,8 @@ param(
     [string]$Environment = "dev",
     [string]$DomainName = "tfg.gasparri.com.ar",
     [string]$GrafanaSubdomain = "grafana",
-    [string]$AdminCidr = "181.171.27.186/32",
     [string]$AlertEmail = "mauro@gasparri.com.ar",
-    [ValidateSet(1, 2, 3, 4, 5)]
+    [ValidateSet(1, 2, 3, 4, 5, 6)]
     [int]$StartFromPhase = 1
 )
 
@@ -55,6 +52,7 @@ $ErrorActionPreference = "Stop"
 $STACK_NAME = "people-counter-$Environment"
 $REGION = "us-east-1"
 $FULL_DOMAIN = "$GrafanaSubdomain.$DomainName"
+$API_DOMAIN  = "api.$DomainName"
 
 # El script vive en infra/, asi que el template y el sql son relativos:
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -79,7 +77,8 @@ function Wait-ForUser {
 function Invoke-CfnDeploy {
     param(
         [string]$DeployGrafana,
-        [string]$CertArn = ""
+        [string]$CertArn = "",
+        [string]$ApiCertArn = ""
     )
     aws cloudformation deploy `
         --stack-name $STACK_NAME `
@@ -89,10 +88,46 @@ function Invoke-CfnDeploy {
             Environment=$Environment `
             DomainName=$DomainName `
             GrafanaSubdomain=$GrafanaSubdomain `
-            AdminCidr=$AdminCidr `
             AlertEmail=$AlertEmail `
             DeployGrafana=$DeployGrafana `
-            GrafanaCertArn=$CertArn
+            GrafanaCertArn=$CertArn `
+            ApiCertArn=$ApiCertArn
+}
+
+# Solicita-o-reusa un cert ACM para $Fqdn, pausa para la validacion DNS si
+# hace falta, espera ISSUED, y devuelve el ARN. Cuidado con el pipeline:
+# solo $arn debe salir de la funcion (los displays van a Out-Host/Out-Null).
+function Ensure-Cert {
+    param([string]$Fqdn)
+    Write-Host "  Cert ACM para $Fqdn..." -ForegroundColor Cyan
+    $arn = aws acm list-certificates --region $REGION `
+        --query "CertificateSummaryList[?DomainName=='$Fqdn'].CertificateArn | [0]" `
+        --output text 2>$null
+    if ($arn -and $arn -ne "None") {
+        Write-Host "    Cert existente: $arn"
+    } else {
+        $arn = aws acm request-certificate --region $REGION --domain-name $Fqdn `
+            --validation-method DNS --query CertificateArn --output text
+        if (-not $arn) { throw "request-certificate fallo para $Fqdn" }
+        Write-Host "    Cert nuevo: $arn"
+        Start-Sleep 10  # ACM tarda en generar los validation records
+    }
+    $status = aws acm describe-certificate --certificate-arn $arn `
+        --query "Certificate.Status" --output text
+    if ($status -eq "ISSUED") {
+        Write-Host "    ya ISSUED" -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "DNS de validacion para ${Fqdn} (PERMANENTE - ACM lo re-checkea cada renewal):" -ForegroundColor Yellow
+        aws acm describe-certificate --certificate-arn $arn `
+            --query "Certificate.DomainValidationOptions[].ResourceRecord.{Name:Name,Type:Type,Value:Value}" `
+            --output table | Out-Host
+        Wait-ForUser "Agrega el CNAME de validacion de $Fqdn en tu DNS" | Out-Null
+        Write-Host "    esperando ISSUED..." -ForegroundColor Cyan
+        aws acm wait certificate-validated --certificate-arn $arn | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Cert de $Fqdn no llego a ISSUED (revisa el CNAME, reintenta -StartFromPhase 3)" }
+    }
+    return $arn
 }
 
 # === Pre-flight ===
@@ -133,7 +168,9 @@ if ($StartFromPhase -le 2) {
         if ($LASTEXITCODE -ne 0) { throw "Docker no esta corriendo o no esta en PATH" }
 
         $loginPwd = aws ecr get-login-password --region $REGION
-        $loginPwd | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com" 2>&1 | Out-Null
+        # --password directo (no --password-stdin): el pipe de PowerShell a
+        # stdin corrompe el token (encoding/newline) y ECR responde 400.
+        docker login --username AWS --password $loginPwd "$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com" 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Docker login a ECR fallo" }
 
         docker pull grafana/grafana:latest
@@ -189,125 +226,126 @@ if ($StartFromPhase -le 2) {
     Write-Host "[2/5] OK" -ForegroundColor Green
 }
 
-# === [3/5] ACM cert + DNS validation ===
-# Cert se crea FUERA de CFN para que el deploy no bloquee esperando DNS.
-# Una vez ISSUED, se pasa el ARN como parametro al CFN en Phase 4. ACM hace
-# DNS validation: agrega CNAMEs especificos al DNS provider y ACM checkea
-# que existan (re-checkea periodicamente para auto-renew, ergo deben quedar
-# permanentes en el DNS provider).
+# === [3/6] ACM certs (grafana + api) + DNS validation ===
+# Los certs se crean FUERA de CFN para que el deploy no bloquee esperando la
+# validacion DNS. Una vez ISSUED, los ARNs entran como parametros al CFN en
+# Phase 4. Ensure-Cert pausa pidiendo el CNAME de validacion si hace falta.
 if ($StartFromPhase -le 3) {
     Write-Host ""
-    Write-Host "[3/5] Cert ACM para $FULL_DOMAIN..." -ForegroundColor Cyan
-
-    # Idempotente: reusar el cert si ya existe para este FQDN.
-    $existingCert = aws acm list-certificates --region $REGION `
-        --query "CertificateSummaryList[?DomainName=='$FULL_DOMAIN'].CertificateArn | [0]" `
-        --output text 2>$null
-
-    if ($existingCert -and $existingCert -ne "None") {
-        $CERT_ARN = $existingCert
-        Write-Host "  Cert existente encontrado: $CERT_ARN"
-    } else {
-        Write-Host "  Solicitando cert nuevo..."
-        $CERT_ARN = aws acm request-certificate `
-            --region $REGION `
-            --domain-name $FULL_DOMAIN `
-            --validation-method DNS `
-            --query CertificateArn --output text
-        if (-not $CERT_ARN) { throw "request-certificate no devolvio ARN" }
-        Write-Host "  Cert ARN: $CERT_ARN"
-        Start-Sleep 10  # ACM tarda en generar los validation records
-    }
-
-    # Status check antes de mostrar validation records
-    $certStatus = aws acm describe-certificate --certificate-arn $CERT_ARN `
-        --query "Certificate.Status" --output text
-
-    if ($certStatus -eq "ISSUED") {
-        Write-Host "  Cert ya esta ISSUED - skip pause de DNS" -ForegroundColor Green
-    } else {
-        Write-Host ""
-        Write-Host "DNS records de validacion a agregar en ${DomainName}:" -ForegroundColor Yellow
-        Write-Host "(deben quedar PERMANENTES en el DNS provider — ACM los re-checkea cada renewal)"
-        Write-Host ""
-
-        aws acm describe-certificate --certificate-arn $CERT_ARN `
-            --query "Certificate.DomainValidationOptions[].ResourceRecord.{Name:Name, Type:Type, Value:Value}" `
-            --output table
-
-        Wait-ForUser "Agrega esos CNAMEs en tu DNS provider"
-
-        Write-Host ""
-        Write-Host "  Esperando que ACM marque ISSUED..." -ForegroundColor Cyan
-        # `aws acm wait certificate-validated` polea cada 60s con timeout 75min.
-        aws acm wait certificate-validated --certificate-arn $CERT_ARN
-        if ($LASTEXITCODE -ne 0) {
-            throw "Cert no llego a ISSUED - verifica que los CNAMEs esten bien y reintenta con -StartFromPhase 3"
-        }
-    }
-
-    Write-Host "[3/5] OK - cert ISSUED" -ForegroundColor Green
-
-    # Persistir el ARN para Phase 4 si el script se reanuda
-    $env:GRAFANA_CERT_ARN = $CERT_ARN
+    Write-Host "[3/6] Certs ACM (grafana + api)..." -ForegroundColor Cyan
+    $CERT_ARN     = Ensure-Cert $FULL_DOMAIN
+    $API_CERT_ARN = Ensure-Cert $API_DOMAIN
+    Write-Host "[3/6] OK - ambos certs ISSUED" -ForegroundColor Green
 } else {
-    # Si arrancamos en Phase >=4, recuperar el cert desde ACM por nombre de domain
+    # Reanudando en Phase >=4: recuperar ambos ARNs por nombre de dominio.
     $CERT_ARN = aws acm list-certificates --region $REGION `
-        --query "CertificateSummaryList[?DomainName=='$FULL_DOMAIN'].CertificateArn | [0]" `
-        --output text
-    if (-not $CERT_ARN -or $CERT_ARN -eq "None") {
-        throw "No se encontro cert ACM para $FULL_DOMAIN — corre con -StartFromPhase 3"
-    }
+        --query "CertificateSummaryList[?DomainName=='$FULL_DOMAIN'].CertificateArn | [0]" --output text
+    if (-not $CERT_ARN -or $CERT_ARN -eq "None") { throw "No se encontro cert para $FULL_DOMAIN - corre -StartFromPhase 3" }
+    $API_CERT_ARN = aws acm list-certificates --region $REGION `
+        --query "CertificateSummaryList[?DomainName=='$API_DOMAIN'].CertificateArn | [0]" --output text
+    if (-not $API_CERT_ARN -or $API_CERT_ARN -eq "None") { throw "No se encontro cert para $API_DOMAIN - corre -StartFromPhase 3" }
 }
 
-# === [4/5] Phase 2: CFN deploy con Grafana + cert ===
+# === [4/6] CFN deploy con Grafana + ambos certs ===
 if ($StartFromPhase -le 4) {
     Write-Host ""
-    Write-Host "[4/5] Phase 2: deploy ECS Fargate + ALB + Grafana..." -ForegroundColor Cyan
+    Write-Host "[4/6] deploy ECS Fargate + ALB + Grafana + custom domain API..." -ForegroundColor Cyan
     Write-Host "  (CFN espera a que el service estabilice, ~5-8 min)"
-    Invoke-CfnDeploy -DeployGrafana "true" -CertArn $CERT_ARN
-    if ($LASTEXITCODE -ne 0) { throw "Phase 2 deploy fallo" }
-    Write-Host "[4/5] OK" -ForegroundColor Green
+    # ECS service-linked role: en cuentas que nunca usaron ECS no existe, y
+    # CreateCluster falla con "Unable to assume the service linked role".
+    # Crearlo es idempotente; si ya existe AWS responde "has been taken".
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com 2>&1 | Out-Null
+    $ErrorActionPreference = $prevEAP
+    Invoke-CfnDeploy -DeployGrafana "true" -CertArn $CERT_ARN -ApiCertArn $API_CERT_ARN
+    if ($LASTEXITCODE -ne 0) { throw "Phase 4 deploy fallo" }
+    Write-Host "[4/6] OK" -ForegroundColor Green
 }
 
-# === [5/5] CNAME final ===
+# === [5/6] CNAMEs finales (grafana -> ALB, api -> API GW domain) ===
 if ($StartFromPhase -le 5) {
     Write-Host ""
-    Write-Host "[5/5] CNAME final $FULL_DOMAIN -> ALB..." -ForegroundColor Cyan
+    Write-Host "[5/6] CNAMEs finales..." -ForegroundColor Cyan
 
     $ALB_DNS = Get-StackOutput "GrafanaAlbDnsName"
     if (-not $ALB_DNS) { throw "GrafanaAlbDnsName no encontrado en outputs" }
+    $API_TARGET = Get-StackOutput "IngestPosDomainTarget"
+    if (-not $API_TARGET) { throw "IngestPosDomainTarget no encontrado en outputs" }
 
+    $zonePrefix = $DomainName.Split('.')[0]   # ej. tfg.gasparri.com.ar -> tfg
     Write-Host ""
-    Write-Host "Agregar al DNS provider:" -ForegroundColor Yellow
-    Write-Host "  Nombre:  $GrafanaSubdomain"
-    Write-Host "  Tipo:    CNAME"
-    Write-Host "  Valor:   $ALB_DNS"
+    Write-Host "Agregar al DNS provider (2 CNAMEs):" -ForegroundColor Yellow
+    Write-Host "  1) $FULL_DOMAIN   CNAME  $ALB_DNS       (relativo: $GrafanaSubdomain.$zonePrefix)"
+    Write-Host "  2) $API_DOMAIN          CNAME  $API_TARGET   (relativo: api.$zonePrefix)"
     Write-Host ""
 
-    Wait-ForUser "Agrega el CNAME en tu DNS provider"
+    Wait-ForUser "Agrega ambos CNAMEs en tu DNS provider"
 
-    # Verificacion de resolucion DNS (best-effort, no falla si TTL todavia no propago)
+    # Verificacion de resolucion (best-effort, no falla si el TTL no propago)
+    foreach ($pair in @(@($FULL_DOMAIN, $ALB_DNS), @($API_DOMAIN, $API_TARGET))) {
+        $fqdn = $pair[0]; $tgt = $pair[1]
+        Write-Host "  Verificando $fqdn -> $tgt ..." -ForegroundColor Cyan
+        $attempt = 0
+        do {
+            $attempt++
+            try {
+                $resolved = (Resolve-DnsName -Name $fqdn -Type CNAME -ErrorAction Stop -DnsOnly).NameHost
+                if ($resolved -and $resolved -like "*$tgt*") { Write-Host "    OK: $resolved" -ForegroundColor Green; break }
+                Write-Host "    [$attempt/6] aun no propago (resolved: $resolved)"
+            } catch { Write-Host "    [$attempt/6] aun no propago" }
+            if ($attempt -lt 6) { Start-Sleep 30 }
+        } while ($attempt -lt 6)
+    }
+    Write-Host "[5/6] OK" -ForegroundColor Green
+}
+
+# === [6/6] Datasource Postgres en Grafana via API ===
+# Se hace despues del CNAME (Phase 5) porque pega a https://<grafana fqdn>.
+# Usa admin/admin: funciona en un Grafana fresco antes del primer login. Si
+# ya cambiaste el password, da 401 y se skipea (agregalo manual en la UI).
+if ($StartFromPhase -le 6) {
     Write-Host ""
-    Write-Host "  Verificando que $FULL_DOMAIN resuelva al ALB..." -ForegroundColor Cyan
-    $maxAttempts = 6
-    $attempt = 0
-    do {
-        $attempt++
+    Write-Host "[6/6] Datasource Postgres en Grafana..." -ForegroundColor Cyan
+
+    $rdsHost   = Get-StackOutput "RdsEndpoint"
+    $secretArn = Get-StackOutput "RdsMasterSecretArn"
+    $sec = (aws secretsmanager get-secret-value --secret-id $secretArn --query SecretString --output text) | ConvertFrom-Json
+    $cred = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("admin:admin"))
+    $headers = @{ Authorization = "Basic $cred" }
+    $gUrl = "https://$FULL_DOMAIN"
+
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        Invoke-RestMethod -Uri "$gUrl/api/user" -Headers $headers -TimeoutSec 15 | Out-Null
+        $authOk = $true
+    } catch {
+        $authOk = $false
+        Write-Host "  admin/admin no autentico (ya cambiaste el password?). Skip." -ForegroundColor Yellow
+        Write-Host "  Agregalo manual: Connections > Data sources > PostgreSQL"
+        Write-Host "    host $($rdsHost):5432  db people_counter  user people_counter  SSL=require"
+    }
+
+    if ($authOk) {
+        $body = @{
+            name = "people-counter"; type = "postgres"; access = "proxy"
+            url = "$($rdsHost):5432"; user = "people_counter"; isDefault = $true; database = "people_counter"
+            jsonData = @{ database = "people_counter"; sslmode = "require"; postgresVersion = 1600; timescaledb = $false }
+            secureJsonData = @{ password = $sec.password }
+        } | ConvertTo-Json -Depth 5
         try {
-            $resolved = (Resolve-DnsName -Name $FULL_DOMAIN -Type CNAME -ErrorAction Stop -DnsOnly).NameHost
-            if ($resolved -and $resolved -like "*$ALB_DNS*") {
-                Write-Host "  Resuelto: $FULL_DOMAIN -> $resolved" -ForegroundColor Green
-                break
-            }
-            Write-Host "  [$attempt/$maxAttempts] Aun no propago (resolved: $resolved)"
+            $ds = Invoke-RestMethod -Uri "$gUrl/api/datasources" -Method Post -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec 20
+            $h = Invoke-RestMethod -Uri "$gUrl/api/datasources/uid/$($ds.datasource.uid)/health" -Headers $headers -TimeoutSec 25
+            Write-Host "  datasource creado - health: $($h.status) ($($h.message))" -ForegroundColor Green
         } catch {
-            Write-Host "  [$attempt/$maxAttempts] Aun no propago (sin resolucion)"
+            $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+            if ($code -eq 409) { Write-Host "  datasource ya existia (ok)" -ForegroundColor Green }
+            else { Write-Host "  no se pudo crear el datasource (status $code) - agregalo manual en la UI" -ForegroundColor Yellow }
         }
-        if ($attempt -lt $maxAttempts) { Start-Sleep 30 }
-    } while ($attempt -lt $maxAttempts)
-
-    Write-Host "[5/5] OK" -ForegroundColor Green
+    }
+    $ErrorActionPreference = $prevEAP
+    Write-Host "[6/6] OK" -ForegroundColor Green
 }
 
 # === Done ===
@@ -318,8 +356,8 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host "DEPLOY COMPLETO" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Grafana:        $GRAFANA_URL"
-Write-Host "Login inicial:  admin / admin (cambiar al primer login)"
+Write-Host "Grafana:   $GRAFANA_URL  (login inicial admin / admin)"
+Write-Host "POS API:   https://$API_DOMAIN/pos/transactions  (POST, firma SigV4 / IAM)"
 Write-Host ""
 Write-Host "Proximos pasos:"
 Write-Host "  1. Cambiar password de admin en Grafana"
