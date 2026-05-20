@@ -10,28 +10,26 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_module_state():
     """Resetea conexiones cacheadas entre tests para que cada uno arranque limpio."""
-    # Import lazy así el módulo se re-evalúa con env vars limpios si hace falta.
     from src.cloud import persist_event
 
     persist_event._pg_conn = None
-    persist_event._pg_password = None
     yield
     persist_event._pg_conn = None
-    persist_event._pg_password = None
 
 
 @pytest.fixture
 def fake_pg(monkeypatch):
-    """Mockea psycopg.connect + SSM. Devuelve la conn fake para asserts."""
+    """Mockea psycopg.connect + boto3 (RDS IAM token). Devuelve la conn fake para asserts."""
     monkeypatch.setenv("PG_HOST", "localhost")
     monkeypatch.setenv("PG_DB", "test_db")
     monkeypatch.setenv("PG_USER", "test_user")
+    monkeypatch.setenv("PG_REGION", "us-east-1")
 
-    # Mock SSM get_parameter
-    fake_ssm = MagicMock()
-    fake_ssm.get_parameter.return_value = {"Parameter": {"Value": "fake-pw"}}
+    # Mock boto3 — rds.generate_db_auth_token() devuelve un string truthy.
+    fake_rds = MagicMock()
+    fake_rds.generate_db_auth_token.return_value = "fake-iam-token"
     fake_boto3 = MagicMock()
-    fake_boto3.client.return_value = fake_ssm
+    fake_boto3.client.return_value = fake_rds
 
     # Mock psycopg
     fake_cursor = MagicMock()
@@ -46,7 +44,7 @@ def fake_pg(monkeypatch):
     monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
 
     return {
-        "ssm": fake_ssm,
+        "rds": fake_rds,
         "psycopg": fake_psycopg,
         "conn": fake_conn,
         "cursor": fake_cursor,
@@ -54,12 +52,9 @@ def fake_pg(monkeypatch):
 
 
 def test_counting_event_inserts(fake_pg):
-    """Schema actual del INSERT (17 columnas) — ver _insert_counting.
-        0=device_id, 1=store_id, 2=event_ts, 3=event_bucket, 4=direction,
-        5=track_id, 6=confidence, 7=position_y,
-        8=height_class, 9=height_m, 10=head_depth_m,
-        11=total_in, 12=total_out,
-        13=scaling_factor, 14=scaled_in, 15=scaled_out, 16=best_frame_path.
+    """Schema actual del INSERT (9 columnas) — ver _insert_counting.
+        0=device_id, 1=store_id, 2=event_ts, 3=bucket_15min, 4=direction,
+        5=track_id, 6=confidence, 7=height_class, 8=height_m.
     """
     from src.cloud.persist_event import handler
 
@@ -72,28 +67,48 @@ def test_counting_event_inserts(fake_pg):
             "track_id": 42,
             "confidence": 0.87,
             "height_class": "adult",
+            "height_m": 1.75,
         },
     }
     result = handler(event, None)
 
     assert result["statusCode"] == 200
-    # Verifica que ejecutó un INSERT a count_events (tabla nueva post-bootstrap).
     assert fake_pg["cursor"].execute.called
     call_args = fake_pg["cursor"].execute.call_args
     sql = call_args[0][0]
     params = call_args[0][1]
     assert "INSERT INTO count_events" in sql
+    assert "bucket_15min" in sql
     assert params[0] == "store-001-cam-01"
-    assert params[1] == "store-001"  # store_id inferido del device_id
+    assert params[1] == "store-001"          # store_id inferido
     # params[2] = event_ts (datetime UTC desde event_time o envelope timestamp).
-    # params[3] = event_bucket — None cuando el cliente no lo manda.
-    assert params[3] is None
-    assert params[4] == "in"          # direction
-    assert params[5] == 42            # track_id
-    assert params[6] == 0.87          # confidence
-    # params[7] = position_y (None aca, no viene en el payload)
-    assert params[7] is None
-    assert params[8] == "adult"       # height_class
+    assert params[3] is None                 # bucket_15min — None cuando no se manda
+    assert params[4] == "in"                 # direction
+    assert params[5] == 42                   # track_id
+    assert params[6] == 0.87                 # confidence
+    assert params[7] == "adult"              # height_class
+    assert params[8] == 1.75                 # height_m
+
+
+def test_counting_event_accepts_legacy_event_bucket_key(fake_pg):
+    """Devices con firmware viejo mandan ``event_bucket`` en vez de ``bucket_15min``.
+    El Lambda debe aceptar ambas keys durante el rollout escalonado."""
+    from src.cloud.persist_event import handler
+
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "counting",
+        "data": {
+            "direction": "in",
+            "event_bucket": 1762963200,  # key vieja
+        },
+    }
+    result = handler(event, None)
+    assert result["statusCode"] == 200
+    params = fake_pg["cursor"].execute.call_args[0][1]
+    # bucket_15min (params[3]) debe estar populado desde event_bucket legacy.
+    assert params[3] is not None
 
 
 def test_telemetry_event_inserts(fake_pg):
@@ -121,11 +136,7 @@ def test_telemetry_event_inserts(fake_pg):
 def test_wifi_ble_event_inserts(fake_pg):
     """Schema actual del INSERT (7 columnas):
         0=device_id, 1=store_id, 2=period_start, 3=period_end,
-        4=period_bucket, 5=passersby, 6=shoppers.
-
-    ``period_bucket`` se agregó después del schema original — falla del
-    test legacy era esperar passersby/shoppers en posiciones 4/5 cuando
-    ahora están en 5/6.
+        4=bucket_15min, 5=passersby, 6=shoppers.
     """
     from src.cloud.persist_event import handler
 
@@ -147,9 +158,10 @@ def test_wifi_ble_event_inserts(fake_pg):
     sql = call_args[0][0]
     params = call_args[0][1]
     assert "INSERT INTO wifi_ble_summary" in sql
+    assert "bucket_15min" in sql
     assert params[0] == "store-001-cam-01"
     assert params[1] == "store-001"
-    # params[4] = period_bucket (default = period_start cuando no viene).
+    # params[4] = bucket_15min (default = period_start cuando no viene).
     assert params[5] == 160  # passersby
     assert params[6] == 27   # shoppers
 

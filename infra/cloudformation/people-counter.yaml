@@ -512,6 +512,132 @@ Resources:
       SourceArn: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:rule/people_counter_wifi_ble_${Environment}"
 
   # =========================================================================
+  # Ingest POS — API Gateway HTTP API v2 + Lambda con IAM auth (T9.11, US-06)
+  # =========================================================================
+  # POST /pos/transactions — el POS firma con SigV4 contra un IAM principal
+  # autorizado. Body acepta {tx} o [{tx1}, {tx2}, ...]. Lambda valida +
+  # inserta con ON CONFLICT (store_id, transaction_id) DO NOTHING.
+
+  IngestPosLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "people-counter-ingest-pos-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: rds-iam-auth
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # User Postgres separado del lambda_writer (least privilege:
+              # solo INSERT/SELECT sobre pos_transactions). Creado por SQL bootstrap.
+              - Effect: Allow
+                Action: [rds-db:connect]
+                Resource: !Sub "arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${RdsInstance.DbiResourceId}/lambda_pos_writer"
+
+  IngestPosLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: IngestPosLambdaLogGroup
+    Properties:
+      FunctionName: !Sub "people-counter-ingest-pos-${Environment}"
+      Runtime: python3.13
+      Handler: ingest_pos_transaction.handler
+      Role: !GetAtt IngestPosLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          PG_HOST: !GetAtt RdsInstance.Endpoint.Address
+          PG_PORT: !GetAtt RdsInstance.Endpoint.Port
+          PG_DB: people_counter
+          PG_USER: lambda_pos_writer
+          PG_REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          # Placeholder — el codigo real esta en src/cloud/ingest_pos_transaction.py
+          # y se sube con scripts/deploy_lambda.sh
+          def handler(event, context):
+              import json
+              print(json.dumps({"received": event}))
+              return {"statusCode": 501, "body": "Deploy real ingest_pos_transaction.py + psycopg layer"}
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  IngestPosLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/people-counter-ingest-pos-${Environment}"
+      RetentionInDays: 14
+
+  IngestPosApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "people-counter-pos-${Environment}"
+      Description: API REST para ingesta de transacciones POS (US-06)
+      ProtocolType: HTTP
+      Tags: {Project: people-counter, Environment: !Ref Environment}
+
+  IngestPosIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref IngestPosApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt IngestPosLambda.Arn
+      IntegrationMethod: POST
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  IngestPosRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IngestPosApi
+      RouteKey: "POST /pos/transactions"
+      # IAM auth: el POS firma con SigV4 contra un IAM user/role con
+      # execute-api:Invoke. Sin firma valida -> 403 antes de invocar la Lambda.
+      AuthorizationType: AWS_IAM
+      Target: !Sub "integrations/${IngestPosIntegration}"
+
+  IngestPosStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref IngestPosApi
+      StageName: "$default"
+      AutoDeploy: true
+      Tags: {Project: people-counter, Environment: !Ref Environment}
+
+  IngestPosLambdaPermissionApiGw:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngestPosLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${IngestPosApi}/*/*/pos/transactions"
+
+  IngestPosLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "people-counter-ingest-pos-errors-${Environment}"
+      AlarmDescription: Lambda ingest_pos con errores (auth IAM falla / DB unreachable / validaciones rotas)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - {Name: FunctionName, Value: !Ref IngestPosLambda}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+
+  # =========================================================================
   # ECR — repo privado para imagen Grafana (push manual desde Docker Hub)
   # =========================================================================
 
@@ -1005,6 +1131,18 @@ Outputs:
     Condition: DeployGrafanaCondition
     Description: URL final HTTPS una vez agregado el CNAME al DNS provider
     Value: !Sub "https://${GrafanaSubdomain}.${DomainName}"
+
+  IngestPosApiUrl:
+    Description: >
+      Endpoint para ingesta POS. El cliente firma con SigV4 (IAM) contra un
+      role que tenga execute-api:Invoke. POST {url}/pos/transactions con body
+      single {tx} o array [{tx1}, ...].
+    Value: !Sub "https://${IngestPosApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Export: {Name: !Sub "people-counter-${Environment}-IngestPosApiUrl"}
+
+  IngestPosApiId:
+    Value: !Ref IngestPosApi
+    Export: {Name: !Sub "people-counter-${Environment}-IngestPosApiId"}
 
   AlertTopicArn:
     Value: !Ref AlertTopic

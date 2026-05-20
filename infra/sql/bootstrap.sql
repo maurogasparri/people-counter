@@ -18,35 +18,42 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- Para PoC, dropeamos y recreamos. Cascade tira las views que dependen de las
 -- tablas; se recrean abajo. IF EXISTS hace este bloque idempotente en cold start.
 
-DROP TABLE IF EXISTS count_events     CASCADE;
-DROP TABLE IF EXISTS wifi_ble_summary CASCADE;
-DROP TABLE IF EXISTS telemetry        CASCADE;
-DROP TABLE IF EXISTS sales            CASCADE;
+DROP TABLE IF EXISTS count_events       CASCADE;
+DROP TABLE IF EXISTS wifi_ble_summary   CASCADE;
+DROP TABLE IF EXISTS telemetry          CASCADE;
+DROP TABLE IF EXISTS pos_transactions   CASCADE;
 
 -- =============================================================================
 -- Tablas raw — escritas por Lambda persist_event (3 topics IoT distintos)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS count_events (
-    event_id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    device_id        TEXT         NOT NULL,
-    store_id         TEXT         NOT NULL,
-    event_ts         TIMESTAMPTZ  NOT NULL,
-    event_bucket     TIMESTAMPTZ,                 -- alineado a analytics.bucket_seconds en el device
-    direction        TEXT         NOT NULL CHECK (direction IN ('in', 'out')),
-    track_id         INT,
-    confidence       REAL,
-    position_y       REAL,                        -- coordenada Y del cruce (rect coords)
-    height_class     TEXT,                        -- 'adult' | 'child' | 'unknown' (segun height_m)
-    height_m         REAL,
-    head_depth_m     REAL,
-    total_in         INT,                         -- running total en el device al momento del evento
-    total_out        INT,
-    scaling_factor   REAL,                        -- multiplier del shadow (escala por sensibilidad)
-    scaled_in        INT,
-    scaled_out       INT,
-    best_frame_path  TEXT,                        -- path local en el device (no contiene la imagen)
-    received_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    event_id        UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id       TEXT         NOT NULL,
+    store_id        TEXT         NOT NULL,
+    event_ts        TIMESTAMPTZ  NOT NULL,
+    -- Bucket de 15min alineado al epoch — lo manda el device pre-calculado
+    -- desde analytics.bucket_seconds (default 900s). Mantener device-controlled
+    -- permite cambiar el bucket via shadow sin recomputar nada server-side.
+    bucket_15min    TIMESTAMPTZ,
+    -- Rollups server-side derivados del event_ts. STORED para que sean indexables
+    -- y los queries de Grafana hourly/daily no recomputen date_trunc en cada fila.
+    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', event_ts)) STORED,
+    bucket_day      DATE         GENERATED ALWAYS AS (date_trunc('day', event_ts)::date) STORED,
+    direction       TEXT         NOT NULL CHECK (direction IN ('in', 'out')),
+    track_id        INT,
+    -- Score del detector (0-1). No se usa en views/dashboards regulares, se
+    -- mantiene para debug ad-hoc: investigar falsos positivos en stores con
+    -- conteos sospechosos, detectar drift entre devices.
+    confidence      REAL,
+    -- 'adult' | 'child' | 'unknown' (clasificacion server-side desde height_m).
+    -- Usado en S10 dashboards (US-05 breakdown adult/child).
+    height_class    TEXT         CHECK (height_class IN ('adult', 'child', 'unknown')),
+    -- Altura cruda en metros. Se mantiene para debug operativo: detectar
+    -- drift del mounting_height_m del config vs altura fisica real ("99% de
+    -- los eventos del device X tienen height_m < 1.0 -> alguien movio el bracket").
+    height_m        REAL,
+    received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- Idempotencia para reintentos del Lambda / replay del buffer del device.
     UNIQUE (device_id, event_ts, track_id, direction)
 );
@@ -55,31 +62,43 @@ CREATE INDEX IF NOT EXISTS idx_count_events_store_ts
     ON count_events (store_id, event_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_count_events_device_ts
     ON count_events (device_id, event_ts DESC);
-CREATE INDEX IF NOT EXISTS idx_count_events_bucket
-    ON count_events (store_id, event_bucket DESC) WHERE event_bucket IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_count_events_bucket15
+    ON count_events (store_id, bucket_15min DESC) WHERE bucket_15min IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_count_events_day
+    ON count_events (store_id, bucket_day DESC);
 
 CREATE TABLE IF NOT EXISTS wifi_ble_summary (
     summary_id      UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id       TEXT         NOT NULL,
     store_id        TEXT         NOT NULL,
-    period_start    TIMESTAMPTZ  NOT NULL,   -- inicio de la ventana (epoch del device)
-    period_end      TIMESTAMPTZ  NOT NULL,   -- fin de la ventana
-    period_bucket   TIMESTAMPTZ  NOT NULL,   -- bucket alineado para joins multi-cam (= period_start alineado)
-    passersby       INT          NOT NULL,   -- post L2 dedup
-    shoppers        INT          NOT NULL,   -- en rango cercano (RSSI fuerte)
+    period_start    TIMESTAMPTZ  NOT NULL,                  -- inicio de la ventana (epoch del device)
+    period_end      TIMESTAMPTZ  NOT NULL,                  -- fin de la ventana
+    -- Bucket de 15min device-aligned. Se llama bucket_15min para consistencia
+    -- con count_events / pos_transactions (mismo nombre de columna -> JOINs faciles).
+    bucket_15min    TIMESTAMPTZ  NOT NULL,
+    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', period_start)) STORED,
+    bucket_day      DATE         GENERATED ALWAYS AS (date_trunc('day', period_start)::date) STORED,
+    passersby       INT          NOT NULL,                  -- post L2 dedup
+    shoppers        INT          NOT NULL,                  -- en rango cercano (RSSI fuerte)
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- Idempotencia ante retries del device: una sola fila por (device, ventana).
     UNIQUE (device_id, period_start, period_end)
 );
 
-CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_period
-    ON wifi_ble_summary (store_id, period_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_bucket15
+    ON wifi_ble_summary (store_id, bucket_15min DESC);
+CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_day
+    ON wifi_ble_summary (store_id, bucket_day DESC);
 
 CREATE TABLE IF NOT EXISTS telemetry (
     telemetry_id     UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id        TEXT         NOT NULL,
     store_id         TEXT         NOT NULL,
     event_ts         TIMESTAMPTZ  NOT NULL,
+    -- Rollup hourly server-side. Telemetry corre cada 5min, asi que 15min/day
+    -- no aplican naturalmente; hourly es la granularidad util para dashboards
+    -- de fleet ("CPU temp p95 por hora", "fps mediana por hora").
+    bucket_hour      TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', event_ts)) STORED,
     -- OS metrics
     uptime_s                      REAL,
     cpu_temp_c                    REAL,
@@ -109,72 +128,91 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- Schedule / error state (mando 'error' del payload + detalle largo)
     error                         TEXT,
     schedule_error_detail         TEXT,
-    received_at                   TIMESTAMPTZ  NOT NULL DEFAULT now()
+    received_at                   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    -- Idempotencia ante retries de IoT (mismo device + mismo timestamp = misma muestra).
+    UNIQUE (device_id, event_ts)
 );
 
 CREATE INDEX IF NOT EXISTS idx_telemetry_device_ts
     ON telemetry (device_id, event_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_telemetry_device_hour
+    ON telemetry (device_id, bucket_hour DESC);
 
 -- =============================================================================
--- Sales — placeholder para futura ingesta vía API Gateway desde POS externo
+-- POS transactions — ingesta via API Gateway desde el POS del cliente (T9.11)
 -- =============================================================================
+-- Soporta dos modos de envio a discrecion del POS:
+--   1) Transaction-by-transaction: una fila por factura/ticket, type='sale'
+--      o 'return'. transaction_id = numero de factura.
+--   2) Aggregated: una fila por batch (turno, hora, etc.), type='sale' o
+--      'return' segun corresponda al batch. items = total de items del batch,
+--      amount_minor = total del batch. transaction_id = batch_id del POS.
+-- En ambos casos el conversion_rate funciona — solo cambia la granularidad
+-- maxima a la que se puede agrupar.
 
-CREATE TABLE IF NOT EXISTS sales (
-    sale_id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    external_id     TEXT         NOT NULL,    -- ID en el sistema POS origen
+CREATE TABLE IF NOT EXISTS pos_transactions (
+    pos_id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_id  TEXT         NOT NULL,                  -- factura o batch id del POS
     store_id        TEXT         NOT NULL,
-    sale_ts         TIMESTAMPTZ  NOT NULL,
-    amount_minor    BIGINT       NOT NULL,    -- centavos (sin floats)
+    event_ts        TIMESTAMPTZ  NOT NULL,                  -- timestamp de la transaccion/batch
+    type            TEXT         NOT NULL CHECK (type IN ('sale', 'return')),
+    items           INT          NOT NULL DEFAULT 1 CHECK (items >= 0),
+    amount_minor    BIGINT       NOT NULL CHECK (amount_minor >= 0),  -- en centavos (no floats)
     currency        CHAR(3)      NOT NULL DEFAULT 'ARS',
-    item_count      INT,
-    payment_method  TEXT,
-    cashier_id      TEXT,
-    metadata        JSONB,
+    payment_method  TEXT,                                   -- nullable: NULL o 'mixed' para batches
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    UNIQUE (store_id, external_id)            -- POS puede reintentar sin duplicar
+    -- Buckets generados server-side desde event_ts (el POS no conoce nuestro shadow).
+    -- Mismos nombres que count_events/wifi_ble_summary -> JOINs por nombre de columna.
+    bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (
+        date_trunc('hour', event_ts) +
+        INTERVAL '15 min' * (date_part('minute', event_ts)::int / 15)
+    ) STORED,
+    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (date_trunc('hour', event_ts)) STORED,
+    bucket_day      DATE         GENERATED ALWAYS AS (date_trunc('day', event_ts)::date) STORED,
+    -- Idempotencia: POS reintenta mismo transaction_id sin duplicar.
+    UNIQUE (store_id, transaction_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_sales_store_ts
-    ON sales (store_id, sale_ts DESC);
-CREATE INDEX IF NOT EXISTS idx_sales_received
-    ON sales (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pos_store_bucket15
+    ON pos_transactions (store_id, bucket_15min DESC);
+CREATE INDEX IF NOT EXISTS idx_pos_store_day
+    ON pos_transactions (store_id, bucket_day DESC);
 
 -- =============================================================================
 -- View multi-cam: agregación por store con MAX (no SUM) para WiFi/BLE
+-- =============================================================================
 -- Cuando un store tenga 2+ cams, WiFi/BLE range (~30-50m) excede al vision
 -- range (3-5m), entonces las cams ven la misma gente. Tomar MAX en vez de SUM
 -- evita doble-conteo. Con 1 cam por store, MAX = el row de esa cam.
--- =============================================================================
 
 CREATE OR REPLACE VIEW wifi_ble_store_traffic AS
 SELECT
-    period_bucket,
+    bucket_15min,
     store_id,
     MAX(passersby)   AS passersby,
     MAX(shoppers)    AS shoppers,
     COUNT(*)         AS cams_reporting
 FROM wifi_ble_summary
-GROUP BY period_bucket, store_id;
+GROUP BY bucket_15min, store_id;
 
 -- =============================================================================
--- Counting agregado por bucket del device (analytics.bucket_seconds, 15min default)
+-- Counting agregado por bucket (15min device-aligned)
 -- =============================================================================
--- event_bucket es la columna que el device alinea al multiplo del epoch segun
--- analytics.bucket_seconds (15min por default). Agrupar por esa columna mantiene
--- semantica device-correcta: cambiar el bucket via shadow no requiere recomputar
--- nada, y rows viejos preservan su bucket original.
+-- bucket_15min es device-controlled (alineado al multiplo del epoch segun
+-- analytics.bucket_seconds). Cambiar el bucket via shadow no recomputa nada
+-- server-side; rows viejos preservan su bucket original.
 
 CREATE OR REPLACE VIEW counting_by_bucket AS
 SELECT
     store_id,
-    event_bucket,
+    bucket_15min,
     COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
     COUNT(*) FILTER (WHERE direction = 'out') AS outs,
     COUNT(*) FILTER (WHERE direction = 'in')
       - COUNT(*) FILTER (WHERE direction = 'out') AS net
 FROM count_events
-WHERE event_bucket IS NOT NULL
-GROUP BY store_id, event_bucket;
+WHERE bucket_15min IS NOT NULL
+GROUP BY store_id, bucket_15min;
 
 -- =============================================================================
 -- Turn-in rate por bucket: gente que entro / gente que paso cerca
@@ -186,82 +224,141 @@ GROUP BY store_id, event_bucket;
 
 CREATE OR REPLACE VIEW turn_in_rate_by_bucket AS
 WITH ins AS (
-    SELECT store_id, event_bucket, COUNT(*) AS ins
+    SELECT store_id, bucket_15min, COUNT(*) AS ins
     FROM count_events
-    WHERE direction = 'in' AND event_bucket IS NOT NULL
-    GROUP BY store_id, event_bucket
+    WHERE direction = 'in' AND bucket_15min IS NOT NULL
+    GROUP BY store_id, bucket_15min
 )
 SELECT
-    COALESCE(i.store_id, w.store_id)          AS store_id,
-    COALESCE(i.event_bucket, w.period_bucket) AS bucket,
-    COALESCE(i.ins, 0)                        AS ins,
-    COALESCE(w.passersby, 0)                  AS passersby,
-    COALESCE(w.shoppers, 0)                   AS shoppers,
+    COALESCE(i.store_id, w.store_id)        AS store_id,
+    COALESCE(i.bucket_15min, w.bucket_15min) AS bucket_15min,
+    COALESCE(i.ins, 0)                       AS ins,
+    COALESCE(w.passersby, 0)                 AS passersby,
+    COALESCE(w.shoppers, 0)                  AS shoppers,
     CASE WHEN COALESCE(w.passersby, 0) > 0
          THEN i.ins::float / w.passersby
-         ELSE NULL END                        AS turn_in_rate,
+         ELSE NULL END                       AS turn_in_rate,
     CASE WHEN COALESCE(w.shoppers, 0) > 0
          THEN i.ins::float / w.shoppers
-         ELSE NULL END                        AS conversion_rate
+         ELSE NULL END                       AS turn_in_shoppers_rate
 FROM ins i
 FULL OUTER JOIN wifi_ble_store_traffic w
-    ON w.store_id = i.store_id AND w.period_bucket = i.event_bucket;
+    ON w.store_id = i.store_id AND w.bucket_15min = i.bucket_15min;
 
 -- =============================================================================
--- Rollups hourly encima de los views de bucket
+-- Rollups hourly / daily encima de los views de bucket
 -- =============================================================================
--- Para reportes diarios donde 15min es demasiado fino y para charts de Grafana
--- de "ultimas 24h" sin aliasing.
+-- Usan bucket_hour / bucket_day directos (generated columns) -> sin date_trunc.
 
 CREATE OR REPLACE VIEW counting_hourly AS
 SELECT
     store_id,
-    date_trunc('hour', event_bucket) AS hour,
-    SUM(ins)  AS ins,
-    SUM(outs) AS outs,
-    SUM(net)  AS net
-FROM counting_by_bucket
-GROUP BY store_id, date_trunc('hour', event_bucket);
+    bucket_hour,
+    COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
+    COUNT(*) FILTER (WHERE direction = 'out') AS outs,
+    COUNT(*) FILTER (WHERE direction = 'in')
+      - COUNT(*) FILTER (WHERE direction = 'out') AS net
+FROM count_events
+GROUP BY store_id, bucket_hour;
 
-CREATE OR REPLACE VIEW turn_in_rate_hourly AS
+CREATE OR REPLACE VIEW counting_daily AS
 SELECT
     store_id,
-    date_trunc('hour', bucket) AS hour,
-    SUM(ins)       AS ins,
-    SUM(passersby) AS passersby,
-    SUM(shoppers)  AS shoppers,
-    CASE WHEN SUM(passersby) > 0
-         THEN SUM(ins)::float / SUM(passersby)
-         ELSE NULL END  AS turn_in_rate,
-    CASE WHEN SUM(shoppers) > 0
-         THEN SUM(ins)::float / SUM(shoppers)
-         ELSE NULL END  AS conversion_rate
-FROM turn_in_rate_by_bucket
-GROUP BY store_id, date_trunc('hour', bucket);
+    bucket_day,
+    COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
+    COUNT(*) FILTER (WHERE direction = 'out') AS outs,
+    COUNT(*) FILTER (WHERE direction = 'in')
+      - COUNT(*) FILTER (WHERE direction = 'out') AS net,
+    -- Breakdown adult/child para US-05 (solo en daily, en 15min es ruido)
+    COUNT(*) FILTER (WHERE direction = 'in' AND height_class = 'adult') AS ins_adult,
+    COUNT(*) FILTER (WHERE direction = 'in' AND height_class = 'child') AS ins_child
+FROM count_events
+GROUP BY store_id, bucket_day;
 
 -- =============================================================================
--- View agregada: count events + sales por hora por store
--- Útil para dashboards de conversion rate = sales_count / people_in
+-- Conversion rate: visitas (counter) vs ventas (POS) — cierra US-06
 -- =============================================================================
+-- Granularidad de 15min para drill-down. FULL OUTER JOIN preserva buckets donde
+-- solo una fuente reporto (counter sin POS, o POS fuera del horario de counter).
 
-CREATE OR REPLACE VIEW store_hourly_summary AS
-SELECT
-    DATE_TRUNC('hour', c.event_ts)              AS hour_bucket,
-    c.store_id,
-    COUNT(*) FILTER (WHERE c.direction = 'in')  AS people_in,
-    COUNT(*) FILTER (WHERE c.direction = 'out') AS people_out,
-    COALESCE(s.sales_total, 0)                  AS sales_total,
-    COALESCE(s.sales_count, 0)                  AS sales_count
-FROM count_events c
-LEFT JOIN LATERAL (
+CREATE OR REPLACE VIEW conversion_rate_by_store AS
+WITH visits AS (
+    SELECT store_id, bucket_15min,
+           COUNT(*) FILTER (WHERE direction = 'in') AS visits
+    FROM count_events
+    WHERE bucket_15min IS NOT NULL
+    GROUP BY store_id, bucket_15min
+),
+pos_agg AS (
     SELECT
-        SUM(amount_minor) / 100.0  AS sales_total,
-        COUNT(*)                    AS sales_count
-    FROM sales sl
-    WHERE sl.store_id = c.store_id
-      AND DATE_TRUNC('hour', sl.sale_ts) = DATE_TRUNC('hour', c.event_ts)
-) s ON true
-GROUP BY DATE_TRUNC('hour', c.event_ts), c.store_id, s.sales_total, s.sales_count;
+        store_id,
+        bucket_15min,
+        COUNT(*) FILTER (WHERE type = 'sale')   AS sales,
+        COUNT(*) FILTER (WHERE type = 'return') AS returns,
+        COALESCE(SUM(items)        FILTER (WHERE type = 'sale'),   0) AS sales_items,
+        COALESCE(SUM(items)        FILTER (WHERE type = 'return'), 0) AS returns_items,
+        COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0) AS sales_amount_minor,
+        COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0) AS returns_amount_minor
+    FROM pos_transactions
+    GROUP BY store_id, bucket_15min
+)
+SELECT
+    COALESCE(v.store_id, p.store_id)         AS store_id,
+    COALESCE(v.bucket_15min, p.bucket_15min) AS bucket_15min,
+    COALESCE(v.visits, 0)                    AS visits,
+    COALESCE(p.sales, 0)                     AS sales,
+    COALESCE(p.returns, 0)                   AS returns,
+    COALESCE(p.sales_items, 0)               AS sales_items,
+    COALESCE(p.returns_items, 0)             AS returns_items,
+    COALESCE(p.sales_amount_minor, 0)        AS sales_amount_minor,
+    COALESCE(p.returns_amount_minor, 0)      AS returns_amount_minor,
+    COALESCE(p.sales_amount_minor, 0)
+      - COALESCE(p.returns_amount_minor, 0)  AS net_amount_minor,
+    -- Conversion rate = sales / visits. NULL si no hay visits (evita div/0).
+    CASE WHEN COALESCE(v.visits, 0) > 0
+         THEN p.sales::float / v.visits
+         ELSE NULL END                       AS conversion_rate
+FROM visits v
+FULL OUTER JOIN pos_agg p
+    ON v.store_id = p.store_id AND v.bucket_15min = p.bucket_15min;
+
+-- Rollups hourly / daily encima del 15min para reportes mas anchos.
+
+CREATE OR REPLACE VIEW conversion_rate_hourly AS
+SELECT
+    store_id,
+    date_trunc('hour', bucket_15min) AS bucket_hour,
+    SUM(visits)               AS visits,
+    SUM(sales)                AS sales,
+    SUM(returns)              AS returns,
+    SUM(sales_items)          AS sales_items,
+    SUM(returns_items)        AS returns_items,
+    SUM(sales_amount_minor)   AS sales_amount_minor,
+    SUM(returns_amount_minor) AS returns_amount_minor,
+    SUM(net_amount_minor)     AS net_amount_minor,
+    CASE WHEN SUM(visits) > 0
+         THEN SUM(sales)::float / SUM(visits)
+         ELSE NULL END        AS conversion_rate
+FROM conversion_rate_by_store
+GROUP BY store_id, date_trunc('hour', bucket_15min);
+
+CREATE OR REPLACE VIEW conversion_rate_daily AS
+SELECT
+    store_id,
+    date_trunc('day', bucket_15min)::date AS bucket_day,
+    SUM(visits)               AS visits,
+    SUM(sales)                AS sales,
+    SUM(returns)              AS returns,
+    SUM(sales_items)          AS sales_items,
+    SUM(returns_items)        AS returns_items,
+    SUM(sales_amount_minor)   AS sales_amount_minor,
+    SUM(returns_amount_minor) AS returns_amount_minor,
+    SUM(net_amount_minor)     AS net_amount_minor,
+    CASE WHEN SUM(visits) > 0
+         THEN SUM(sales)::float / SUM(visits)
+         ELSE NULL END        AS conversion_rate
+FROM conversion_rate_by_store
+GROUP BY store_id, date_trunc('day', bucket_15min)::date;
 
 -- =============================================================================
 -- User Lambda persist_event — IAM auth (sin password)
@@ -274,7 +371,6 @@ GROUP BY DATE_TRUNC('hour', c.event_ts), c.store_id, s.sales_total, s.sales_coun
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lambda_writer') THEN
-        -- Revocar todo y dropear, así re-creamos limpio
         REVOKE ALL ON ALL TABLES IN SCHEMA public FROM lambda_writer;
         REVOKE ALL ON SCHEMA public FROM lambda_writer;
         DROP USER lambda_writer;
@@ -287,6 +383,27 @@ GRANT USAGE ON SCHEMA public TO lambda_writer;
 GRANT INSERT ON count_events, wifi_ble_summary, telemetry TO lambda_writer;
 -- ON CONFLICT necesita SELECT también para evaluar la condición unique:
 GRANT SELECT ON count_events, wifi_ble_summary, telemetry TO lambda_writer;
+
+-- =============================================================================
+-- User Lambda ingest_pos_transaction — IAM auth (sin password)
+-- =============================================================================
+-- Lambda separada del persist_event con role IAM propio (least privilege:
+-- solo INSERT/SELECT sobre pos_transactions, sin acceso a count_events ni
+-- telemetry). El API Gateway invoca esta Lambda con IAM auth.
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lambda_pos_writer') THEN
+        REVOKE ALL ON ALL TABLES IN SCHEMA public FROM lambda_pos_writer;
+        REVOKE ALL ON SCHEMA public FROM lambda_pos_writer;
+        DROP USER lambda_pos_writer;
+    END IF;
+END $$;
+
+CREATE USER lambda_pos_writer;
+GRANT rds_iam TO lambda_pos_writer;
+GRANT USAGE ON SCHEMA public TO lambda_pos_writer;
+GRANT INSERT, SELECT ON pos_transactions TO lambda_pos_writer;
 
 -- =============================================================================
 -- Database "grafana" — separada para el state interno de Grafana

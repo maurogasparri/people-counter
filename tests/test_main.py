@@ -285,7 +285,6 @@ def _make_pipeline_config(tmpdir: str) -> dict:
             "sgbm": {"num_disparities": 192, "block_size": 9, "downscale": 1},
         },
         "counter": {
-            "foot_projection_enabled": False,
             "roi": {
                 "x_min": 0, "x_max": 640,
                 "y_min": 100, "y_max": 380,

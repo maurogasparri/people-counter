@@ -61,7 +61,7 @@ _COMPLETE_CONFIG: dict = {
             "depth_gate_m": 0.5,
         },
     },
-    "counter": {"foot_projection_enabled": False},
+    "counter": {},
     "wifi_ble": {
         "enabled": True,
         "wifi_interface": "wlan0",

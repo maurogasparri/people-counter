@@ -95,7 +95,6 @@ def _make_config(tmpdir: str) -> dict[str, Any]:
             },
         },
         "counter": {
-            "foot_projection_enabled": False,
             "roi": {"x_min": 100, "x_max": 540, "y_min": 180, "y_max": 300},
             "lines": [
                 {
@@ -344,11 +343,13 @@ def test_e2e_ingress_event_published(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(events) == 1, f"expected 1 counting event, got {events}"
     event = events[0]
     assert event["direction"] == "ingress"
-    assert event["total_in"] == 1
-    assert event["total_out"] == 0
-    assert event["scaled_in"] == 1
+    # total_in/out, scaling_factor/scaled_in/out, position_y, head_depth_m y
+    # best_frame_path se dropearon del payload de counting (no se usan en views
+    # ni en dashboards planificados). Quedan en telemetry los running totals
+    # como sanity check device-vs-server.
     assert "event_time" in event
     assert "track_id" in event
+    assert "bucket_15min" in event
 
 
 # ---------------------------------------------------------------------------

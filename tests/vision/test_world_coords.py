@@ -1,14 +1,12 @@
 """Tests para helpers de world-space (clasificación de altura de cabeza)."""
 
 import numpy as np
-import pytest
 
 from src.vision.depth import head_depth_in_bbox, min_depth_at_bbox
 from src.vision.world_coords import (
     aggregate_height_class,
     classify_height,
     head_height_above_floor,
-    project_to_floor,
 )
 
 
@@ -75,163 +73,6 @@ class TestAggregateHeightClass:
         # Equal counts: last non-unknown wins (bias toward latest stable bbox)
         assert aggregate_height_class(["adult", "child"]) == "child"
         assert aggregate_height_class(["child", "adult"]) == "adult"
-
-
-class TestProjectToFloor:
-    """Footpoint projection (head pixel → foot pixel using head height).
-
-    Verifies the parallax-correction trick used by the counter: knowing
-    the actual head height above the floor (via SGBM depth) lets us scale
-    the head pixel toward the principal point by ``Z_head / H`` to get
-    the foot pixel. At nadir the scale is irrelevant; at the periphery
-    the shift is the parallax error a centroid-based tracker would
-    silently accumulate.
-    """
-
-    # Realistic geometry: 3 m mount, 1.7 m person, 1152×648 frame after
-    # the standard rescale of the 2304×1296 calibration. Principal
-    # point sits roughly at frame centre on rectified imagery.
-    MOUNT_MM = 3000.0
-    HEAD_MM = 1700.0
-    CX = 576.0
-    CY = 324.0
-
-    def test_nadir_no_shift(self):
-        """Head exactly at the principal point ⇒ scale is irrelevant,
-        feet project on the same pixel. The geometric invariant the
-        whole construction rests on."""
-        u, v = project_to_floor(
-            (self.CX, self.CY),
-            self.HEAD_MM,
-            self.MOUNT_MM,
-            self.CX,
-            self.CY,
-        )
-        assert u == pytest.approx(self.CX)
-        assert v == pytest.approx(self.CY)
-
-    def test_periphery_shifts_toward_principal_point(self):
-        """A head pixel offset from nadir scales TOWARD the principal
-        point — the foot pixel is closer to centre than the head pixel
-        by exactly the parallax factor.
-        """
-        # Head 200 px to the right of nadir.
-        head_pixel = (self.CX + 200.0, self.CY)
-        u, v = project_to_floor(
-            head_pixel,
-            self.HEAD_MM,
-            self.MOUNT_MM,
-            self.CX,
-            self.CY,
-        )
-        # Z_head/H = (3000-1700)/3000 = 0.4333..., so the offset shrinks
-        # from 200 px to 200*0.4333 = 86.67 px.
-        expected_offset = 200.0 * (self.MOUNT_MM - self.HEAD_MM) / self.MOUNT_MM
-        assert u == pytest.approx(self.CX + expected_offset)
-        assert v == pytest.approx(self.CY)
-        # Foot pixel is closer to principal point than head pixel.
-        assert abs(u - self.CX) < abs(head_pixel[0] - self.CX)
-
-    def test_diagonal_periphery(self):
-        """2D shift: both u and v scale by the same factor."""
-        head_pixel = (self.CX + 300.0, self.CY - 150.0)
-        u, v = project_to_floor(
-            head_pixel,
-            self.HEAD_MM,
-            self.MOUNT_MM,
-            self.CX,
-            self.CY,
-        )
-        scale = (self.MOUNT_MM - self.HEAD_MM) / self.MOUNT_MM
-        assert u == pytest.approx(self.CX + 300.0 * scale)
-        assert v == pytest.approx(self.CY + (-150.0) * scale)
-
-    def test_zero_head_height_is_no_op(self):
-        """No head height = no info. Returning the input lets the caller
-        fall back to centroid-based crossing logic transparently."""
-        head_pixel = (700.0, 200.0)
-        u, v = project_to_floor(
-            head_pixel,
-            0.0,
-            self.MOUNT_MM,
-            self.CX,
-            self.CY,
-        )
-        assert (u, v) == head_pixel
-
-    def test_zero_mount_is_no_op(self):
-        """Bad/missing mount config ⇒ no projection, no crash."""
-        head_pixel = (700.0, 200.0)
-        u, v = project_to_floor(
-            head_pixel,
-            self.HEAD_MM,
-            0.0,
-            self.CX,
-            self.CY,
-        )
-        assert (u, v) == head_pixel
-
-    def test_negative_inputs_are_no_op(self):
-        head_pixel = (700.0, 200.0)
-        assert (
-            project_to_floor(
-                head_pixel,
-                -5.0,
-                self.MOUNT_MM,
-                self.CX,
-                self.CY,
-            )
-            == head_pixel
-        )
-        assert (
-            project_to_floor(
-                head_pixel,
-                self.HEAD_MM,
-                -1.0,
-                self.CX,
-                self.CY,
-            )
-            == head_pixel
-        )
-
-    def test_head_taller_than_mount_is_no_op(self):
-        """Pathological: a taller-than-mount head means the camera is
-        looking at a torso, not a head — the depth estimate must be
-        wrong. Falling back to the head pixel keeps the counter from
-        sign-flipping the parallax shift."""
-        head_pixel = (800.0, 400.0)
-        # Head at 3.5 m, mount only 3 m → Z_head = -500 mm.
-        u, v = project_to_floor(
-            head_pixel,
-            3500.0,
-            self.MOUNT_MM,
-            self.CX,
-            self.CY,
-        )
-        assert (u, v) == head_pixel
-
-    def test_periphery_magnitude_matches_documented_geometry(self):
-        """Sanity-check contra los números geométricos del caso canónico:
-        persona de 1.7 m bajo mount de 3.0 m, head pixel cerca del borde
-        del frame (~60° de excentricidad desde el eje óptico a este FOV).
-        El shift no es exactamente 110 cm acá porque computamos en
-        espacio de IMAGEN, no en metros de plano de piso — pero el factor
-        de escala tiene que ser exactamente Z_head/H."""
-        # 500 px is roughly ~80% of the half-frame width on 1152×648,
-        # i.e. nearly at the border.
-        head_pixel = (self.CX + 500.0, self.CY)
-        u_foot, _ = project_to_floor(
-            head_pixel,
-            self.HEAD_MM,
-            self.MOUNT_MM,
-            self.CX,
-            self.CY,
-        )
-        # The shift in image space relative to the head pixel:
-        shift_px = head_pixel[0] - u_foot
-        # Z_head/H = 1300/3000 ≈ 0.433, so foot is at offset 500*0.433 =
-        # 216.67 from centre, shift = 500 - 216.67 = 283.33 px.
-        assert shift_px == pytest.approx(500.0 - 500.0 * 1300.0 / 3000.0)
 
 
 class TestMinDepthAtBbox:

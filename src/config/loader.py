@@ -311,7 +311,7 @@ def _validate(config: dict[str, Any]) -> None:
         "tracking": (
             "max_disappeared_frames", "max_distance_px", "state_machine",
         ),
-        "counter": ("foot_projection_enabled",),
+        "counter": (),
         "wifi_ble": (
             "wifi_interface",
             "probe_interval_seconds",
@@ -373,11 +373,6 @@ def _validate(config: dict[str, Any]) -> None:
                     "config.tracking.state_machine.kalman."
                     f"{k} must be a number"
                 )
-
-    if not isinstance(config["counter"]["foot_projection_enabled"], bool):
-        raise ValueError(
-            "config.counter.foot_projection_enabled must be a bool"
-        )
 
     # Threshold de debounce opcional para line crossing. ``None`` /
     # ausente / 0 deshabilita el feature; un float >= 0 lo activa.

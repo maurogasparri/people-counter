@@ -159,38 +159,25 @@ def _insert_counting(conn, event: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT INTO count_events
-                (device_id, store_id, event_ts, event_bucket, direction,
-                 track_id, confidence, position_y,
-                 height_class, height_m, head_depth_m,
-                 total_in, total_out,
-                 scaling_factor, scaled_in, scaled_out,
-                 best_frame_path)
+                (device_id, store_id, event_ts, bucket_15min, direction,
+                 track_id, confidence, height_class, height_m)
             VALUES (%s, %s, %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s,
-                    %s, %s, %s,
-                    %s)
+                    %s, %s, %s, %s)
             ON CONFLICT (device_id, event_ts, track_id, direction) DO NOTHING
             """,
             (
                 device_id,
                 _infer_store_id(device_id),
                 _ts(data.get("event_time", event.get("timestamp"))),
-                _ts(data.get("event_bucket")),
+                # Acepta tanto la key nueva ("bucket_15min") como la legacy
+                # ("event_bucket") para no romper devices con firmware viejo
+                # durante un rollout escalonado.
+                _ts(data.get("bucket_15min", data.get("event_bucket"))),
                 data["direction"],
                 data.get("track_id"),
                 data.get("confidence"),
-                data.get("position_y"),
                 data.get("height_class"),
                 data.get("height_m"),
-                data.get("head_depth_m"),
-                data.get("total_in"),
-                data.get("total_out"),
-                data.get("scaling_factor"),
-                data.get("scaled_in"),
-                data.get("scaled_out"),
-                data.get("best_frame_path"),
             ),
         )
 
@@ -226,6 +213,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                     %s, %s,
                     %s,
                     %s, %s)
+            ON CONFLICT (device_id, event_ts) DO NOTHING
             """,
             (
                 device_id,
@@ -260,13 +248,16 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
 def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
     data = event["data"]
     device_id = event["device_id"]
-    # period_bucket default == period_start (publisher manda ambos pre-alineados).
-    period_bucket = data.get("period_bucket", data["period_start"])
+    # bucket_15min default == period_start (publisher manda ambos pre-alineados).
+    # Acepta legacy key "period_bucket" para devices con firmware viejo.
+    bucket_15min = data.get(
+        "bucket_15min", data.get("period_bucket", data["period_start"])
+    )
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO wifi_ble_summary
-                (device_id, store_id, period_start, period_end, period_bucket,
+                (device_id, store_id, period_start, period_end, bucket_15min,
                  passersby, shoppers)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (device_id, period_start, period_end) DO NOTHING
@@ -276,7 +267,7 @@ def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
                 _infer_store_id(device_id),
                 _ts(data["period_start"]),
                 _ts(data["period_end"]),
-                _ts(period_bucket),
+                _ts(bucket_15min),
                 data["passersby"],
                 data["shoppers"],
             ),

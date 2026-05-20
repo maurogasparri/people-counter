@@ -358,17 +358,6 @@ counter:
                                     # de mujeres adultas en Argentina; pocos
                                     # adultos se misclasifican.
 
-  # Proyección parallax de foot-point. Cuando true, el counter proyecta el
-  # head pixel del bbox al foot-point via altura 3D antes de evaluar la
-  # línea virtual + ROI. Corrige el parallax fisheye en geometrías donde
-  # la puerta cae al borde del FOV (~1m de error a mount 3m). Default
-  # false: requiere depth válido (calibración pasada por diagnose_depth.py)
-  # — con depth incorrecto el head_height_mm queda mal y la proyección
-  # comprime la trayectoria del foot-point dentro del ROI hasta que los
-  # exits no disparan. Activar per-device después de validar que la
-  # calibración estéreo da error <5% al centro a 2m.
-  foot_projection_enabled: false
-
   # Debounce de cruce de línea — distancia mínima en pixels que el track
   # debe haberse movido entre frames consecutivos para considerar un flip
   # de lado como cruce real. 0 deshabilita el feature (default — preserva

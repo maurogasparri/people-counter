@@ -46,7 +46,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.tracking.tracker import CONFIRMED, PENDING, Track
-from src.vision.world_coords import project_to_floor
 
 logger = logging.getLogger(__name__)
 
@@ -243,41 +242,6 @@ def _aggregate_head_depth_m_from_track(track: Track) -> Optional[float]:
     return float(median_mm) / 1000.0
 
 
-def _latest_head_height_and_bbox(
-    track: Track,
-) -> tuple[Optional[float], Optional[tuple[float, float, float, float]]]:
-    """(head_height_mm, bbox) válido más reciente del detection history
-    del track. Lo usa :meth:`Counter._tracking_point` para manejar la
-    proyección parallax-corrected del footpoint.
-
-    Recorre la historia de atrás hacia adelante así un valor stale
-    nunca desplaza a uno fresco, y devuelve ``head_height_mm`` solo
-    cuando es positivo (que sea None es la señal de upstream de que el
-    depth pick fue implausible — ver el height sanity gate en
-    ``main.py``).
-    """
-    history = track.meta.get("detection_history", [])
-    head_mm: Optional[float] = None
-    bbox: Optional[tuple[float, float, float, float]] = None
-    for rec in reversed(history):
-        if head_mm is None:
-            v = rec.get("head_height_mm")
-            if v is not None and float(v) > 0:
-                head_mm = float(v)
-        if bbox is None:
-            b = rec.get("bbox")
-            if b is not None and len(b) == 4:
-                bbox = (
-                    float(b[0]),
-                    float(b[1]),
-                    float(b[2]),
-                    float(b[3]),
-                )
-        if head_mm is not None and bbox is not None:
-            break
-    return head_mm, bbox
-
-
 def _aggregate_confidence_from_track(track: Track) -> Optional[float]:
     """Mediana de confidence YOLO sobre el detection history del track."""
     history = track.meta.get("detection_history", [])
@@ -327,37 +291,19 @@ class Counter:
     - ``line_sides``: cache per-line del "lado" del tracking point del
       frame previo. Se usa para detectar transiciones de lado que
       impliquen un cruce.
-    - ``proj_active``: si los ``line_sides`` del frame previo se
-      computaron usando el footpoint parallax-corrected (True) o el
-      centroide bbox raw (False). Toggling entre convenciones se
-      maneja resnapshoteando los lados en vez de compararlos cross.
 
-    Tracking point — parallax-corrected cuando se puede
-    ---------------------------------------------------
-    El bbox del detector en zenith fisheye encierra cabeza + hombros +
-    torso hasta aproximadamente la cintura; los pies no son visibles
-    desde arriba. Usar el centroide (≈ hombros) como tracking point
-    hace que el cruce de línea dispare cuando la *proyección del
-    hombro* de la persona — no los pies — pasa la línea. Con un mount
-    de 3 m eso son ~1 m de error en el borde del frame (60° de
-    excentricidad).
-
-    Cuando la metadata per-track lleva un ``head_height_mm`` válido de
-    SGBM y el principal point de calibración + altura de montaje están
-    disponibles, el counter usa :func:`project_to_floor` para escalar
-    el head pixel hacia el principal point por ``Z_head / mount`` y
-    cuenta el cruce del *foot* pixel proyectado. La altura 3D que SGBM
-    nos provee permite recuperar el footpoint geométricamente, evitando
-    el sesgo sistemático de contar por centroide/hombros bajo lentes
-    cenitales con FOV ancho.
-
-    Cuando la proyección no es viable para un track (sin head height
-    todavía, sin calibración plumbed in, mount=0), el counter cae al
-    comportamiento de centroide. Las dos convenciones nunca se mezclan
-    dentro de la comparación de lados de un único frame:
-    ``proj_active`` registra cuál se usó para los lados cacheados, y
-    un flip de convención resnapshotea los lados sin emitir un cruce
-    fantasma.
+    Tracking point — centroide del bbox
+    -----------------------------------
+    El counter usa el centroide del bbox como tracking point para ROI +
+    cruce de línea. El montaje es cenital sobre el umbral de la puerta a
+    medir, así que el cruce ocurre cerca del nadir, donde el paralaje es
+    ~cero (cabeza y pies proyectan al mismo pixel) — el centroide es el
+    foot-point efectivo ahí. La corrección de paralaje image-space que
+    existía antes (footpoint proyectado vía ``project_to_floor``) se
+    retiró: comprimía la trayectoria hacia el principal point y rompía
+    los INs en geometría de puerta central, y no aportaba en la zona del
+    cruce. La altura 3D de SGBM se sigue usando, pero solo para
+    clasificar adult/child (no para la posición del cruce).
     """
 
     META_KEY = "counter"
@@ -386,25 +332,12 @@ class Counter:
         lines: list[Line],
         roi: Optional[dict[str, float]] = None,
         *,
-        mounting_height_mm: Optional[float] = None,
-        principal_point: Optional[tuple[float, float]] = None,
         min_crossing_movement_px: float = 0.0,
     ) -> None:
         """
         Args:
             lines: Al menos una línea de conteo axis-aligned.
             roi: ROI rectangular opcional gateando la región contada.
-            mounting_height_mm: Altura de la cámara sobre el piso (mm).
-                Setear esto junto con ``principal_point`` para habilitar
-                el tracking de footpoint parallax-corrected. Cuando
-                cualquiera de los dos es ``None`` el counter cae a
-                tracking por centroide del bbox — preserva la semántica
-                legacy para tests y runs pre-calibración.
-            principal_point: ``(cx, cy)`` de la cámara izquierda
-                rectificada en pixels. Viene de ``P1[0,2], P1[1,2]``
-                del ``.npz`` de calibración estéreo. Tiene que estar
-                en el mismo pixel space que las posiciones del
-                tracking (es decir, la resolución runtime rectificada).
             min_crossing_movement_px: Threshold de debounce — si el
                 track se movió menos que este valor (en pixels) entre
                 frames consecutivos *dentro* del ROI, los flips de lado
@@ -421,19 +354,6 @@ class Counter:
         self._lines: list[Line] = list(lines)
         self._roi: Optional[tuple[float, float, float, float]] = (
             _validate_roi(roi) if roi else None
-        )
-        # Params de proyección de footpoint. Ambos tienen que estar
-        # populados para que la proyección se active; si no, el counter
-        # cae al modo centroide (sin corrección de parallax).
-        self._mounting_height_mm: Optional[float] = (
-            float(mounting_height_mm)
-            if mounting_height_mm is not None and float(mounting_height_mm) > 0
-            else None
-        )
-        self._principal_point: Optional[tuple[float, float]] = (
-            (float(principal_point[0]), float(principal_point[1]))
-            if principal_point is not None
-            else None
         )
         self._min_crossing_movement_px: float = max(0.0, float(min_crossing_movement_px))
         all_labels: set[str] = set()
@@ -715,77 +635,17 @@ class Counter:
         x_min, x_max, y_min, y_max = self._roi
         return x_min <= cx <= x_max and y_min <= cy <= y_max
 
-    def _tracking_point(self, track: Track) -> tuple[float, float, bool]:
-        """Elige el pixel usado para ROI + cruce de línea este frame.
+    def _tracking_point(self, track: Track) -> tuple[float, float]:
+        """Pixel usado para ROI + cruce de línea: el centroide del bbox.
 
-        Devuelve ``(x, y, projected)`` donde ``projected`` es True
-        cuando se usó el footpoint parallax-corrected. El caller guarda
-        ``projected`` en la meta del track así el próximo frame puede
-        detectar un flip de convención y re-snapshotear los line sides
-        cacheados.
-
-        Reglas de selección:
-
-        1. Si el counter no se construyó con params de calibración
-           (``mounting_height_mm`` + ``principal_point``), caer al
-           centroide. Preserva el comportamiento legacy para tests y
-           runs pre-calibración.
-        2. Si el track tiene un ``head_height_mm`` válido en su
-           metadata de detección más reciente, proyectar el *tope* del
-           bbox (head pixel) al piso. El tope del bbox está más cerca
-           de la cabeza real que el centroide en zenith fisheye — el
-           centro del bbox cae aproximadamente sobre los hombros, así
-           que proyectar el centroide subestimaría el shift de
-           parallax por ~30%. Cae al X del centroide cuando falta bbox.
-        3. Si no, centroide.
-
-        Tomar head height del registro de detección MÁS RECIENTE (no
-        la mediana) mantiene la proyección responsive a cambios de
-        depth — una persona que se agacha tiene menos head height;
-        deberíamos trackearla donde están sus pies ahora, no donde
-        estaba su mediana. El speckle ya está filtrado upstream por
-        ``head_depth_in_bbox`` (gates antropométricos) y el sanity
-        check de altura en ``main.py`` (None-out de valores
-        implausibles), así que latest es safe.
+        El montaje es cenital sobre el umbral de la puerta a medir, así
+        que el cruce ocurre cerca del nadir donde el paralaje es ~cero —
+        el centroide es el foot-point efectivo. La corrección de paralaje
+        image-space (footpoint proyectado) se retiró porque comprimía la
+        trayectoria hacia el principal point y rompía los INs en puerta
+        central, sin aportar en la zona del cruce.
         """
-        cx = float(track.positions[-1][0])
-        cy = float(track.positions[-1][1])
-
-        if self._mounting_height_mm is None or self._principal_point is None:
-            return cx, cy, False
-
-        head_mm, bbox = _latest_head_height_and_bbox(track)
-        if head_mm is None or head_mm <= 0:
-            return cx, cy, False
-
-        # Head pixel = centro del tope del bbox. En zenith fisheye la
-        # cabeza cae cerca del borde superior del bbox de persona (el
-        # bbox se extiende hacia abajo a través de torso/cintura).
-        # Cuando bbox no está disponible (meta vieja), caer al X del
-        # centroide con el Y del centroide — mejor que nada, y la
-        # proyección igual corrige la mayor parte del parallax porque
-        # lo que importa es la dirección radial.
-        if bbox is not None:
-            x1, y1, x2, _y2 = bbox
-            head_px = ((float(x1) + float(x2)) / 2.0, float(y1))
-        else:
-            head_px = (cx, cy)
-
-        cx_pp, cy_pp = self._principal_point
-        u_foot, v_foot = project_to_floor(
-            head_px,
-            head_mm,
-            self._mounting_height_mm,
-            cx_pp,
-            cy_pp,
-        )
-        # Si project_to_floor rechazó los inputs (degenerados),
-        # devuelve el head pixel sin cambios. No podemos llamar safely
-        # a eso "footpoint" — caer al centroide así la flag de
-        # convención refleja con precisión lo que usamos.
-        if (u_foot, v_foot) == head_px and head_px != (cx, cy):
-            return cx, cy, False
-        return u_foot, v_foot, True
+        return float(track.positions[-1][0]), float(track.positions[-1][1])
 
     def _process_track(self, track: Track) -> Optional[CountEvent]:
         # Los tracks CANDIDATE son demasiado inestables para contar.
@@ -794,24 +654,20 @@ class Counter:
         if not track.positions:
             return None
 
-        # Tracking point — footpoint proyectado cuando depth +
-        # calibración están disponibles, centroide raw si no.
-        # ``projected`` flaggea la convención así un flip cross frames
-        # dispara un resnapshot del side cache abajo.
-        cx, cy, projected = self._tracking_point(track)
+        # Tracking point — centroide del bbox (ver _tracking_point).
+        cx, cy = self._tracking_point(track)
         meta = track.meta.setdefault(self.META_KEY, {})
         was_inside = bool(meta.get("inside", False))
-        prev_projected = bool(meta.get("proj_active", False))
         is_inside = self._inside_roi(cx, cy)
 
-        # Memoria de la última posición outside-ROI bajo la convención
-        # actual. La entry-fresca abajo la usa para snapshotear sides[]
-        # desde la trayectoria de approach (lado inequívoco de donde
-        # viene el track) en lugar de la primera detección inside —
-        # que con ROI chico + detector miss rate puede caer ya del otro
-        # lado de la línea y dejar el cache corrupto, perdiendo el
-        # cruce. Solo se actualiza cuando el track está outside; se
-        # consume y opcionalmente persiste a través del cycle.
+        # Memoria de la última posición outside-ROI. La entry-fresca
+        # abajo la usa para snapshotear sides[] desde la trayectoria de
+        # approach (lado inequívoco de donde viene el track) en lugar de
+        # la primera detección inside — que con ROI chico + detector miss
+        # rate puede caer ya del otro lado de la línea y dejar el cache
+        # corrupto, perdiendo el cruce. Solo se actualiza cuando el track
+        # está outside; se consume y opcionalmente persiste a través del
+        # cycle.
         if not is_inside:
             meta["last_outside_pos"] = (cx, cy)
 
@@ -822,31 +678,6 @@ class Counter:
         if not isinstance(sides, list) or len(sides) != len(self._lines):
             sides = [0] * len(self._lines)
             meta["line_sides"] = sides
-
-        # Flip de convención: el frame previo cacheó sides bajo la
-        # *otra* convención de tracking-point (centroide vs footpoint
-        # proyectado). Comparar sides cross convenciones puede fabricar
-        # un "cruce" — ej. el centroide estaba debajo de la línea, la
-        # proyección pone los pies arriba, no pasó movimiento real.
-        # Re-snapshotear bajo la nueva convención sin emitir un label
-        # este frame; el próximo frame detectará cualquier cruce
-        # subsecuente genuino limpiamente.
-        convention_flipped = was_inside and (projected != prev_projected)
-        if convention_flipped:
-            for i, line in enumerate(self._lines):
-                sides[i] = line.side_of(cx, cy) if is_inside else 0
-            meta["proj_active"] = projected
-            # La outside-pos memoria está expresada en la convención
-            # vieja; descartarla así la próxima entry-fresca no
-            # snapshotea con coordenadas heterogéneas.
-            meta.pop("last_outside_pos", None)
-            if not is_inside:
-                # Tratarlo como un exit benigno (sin contexto de
-                # cruce confiable).
-                meta["inside"] = False
-                meta["last_label"] = None
-            return None
-        meta["proj_active"] = projected
 
         if is_inside and not was_inside:
             # Entry fresca: resetear estado del ciclo y snapshotear
@@ -1020,20 +851,8 @@ class Counter:
 # ---------------------------------------------------------------------------
 
 
-def build_counter(
-    config: dict[str, Any],
-    *,
-    mounting_height_mm: Optional[float] = None,
-    principal_point: Optional[tuple[float, float]] = None,
-) -> Counter:
+def build_counter(config: dict[str, Any]) -> Counter:
     """Construye el counter desde config YAML.
-
-    Los opcionales ``mounting_height_mm`` y ``principal_point``
-    habilitan el tracking de footpoint parallax-corrected (ver
-    :class:`Counter` para el rationale). Hay que proveer ambos juntos;
-    omitir cualquiera deja al counter en el path legacy de tracking
-    por centroide. Se pasa desde ``main.py`` una vez que se cargó
-    calibración.
 
     Schema (estricto):
 
@@ -1077,8 +896,6 @@ def build_counter(
     return Counter(
         lines=lines,
         roi=counter_cfg.get("roi"),
-        mounting_height_mm=mounting_height_mm,
-        principal_point=principal_point,
         min_crossing_movement_px=float(
             counter_cfg.get("min_crossing_movement_px", 0.0) or 0.0
         ),

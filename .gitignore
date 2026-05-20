@@ -49,6 +49,9 @@ Thumbs.db
 
 # Models (downloaded, not committed)
 /models/
+# Pesos COCO off-the-shelf que baja ultralytics (ej. al correr
+# scripts/training/compare_detectors.py). Build artifact, regenerable.
+/yolov8n.pt
 
 # Ultralytics default training/eval output dir — generated when calling
 # YOLO().train()/val() without an explicit project=. Regenerable, no value.

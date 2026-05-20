@@ -31,7 +31,6 @@ from src.config.loader import (
     apply_shadow_delta,
     build_reported_state,
     get_invalid_schedule_mode,
-    get_scaling_factor,
     has_schedule_error,
     is_counting_enabled,
     is_within_operating_hours,
@@ -1256,45 +1255,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 rect_l, rect_r = frame_l, frame_r
             t_rectify_end = time.perf_counter()
 
-            # --- Inicializar counter con la altura real del frame ---
-            # Footpoint projection: cuando la calibración está cargada Y
-            # ``counter.foot_projection_enabled`` es true (default false en
-            # ``config/config.example.yaml``), tomamos el principal point
-            # de P1 (matriz de proyección izquierda rectificada) y lo
-            # combinamos con vision.mounting_height_m así el counter usa
-            # pixels de pies corregidos por parallax para los cruces de
-            # línea en vez del centroide del bbox. Disabled por default:
-            # en geometrías de puerta central la proyección comprime la
-            # trayectoria del foot-point dentro del ROI y los exits nunca
-            # disparan (solo se detectan OUTs, sin INs). Cuando el toggle
-            # está off — o cuando calibración / mount no están disponibles —
-            # el counter cae al path del centroide.
+            # --- Inicializar counter ---
+            # El counter cuenta por centroide del bbox. El montaje es
+            # cenital sobre el umbral de la puerta a medir, así que el
+            # cruce ocurre cerca del nadir donde el paralaje es ~cero — el
+            # centroide es el foot-point efectivo. (La corrección de
+            # paralaje image-space que existía se retiró: comprimía la
+            # trayectoria hacia el centro y rompía los INs en puerta
+            # central. La altura 3D de SGBM se sigue usando solo para
+            # adult/child, no para la posición del cruce.)
             if counter is None:
-                foot_projection_enabled = bool(
-                    config["counter"]["foot_projection_enabled"]
-                )
-                if foot_projection_enabled and calibration is not None:
-                    p1 = calibration["P1"]
-                    principal_pt: tuple[float, float] | None = (
-                        float(p1[0, 2]),
-                        float(p1[1, 2]),
-                    )
-                else:
-                    principal_pt = None
-                mount_mm_for_counter = (
-                    float(vision_cfg.get("mounting_height_m", 0.0) or 0.0) * 1000.0
-                ) or None
-                counter = build_counter(
-                    config,
-                    mounting_height_mm=mount_mm_for_counter,
-                    principal_point=principal_pt,
-                )
+                counter = build_counter(config)
                 logger.info(
-                    "Counter inicializado: %s (footpoint_projection=%s, "
-                    "toggle=%s)",
-                    type(counter).__name__,
-                    bool(principal_pt is not None and mount_mm_for_counter),
-                    foot_projection_enabled,
+                    "Counter inicializado: %s", type(counter).__name__
                 )
 
             # --- Setear focal length + baseline desde la calibración ---
@@ -1669,22 +1642,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     )
 
             # --- Publicar eventos de conteo ---
-            scaling = get_scaling_factor(config)
             for event in events:
-                # Best-frame: escribe el JPG elegido localmente y adjunta el
-                # path al payload del evento. Solo el path viaja por MQTT —
-                # los bytes de la imagen nunca dejan el dispositivo. Cuando
-                # el feature está OFF (default) ``best_frame_path`` queda
-                # None y se omite del payload por la construcción de dict
-                # de abajo.
-                best_frame_path: str | None = None
-                if best_frame_mgr is not None:
-                    best_frame_path = best_frame_mgr.commit(
-                        event.track_id,
-                        event.timestamp,
-                    )
-
-                # event_bucket: alineamos event_time al múltiplo de
+                # bucket_15min: alineamos event_time al múltiplo de
                 # analytics.bucket_seconds (epoch). Lo calculamos en el
                 # device y lo mandamos en el payload así Postgres lo guarda
                 # como columna regular — cambiar bucket_seconds via shadow
@@ -1693,29 +1652,18 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 bucket_secs = float(
                     config.get("analytics", {}).get("bucket_seconds", 900)
                 )
-                event_bucket = (
+                bucket_15min = (
                     int(event.timestamp / bucket_secs) * bucket_secs
                 )
 
                 payload = {
                     "direction": event.direction,
                     "track_id": event.track_id,
-                    "position_y": event.position_y,
                     "event_time": event.timestamp,
-                    "event_bucket": event_bucket,
-                    "total_in": counter.total_in,
-                    "total_out": counter.total_out,
-                    "scaling_factor": scaling,
-                    "scaled_in": round(counter.total_in * scaling),
-                    "scaled_out": round(counter.total_out * scaling),
+                    "bucket_15min": bucket_15min,
                     "height_class": event.height_class,
                     "height_m": (
                         round(event.height_m, 2) if event.height_m is not None else None
-                    ),
-                    "head_depth_m": (
-                        round(event.head_depth_m, 2)
-                        if event.head_depth_m is not None
-                        else None
                     ),
                     "confidence": (
                         round(event.confidence, 3)
@@ -1723,8 +1671,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         else None
                     ),
                 }
-                if best_frame_path is not None:
-                    payload["best_frame_path"] = best_frame_path
                 mqtt_client.publish_event("counting", payload)
                 logger.info(
                     "counting_event_published direction=%s track_id=%d "

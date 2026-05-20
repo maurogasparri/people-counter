@@ -72,16 +72,6 @@ class TestShippedTemplate:
         bf = cfg.get("best_frame", {})
         assert bf.get("enabled") is False
 
-    def test_shipped_foot_projection_default_off(self):
-        """Default off — el feature requiere depth válido (calibración
-        que pase diagnose_depth.py con error <5% al centro a 2m). Con
-        depth incorrecto el head_height_mm queda mal y la proyección
-        comprime la trayectoria del foot-point dentro del ROI hasta
-        que los exits no disparan. Activar per-site recién después
-        de validar la calibración."""
-        cfg = self._load_shipped()
-        assert cfg["counter"]["foot_projection_enabled"] is False
-
 
 # ---------------------------------------------------------------------------
 # low_confidence_threshold (two-stage matching)
@@ -256,35 +246,22 @@ class TestBestFrameValidation:
 
 
 # ---------------------------------------------------------------------------
-# counter.foot_projection_enabled toggle
+# counter section presence
 # ---------------------------------------------------------------------------
 
 
-class TestCounterToggle:
-    def test_true_accepted(self, tmp_path, complete_config):
-        complete_config["counter"] = {"foot_projection_enabled": True}
-        loaded = load_config(write_config(tmp_path, complete_config))
-        assert loaded["counter"]["foot_projection_enabled"] is True
-
-    def test_false_accepted(self, tmp_path, complete_config):
-        complete_config["counter"] = {"foot_projection_enabled": False}
-        loaded = load_config(write_config(tmp_path, complete_config))
-        assert loaded["counter"]["foot_projection_enabled"] is False
-
+class TestCounterSection:
     def test_missing_block_rejected(self, tmp_path, complete_config):
         complete_config.pop("counter", None)
         with pytest.raises(ValueError, match="missing section: counter"):
             load_config(write_config(tmp_path, complete_config))
 
-    def test_missing_key_rejected(self, tmp_path, complete_config):
+    def test_empty_block_accepted(self, tmp_path, complete_config):
+        """El counter no exige keys a nivel loader — las líneas las valida
+        build_counter en runtime. Un bloque vacío pasa el loader."""
         complete_config["counter"] = {}
-        with pytest.raises(ValueError, match="counter.foot_projection_enabled"):
-            load_config(write_config(tmp_path, complete_config))
-
-    def test_non_bool_rejected(self, tmp_path, complete_config):
-        complete_config["counter"] = {"foot_projection_enabled": "yes"}
-        with pytest.raises(ValueError, match="must be a bool"):
-            load_config(write_config(tmp_path, complete_config))
+        loaded = load_config(write_config(tmp_path, complete_config))
+        assert loaded["counter"] == {}
 
 
 # ---------------------------------------------------------------------------
