@@ -1,5 +1,5 @@
 [Unit]
-Description=WiFi monitor mode para captura de probes (nexmon + airmon-ng)
+Description=Libera wlan0 para WiFi probing en monitor mode (Pi 5 / CYW43455)
 After=network-pre.target
 Before=people-counter.service
 Wants=network-pre.target
@@ -7,9 +7,14 @@ Wants=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/usr/sbin/airmon-ng check kill
-ExecStart=/usr/sbin/airmon-ng start wlan0
-ExecStop=/usr/sbin/airmon-ng stop wlan0mon
+# La Pi 5 (CYW43455/brcmfmac) NO soporta una vif `wlan0mon` paralela, asi que
+# `airmon-ng start wlan0` falla (Device or resource busy) — ese era el bug del
+# servicio original. El pipeline (people-counter) convierte wlan0 a monitor
+# mode el mismo via `iw dev wlan0 set type monitor`; aca solo matamos los
+# procesos que reclaman wlan0 a station mode (NetworkManager si corre +
+# wpa_supplicant). eth0 (red Ethernet / uplink MQTT) NO va por wpa_supplicant,
+# asi que no se ve afectada por el check kill.
+ExecStart=/usr/sbin/airmon-ng check kill
 
 [Install]
 WantedBy=multi-user.target
