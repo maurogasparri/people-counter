@@ -205,7 +205,7 @@ class _NullMQTTClient:
         self.disconnect_count = 0
         self.on_connected = None
 
-    def connect(self) -> None:
+    def connect(self, startup_jitter_seconds: float = 0.0) -> None:  # noqa: ARG002
         logger.info(
             "MQTT deshabilitado (--no-mqtt) — los publishes se loggearán a stdout, "
             "no se transmite nada a AWS IoT.",
