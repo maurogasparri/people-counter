@@ -113,6 +113,40 @@ class TestHotCellSuppression:
         assert out == [det], "Hit rate 0.5 (<0.7) no debe suprimirse"
 
 
+class TestExemptRoi:
+    """Detecciones dentro de ``exempt_roi`` no se suprimen aunque su celda
+    esté hot — exenta el ROI de conteo (gente parada en la puerta no debe
+    morir y disparar counts fantasma)."""
+
+    def _warm_hot_cell(self, sup, clock, det) -> None:
+        for _ in range(11):
+            _tick_and_update(sup, clock, [det])
+
+    def test_hot_cell_inside_exempt_roi_is_kept(self) -> None:
+        sup, clock = _suppressor()
+        det = _FakeDet(100, 100)
+        self._warm_hot_cell(sup, clock, det)
+        clock.tick(0.1)
+        out = sup.update_and_filter([det], exempt_roi=(50, 200, 50, 200))
+        assert out == [det], "celda hot dentro del ROI exento se conserva"
+
+    def test_hot_cell_outside_exempt_roi_still_suppressed(self) -> None:
+        sup, clock = _suppressor()
+        det = _FakeDet(100, 100)
+        self._warm_hot_cell(sup, clock, det)
+        clock.tick(0.1)
+        out = sup.update_and_filter([det], exempt_roi=(400, 600, 400, 600))
+        assert out == [], "celda hot fuera del ROI exento se suprime igual"
+
+    def test_exempt_roi_none_is_prior_behavior(self) -> None:
+        sup, clock = _suppressor()
+        det = _FakeDet(100, 100)
+        self._warm_hot_cell(sup, clock, det)
+        clock.tick(0.1)
+        out = sup.update_and_filter([det])  # default exempt_roi=None
+        assert out == [], "sin exempt_roi, la celda hot se suprime (comportamiento previo)"
+
+
 class TestNonHotCellsPassFreely:
     def test_isolated_detection_in_cold_cell_passes(self) -> None:
         """Una detección en una celda nueva (sin historia) pasa

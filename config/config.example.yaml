@@ -266,26 +266,29 @@ detection:
   # durante warm-up para no filtrar antes de tener historia.
   #
   # ON por default: en retail real el clutter estructural es la norma
-  # (mostradores, displays con maniquíes, sillas en el cuadro del ROI)
-  # y el suppressor es la única defensa contra FPs persistentes que
-  # generan counts fantasma. La ventana de 3s + min_samples=8 da margen
-  # para que una persona quieta legítima salga del rango antes de
-  # alcanzar el threshold. Apagar SOLO si se observa que se come
-  # cabezas reales (zonas de espera donde la gente está parada >5s
-  # mirando algo, colas largas).
+  # (mostradores, displays con maniquíes, sillas en el cuadro) y el
+  # suppressor es la única defensa contra FPs persistentes que generan
+  # counts fantasma. El ROI de conteo se EXENTA automáticamente (el
+  # runtime pasa counter.roi como exempt_roi): una persona parada en el
+  # umbral de la puerta nunca se suprime, así no se mata su track ni se
+  # dispara un count fantasma vía synthetic-exit. El suppressor solo
+  # ataca la periferia (fuera del ROI). Apagar SOLO si se come cabezas
+  # reales fuera del ROI.
   static_suppressor:
     enabled: true
     cell_size_px: 30                # Resolución espacial del filtro.
                                     # 30px funciona para 1152×648 con cabezas
                                     # ~50-80px (cada cabeza ocupa ~2-3 celdas).
-    window_seconds: 3.0             # Ventana del análisis en segundos reales
+    window_seconds: 15.0            # Ventana del análisis en segundos reales
                                     # (no en frames). El supresor mide la
                                     # ventana con timestamps internos, así
                                     # que el comportamiento es consistente
-                                    # sea cual sea el FPS instantáneo del
-                                    # pipeline. 3s da tiempo a un FP estable
-                                    # para acumular hit rate alto sin
-                                    # penalizar a una persona quieta.
+                                    # sea cual sea el FPS instantáneo. 15s:
+                                    # una persona puede pausar/dudar varios
+                                    # segundos sin suprimirse; un FP estructural
+                                    # está hot ~100% del tiempo y se caza igual.
+                                    # (Antes 3s — demasiado corto, suprimía
+                                    # gente parada y disparaba counts fantasma.)
     hit_rate_threshold: 0.7         # Fracción mínima para considerar la
                                     # celda hot. 0.7 separa FP estable (~1.0)
                                     # de presencia ocasional (~0.3-0.5).

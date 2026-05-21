@@ -730,7 +730,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     if ss_cfg.get("enabled", True):
         static_suppressor = StaticSuppressor(
             cell_size_px=int(ss_cfg.get("cell_size_px", 30)),
-            window_seconds=float(ss_cfg.get("window_seconds", 3.0)),
+            window_seconds=float(ss_cfg.get("window_seconds", 15.0)),
             hit_rate_threshold=float(ss_cfg.get("hit_rate_threshold", 0.7)),
             min_samples_for_judgment=int(
                 ss_cfg.get("min_samples_for_judgment", 8)
@@ -1356,8 +1356,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # Durante warm-up devuelve la lista intacta. Si el feature
             # está disabled, suppressor=None y skip.
             if static_suppressor is not None:
+                # El ROI de conteo se exenta: una persona parada en el umbral
+                # de la puerta NO debe suprimirse (mataría su track y dispararía
+                # un count fantasma vía synthetic-exit). El suppressor solo
+                # ataca clutter estructural de la periferia, fuera del ROI.
                 all_detections = static_suppressor.update_and_filter(
-                    all_detections
+                    all_detections,
+                    exempt_roi=counter.roi if counter is not None else None,
                 )
 
             # Separa las detecciones en buckets spawn-eligible vs match-only.

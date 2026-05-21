@@ -45,6 +45,19 @@ class _HasCentroid(Protocol):
         ...
 
 
+def _in_rect(
+    pt: tuple[float, float],
+    rect: tuple[float, float, float, float] | None,
+) -> bool:
+    """True si ``pt`` cae dentro del rectángulo ``(x_min, x_max, y_min, y_max)``.
+    ``rect=None`` => False (no hay región exenta)."""
+    if rect is None:
+        return False
+    x, y = pt
+    x_min, x_max, y_min, y_max = rect
+    return x_min <= x <= x_max and y_min <= y <= y_max
+
+
 class StaticSuppressor:
     """Filtro rolling que suprime detecciones sobre celdas hot.
 
@@ -55,9 +68,12 @@ class StaticSuppressor:
             razonable para frames 1152×648 con cabezas de ~50-80px de
             ancho (cada cabeza ocupa ~2-3 celdas).
         window_seconds: Ventana del análisis temporal en segundos reales.
-            3s es buen sweet spot — suficiente para que un FP estable se
-            acumule, corto para que una persona parada por reasons
-            legítimos (atención al mostrador) no quede suprimida.
+            15s: una persona puede pausar/dudar en la puerta varios segundos
+            sin quedar suprimida; un FP estructural está "hot" ~100% del
+            tiempo y igual se caza tras la ventana. (Antes 3s — demasiado
+            corto: una persona parada ~3s se suprimía, su track moría y el
+            synthetic-exit del Counter disparaba un count fantasma. La región
+            de conteo además se exenta via ``exempt_roi`` en update_and_filter.)
         hit_rate_threshold: Fracción mínima de la ventana en que la
             celda debe estar activa para suprimirse. 0.7 distingue
             FP estructural (≈1.0) de presencia humana ocasional (~0.3-0.5).
@@ -73,7 +89,7 @@ class StaticSuppressor:
     def __init__(
         self,
         cell_size_px: int = 30,
-        window_seconds: float = 3.0,
+        window_seconds: float = 15.0,
         hit_rate_threshold: float = 0.7,
         min_samples_for_judgment: int = 8,
         time_fn: Callable[[], float] = time.monotonic,
@@ -121,7 +137,9 @@ class StaticSuppressor:
         return now - self._buffer[0][0] >= self.window_seconds * 0.95
 
     def update_and_filter(
-        self, detections: Iterable[_HasCentroid]
+        self,
+        detections: Iterable[_HasCentroid],
+        exempt_roi: tuple[float, float, float, float] | None = None,
     ) -> list[_HasCentroid]:
         """Registra el frame actual y devuelve detections sin las que
         caen en celdas hot.
@@ -129,6 +147,14 @@ class StaticSuppressor:
         Hasta que el buffer cubra la ventana temporal completa (warm-up),
         nunca filtra — sin historia suficiente no se puede distinguir
         FP estable de presencia legítima.
+
+        ``exempt_roi`` (``x_min, x_max, y_min, y_max``): las detecciones cuyo
+        centroide cae dentro de este rectángulo NUNCA se suprimen, aunque su
+        celda esté hot. Exenta el ROI de conteo — el suppressor existe para
+        clutter estructural de la periferia (maniquíes, racks), pero dentro
+        del umbral de la puerta una detección persistente es una persona real
+        (parada/dudando), y suprimirla mata su track + dispara un count
+        fantasma vía el synthetic-exit del Counter. ``None`` => sin exención.
         """
         now = self._time_fn()
         self._evict_expired(now)
@@ -159,4 +185,5 @@ class StaticSuppressor:
             d
             for d in det_list
             if self._cell_of(d.centroid[0], d.centroid[1]) not in hot_cells
+            or _in_rect(d.centroid, exempt_roi)
         ]
