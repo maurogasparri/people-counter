@@ -261,6 +261,36 @@ if ($StartFromPhase -le 4) {
     Invoke-CfnDeploy -DeployGrafana "true" -CertArn $CERT_ARN -ApiCertArn $API_CERT_ARN
     if ($LASTEXITCODE -ne 0) { throw "Phase 4 deploy fallo" }
     Write-Host "[4/6] OK" -ForegroundColor Green
+
+    # --- Codigo real de la Lambda persist_event ---
+    # El template crea la Lambda con un stub inline (ImportModuleError al
+    # invocarla). El deploy del codigo real va ACA, al final de Phase 4, porque
+    # CADA stack deploy (Phase 1 y 4) resetea la Lambda al stub inline -> hay
+    # que re-deployar el codigo justo despues del ultimo stack deploy. Antes era
+    # un paso manual (scripts/deploy_lambda.sh) que se olvidaba en cada redeploy.
+    Write-Host "  Deployando codigo real de la Lambda persist_event..." -ForegroundColor Cyan
+    $lambdaFn  = "people-counter-persist-event-$Environment"
+    $lambdaSrc = Join-Path $SCRIPT_DIR "..\src\cloud\persist_event.py"
+    $buildDir  = Join-Path $env:TEMP "pc-lambda-build"
+    $zipPath   = Join-Path $env:TEMP "pc-lambda.zip"
+    Remove-Item -Recurse -Force $buildDir, $zipPath -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $buildDir | Out-Null
+    # psycopg (binary wheel) target el runtime de Lambda: manylinux2014 x86_64,
+    # py3.13. Usamos `py -m pip` porque `pip` suelto no siempre esta en PATH
+    # (git-bash/Windows). stderr de pip (notices) va a consola, sin redirigir.
+    py -m pip install --platform manylinux2014_x86_64 --target $buildDir `
+        --implementation cp --python-version 3.13 --only-binary=:all: --upgrade `
+        "psycopg[binary]==3.2.*" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "pip install de psycopg para la Lambda fallo" }
+    Copy-Item $lambdaSrc (Join-Path $buildDir "persist_event.py") -Force
+    # Zip via zipfile de Python: garantiza arcnames con '/' (Compress-Archive de
+    # PS 5.1 usa '\' y Lambda no encuentra el modulo -> ImportModuleError).
+    py -c "import zipfile,os,sys; b=sys.argv[1]; z=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED); [z.write(os.path.join(r,f), os.path.relpath(os.path.join(r,f),b).replace(os.sep,'/')) for r,_,fs in os.walk(b) for f in fs]; z.close()" $buildDir $zipPath
+    if ($LASTEXITCODE -ne 0) { throw "Empaquetado (zip) de la Lambda fallo" }
+    $sz = aws lambda update-function-code --function-name $lambdaFn `
+        --zip-file "fileb://$zipPath" --query 'CodeSize' --output text
+    if ($LASTEXITCODE -ne 0) { throw "update-function-code de la Lambda fallo" }
+    Write-Host "  Lambda persist_event deployada (CodeSize: $sz bytes)" -ForegroundColor Green
 }
 
 # === [5/6] CNAMEs finales (grafana -> ALB, api -> API GW domain) ===
@@ -359,9 +389,9 @@ Write-Host ""
 Write-Host "Grafana:   $GRAFANA_URL  (login inicial admin / admin)"
 Write-Host "POS API:   https://$API_DOMAIN/pos/transactions  (POST, firma SigV4 / IAM)"
 Write-Host ""
+$IOT_EP = aws iot describe-endpoint --endpoint-type iot:Data-ATS --query endpointAddress --output text
 Write-Host "Proximos pasos:"
 Write-Host "  1. Cambiar password de admin en Grafana"
-Write-Host "  2. Deployar el codigo real de Lambda persist_event:"
-Write-Host "     .\scripts\deploy_lambda.sh $Environment"
-Write-Host "  3. Re-provisionar el device:"
-Write-Host "     python scripts\provision.py --thing-name store-pilot-01-cam-01"
+Write-Host "  2. Re-provisionar el device (crea thing + cert + config + deploy SSH):"
+Write-Host "     python scripts\provision.py create --device-id store-pilot-01-cam-01 --store-id store-pilot-01 --endpoint $IOT_EP --policy-name people-counter-device-policy-$Environment"
+Write-Host "  (El codigo real de la Lambda persist_event ya se deploya solo en Phase 4, no es paso manual.)"

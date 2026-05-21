@@ -429,6 +429,15 @@ mqtt:
   key_path: "/etc/people-counter/certs/device.pem.key"
   ca_path: "/etc/people-counter/certs/AmazonRootCA1.pem"
   port: 8883                        # Puerto TLS de AWS IoT Core.
+  shadow_enabled: false             # Device Shadow (config cloud→device:
+                                    # operating_hours, counting_enabled vía
+                                    # CLOUD_OVERRIDABLE). FUERA DE SCOPE por
+                                    # ahora → false: el device no suscribe al
+                                    # delta ni publica reported-state, corre
+                                    # 100% con el config local. Poner true
+                                    # cuando se implemente el push de config
+                                    # desde la nube. Key opcional: si falta,
+                                    # el runtime asume false.
   startup_jitter_seconds: 10.0      # Anti thundering-herd. Cuando la
                                     # flota entera bootea simultáneamente
                                     # tras un outage (incident regional,

@@ -874,6 +874,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         dedup, wifi_ble_publisher, wifi_capture, ble_scanner = wifi_ble
 
     # --- Wiring de los shadow delta ------------------------------------------
+    # Device Shadow gateado por mqtt.shadow_enabled (default False = fuera de
+    # scope por ahora). Con shadow off NO suscribimos al delta ni publicamos
+    # reported-state — el device corre 100% con el config local.
+    shadow_enabled = bool(config.get("mqtt", {}).get("shadow_enabled", False))
     # Los deltas llegan en el thread de red de paho; la queue es el handoff
     # thread-safe al main loop, que es el único writer de `config`. La misma
     # queue también lleva un sentinel ``{"__reconcile__": True}`` posteado por
@@ -898,10 +902,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     def _on_mqtt_connected() -> None:
         # Corre en el thread de paho — encolar, no bloquear.
-        try:
-            shadow_queue.put_nowait(_RECONCILE_SENTINEL)
-        except queue.Full:
-            logger.warning("Shadow queue llena — descartando request de reconcile")
+        if shadow_enabled:
+            try:
+                shadow_queue.put_nowait(_RECONCILE_SENTINEL)
+            except queue.Full:
+                logger.warning("Shadow queue llena — descartando request de reconcile")
         # Disparar el primer telemetry post-connect así sale con
         # mqtt_connected=True. Reconnects subsecuentes re-disparan
         # (idempotente y deseable: snapshot fresco post-recovery).
@@ -917,10 +922,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
     mqtt_client.connect(startup_jitter_seconds=startup_jitter)
 
-    try:
-        mqtt_client.subscribe_shadow_delta(device_id, _shadow_delta_handler)
-    except Exception:
-        logger.exception("Falló la subscripción a shadow delta")
+    if shadow_enabled:
+        try:
+            mqtt_client.subscribe_shadow_delta(device_id, _shadow_delta_handler)
+        except Exception:
+            logger.exception("Falló la subscripción a shadow delta")
+    else:
+        logger.info("Device Shadow deshabilitado (mqtt.shadow_enabled=false)")
 
     config_path_arg = getattr(args, "config", None)
 
