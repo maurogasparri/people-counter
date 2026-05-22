@@ -50,22 +50,23 @@ def _no_roi_counter() -> Counter:
 
 def test_compose_3panel_handles_none_panels():
     out = compose_3panel(None, None, None, target_height=120)
-    # 2-row layout: top is target_height, bottom is target_height // 2.
-    assert out.shape[0] == 120 + 120 // 2
+    # Single-row layout: los 3 paneles a target_height, placeholders incluidos.
+    assert out.shape[0] == 120
     assert out.shape[2] == 3
 
 
-def test_compose_3panel_two_row_layout():
-    a = np.zeros((300, 400, 3), dtype=np.uint8)   # left
-    b = np.zeros((100, 200, 3), dtype=np.uint8)   # right
-    c = np.zeros((600, 800, 3), dtype=np.uint8)   # depth
+def test_compose_3panel_single_row_preserves_aspect():
+    """Los 3 paneles van lado a lado a la MISMA altura, cada uno preservando
+    su aspect ratio. La disparidad (panel c) NO se estira al ancho de L|R
+    como hacía el layout viejo de 2 filas — su ancho sale de su propio
+    aspect (800/600 -> 160px a h=120), no del ancho del top."""
+    a = np.zeros((300, 400, 3), dtype=np.uint8)   # left  (w/h 1.333) -> 160
+    b = np.zeros((100, 200, 3), dtype=np.uint8)   # right (w/h 2.0)   -> 240
+    c = np.zeros((600, 800, 3), dtype=np.uint8)   # depth (w/h 1.333) -> 160
     out = compose_3panel(a, b, c, target_height=120)
-    # Top row height = target_height; bottom row spans the full top width.
-    expected_h = 120 + 120 // 2
-    assert out.shape[0] == expected_h
-    # Top row holds two panels side by side, both at target_height after
-    # resize, so total width is at least 2 * smallest aspect ratio.
-    assert out.shape[1] > 120
+    assert out.shape[0] == 120                    # fila única, todos a h=120
+    assert out.shape[1] == 160 + 240 + 160        # ancho = suma de aspectos
+    assert out.shape[2] == 3
 
 
 def test_depth_colormap_handles_none():
@@ -85,7 +86,7 @@ def test_depth_colormap_marks_zero_invalid_black():
 
 def test_annotate_left_with_empty_inputs_does_not_crash():
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
-    out = annotate_left(frame, [], {}, None, fps=0.0)
+    out = annotate_left(frame, [], {}, None)
     assert out.shape == frame.shape
     # Frame must remain a copy (not the original buffer).
     assert out is not frame
@@ -114,18 +115,16 @@ def test_annotate_left_draws_roi_and_tracks():
             meta={},
         ),
     }
-    out = annotate_left(frame, dets, tracks, counter, fps=15.0)
+    out = annotate_left(frame, dets, tracks, counter)
     assert out.shape == frame.shape
     # Anything was drawn (the all-zero input makes that easy to detect).
     assert out.any()
-    # The bottom overlay band (last ~60 px) must contain text pixels.
-    assert out[-60:, :, :].any()
 
 
 def test_annotate_left_with_no_roi_counter():
     """Counter without ROI should still draw the line + arrow."""
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
-    out = annotate_left(frame, [], {}, _no_roi_counter(), fps=0.0)
+    out = annotate_left(frame, [], {}, _no_roi_counter())
     # The line at y=240 should produce non-zero pixels along that row.
     assert out[240, :, :].any()
 
@@ -143,7 +142,7 @@ def test_annotate_left_hides_candidate_tracks():
         positions=[np.array([175.0, 80.0, 0.0])],  # arriba del ROI/línea
         meta={},
     )
-    out = annotate_left(frame, [], {1: candidate_track}, None, fps=15.0)
+    out = annotate_left(frame, [], {1: candidate_track}, None)
     # No debe haber ningún círculo coloreado del track CANDIDATE en
     # las coords centrales (excepto el bottom overlay bar de IN/OUT/FPS
     # que queda fuera del patch).
@@ -181,7 +180,7 @@ def test_annotate_left_pending_marker_anchors_to_bbox_not_kalman_predict():
         ]},
     )
     track.disappeared = 1  # hysteresis: aún se muestra verde
-    out = annotate_left(frame, [], {1: track}, None, fps=15.0)
+    out = annotate_left(frame, [], {1: track}, None)
 
     # El círculo del marker debe estar en (200, 80) — centro del
     # bbox observado — NO en (350, 80) — predict del Kalman.
@@ -217,7 +216,7 @@ def test_annotate_left_pending_hysteresis_keeps_confirmed_color():
     )
     track_recently_pending.disappeared = 1
     out = annotate_left(
-        frame, [], {1: track_recently_pending}, counter, fps=15.0
+        frame, [], {1: track_recently_pending}, counter
     )
     # Buscar un pixel verde (0, 255, 0) cerca del centroide. Si el
     # display fuera naranja, no habría verde puro en esa zona.
@@ -246,7 +245,7 @@ def test_annotate_left_sustained_pending_flips_to_orange():
     )
     track_long_pending.disappeared = 10  # Bien arriba del threshold (5)
     out = annotate_left(
-        frame, [], {1: track_long_pending}, counter, fps=15.0
+        frame, [], {1: track_long_pending}, counter
     )
     cx, cy = 175, 155
     patch = out[cy - 5:cy + 5, cx - 5:cx + 5, :]
@@ -275,7 +274,7 @@ def test_annotate_left_draws_track_bbox_from_history():
         ]},
     )
     # Sin detections raw — solo el track. El bbox debe aparecer igual.
-    out = annotate_left(frame, [], {1: track}, counter, fps=15.0)
+    out = annotate_left(frame, [], {1: track}, counter)
     # Verificar que los bordes del rectángulo (~y=130 y y=180, ~x=150 y x=200)
     # tienen pixels coloreados.
     assert out[130, 150:200, :].any(), "Top edge del bbox debe estar dibujado"
@@ -314,7 +313,7 @@ def test_annotate_left_bbox_width_height_uses_median_smoothing():
         positions=[np.array([400.0, 300.0, 0.0])],
         meta={"detection_history": history},
     )
-    out = annotate_left(frame, [], {1: track}, counter, fps=15.0)
+    out = annotate_left(frame, [], {1: track}, counter)
 
     # El outlier (180×280) NO debería dominar — la mediana absorbe.
     # Verificamos buscando los pixels coloreados del rectángulo: deben
@@ -361,7 +360,7 @@ def test_annotate_left_bbox_center_follows_latest_position():
         positions=[np.array([600.0, 300.0, 0.0])],
         meta={"detection_history": history},
     )
-    out = annotate_left(frame, [], {1: track}, counter, fps=15.0)
+    out = annotate_left(frame, [], {1: track}, counter)
 
     # El bbox debe estar centrado en x=600 → bordes en x=550 y x=650.
     # Verificamos buscando pixels coloreados en x=550 (left edge).
@@ -409,7 +408,7 @@ def test_annotate_left_height_label_uses_median_of_history():
     # exacta de que muestra ~1.62m (no 1.90m) requeriría OCR; alcanza
     # con asegurar que el path corre y la mediana queda en el rango
     # esperado calculándola por afuera.
-    out = annotate_left(frame, [], {1: track}, counter, fps=15.0)
+    out = annotate_left(frame, [], {1: track}, counter)
     assert out.shape == frame.shape
 
     # Sanity numérica: la mediana de los 6 samples debería ser ~1620.5

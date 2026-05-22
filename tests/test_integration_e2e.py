@@ -342,7 +342,9 @@ def test_e2e_ingress_event_published(monkeypatch: pytest.MonkeyPatch) -> None:
     events = _counting_events(mqtt)
     assert len(events) == 1, f"expected 1 counting event, got {events}"
     event = events[0]
-    assert event["direction"] == "ingress"
+    # El label interno 'ingress' se mapea a la direccion canonica del wire/schema
+    # 'in' en el borde del publish (count_events CHECK direction IN ('in','out')).
+    assert event["direction"] == "in"
     # total_in/out, scaling_factor/scaled_in/out, position_y, head_depth_m y
     # best_frame_path se dropearon del payload de counting (no se usan en views
     # ni en dashboards planificados). Quedan en telemetry los running totals

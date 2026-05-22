@@ -427,6 +427,48 @@ class DedupEngine:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def get_recent_records(
+        self,
+        limit: int = 10,
+        rssi_passerby: float = -75.0,
+        rssi_shopper: float = -55.0,
+    ) -> list[dict]:
+        """Últimos ``limit`` registros (hash groups) vistos, más recientes
+        primero. Para el live preview / debug del tráfico exterior.
+
+        Devuelve por registro: ``hash`` truncado (8 hex, ya es un hash —
+        nunca MAC cruda), ``protocol`` (wifi/ble), ``last_seen`` (epoch s),
+        ``rssi`` (dBm o None), y ``classification`` derivada del RSSI
+        (shopper >= ``rssi_shopper``, passerby >= ``rssi_passerby``, si no
+        ``weak``; ``unknown`` sin RSSI).
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT hash, protocol, last_seen, rssi FROM hash_groups "
+                "ORDER BY last_seen DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        out: list[dict] = []
+        for h, proto, ts, rssi in rows:
+            if rssi is None:
+                cls = "unknown"
+            elif rssi >= rssi_shopper:
+                cls = "shopper"
+            elif rssi >= rssi_passerby:
+                cls = "passerby"
+            else:
+                cls = "weak"
+            out.append(
+                {
+                    "hash": h[:8],
+                    "protocol": proto,
+                    "last_seen": ts,
+                    "rssi": rssi,
+                    "classification": cls,
+                }
+            )
+        return out
+
     def get_window_summary(
         self,
         since_ts: float,

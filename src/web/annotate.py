@@ -20,8 +20,6 @@ _COLOR_PENDING = (0, 165, 255)
 _COLOR_CANDIDATE = (180, 180, 180)
 _COLOR_DET = (90, 90, 90)
 _COLOR_ROI = (0, 0, 255)         # rojo
-_COLOR_TEXT = (255, 255, 255)
-_COLOR_OVERLAY_BG = (0, 0, 0)
 
 # Paleta de la counting-line por label de dirección. Cualquier otra cosa cae
 # a blanco así que un label exótico igual renderiza visiblemente. Verdes para
@@ -73,17 +71,20 @@ def annotate_left(
     detections: list,
     tracks: dict,
     counter: Optional[Any],
-    fps: float = 0.0,
 ) -> np.ndarray:
     """Dibuja ROI, línea, detecciones raw y tracks sobre una copia de ``frame``.
+
+    NO dibuja totales/FPS — esos van en el dashboard del viewer (evita el
+    overlay duplicado). Acá solo la geometría (ROI + línea) + las
+    cajas/centroides/track-ids, útil para ver qué detecta y trackea el
+    pipeline (debug de ghosts, etc.).
 
     Args:
         frame: Frame BGR de la cámara izquierda (rectificado).
         detections: objetos Detection (tienen ``.bbox`` y ``.centroid``).
         tracks: dict[int, Track] de EuclideanTracker.
-        counter: instancia LineCounter o ROICounter (se lee para el
-            overlay de geometría + totales). Puede ser None.
-        fps: estimación de FPS del pipeline para el overlay inferior.
+        counter: instancia del Counter (se lee para el overlay de geometría
+            ROI + línea). Puede ser None.
     """
     out = frame.copy()
 
@@ -241,7 +242,6 @@ def annotate_left(
                         cv2.FONT_HERSHEY_SIMPLEX, 0.85, display_colour, 2,
                         cv2.LINE_AA)
 
-    _draw_counter_overlay(out, counter, fps)
     return out
 
 
@@ -273,52 +273,39 @@ def compose_3panel(
     left: Optional[np.ndarray],
     right: Optional[np.ndarray],
     depth: Optional[np.ndarray],
-    target_height: int = 480,
+    target_height: int = 320,
 ) -> np.ndarray:
-    """Composite de dos filas: fila superior L | R side-by-side, fila
-    inferior el panel de depth que span el mismo ancho.
+    """Composite de 3 paneles lado a lado a la misma altura: L | R |
+    disparidad.
 
-    La fila superior L/R le da al operador la misma vista que ven
-    las cámaras; la fila de depth abajo queda aproximadamente
-    cuadrada así el colormap es legible. Los paneles faltantes /
-    vacíos se llenan con un placeholder gris oscuro así el composite
-    nunca crashea ante input parcial.
+    Cada panel se escala POR ALTURA preservando su aspect ratio, así la
+    disparidad (que tiene la misma proporción que las cámaras) NO se
+    deforma — el bug previo la estiraba al ancho de la fila L|R. Los tres
+    paneles quedan del mismo tamaño (fácil comparar). Paneles faltantes /
+    vacíos se llenan con un placeholder gris oscuro así el composite nunca
+    crashea ante input parcial. ``target_height`` chico = stream liviano.
     """
-    def _to_bgr_height(img: Optional[np.ndarray], h_target: int,
-                       w_fallback: int) -> np.ndarray:
+    def _panel(img: Optional[np.ndarray], h_target: int) -> np.ndarray:
         if img is None or img.size == 0:
-            return np.full((h_target, w_fallback, 3), 30, dtype=np.uint8)
+            # Placeholder con el mismo aspect ~16:9 que los paneles reales.
+            return np.full((h_target, max(1, h_target * 16 // 9), 3), 30, dtype=np.uint8)
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         h, w = img.shape[:2]
         if h != h_target:
-            scale = h_target / h
             img = cv2.resize(
-                img, (max(1, int(w * scale)), h_target),
+                img, (max(1, round(w * h_target / h)), h_target),
                 interpolation=cv2.INTER_AREA,
             )
         return img
 
-    # Fila superior: L y R a target_height cada una.
-    l_img = _to_bgr_height(left, target_height, target_height)
-    r_img = _to_bgr_height(right, target_height, target_height)
-    top = cv2.hconcat([l_img, r_img])
-    top_w = top.shape[1]
-
-    # Fila inferior: depth redimensionado para spanear exactamente el
-    # ancho del top. Mantenerlo aproximadamente la mitad de la altura
-    # así el layout se ve balanceado.
-    depth_h = max(1, target_height // 2)
-    if depth is None or depth.size == 0:
-        bottom = np.full((depth_h, top_w, 3), 30, dtype=np.uint8)
-    else:
-        d = depth
-        if d.ndim == 2:
-            d = cv2.cvtColor(d, cv2.COLOR_GRAY2BGR)
-        bottom = cv2.resize(
-            d, (top_w, depth_h), interpolation=cv2.INTER_AREA,
-        )
-    return cv2.vconcat([top, bottom])
+    return cv2.hconcat(
+        [
+            _panel(left, target_height),
+            _panel(right, target_height),
+            _panel(depth, target_height),
+        ]
+    )
 
 
 # ----------------------------------------------------------------- internals
@@ -402,17 +389,3 @@ def _draw_line_with_arrows(frame: np.ndarray, line: Any) -> None:
                 tail = (mx, my)
                 tip = (mx - arrow_len, my)
             cv2.arrowedLine(frame, tail, tip, color, 4, tipLength=0.35)
-
-
-def _draw_counter_overlay(
-    frame: np.ndarray, counter: Optional[Any], fps: float,
-) -> None:
-    h, w = frame.shape[:2]
-    in_n = getattr(counter, "total_in", 0) if counter else 0
-    out_n = getattr(counter, "total_out", 0) if counter else 0
-    text = f"IN: {in_n}  OUT: {out_n}  FPS: {fps:.1f}"
-    bar_h = 56
-    cv2.rectangle(frame, (0, h - bar_h), (w, h), _COLOR_OVERLAY_BG, -1)
-    cv2.putText(frame, text, (12, h - 16),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.4, _COLOR_TEXT, 3,
-                cv2.LINE_AA)

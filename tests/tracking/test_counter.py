@@ -225,6 +225,10 @@ def test_same_track_two_full_cycles_within_window_cancel():
     assert ev2 is None
     assert counter.total_in == 0
     assert counter.total_out == 0
+    # El breakdown horario queda consistente con los totales: el ingress que
+    # se contó fue revertido al cancelarse (antes quedaba colgado +1).
+    assert counter.hourly_in_out() == []
+    assert sum(h["in"] for h in counter.hourly_in_out()) == counter.total_in
 
 
 def test_oscillation_without_full_cycle_does_not_count_twice():
@@ -299,16 +303,13 @@ def test_indeciso_no_crossing():
 
 def test_lost_inside_without_crossing_does_not_count():
     """Track entra al ROI pero muere antes de cruzar la línea — no
-    cuenta. El synthetic exit solo dispara si hubo un cruce cacheado;
-    sin cruce no hay dirección que contar. Es la guardia conservativa
-    contra falsos positivos: tracks que entraron al ROI por glitch del
-    tracker y nunca cruzaron no se materializan en counts fantasma."""
+    cuenta. Sin cruce no hay dirección que contar; y el conteo exige
+    salir del ROI de todos modos."""
     counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 220, 3000]])  # entry above line at y=300
     counter.check_all({1: track})
     track.positions.append(np.array([300, 250, 3000]))  # still above line
     counter.check_all({1: track})
-    assert 1 not in counter._track_snapshots  # no last_label cacheado
     track.state = LOST
     events = counter.check_all({})  # tracker dropped it
     assert events == []
@@ -316,14 +317,14 @@ def test_lost_inside_without_crossing_does_not_count():
     assert counter.total_out == 0
 
 
-def test_synthetic_exit_on_track_death_after_crossing():
-    """Track entra al ROI, cruza la línea, y muere antes de salir
-    geométricamente — counter emite synthetic exit event con la
-    dirección del cruce cacheado. Cubre el caso real de oclusión o
-    pausa prolongada (persona se queda mirando un display, alguien la
-    tapa con un carrito) donde el tracker dropea el track post-cruce.
-    Sin este path los OUTs reales se pierden cuando el bbox se traba
-    en PENDING dentro del ROI."""
+def test_no_count_on_track_death_inside_roi_after_crossing():
+    """Track entra al ROI, cruza la línea, y muere SIN salir del ROI —
+    NO se cuenta. Es el caso de una persona que duda/se para/se sienta en
+    el ROI (o que el detector pierde por pose fuera de distribución, o que
+    mueve la cabeza cruzando la línea sin trasladarse). La semántica
+    canónica exige entrar -> cruzar -> SALIR del ROI; no hay "salida
+    sintética" por muerte del track adentro. Evita el falso positivo de
+    gente lingering en la puerta."""
     counter = Counter(lines=[_line_h()], roi=ROI)
 
     # Frame 1: outside ROI, arriba de la línea.
@@ -333,25 +334,18 @@ def test_synthetic_exit_on_track_death_after_crossing():
     # Frame 2: entry inside ROI, todavía arriba de la línea.
     track.positions.append(np.array([300, 250, 3000]))
     counter.check_all({1: track})
-    assert 1 not in counter._track_snapshots  # aún no hubo cross
 
-    # Frame 3: cross — abajo de la línea, still inside ROI.
+    # Frame 3: cross — abajo de la línea, still inside ROI (nunca sale).
     track.positions.append(np.array([300, 350, 3000]))
     counter.check_all({1: track})
-    assert 1 in counter._track_snapshots
-    assert counter._track_snapshots[1]["label"] == "ingress"
 
-    # Frame 4: track desaparece del tracker (LOST + removido).
+    # Frame 4: track desaparece del tracker SIN haber salido del ROI.
     events = counter.check_all({})
 
-    assert len(events) == 1
-    assert events[0].track_id == 1
-    assert events[0].direction == "ingress"
-    assert counter.total_in == 1
+    # Sin salida sintética: el cruce sin salida del ROI NO cuenta.
+    assert events == []
+    assert counter.total_in == 0
     assert counter.total_out == 0
-    # Snapshot limpiado post-emisión — evita doble cuenta si el mismo
-    # track_id reapareciera (no debería pero defensa en depth).
-    assert 1 not in counter._track_snapshots
 
 
 def test_uturn_zone_cancels_in_followed_by_out():
@@ -456,11 +450,11 @@ def test_uturn_does_not_cancel_when_window_disabled(monkeypatch):
     assert counter.total_out == 1
 
 
-def test_synthetic_exit_does_not_fire_on_legitimate_exit():
-    """Cuando un track sale del ROI legítimamente (path geométrico
-    normal), el snapshot se limpia al frame del exit y NO se emite
-    synthetic exit cuando el track desaparezca después. Evita
-    doble-conteo del mismo cruce."""
+def test_legitimate_exit_counts_once_and_death_does_not_recount():
+    """Cuando un track sale del ROI legítimamente (entrar -> cruzar ->
+    SALIR), se cuenta UNA vez en el frame de salida. Si después el track
+    desaparece del tracker, NO se vuelve a contar (sin salida sintética
+    no hay doble-conteo del mismo cruce)."""
     counter = Counter(lines=[_line_h()], roi=ROI)
 
     # Cycle completo: outside → entry → cross → exit.
@@ -468,19 +462,15 @@ def test_synthetic_exit_does_not_fire_on_legitimate_exit():
     counter.check_all({1: track})
     track.positions.append(np.array([300, 250, 3000]))  # entry
     counter.check_all({1: track})
-    track.positions.append(np.array([300, 350, 3000]))  # cross
+    track.positions.append(np.array([300, 350, 3000]))  # cross (still inside)
     counter.check_all({1: track})
-    assert 1 in counter._track_snapshots  # snapshotteado mid-ROI
 
-    track.positions.append(np.array([300, 450, 3000]))  # exit
+    track.positions.append(np.array([300, 450, 3000]))  # exit (sale del ROI)
     events = counter.check_all({1: track})
-    assert len(events) == 1  # count event geométrico
+    assert len(events) == 1  # count event geométrico en la salida
     assert events[0].direction == "ingress"
-    # Snapshot debe haberse limpiado en el frame de exit
-    # (meta.inside=False ⇒ _snapshot_track pop).
-    assert 1 not in counter._track_snapshots
 
-    # Track muere — NO debe disparar synthetic exit (ya contamos).
+    # Track muere — NO debe re-contar (ya se contó en la salida).
     events = counter.check_all({})
     assert events == []
     assert counter.total_in == 1  # sigue siendo 1, no se duplicó
@@ -608,21 +598,18 @@ def test_crossing_outside_segment_is_ignored():
 # ---------------------------------------------------------------------------
 
 
-def test_no_roi_uses_full_frame():
-    """Without ROI, the counter treats the whole frame as 'inside' and
-    triggers counting transitions only when the track disappears (LOST).
-    For tests we approximate the LOST signal by removing the track from
-    check_all — but for the standard exit-from-ROI path, the no-ROI
-    config has nowhere to exit to, so single-line crossings can't count
-    until the track dies. This is by design: in real deploys you usually
-    DO want a ROI."""
+def test_no_roi_single_crossing_does_not_count():
+    """Without a ROI the whole frame is 'inside', so there is no exit
+    gate: a single-line crossing alone never counts. (The previous
+    track-death / synthetic-exit fallback that made no-ROI count was
+    removed to stop false positives from people lingering inside the ROI
+    — see counter docstring.) In real deploys you ALWAYS configure a ROI;
+    the count requires entrar -> cruzar -> SALIR del ROI."""
     counter = Counter(lines=[_line_h()])  # no ROI
     track = _make_track(1, [[200, 200, 3000]])
-    # The track is "always inside" (no ROI). A single crossing won't fire
-    # an event — only the exit transition does, and there's no exit.
     counter._process_track(track)
     _advance(counter, track, [200, 350, 3000])
-    assert counter.total_in == 0  # no exit yet
+    assert counter.total_in == 0  # sin ROI no hay salida que dispare el conteo
 
 
 # ---------------------------------------------------------------------------

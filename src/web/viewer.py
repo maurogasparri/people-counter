@@ -38,42 +38,149 @@ _HTML = """<!DOCTYPE html>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <title>People Counter — Live</title>
   <style>
-    body { margin: 0; background: #000; color: #eee;
-           font-family: ui-monospace, Menlo, monospace; }
-    /* Una sola línea compacta de stats así la imagen se queda casi con
-       toda la altura del viewport. */
-    #stats { padding: 4px 12px; background: #1a1a1a;
-             border-bottom: 1px solid #2c2c2c; font-size: 12px;
-             line-height: 1.4; white-space: nowrap; overflow-x: auto; }
-    #stats span { margin-right: 14px; }
-    #stats b { color: #fff; }
-    #stats .label { color: #999; }
-    img { display: block; max-width: 100%; max-height: calc(100vh - 26px);
-          margin: 0 auto; }
+    :root{--bg:#0b0d10;--panel:#15181e;--panel2:#1c2128;--line:#2a2f38;
+      --txt:#e6e9ee;--muted:#8b94a3;--in:#3ddc84;--out:#ff8c42;--accent:#5b9dff;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--txt);font-size:14px;
+      font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}
+    .wrap{max-width:1180px;margin:0 auto;padding:14px;}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;
+      flex-wrap:wrap;padding:12px 16px;background:var(--panel);
+      border:1px solid var(--line);border-radius:12px;}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;}
+    .dot{width:9px;height:9px;border-radius:50%;background:var(--in);
+      box-shadow:0 0 8px var(--in);animation:pulse 2s infinite;}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    .site{text-align:right;line-height:1.35;}
+    .site .name{font-weight:600;}
+    .site .dev{color:var(--muted);font-family:ui-monospace,monospace;font-size:12px;}
+    .meta{display:flex;gap:18px;align-items:center;padding:9px 6px 0;
+      color:var(--muted);font-size:12.5px;font-family:ui-monospace,monospace;}
+    .meta b{color:var(--txt);}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px;}
+    @media(max-width:820px){.grid{grid-template-columns:1fr;}}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+      padding:14px 16px;}
+    .card h3{margin:0 0 10px;font-size:11.5px;letter-spacing:.06em;
+      text-transform:uppercase;color:var(--muted);font-weight:600;}
+    .counts{display:flex;gap:12px;}
+    .count{flex:1;text-align:center;border-radius:10px;padding:12px 8px;
+      background:var(--panel2);border:1px solid var(--line);}
+    .count .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);}
+    .count .v{font-size:46px;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums;}
+    .count.in .v{color:var(--in);} .count.out .v{color:var(--out);}
+    .subtats{margin-top:12px;display:flex;gap:18px;color:var(--muted);
+      font-size:12.5px;font-family:ui-monospace,monospace;}
+    .subtats b{color:var(--txt);}
+    .ext-top{display:flex;gap:12px;margin-bottom:12px;}
+    .ext-top .box{flex:1;background:var(--panel2);border:1px solid var(--line);
+      border-radius:10px;padding:9px 12px;}
+    .ext-top .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}
+    .ext-top .v{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;}
+    table{width:100%;border-collapse:collapse;font-size:12px;
+      font-family:ui-monospace,monospace;}
+    th{text-align:left;color:var(--muted);font-weight:600;padding:5px 6px;
+      border-bottom:1px solid var(--line);font-size:10.5px;text-transform:uppercase;}
+    td{padding:5px 6px;border-bottom:1px solid #20242c;white-space:nowrap;}
+    .pill{padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600;}
+    .pill.shopper{background:rgba(61,220,132,.16);color:var(--in);}
+    .pill.passerby{background:rgba(91,157,255,.16);color:var(--accent);}
+    .pill.weak,.pill.unknown{background:rgba(139,148,163,.14);color:var(--muted);}
+    .tag{font-size:9px;color:var(--muted);}
+    .empty{color:var(--muted);text-align:center;padding:16px;}
+    .stream{margin-top:14px;background:#000;border:1px solid var(--line);
+      border-radius:12px;overflow:hidden;}
+    .stream img{display:block;width:100%;}
+    .stream .cap{padding:6px 12px;color:var(--muted);font-size:11px;
+      font-family:ui-monospace,monospace;border-top:1px solid var(--line);}
+    .off{color:var(--out);}
   </style>
 </head>
 <body>
-  <div id='stats'>
-    <span><span class='label'>IN:</span> <b id='in'>0</b></span>
-    <span><span class='label'>OUT:</span> <b id='out'>0</b></span>
-    <span><span class='label'>FPS:</span> <b id='fps'>0</b></span>
-    <span><span class='label'>Tracks:</span> <b id='tracks'>0</b></span>
-    <span><span class='label'>Dets:</span> <b id='dets'>0</b></span>
+  <div class='wrap'>
+    <header>
+      <div class='brand'><span class='dot'></span> People Counter</div>
+      <div class='site'>
+        <div class='name' id='site'>—</div>
+        <div class='dev' id='device'>—</div>
+      </div>
+    </header>
+    <div class='meta'>
+      <span>Horario <b id='hours'>—</b></span>
+      <span>Estado <b id='sched'>—</b></span>
+      <span style='margin-left:auto'><b id='clock'>—</b></span>
+    </div>
+    <div class='grid'>
+      <div class='card'>
+        <h3>Conteo (hoy)</h3>
+        <div class='counts'>
+          <div class='count in'><div class='k'>IN</div><div class='v' id='in'>0</div></div>
+          <div class='count out'><div class='k'>OUT</div><div class='v' id='out'>0</div></div>
+        </div>
+        <div class='subtats'>
+          <span>FPS <b id='fps'>—</b></span>
+          <span>Tracks <b id='tracks'>0</b></span>
+          <span>Dets <b id='dets'>0</b></span>
+        </div>
+        <table style='margin-top:14px'>
+          <thead><tr><th>Hora</th><th>IN</th><th>OUT</th></tr></thead>
+          <tbody id='hourly'><tr><td class='empty' colspan='3'>Sin actividad hoy</td></tr></tbody>
+        </table>
+      </div>
+      <div class='card'>
+        <h3>Tráfico exterior · WiFi/BLE</h3>
+        <div class='ext-top'>
+          <div class='box'><div class='k'>Passersby</div><div class='v' id='passersby'>0</div></div>
+          <div class='box'><div class='k'>Shoppers</div><div class='v' id='shoppers'>0</div></div>
+        </div>
+        <table>
+          <thead><tr><th>Hash</th><th>Hora</th><th>RSSI</th><th>Tipo</th></tr></thead>
+          <tbody id='ext'><tr><td class='empty' colspan='4'>Sin registros</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class='stream'>
+      <img src='/stream' alt='live stream'/>
+      <div class='cap'>L | R | disparidad</div>
+    </div>
   </div>
-  <img src='/stream' alt='live stream'/>
   <script>
-    setInterval(async () => {
-      try {
-        const r = await fetch('/stats', {cache: 'no-store'});
-        const s = await r.json();
-        document.getElementById('in').textContent = s.total_in;
-        document.getElementById('out').textContent = s.total_out;
-        document.getElementById('fps').textContent =
-            (typeof s.fps === 'number') ? s.fps.toFixed(1) : '-';
-        document.getElementById('tracks').textContent = s.tracks;
-        document.getElementById('dets').textContent = s.dets;
-      } catch (e) {}
-    }, 1000);
+    const $=id=>document.getElementById(id);
+    const fmtT=e=>e?new Date(e*1000).toLocaleTimeString('es-AR',{hour12:false}):'—';
+    const fmtR=r=>(r==null)?'—':Math.round(r)+' dBm';
+    async function tick(){
+      try{
+        const s=await (await fetch('/stats',{cache:'no-store'})).json();
+        $('site').textContent=s.store_name||'—';
+        $('device').textContent=s.device_id||'—';
+        $('hours').textContent=s.operating_hours||'—';
+        const sc=s.counting_active;
+        $('sched').textContent=(sc==null)?'—':(sc?'contando':'pausado');
+        $('sched').className=sc?'':'off';
+        $('clock').textContent=s.device_time||'—';
+        $('in').textContent=s.total_in??0;
+        $('out').textContent=s.total_out??0;
+        $('fps').textContent=(typeof s.fps==='number')?s.fps.toFixed(1):'—';
+        $('tracks').textContent=s.tracks??0;
+        $('dets').textContent=s.dets??0;
+        const hr=s.hourly||[];
+        $('hourly').innerHTML=hr.length?hr.map(r=>
+          `<tr><td>${String(r.hour).padStart(2,'0')}:00</td>`+
+          `<td style='color:var(--in)'>${r.in}</td>`+
+          `<td style='color:var(--out)'>${r.out}</td></tr>`
+        ).join(''):"<tr><td class='empty' colspan='3'>Sin actividad hoy</td></tr>";
+        const ext=s.exterior||{};
+        $('passersby').textContent=ext.passersby??0;
+        $('shoppers').textContent=ext.shoppers??0;
+        const rows=ext.recent||[];
+        $('ext').innerHTML=rows.length?rows.map(r=>
+          `<tr><td>${r.hash} <span class='tag'>${(r.protocol||'').toUpperCase()}</span></td>`+
+          `<td>${fmtT(r.last_seen)}</td><td>${fmtR(r.rssi)}</td>`+
+          `<td><span class='pill ${r.classification}'>${r.classification}</span></td></tr>`
+        ).join(''):"<tr><td class='empty' colspan='4'>Sin registros</td></tr>";
+      }catch(e){}
+    }
+    setInterval(tick,1000);tick();
   </script>
 </body>
 </html>
@@ -102,7 +209,7 @@ class WebViewer:
         self,
         port: int = 80,
         host: str = "0.0.0.0",
-        jpeg_quality: int = 70,
+        jpeg_quality: int = 55,
         queue_size: int = 4,
     ) -> None:
         self.port = port

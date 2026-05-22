@@ -28,12 +28,15 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/people-counter /var/log/people-counter /etc/people-counter /usr/src/people-counter
 PrivateTmp=true
 
-# El web viewer en vivo bindea al puerto 80 por default (--web-viewer-port).
-# Otorgarle CAP_NET_BIND_SERVICE al user del servicio (pi) le permite bindear
-# puertos privilegiados sin correr como root. Pasar --web-viewer-port 0 en
-# ExecStart para deshabilitar el viewer; en ese caso esta capability no se usa.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# Capabilities que necesita el servicio corriendo como user no-root (pi):
+#  - CAP_NET_BIND_SERVICE: el web viewer bindea al puerto 80 (--web-viewer-port).
+#  - CAP_NET_ADMIN: WiFi probing — el pipeline pone wlan0 en monitor mode via
+#    `ip link set wlan0 down/up` + `iw dev wlan0 set type monitor`. Sin esto
+#    falla con "Operation not permitted" y el probing queda desactivado (no-fatal).
+#  - CAP_NET_RAW: scapy sniffea los probe requests 802.11 con raw sockets.
+# Pasar --web-viewer-port 0 deshabilita el viewer (no usa NET_BIND_SERVICE).
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target

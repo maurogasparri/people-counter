@@ -70,6 +70,13 @@ from src.wifi_ble.wifi_probe import ProbeEvent, WiFiProbeCapture
 # para suavizar ruido sin ahogar stalls breves.
 TELEMETRY_WINDOW_SIZE = 100
 
+# El counter usa labels internos 'ingress'/'egress' (config + total_in/out +
+# colores del viewer). El wire MQTT y el schema RDS son canonicos 'in'/'out'
+# (count_events tiene CHECK direction IN ('in','out')). Se mapea en el borde
+# del publish; sin esto la Lambda persist_event rechaza el INSERT con
+# CheckViolation y el counting no llega a RDS.
+_WIRE_DIRECTION = {"ingress": "in", "egress": "out"}
+
 logger = logging.getLogger(__name__)
 
 
@@ -1051,6 +1058,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     sd_notify("READY=1")
     health_signals.boot_complete = True
 
+    # Throttle del live preview: ni el push MJPEG ni la query del tráfico
+    # exterior (sqlite) necesitan correr a full FPS. Limitamos el push a
+    # ~8 fps y la query del dedup a ~cada 2s, cacheando entre medio — menos
+    # ancho de banda + menos carga, sin afectar el counting (que corre full).
+    _viewer_push_interval = 1.0 / 8.0
+    _last_viewer_push = 0.0
+    _ext_cache: dict[str, Any] = {}
+    _last_ext_ts = 0.0
+
     try:
         while running:
             # --- Drenar shadow deltas pendientes (lado main-thread) ---
@@ -1670,7 +1686,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 )
 
                 payload = {
-                    "direction": event.direction,
+                    # Label interno ('ingress'/'egress') -> direccion canonica
+                    # del wire/schema ('in'/'out'). Ver _WIRE_DIRECTION arriba.
+                    "direction": _WIRE_DIRECTION.get(event.direction, event.direction),
                     "track_id": event.track_id,
                     "event_time": event.timestamp,
                     "bucket_15min": bucket_15min,
@@ -1734,6 +1752,29 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     for t in tracks.values()
                     if getattr(t, "state", None) in ("confirmed", "pending")
                 )
+                now_mono = time.monotonic()
+                # Tráfico exterior: query al dedup throttleada (~cada 2s) y
+                # cacheada — sqlite no debe pegarse a full FPS.
+                if wifi_ble is not None and now_mono - _last_ext_ts >= 2.0:
+                    try:
+                        _tc = dedup.get_traffic_counts()
+                        _ext_cache = {
+                            "passersby": _tc.get("passersby", 0),
+                            "shoppers": _tc.get("shoppers", 0),
+                            "recent": dedup.get_recent_records(limit=10),
+                        }
+                    except Exception:
+                        logger.debug(
+                            "viewer: query de tráfico exterior falló", exc_info=True
+                        )
+                    _last_ext_ts = now_mono
+                _now = datetime.now()
+                _oh = (
+                    config.get("cloud_defaults", {})
+                    .get("operating_hours", {})
+                    .get(_now.strftime("%A").lower(), "—")
+                )
+                _dev = config.get("device", {})
                 viewer.update_stats(
                     {
                         "total_in": counter.total_in,
@@ -1741,20 +1782,27 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "fps": last_fps_estimate,
                         "tracks": confirmed_or_pending,
                         "dets": len(detections),
+                        "store_name": _dev.get("store_name", ""),
+                        "device_id": _dev.get("id", ""),
+                        "operating_hours": _oh,
+                        "counting_active": bool(counting_active),
+                        "device_time": _now.strftime("%d/%m/%Y %H:%M:%S"),
+                        "hourly": counter.hourly_in_out(),
+                        "exterior": _ext_cache,
                     }
                 )
-                if viewer.has_subscribers():
+                # Push MJPEG throttleado a ~8 fps (menos banda + encode).
+                if (
+                    viewer.has_subscribers()
+                    and now_mono - _last_viewer_push >= _viewer_push_interval
+                ):
                     try:
                         if depth_map is not None:
                             last_depth_panel = depth_to_colormap(depth_map)
                         elif last_depth_panel is None:
                             last_depth_panel = depth_to_colormap(None)
                         left_annot = annotate_left(
-                            rect_l,
-                            detections,
-                            tracks,
-                            counter,
-                            fps=last_fps_estimate,
+                            rect_l, detections, tracks, counter
                         )
                         composite = compose_3panel(
                             left_annot,
@@ -1762,6 +1810,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             last_depth_panel,
                         )
                         viewer.push(composite)
+                        _last_viewer_push = now_mono
                     except Exception:
                         logger.exception("Falló el push al web viewer")
 

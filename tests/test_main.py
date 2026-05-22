@@ -648,6 +648,9 @@ def test_run_pipeline_publishes_shadow_reconciliation_on_boot(
     config = _make_pipeline_config(tmpdir)
     config["vision"]["calibration_file"] = None
     config["device"]["firmware_version"] = "0.1.0-pilot"
+    # Este test ejercita la reconciliacion del Device Shadow, que esta gateada
+    # por mqtt.shadow_enabled (default False = fuera de scope). Enablearlo aca.
+    config["mqtt"]["shadow_enabled"] = True
     args = argparse.Namespace(
         replay_dir="/fake", detection_backend="opencv", config="/fake/config.yaml"
     )

@@ -9,12 +9,22 @@ Un único :class:`Counter` parametrizado por:
   asociado; los cruces en direcciones no configuradas se ignoran sin ruido
   (gates one-way).
 
-Un track se cuenta cuando:
+Un track se cuenta cuando, EN ORDEN:
 
-  1. Entra al ROI desde afuera (o aparece en frame si no hay ROI).
+  1. Entra al ROI desde afuera.
   2. Cruza una de las líneas configuradas en una dirección con label
      mientras está dentro del ROI.
-  3. Sale del ROI por el lado opuesto (o sale del frame si no hay ROI).
+  3. **Sale del ROI** por el lado opuesto.
+
+El conteo dispara recién en (3): la salida del ROI es obligatoria. NO hay
+"salida sintética" por muerte del track dentro del ROI — una persona que
+cruza la línea pero se queda en el ROI (parada/sentada/dudando en la puerta,
+o que el detector pierde por pose fuera de distribución) NO se cuenta. Esto
+evita falsos positivos de gente lingering en el umbral.
+
+Sin ROI configurado no hay gate de salida (todo el frame es "inside"), así
+que un cruce de línea solo no cuenta — en la práctica siempre se configura
+un ROI.
 
 Cuando dispara (3), la meta del track se resetea así el mismo track puede
 contar otro ciclo completo más tarde — importante cuando una persona entra
@@ -360,6 +370,10 @@ class Counter:
         for line in self._lines:
             all_labels.update(line.labels.values())
         self._totals: dict[str, int] = {label: 0 for label in all_labels}
+        # Breakdown horario en memoria: hour (0-23) -> {label: count}. Para el
+        # live preview. Reset diario (reset_daily). El histórico persistente
+        # vive en RDS (count_events.bucket_15min), no en el borde.
+        self._hourly: dict[int, dict[str, int]] = {}
         # U-turn cancellation: el ROI ACTÚA como zona de cancelación.
         # Eventos opuestos del mismo ROI dentro de ``UTURN_WINDOW_SECONDS``
         # se cancelan mutuamente — captura "persona dudó y volvió" así
@@ -379,17 +393,6 @@ class Counter:
         # naturalmente por la ventana corta (típico 5s) + el flujo de
         # tráfico (decenas de eventos/min máximo por sucursal típica).
         self._recent_events: list[tuple[int, str, float, float, float]] = []
-        # Snapshots de tracks que están inside ROI con un last_label
-        # cacheado — la única condición bajo la cual un track que
-        # desaparece del tracker dict tiene un cruce pendiente que vale
-        # contar. Keyeado por track_id; cada slot lleva todo lo necesario
-        # para construir un CountEvent sintético sin re-acceder al Track
-        # original (que ya fue removido por el tracker en el frame de
-        # muerte). Se popula cada frame en ``check_all`` y se limpia
-        # automáticamente cuando el track sale del ROI legítimamente
-        # (inside vuelve a False, last_label a None) o cuando el cruce
-        # se cancela.
-        self._track_snapshots: dict[int, dict[str, Any]] = {}
 
     # ----------------------------------------------------------------- API
     @property
@@ -420,27 +423,34 @@ class Counter:
         ``ingress``/``egress``)."""
         return dict(self._totals)
 
+    def hourly_in_out(self) -> list[dict]:
+        """Breakdown horario de HOY: lista de ``{hour, in, out}`` ordenada por
+        hora, solo las horas con actividad. ``in`` = label ``ingress``,
+        ``out`` = ``egress``. Tracking en memoria con reset diario; el borde
+        NO persiste el histórico (eso vive en RDS, ``count_events``)."""
+        rows = []
+        for hour in sorted(self._hourly):
+            n_in = self._hourly[hour].get("ingress", 0)
+            n_out = self._hourly[hour].get("egress", 0)
+            # Saltear horas que quedaron en cero (ej. un cruce cancelado por
+            # U-turn) — no ensuciar la tabla con filas 0/0.
+            if n_in or n_out:
+                rows.append({"hour": hour, "in": n_in, "out": n_out})
+        return rows
+
     def check_all(self, tracks: dict[int, Track]) -> list[CountEvent]:
+        # Un track se cuenta SOLO cuando su centroide cruza la linea y luego
+        # SALE del ROI (ver _process_track). NO hay "salida sintetica" por
+        # muerte del track dentro del ROI: una persona parada/sentada/dudando
+        # en el ROI (que el detector pierde por pose fuera de distribucion, o
+        # que mueve la cabeza cruzando la linea sin trasladarse) NO debe
+        # contar. Requerir la salida del ROI es la semantica canonica del gate
+        # (entrar -> cruzar -> salir) y elimina ese falso positivo. Trade-off
+        # aceptado: una pasada limpia ocluida JUSTO dentro del ROI antes de
+        # salir no se cuenta (raro en montaje cenital sobre puerta).
         events: list[CountEvent] = []
-        seen_ids: set[int] = set()
         for track in tracks.values():
-            seen_ids.add(track.track_id)
             ev = self._process_track(track)
-            if ev is not None:
-                events.append(ev)
-            self._snapshot_track(track)
-        # Synthetic exit: cualquier track que teníamos snapshotteado
-        # (inside ROI + last_label cacheado) que desapareció del dict
-        # del tracker este frame murió antes de salir del ROI
-        # geométricamente. Emitir un count event sintético en la
-        # dirección del cruce ya detectado — sin esto perdemos los
-        # cases donde la persona cruza la línea + se queda quieta
-        # adentro (mirando un display, ocluida por estructura) lo
-        # suficiente para que el tracker la dropee.
-        disappeared = set(self._track_snapshots.keys()) - seen_ids
-        for track_id in disappeared:
-            snap = self._track_snapshots.pop(track_id)
-            ev = self._emit_synthetic_exit(track_id, snap)
             if ev is not None:
                 events.append(ev)
         return events
@@ -448,12 +458,10 @@ class Counter:
     def reset_daily(self) -> None:
         for k in self._totals:
             self._totals[k] = 0
-        # Tirar snapshots pendientes también — empezamos el día limpio.
-        # Si un track sobrevive el reset, su próximo frame re-snapshotea.
-        self._track_snapshots.clear()
-        # Tirar también el cache de eventos recientes — un reset es un
-        # boundary semántico, no queremos que un IN del día anterior
-        # cancele un OUT del nuevo día.
+        self._hourly.clear()
+        # Tirar el cache de eventos recientes — un reset es un boundary
+        # semántico, no queremos que un IN del día anterior cancele un OUT
+        # del nuevo día.
         self._recent_events.clear()
 
     # ------------------------------------------------------------- internal
@@ -500,6 +508,11 @@ class Counter:
             self._totals[opposite] = max(
                 0, self._totals.get(opposite, 0) - 1
             )
+            # Mantener el breakdown horario consistente con los totales: el
+            # evento opuesto cancelado se contó en su hora; revertirlo ahí.
+            _hb = self._hourly.get(time.localtime(_r_ts).tm_hour)
+            if _hb and _hb.get(opposite, 0) > 0:
+                _hb[opposite] -= 1
             del self._recent_events[i]
             logger.debug(
                 "uturn_cancellation",
@@ -530,104 +543,6 @@ class Counter:
         if not self._inside_roi(x, y):
             return
         self._recent_events.append((track_id, label, x, y, timestamp))
-
-    def _snapshot_track(self, track: Track) -> None:
-        """Snapshotea un track inside ROI con last_label cacheado para
-        potencial emisión de synthetic exit.
-
-        Llamado después de ``_process_track`` cada frame. Solo
-        snapshotea cuando hay un cruce pendiente real (inside=True +
-        last_label != None); si no, limpia cualquier snapshot stale
-        del track (handles: track salió legítimamente → meta reseteada
-        → snapshot pop; track entró y aún no cruzó → no snapshot todavía;
-        track volvió a outside sin cruzar → no snapshot).
-
-        El snapshot incluye todo lo necesario para construir un
-        CountEvent — incluyendo demographics computados desde la
-        historia del track ahora mismo, mientras el Track sigue
-        accesible. Cuando el tracker remueve el track en el próximo
-        frame, ``check_all`` puede emitir el sintético sin tocar el
-        Track original.
-        """
-        meta = track.meta.get(self.META_KEY)
-        if not meta:
-            self._track_snapshots.pop(track.track_id, None)
-            return
-        if not meta.get("inside") or not meta.get("last_label"):
-            self._track_snapshots.pop(track.track_id, None)
-            return
-
-        # Computar demographics desde la historia actual del track.
-        # Aplicar el mismo gate de confidence que usa el path de exit
-        # normal — un track marginal a lo largo de la trayectoria tiene
-        # altura derivada de SGBM no confiable.
-        conf_median = _aggregate_confidence_from_track(track)
-        if conf_median is not None and conf_median < self.HEIGHT_CONFIDENCE_GATE:
-            height_class = "unknown"
-            height_m: Optional[float] = None
-            head_depth_m: Optional[float] = None
-        else:
-            height_class = _aggregate_height_class_from_track(track)
-            height_m = _aggregate_height_m_from_track(track)
-            head_depth_m = _aggregate_head_depth_m_from_track(track)
-
-        # Posición = anclaje del cruce (dentro del ROI), no la posición
-        # actual del track. Coherente con el path de exit normal: el
-        # CountEvent reporta dónde se cruzó la línea, y la cancelación
-        # U-turn matchea por proximidad espacial del cruce.
-        cross = meta.get("last_crossing_pos") or (
-            float(track.positions[-1][0]),
-            float(track.positions[-1][1]),
-        )
-        self._track_snapshots[track.track_id] = {
-            "label": meta["last_label"],
-            "position_x": float(cross[0]),
-            "position_y": float(cross[1]),
-            "height_class": height_class,
-            "height_m": height_m,
-            "head_depth_m": head_depth_m,
-            "confidence": conf_median,
-        }
-
-    def _emit_synthetic_exit(
-        self, track_id: int, snap: dict[str, Any]
-    ) -> Optional[CountEvent]:
-        """Construye y registra un CountEvent sintético desde un snapshot.
-
-        Incrementa el total del label y loguea con un tag distinto del
-        path de exit normal, así downstream / debugging pueden
-        distinguir cruces confirmados geométricamente de los emitidos
-        por track death. La semántica downstream (analytics, totals)
-        es la misma — un IN sintético cuenta igual que un IN
-        geométrico.
-
-        Devuelve ``None`` si el evento se cancela vía U-turn (la
-        otra mitad del par ya estaba registrada). Caller debe filtrar
-        None del resultado.
-        """
-        label: str = snap["label"]
-        px = float(snap.get("position_x", 0.0))
-        py = float(snap.get("position_y", 0.0))
-        now = time.time()
-        if self._try_cancel_uturn(track_id, label, px, py, now):
-            return None
-        self._totals[label] = self._totals.get(label, 0) + 1
-        self._record_event_for_uturn(track_id, label, px, py, now)
-        logger.debug(
-            "synthetic_exit_event",
-            extra={"track_id": track_id, "label": label},
-        )
-        return CountEvent(
-            track_id=track_id,
-            direction=label,
-            timestamp=now,
-            position_y=py,
-            position_x=px,
-            height_class=snap["height_class"],
-            height_m=snap["height_m"],
-            head_depth_m=snap["head_depth_m"],
-            confidence=snap["confidence"],
-        )
 
     def _inside_roi(self, cx: float, cy: float) -> bool:
         if self._roi is None:
@@ -798,6 +713,8 @@ class Counter:
                 ):
                     return None
                 self._totals[label] = self._totals.get(label, 0) + 1
+                _hb = self._hourly.setdefault(time.localtime(now).tm_hour, {})
+                _hb[label] = _hb.get(label, 0) + 1
                 self._record_event_for_uturn(
                     track.track_id, label, cross_x, cross_y, now
                 )
