@@ -43,7 +43,7 @@ from src.status.led import StatusLED
 from src.status.monitor import HealthMonitor, HealthSignals
 from src.telemetry import collect_telemetry
 from src.tracking.counter import Counter, build_counter
-from src.tracking.tracker import EuclideanTracker
+from src.tracking.tracker import EuclideanTracker, stationary_track_ids
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
 from src.vision.depth import (
@@ -1070,6 +1070,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     _ext_cache: dict[str, Any] = {}
     _last_ext_ts = 0.0
 
+    # Filtro de clutter estático: tracks fantasma de FPs sobre estructura fija
+    # (fuera del ROI, sin moverse) se esconden del preview + del contador de
+    # tracks. Solo display/stats — no toca conteo/tracking (ver
+    # stationary_track_ids). Gateable por config.
+    _scf = config.get("tracking", {}).get("stationary_clutter_filter", {}) or {}
+    _scf_enabled = bool(_scf.get("enabled", True))
+    _scf_min_frames = int(_scf.get("min_frames", 20))
+    _scf_max_move_px = float(_scf.get("max_movement_px", 50.0))
+
     try:
         while running:
             # --- Drenar shadow deltas pendientes (lado main-thread) ---
@@ -1750,10 +1759,23 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # corre siempre. ``push`` es no-bloqueante; fallas se loggean
             # pero no rompen el pipeline.
             if viewer is not None:
+                # Clutter estático: tracks fantasma fuera del ROI que no se
+                # mueven. Se esconden del preview + del contador (no del conteo).
+                clutter_ids = (
+                    stationary_track_ids(
+                        tracks,
+                        counter.roi if counter is not None else None,
+                        _scf_min_frames,
+                        _scf_max_move_px,
+                    )
+                    if _scf_enabled
+                    else set()
+                )
                 confirmed_or_pending = sum(
                     1
-                    for t in tracks.values()
+                    for tid, t in tracks.items()
                     if getattr(t, "state", None) in ("confirmed", "pending")
+                    and tid not in clutter_ids
                 )
                 now_mono = time.monotonic()
                 # Tráfico exterior: query al dedup throttleada (~cada 2s) y
@@ -1804,8 +1826,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             last_depth_panel = depth_to_colormap(depth_map)
                         elif last_depth_panel is None:
                             last_depth_panel = depth_to_colormap(None)
+                        # Esconder el clutter estático del preview (tracks
+                        # fantasma fuera del ROI que no se mueven).
+                        viewer_tracks = (
+                            {tid: t for tid, t in tracks.items() if tid not in clutter_ids}
+                            if clutter_ids
+                            else tracks
+                        )
                         left_annot = annotate_left(
-                            rect_l, detections, tracks, counter
+                            rect_l, detections, viewer_tracks, counter
                         )
                         composite = compose_3panel(
                             left_annot,

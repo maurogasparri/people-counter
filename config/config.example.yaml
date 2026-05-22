@@ -635,6 +635,20 @@ height:
 
 # --- Tracker + state machine (tuning de algo, fleet-uniform tras piloto) ----
 tracking:
+  # Filtro de clutter estático: tracks fantasma de FPs del detector sobre
+  # estructura fija (sombra/borde/piso). Un track FUERA del ROI que no se
+  # movió en toda su vida = clutter (la gente se mueve; el clutter no). Se
+  # esconde del live preview + del contador de "Tracks" del dashboard. NO toca
+  # conteo ni tracking (esos tracks están fuera del ROI, nunca cuentan) — es
+  # solo cosmético, sin riesgo de recall. Complementa el static_suppressor
+  # (que es por celda de detección y no caza FPs que flickerean).
+  stationary_clutter_filter:
+    enabled: true
+    min_frames: 20                  # Frames mínimos de vida antes de juzgarlo
+                                    # clutter (una persona ya se movió a los ~1.5s).
+    max_movement_px: 50             # Si el track se movió menos que esto (peak-
+                                    # to-peak) en toda su vida = estático. Clutter
+                                    # típico <10px; un caminante >>100px.
   max_disappeared_frames: 30        # Frames que un track puede miss antes de drop.
   max_distance_px: 100              # Distancia max en px para asociación
                                     # frame-a-frame. A 26 fps con caminata

@@ -753,3 +753,38 @@ class EuclideanTracker:
         # Aplicar también el cap legacy max_disappeared como upper bound.
         if track.disappeared > self.max_disappeared:
             track.state = LOST
+
+
+def stationary_track_ids(
+    tracks: dict[int, Track],
+    roi: tuple[float, float, float, float] | None,
+    min_frames: int = 20,
+    max_movement_px: float = 50.0,
+) -> set[int]:
+    """IDs de tracks que son **clutter estático**: vivos hace >= ``min_frames``,
+    que se movieron < ``max_movement_px`` en toda su historia, y cuyo centroide
+    actual está FUERA del ROI.
+
+    Son FPs del detector sobre estructura fija (sombra/borde/piso) que spawnean
+    tracks fantasma — la gente real se mueve, el clutter no. Sin ROI devuelve
+    set vacío (no filtramos sin zona de conteo). Pensado SOLO para display/stats
+    (esconder el bbox fantasma + no inflar el contador de tracks): estos tracks
+    están fuera del ROI y nunca cuentan, así que el conteo/tracking no se tocan.
+    """
+    if roi is None:
+        return set()
+    x_min, x_max, y_min, y_max = roi
+    out: set[int] = set()
+    for tid, t in tracks.items():
+        positions = getattr(t, "positions", None)
+        if not positions or len(positions) < min_frames:
+            continue
+        cx, cy = float(positions[-1][0]), float(positions[-1][1])
+        if x_min <= cx <= x_max and y_min <= cy <= y_max:
+            continue  # dentro del ROI: nunca lo tratamos como clutter
+        xs = [float(p[0]) for p in positions]
+        ys = [float(p[1]) for p in positions]
+        movement = max(max(xs) - min(xs), max(ys) - min(ys))
+        if movement < max_movement_px:
+            out.add(tid)
+    return out
