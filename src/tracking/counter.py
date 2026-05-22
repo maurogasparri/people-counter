@@ -14,13 +14,23 @@ Un track se cuenta cuando, EN ORDEN:
   1. Entra al ROI desde afuera.
   2. Cruza una de las líneas configuradas en una dirección con label
      mientras está dentro del ROI.
-  3. **Sale del ROI** por el lado opuesto.
+  3. **Sale del ROI**.
 
 El conteo dispara recién en (3): la salida del ROI es obligatoria. NO hay
 "salida sintética" por muerte del track dentro del ROI — una persona que
 cruza la línea pero se queda en el ROI (parada/sentada/dudando en la puerta,
 o que el detector pierde por pose fuera de distribución) NO se cuenta. Esto
 evita falsos positivos de gente lingering en el umbral.
+
+**Cancelación neta dentro del ROI (máquina de estados de la zona):**
+durante una visita al ROI se acumula un balance NETO de cruces por línea —
+cada cruce in-segment hacia un lado suma, hacia el opuesto resta. Al salir
+se emite según el SIGNO del neto: si quedó ±1, ese es el sentido contado;
+si quedó 0, la persona "fue y vino" (cruzó y re-cruzó en sentido opuesto
+dentro del ROI) y NO se cuenta. Esto reemplaza el viejo "gana el último
+cruce". Un gate one-way (línea con label en una sola dirección) es sticky:
+el cruce de vuelta no tiene label, no resta, así que un IN no se cancela
+por volver a salir por el lado sin label.
 
 Sin ROI configurado no hay gate de salida (todo el frame es "inside"), así
 que un cruce de línea solo no cuenta — en la práctica siempre se configura
@@ -74,9 +84,7 @@ class CountEvent:
     timestamp: float
     position_y: float
     # Posición x del track al momento del cruce. Útil para downstream
-    # analytics (clustering espacial de eventos) y para la cancelación
-    # U-turn (un evento solo cancela contra otro si AMBOS caen dentro
-    # del ROI — la x es necesaria para el test geométrico).
+    # analytics (clustering espacial de eventos).
     position_x: float = 0.0
     # Atributos opcionales per-track que se populan cuando el classifier
     # está enabled. "unknown" cuando faltan datos de height (sin profundidad,
@@ -295,9 +303,10 @@ class Counter:
     La meta del track se keea bajo ``META_KEY``. El counter maneja:
 
     - ``inside``: si el track está actualmente dentro del ROI.
-    - ``last_label``: el label más reciente seteado por un cruce de
-      línea válido durante la visita actual al ROI. Se resetea en
-      transiciones entry/exit.
+    - ``crossing_net``: balance NETO de cruces por línea durante la
+      visita actual al ROI. Cada cruce in-segment con label hacia el
+      lado +1 suma 1, hacia -1 resta 1. Se resetea en entry; el signo
+      al exit decide el evento (0 = fue y vino, no cuenta).
     - ``line_sides``: cache per-line del "lado" del tracking point del
       frame previo. Se usa para detectar transiciones de lado que
       impliquen un cruce.
@@ -328,15 +337,6 @@ class Counter:
     # clasificación adult/child se vuelve conservadora.
     HEIGHT_CONFIDENCE_GATE = 0.5
 
-    # Ventana temporal para cancelar pares opuestos IN/OUT dentro del
-    # ROI (U-turn). Eventos opuestos del mismo ROI dentro de esta
-    # ventana se cancelan mutuamente — captura "persona dudó en la
-    # entrada, cruzó y volvió enseguida" o fragmentación de track cerca
-    # de la línea (track A cruza IN, jitter parte el track, track B
-    # cruza OUT). Tests patchean este attr de clase para validar
-    # comportamiento fuera de ventana.
-    UTURN_WINDOW_SECONDS = 5.0
-
     def __init__(
         self,
         lines: list[Line],
@@ -365,7 +365,9 @@ class Counter:
         self._roi: Optional[tuple[float, float, float, float]] = (
             _validate_roi(roi) if roi else None
         )
-        self._min_crossing_movement_px: float = max(0.0, float(min_crossing_movement_px))
+        self._min_crossing_movement_px: float = max(
+            0.0, float(min_crossing_movement_px)
+        )
         all_labels: set[str] = set()
         for line in self._lines:
             all_labels.update(line.labels.values())
@@ -374,25 +376,6 @@ class Counter:
         # live preview. Reset diario (reset_daily). El histórico persistente
         # vive en RDS (count_events.bucket_15min), no en el borde.
         self._hourly: dict[int, dict[str, int]] = {}
-        # U-turn cancellation: el ROI ACTÚA como zona de cancelación.
-        # Eventos opuestos del mismo ROI dentro de ``UTURN_WINDOW_SECONDS``
-        # se cancelan mutuamente — captura "persona dudó y volvió" así
-        # como fragmentación de track cerca de la línea (track A cruza
-        # IN, jitter parte el track, track B cruza OUT). Sin ROI
-        # configurado, no hay cancelación (no podemos bound la zona).
-        # Mapa label → label opuesto, derivado de las líneas.
-        self._opposites: dict[str, str] = {}
-        for line in self._lines:
-            line_labels = list(line.labels.values())
-            if len(line_labels) == 2:
-                self._opposites[line_labels[0]] = line_labels[1]
-                self._opposites[line_labels[1]] = line_labels[0]
-        # Cache de eventos recientes para U-turn matching. Cada entrada:
-        # ``(track_id, label, x, y, timestamp)``. Se purga en cada check
-        # eliminando los eventos fuera de la ventana. Tamaño acotado
-        # naturalmente por la ventana corta (típico 5s) + el flujo de
-        # tráfico (decenas de eventos/min máximo por sucursal típica).
-        self._recent_events: list[tuple[int, str, float, float, float]] = []
 
     # ----------------------------------------------------------------- API
     @property
@@ -432,8 +415,7 @@ class Counter:
         for hour in sorted(self._hourly):
             n_in = self._hourly[hour].get("ingress", 0)
             n_out = self._hourly[hour].get("egress", 0)
-            # Saltear horas que quedaron en cero (ej. un cruce cancelado por
-            # U-turn) — no ensuciar la tabla con filas 0/0.
+            # Saltear horas sin actividad — no ensuciar la tabla con filas 0/0.
             if n_in or n_out:
                 rows.append({"hour": hour, "in": n_in, "out": n_out})
         return rows
@@ -459,91 +441,8 @@ class Counter:
         for k in self._totals:
             self._totals[k] = 0
         self._hourly.clear()
-        # Tirar el cache de eventos recientes — un reset es un boundary
-        # semántico, no queremos que un IN del día anterior cancele un OUT
-        # del nuevo día.
-        self._recent_events.clear()
 
     # ------------------------------------------------------------- internal
-    def _try_cancel_uturn(
-        self,
-        track_id: int,
-        label: str,
-        x: float,
-        y: float,
-        timestamp: float,
-    ) -> bool:
-        """Intenta cancelar el evento contra un opuesto reciente dentro
-        del mismo ROI. Devuelve True si canceló (caller debe abortar la
-        emisión).
-
-        El ROI actúa como zona de cancelación: si el evento actual y un
-        evento opuesto reciente ambos caen dentro del ROI y la ventana
-        temporal no expiró, se cancelan mutuamente. Sin ROI configurado
-        no hay cancelación (no podemos bound la zona).
-        """
-        if self._roi is None:
-            return False
-        if not self._inside_roi(x, y):
-            return False
-        opposite = self._opposites.get(label)
-        if opposite is None:
-            return False
-        cutoff = timestamp - self.UTURN_WINDOW_SECONDS
-        # Purgar eventos fuera de ventana.
-        self._recent_events = [
-            e for e in self._recent_events if e[4] >= cutoff
-        ]
-        for i, recent in enumerate(self._recent_events):
-            r_tid, r_label, r_x, r_y, _r_ts = recent
-            if r_label != opposite:
-                continue
-            if not self._inside_roi(r_x, r_y):
-                continue
-            # U-turn detectado: revertir el evento previo y abortar el
-            # actual. No discriminamos por track_id — el escenario
-            # típico es que el track muera entre el IN y el OUT y la
-            # segunda mitad sea un track nuevo. Si fuera mismo track,
-            # también cancela (idempotente).
-            self._totals[opposite] = max(
-                0, self._totals.get(opposite, 0) - 1
-            )
-            # Mantener el breakdown horario consistente con los totales: el
-            # evento opuesto cancelado se contó en su hora; revertirlo ahí.
-            _hb = self._hourly.get(time.localtime(_r_ts).tm_hour)
-            if _hb and _hb.get(opposite, 0) > 0:
-                _hb[opposite] -= 1
-            del self._recent_events[i]
-            logger.debug(
-                "uturn_cancellation",
-                extra={
-                    "new_label": label,
-                    "cancelled_label": opposite,
-                    "new_track_id": track_id,
-                    "cancelled_track_id": r_tid,
-                },
-            )
-            return True
-        return False
-
-    def _record_event_for_uturn(
-        self,
-        track_id: int,
-        label: str,
-        x: float,
-        y: float,
-        timestamp: float,
-    ) -> None:
-        """Inserta el evento emitido en el cache de recent_events si el
-        ROI está configurado. Eventos fuera del ROI no se cachean porque
-        nunca podrían cancelarse contra nada (el lookup siempre requiere
-        ambos dentro del ROI)."""
-        if self._roi is None:
-            return
-        if not self._inside_roi(x, y):
-            return
-        self._recent_events.append((track_id, label, x, y, timestamp))
-
     def _inside_roi(self, cx: float, cy: float) -> bool:
         if self._roi is None:
             return True
@@ -594,6 +493,20 @@ class Counter:
             sides = [0] * len(self._lines)
             meta["line_sides"] = sides
 
+        # Balance NETO de cruces por línea durante la visita actual al
+        # ROI (máquina de estados de la zona). Cada cruce in-segment
+        # hacia el lado +1 suma 1, hacia el lado -1 resta 1 (solo cuando
+        # la dirección tiene label — un gate one-way es "sticky": el
+        # cruce de vuelta no tiene label y no cancela). Al salir del ROI
+        # se emite según el SIGNO del neto: >0 = quedó del lado +1 (cruzó
+        # neto en esa dirección), <0 = lado -1, 0 = fue y vino, NO cuenta.
+        # Esto reemplaza el viejo "gana el último cruce" que contaba mal
+        # el caso "entró, cruzó, volvió a cruzar y salió" (debía dar 0).
+        net = meta.get("crossing_net")
+        if not isinstance(net, list) or len(net) != len(self._lines):
+            net = [0] * len(self._lines)
+            meta["crossing_net"] = net
+
         if is_inside and not was_inside:
             # Entry fresca: resetear estado del ciclo y snapshotear
             # sides desde la última posición outside-ROI conocida (el
@@ -605,8 +518,11 @@ class Counter:
             # Fallback al (cx, cy) actual si el track nació inside
             # sin historia outside.
             meta["inside"] = True
-            meta["last_label"] = None
+            meta["last_crossing_pos"] = None
             meta["last_track_pos"] = (cx, cy)
+            # Resetear el balance neto de cruces para la nueva visita.
+            for i in range(len(net)):
+                net[i] = 0
             outside_pos = meta.get("last_outside_pos")
             snap_x, snap_y = outside_pos if outside_pos is not None else (cx, cy)
             for i, line in enumerate(self._lines):
@@ -629,14 +545,14 @@ class Counter:
                     dy = cy - float(last_pos[1])
                     if (dx * dx + dy * dy) < threshold * threshold:
                         # Movimiento sub-threshold — preservar sides[] y
-                        # last_label como están, no evaluar cruces.
+                        # el balance neto como están, no evaluar cruces.
                         return None
 
-            # Detectar transición de lado en cada línea. El track
-            # puede cruzar múltiples líneas en una visita al ROI; el
-            # cruce válido más reciente gana (decisión defensiva — en
-            # deployments bien configurados las líneas cubren regiones
-            # disjuntas, así que esto rara vez importa).
+            # Detectar transición de lado en cada línea y acumular el
+            # balance neto de la visita. Un cruce in-segment hacia +1
+            # suma 1 al neto, hacia -1 resta 1 (solo si la dirección
+            # tiene label). El track puede cruzar múltiples líneas en
+            # una visita; cada una lleva su propio neto.
             for i, line in enumerate(self._lines):
                 prev_side = sides[i]
                 new_side = line.side_of(cx, cy)
@@ -648,10 +564,10 @@ class Counter:
                 ):
                     label = line.crossing_label(prev_side, new_side)
                     if label is not None:
-                        meta["last_label"] = label
-                        # Anclar la posición del cruce dentro del ROI
-                        # para el U-turn lookup. El emit en exit usa esta
-                        # posición (no la posición de salida, que está
+                        net[i] += 1 if new_side == 1 else -1
+                        # Anclar la posición del cruce dentro del ROI. El
+                        # emit en exit la usa para el position_x/y del
+                        # CountEvent (no la posición de salida, que está
                         # fuera del ROI por definición).
                         meta["last_crossing_pos"] = (cx, cy)
                 sides[i] = new_side
@@ -678,9 +594,9 @@ class Counter:
                     and prev_side != new_side
                     and line.within_segment(cx, cy)
                 ):
-                    label = line.crossing_label(prev_side, new_side)
-                    if label is not None:
-                        meta["last_label"] = label
+                    cross_label = line.crossing_label(prev_side, new_side)
+                    if cross_label is not None:
+                        net[i] += 1 if new_side == 1 else -1
                         if last_inside is not None:
                             meta["last_crossing_pos"] = (
                                 (float(last_inside[0]) + cx) / 2.0,
@@ -688,36 +604,40 @@ class Counter:
                             )
                         else:
                             meta["last_crossing_pos"] = (cx, cy)
-            label = meta.get("last_label")
+
+            # Veredicto de la visita: según el SIGNO del balance neto por
+            # línea. neto > 0 = cruzó neto hacia el lado +1; neto < 0 =
+            # hacia -1; neto == 0 = fue y vino, no cuenta. Si hay varias
+            # líneas, la última con veredicto no-nulo gana (defensiva; en
+            # deploys bien configurados las líneas cubren zonas disjuntas).
+            label = None
+            for i, line in enumerate(self._lines):
+                if net[i] > 0:
+                    verdict = line.crossing_label(-1, 1)
+                elif net[i] < 0:
+                    verdict = line.crossing_label(1, -1)
+                else:
+                    verdict = None
+                if verdict is not None:
+                    label = verdict
             crossing_pos = meta.get("last_crossing_pos") or (cx, cy)
             # Resetear estado así el mismo track puede contar otro
             # ciclo completo más tarde. El invariante antiglitch
             # vale: contar de nuevo requiere re-entry desde afuera +
             # un cruce de línea con label + exit.
             meta["inside"] = False
-            meta["last_label"] = None
             meta["last_crossing_pos"] = None
             for i in range(len(sides)):
                 sides[i] = 0
+            for i in range(len(net)):
+                net[i] = 0
             if label:
                 now = time.time()
                 cross_x = float(crossing_pos[0])
                 cross_y = float(crossing_pos[1])
-                # U-turn cancellation: si el evento cae dentro del ROI
-                # (zona de cancelación) y matchea un evento opuesto
-                # reciente, decrementa el opuesto y aborta este sin
-                # emitir count. Captura "persona dudó y volvió" + track
-                # fragmentation cerca de la línea sin inflar totales.
-                if self._try_cancel_uturn(
-                    track.track_id, label, cross_x, cross_y, now
-                ):
-                    return None
                 self._totals[label] = self._totals.get(label, 0) + 1
                 _hb = self._hourly.setdefault(time.localtime(now).tm_hour, {})
                 _hb[label] = _hb.get(label, 0) + 1
-                self._record_event_for_uturn(
-                    track.track_id, label, cross_x, cross_y, now
-                )
                 logger.debug(
                     "count_event",
                     extra={"track_id": track.track_id, "label": label},
@@ -756,8 +676,11 @@ class Counter:
                     head_depth_m=head_depth_m,
                     confidence=conf_median,
                 )
+            # Salió sin veredicto: o nunca cruzó la línea, o cruzó y
+            # volvió a cruzar (balance neto 0 — "fue y vino" dentro del
+            # ROI). En ambos casos NO se cuenta.
             logger.debug(
-                "exit_without_crossing",
+                "exit_without_net_crossing",
                 extra={"track_id": track.track_id},
             )
         return None
@@ -800,8 +723,7 @@ def build_counter(config: dict[str, Any]) -> Counter:
             to_xy = tuple(raw["to"])
         except (KeyError, TypeError) as e:
             raise ValueError(
-                f"counter.lines[{idx}]: 'from' and 'to' required as [x, y] "
-                f"pairs ({e})."
+                f"counter.lines[{idx}]: 'from' and 'to' required as [x, y] pairs ({e})."
             ) from e
         if len(from_xy) != 2 or len(to_xy) != 2:
             raise ValueError(

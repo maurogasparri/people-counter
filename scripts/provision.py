@@ -7,12 +7,16 @@ También cubre disaster recovery: traer la calibración de vuelta al backup
 del workstation, y re-emitir certs luego de falla de SD.
 
 Uso:
-    # Provisiona un device nuevo (crea thing + certs + config)
+    # Provisiona un device nuevo (crea thing + certs + config + seed RDS)
     python scripts/provision.py create \
         --device-id store-001-cam-01 \
         --store-id store-001 \
         --store-name "Store Name" \
+        --latitude -34.5669426 --longitude -58.4766207 \
+        --timezone America/Argentina/Buenos_Aires \
         --endpoint xxxxx.iot.us-east-1.amazonaws.com
+    # (lat/long van a la tabla `sites` en RDS, no al config del device.
+    #  Requiere 'pip install .[provisioning]' + creds AWS; --skip-db para omitir.)
 
     # Despliega config + certs (+ calibration.npz si está backupeado) a un device
     python scripts/provision.py deploy \
@@ -56,6 +60,10 @@ REMOTE_CONFIG_DIR = "/etc/people-counter"
 REMOTE_CERT_DIR = "/etc/people-counter/certs"
 REMOTE_DATA_DIR = "/var/lib/people-counter"
 REMOTE_LOG_DIR = "/var/log/people-counter"
+
+# AWS defaults — matchean infra/deploy.ps1 (stack people-counter-$Environment).
+DEFAULT_STACK_NAME = "people-counter-dev"
+DEFAULT_REGION = "us-east-1"
 
 
 def cmd_create(args: argparse.Namespace) -> None:
@@ -113,18 +121,134 @@ def cmd_create(args: argparse.Namespace) -> None:
     _build_config(device_dir, args)
 
     # --- Guardar metadata del device --- (siempre)
+    # lat/long se guardan acá como registro local del provisioning, pero NO van
+    # al config.yaml del device (el device no necesita saber su ubicación) — su
+    # fuente de verdad es la tabla `sites` en RDS, que sembramos abajo.
     metadata = {
         "device_id": device_id,
         "store_id": args.store_id,
         "store_name": args.store_name,
         "endpoint": args.endpoint,
+        "latitude": args.latitude,
+        "longitude": args.longitude,
     }
     (device_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
+    # --- Seed de dimensiones en RDS (sites + devices) ---
+    # Idempotente y no fatal: si RDS no es alcanzable, se saltea con un warning
+    # y el provisioning del device igual queda OK.
+    if not args.skip_db:
+        _seed_dimensions(args)
 
     if config_refresh_only:
         logger.info("Config refreshed at %s (certs unchanged)", device_dir)
     else:
         logger.info("Device %s provisioned at %s", device_id, device_dir)
+
+
+def _rds_connect(stack_name: str, region: str):
+    """Abre una conexión psycopg a RDS como master user, SIN docker.
+
+    Reusa el stack que ya usa la Lambda (psycopg + boto3): toma el endpoint y el
+    ARN del secret de los outputs del stack CloudFormation, lee el master secret
+    de Secrets Manager y conecta vía psycopg con SSL. No depende de docker ni de
+    un psql instalado — solo de boto3 + psycopg (``pip install
+    '.[provisioning]'``), que es cross-platform.
+    """
+    import boto3  # lazy: solo para el seed de la DB
+    import psycopg
+
+    cfn = boto3.client("cloudformation", region_name=region)
+    stacks = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stacks.get("Outputs", [])}
+    host = outputs["RdsEndpoint"]
+    port = int(outputs.get("RdsPort", "5432"))
+    secret_arn = outputs["RdsMasterSecretArn"]
+
+    sm = boto3.client("secretsmanager", region_name=region)
+    secret = json.loads(sm.get_secret_value(SecretId=secret_arn)["SecretString"])
+
+    return psycopg.connect(
+        host=host,
+        port=port,
+        dbname="people_counter",
+        user=secret["username"],
+        password=secret["password"],
+        # RDS force_ssl=1 ya encripta; require (no verify-full) evita tener que
+        # empaquetar el CA bundle en el workstation de provisioning.
+        sslmode="require",
+        connect_timeout=15,
+    )
+
+
+def _seed_dimensions(args: argparse.Namespace) -> None:
+    """UPSERT del site + device en RDS (tablas de dimensiones sites/devices).
+
+    Las coordenadas (lat/long) viven SOLO acá, no en el config del device — son
+    metadata cloud-side para el geomap y los dropdowns de Grafana. Idempotente:
+    re-correr refresca los campos sin duplicar (ON CONFLICT). No fatal: si RDS no
+    es alcanzable (sin creds AWS, stack no deployado, etc.) loguea un warning y
+    sigue — el provisioning del device no se bloquea.
+    """
+    try:
+        conn = _rds_connect(args.stack_name, args.region)
+    except Exception as e:
+        logger.warning(
+            "Seed de sites/devices SALTEADO (no se pudo conectar a RDS: %s). "
+            "Correr el UPSERT a mano cuando la DB esté disponible.",
+            e,
+        )
+        return
+
+    try:
+        with conn, conn.cursor() as cur:
+            # Site primero (devices.store_id tiene FK a sites). COALESCE en el
+            # UPDATE evita que un refresh sin coords borre las ya cargadas.
+            cur.execute(
+                """
+                INSERT INTO sites (store_id, store_name, latitude, longitude,
+                                   timezone, address, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (store_id) DO UPDATE SET
+                    store_name = EXCLUDED.store_name,
+                    latitude   = COALESCE(EXCLUDED.latitude,  sites.latitude),
+                    longitude  = COALESCE(EXCLUDED.longitude, sites.longitude),
+                    timezone   = COALESCE(EXCLUDED.timezone,  sites.timezone),
+                    address    = COALESCE(EXCLUDED.address,   sites.address),
+                    updated_at = now();
+                """,
+                (
+                    args.store_id,
+                    args.store_name,
+                    args.latitude,
+                    args.longitude,
+                    args.timezone,
+                    args.address,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO devices (device_id, store_id, cam_label,
+                                     installed_at, updated_at)
+                VALUES (%s, %s, %s, now(), now())
+                ON CONFLICT (device_id) DO UPDATE SET
+                    store_id   = EXCLUDED.store_id,
+                    cam_label  = COALESCE(EXCLUDED.cam_label, devices.cam_label),
+                    updated_at = now();
+                """,
+                (args.device_id, args.store_id, args.cam_label),
+            )
+        logger.info(
+            "RDS dimensiones: site %s + device %s upserted (lat=%s lon=%s)",
+            args.store_id,
+            args.device_id,
+            args.latitude,
+            args.longitude,
+        )
+    except Exception as e:
+        logger.warning("Seed de sites/devices falló durante el UPSERT: %s", e)
+    finally:
+        conn.close()
 
 
 def _create_iot_thing(
@@ -481,6 +605,39 @@ def main() -> None:
     )
     p_create.add_argument("--skip-aws", action="store_true", help="Saltea el registro de AWS IoT")
     p_create.add_argument("--force", action="store_true", help="Sobreescribe el existente")
+    # --- metadata de dimensiones (van a la tabla sites/devices en RDS, NO al
+    #     config del device) ---
+    p_create.add_argument(
+        "--latitude", type=float, default=None,
+        help="Latitud del local (tabla sites — para el geomap de Grafana)",
+    )
+    p_create.add_argument(
+        "--longitude", type=float, default=None,
+        help="Longitud del local (tabla sites)",
+    )
+    p_create.add_argument(
+        "--timezone", default=None,
+        help="Timezone IANA del local, ej. America/Argentina/Buenos_Aires",
+    )
+    p_create.add_argument(
+        "--address", default=None, help="Dirección del local (opcional, sites)",
+    )
+    p_create.add_argument(
+        "--cam-label", default=None,
+        help="Etiqueta de la cámara, ej. 'puerta principal' (tabla devices)",
+    )
+    p_create.add_argument(
+        "--skip-db", action="store_true",
+        help="Saltea el seed de sites/devices en RDS (solo IoT + config local)",
+    )
+    p_create.add_argument(
+        "--stack-name", default=DEFAULT_STACK_NAME,
+        help=f"Stack CloudFormation para los outputs de RDS (default {DEFAULT_STACK_NAME})",
+    )
+    p_create.add_argument(
+        "--region", default=DEFAULT_REGION,
+        help=f"Región AWS (default {DEFAULT_REGION})",
+    )
     p_create.set_defaults(func=cmd_create)
 
     # --- deploy ---

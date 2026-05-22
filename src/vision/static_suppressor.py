@@ -71,9 +71,9 @@ class StaticSuppressor:
             15s: una persona puede pausar/dudar en la puerta varios segundos
             sin quedar suprimida; un FP estructural está "hot" ~100% del
             tiempo y igual se caza tras la ventana. (Antes 3s — demasiado
-            corto: una persona parada ~3s se suprimía, su track moría y el
-            synthetic-exit del Counter disparaba un count fantasma. La región
-            de conteo además se exenta via ``exempt_roi`` en update_and_filter.)
+            corto: una persona parada ~3s se suprimía y su track moría dentro
+            del ROI sin contar el cruce. La región de conteo además se exenta
+            via ``exempt_roi`` en update_and_filter.)
         hit_rate_threshold: Fracción mínima de la ventana en que la
             celda debe estar activa para suprimirse. 0.7 distingue
             FP estructural (≈1.0) de presencia humana ocasional (~0.3-0.5).
@@ -153,8 +153,10 @@ class StaticSuppressor:
         celda esté hot. Exenta el ROI de conteo — el suppressor existe para
         clutter estructural de la periferia (maniquíes, racks), pero dentro
         del umbral de la puerta una detección persistente es una persona real
-        (parada/dudando), y suprimirla mata su track + dispara un count
-        fantasma vía el synthetic-exit del Counter. ``None`` => sin exención.
+        (parada/dudando), y suprimirla mata su track antes de que salga del
+        ROI → el cruce nunca se cuenta. El keep-alive del tracker dentro del
+        ROI es defensa adicional para los dropouts del detector. ``None`` =>
+        sin exención.
         """
         now = self._time_fn()
         self._evict_expired(now)

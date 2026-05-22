@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 _COLOR_CONFIRMED = (0, 255, 0)
 _COLOR_PENDING = (0, 165, 255)
 _COLOR_CANDIDATE = (180, 180, 180)
-_COLOR_DET = (90, 90, 90)
 _COLOR_ROI = (0, 0, 255)         # rojo
 
 # Paleta de la counting-line por label de dirección. Cualquier otra cosa cae
@@ -68,43 +67,37 @@ _BBOX_DISPLAY_MEDIAN_WINDOW = 10
 
 def annotate_left(
     frame: np.ndarray,
-    detections: list,
     tracks: dict,
     counter: Optional[Any],
 ) -> np.ndarray:
-    """Dibuja ROI, línea, detecciones raw y tracks sobre una copia de ``frame``.
+    """Dibuja ROI, línea y tracks sobre una copia de ``frame``.
 
     NO dibuja totales/FPS — esos van en el dashboard del viewer (evita el
     overlay duplicado). Acá solo la geometría (ROI + línea) + las
-    cajas/centroides/track-ids, útil para ver qué detecta y trackea el
-    pipeline (debug de ghosts, etc.).
+    cajas/centroides/track-ids de los tracks.
+
+    Deliberadamente NO dibuja las detecciones raw del detector: las cajas
+    grises por-frame mostraban FPs de clutter estructural (sombras, bordes)
+    que el filtro de clutter estático YA esconde a nivel de track. Dibujar
+    las detecciones crudas hacía reaparecer esos "ghosts" parpadeando en el
+    preview (sobre todo del lado del approach de IN), confundiendo al
+    operador. Mostrar solo los tracks (ya filtrados) deja el preview limpio.
 
     Args:
         frame: Frame BGR de la cámara izquierda (rectificado).
-        detections: objetos Detection (tienen ``.bbox`` y ``.centroid``).
-        tracks: dict[int, Track] de EuclideanTracker.
+        tracks: dict[int, Track] de EuclideanTracker (idealmente ya
+            filtrado de clutter por el caller).
         counter: instancia del Counter (se lee para el overlay de geometría
             ROI + línea). Puede ser None.
     """
     out = frame.copy()
 
-    # Geometría primero así las detecciones quedan arriba.
+    # Geometría primero así los tracks quedan arriba.
     _draw_counter_geometry(out, counter)
-
-    # Detecciones raw en gris sutil. Las posiciones trackeadas reciben
-    # un marker coloreado encima así el operador puede ver qué
-    # detecciones produjeron tracks y cuáles no.
-    for det in detections:
-        try:
-            x1, y1, x2, y2 = det.bbox
-        except Exception:
-            continue
-        cv2.rectangle(out, (int(x1), int(y1)), (int(x2), int(y2)),
-                      _COLOR_DET, 1)
 
     # Diferir el import así un import circular en init parcial no
     # vuela el módulo viewer.
-    from src.tracking.tracker import CONFIRMED, PENDING, CANDIDATE
+    from src.tracking.tracker import CONFIRMED, PENDING
     base_state_colour = {
         CONFIRMED: _COLOR_CONFIRMED,
         PENDING: _COLOR_PENDING,
@@ -140,13 +133,10 @@ def annotate_left(
             display_colour = base_colour
 
         # Si el track tiene un bbox cacheado en la historia, lo
-        # dibujamos también. Esto persiste el rectángulo visualmente
-        # durante PENDING (el detector pudo no haber emitido bbox
-        # este frame, pero el último bbox conocido sigue siendo
-        # razonable como visual hint). El rectángulo gris fino de
-        # detecciones raw arriba se sigue dibujando cuando hay
-        # detección este frame; el del track persiste a través de
-        # gaps cortos del detector.
+        # dibujamos. Esto persiste el rectángulo visualmente durante
+        # PENDING (el detector pudo no haber emitido bbox este frame,
+        # pero el último bbox conocido sigue siendo razonable como
+        # visual hint) y a través de gaps cortos del detector.
         #
         # Smoothing: width/height del bbox como mediana de los últimos
         # N samples (filtra el "respira" del detector), pero el centro

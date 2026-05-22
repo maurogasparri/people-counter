@@ -176,6 +176,55 @@ CREATE INDEX IF NOT EXISTS idx_pos_store_day
     ON pos_transactions (store_id, bucket_day DESC);
 
 -- =============================================================================
+-- Tablas de dimensiones — sites + devices (sembradas en provisioning)
+-- =============================================================================
+-- A DIFERENCIA de las tablas raw de arriba, estas NO se dropean en el bloque de
+-- reset: son datos de provisioning (no telemetría replayable), así que re-correr
+-- este script las preserva. Para agregarlas a una DB ya deployada con datos en
+-- vivo, correr SOLO este bloque (es idempotente, sin DROP) — NO el script
+-- entero, que borraría las tablas raw.
+--
+-- Sirven para: (a) geomap de Grafana (lat/long por sucursal), (b) template
+-- variables / dropdowns de filtro que salen de una tabla chica en vez de un
+-- SELECT DISTINCT sobre count_events (scan caro a volumen, y que encima no
+-- muestra devices recién provisionados sin datos), (c) labels human-readable
+-- ("Sucursal Centro" en vez de store-001-cam-01) vía JOIN.
+--
+-- Sin FK desde las tablas de hechos (count_events, etc.) hacia estas: las facts
+-- las escribe la Lambda y NO debe fallar si un site todavía no se registró.
+-- Grafana hace LEFT JOIN. La única FK es devices -> sites, que el seed respeta
+-- (UPSERT del site antes que el device).
+
+CREATE TABLE IF NOT EXISTS sites (
+    store_id    TEXT             PRIMARY KEY,             -- matchea count_events.store_id, etc.
+    store_name  TEXT             NOT NULL,                -- human-readable para dashboards
+    -- DOUBLE PRECISION (no REAL): las coords tienen ~7 decimales y REAL solo
+    -- preserva ~7 dígitos significativos → perdería precisión en el mapa.
+    latitude    DOUBLE PRECISION,
+    longitude   DOUBLE PRECISION,
+    timezone    TEXT,                                     -- IANA, ej. 'America/Argentina/Buenos_Aires'
+    address     TEXT,
+    created_at  TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ      NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS devices (
+    device_id        TEXT        PRIMARY KEY,             -- matchea count_events.device_id, etc.
+    store_id         TEXT        NOT NULL REFERENCES sites(store_id) ON UPDATE CASCADE,
+    cam_label        TEXT,                                -- ej. 'puerta principal'
+    firmware_version TEXT,
+    installed_at     TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_store ON devices (store_id);
+
+-- Grafana consulta como master user (people_counter), que es owner → ya puede
+-- leer estas tablas. El seed de provisioning corre como master (mismo path que
+-- este bootstrap). lambda_writer escribe hechos, no necesita las dimensiones.
+
+-- =============================================================================
 -- View multi-cam: agregación por store con MAX (no SUM) para WiFi/BLE
 -- =============================================================================
 -- Cuando un store tenga 2+ cams, WiFi/BLE range (~30-50m) excede al vision

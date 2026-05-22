@@ -7,6 +7,13 @@ Implementa asociación Hungarian-based con una state machine de corto plazo:
     PENDING    -> CONFIRMED  (re-match dentro del re-id gate)
     PENDING    -> LOST       (luego de pending_max_frames misses consecutivos)
 
+Keep-alive dentro del ROI: si se configura ``keepalive_roi`` (lo setea main
+desde ``counter.roi``), un track PENDING cuya última posición predicha cae
+dentro del ROI NO transiciona a LOST — se mantiene vivo indefinidamente
+hasta que vuelve a matchear (PENDING->CONFIRMED) o su predicción sale del
+ROI (ahí aplica el timeout normal). Cubre "cruzó y se quedó adentro mirando
+algo" sin perder el cruce por muerte del track. Ver ``_record_miss``.
+
 El tracker expone todos los tracks en cualquier estado; la capa counter
 filtra a CONFIRMED/PENDING cuando toma decisiones de conteo. Los track IDs
 se preservan a través de recoveries PENDING -> CONFIRMED, así el estado
@@ -68,6 +75,22 @@ LOST = "lost"
 DEFAULT_PROCESS_NOISE = 1.0
 DEFAULT_MEASUREMENT_NOISE = 5.0
 DEFAULT_INITIAL_VELOCITY_UNCERTAINTY = 100.0
+
+# Cap del historial ``positions`` de un track. Normalmente los tracks son
+# cortos (segundos) y nunca lo alcanzan, pero con keep-alive dentro del ROI
+# un track puede vivir indefinidamente (persona parada mucho rato) — sin cap
+# su lista de posiciones crecería sin límite a lo largo de un turno de 12h.
+# 512 a ~20fps son ~25s de historia, de sobra para diagnósticos y para el
+# chequeo de movimiento del stationary filter (que mira el rango reciente).
+# El counter solo lee ``positions[-1]``, así que recortar el frente es inocuo.
+_MAX_POSITIONS_HISTORY = 512
+
+
+def _trim_positions(track: "Track") -> None:
+    """Recorta el frente del historial de posiciones si excede el cap."""
+    excess = len(track.positions) - _MAX_POSITIONS_HISTORY
+    if excess > 0:
+        del track.positions[:excess]
 
 
 @dataclass
@@ -151,6 +174,8 @@ class EuclideanTracker:
         pending_grace_frames: int = 0,
         ambiguous_match_ratio: float = 1.0,
         max_track_id: int = 65536,
+        keepalive_roi: tuple[float, float, float, float] | None = None,
+        keepalive_max_frames: int = 600,
     ) -> None:
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
@@ -203,6 +228,29 @@ class EuclideanTracker:
         # ID como uint16/32. ``_register`` salta IDs en uso si chocara
         # en el rollover (defense in depth).
         self.max_track_id = max(1, int(max_track_id))
+        # ROI de keep-alive: ``(x_min, x_max, y_min, y_max)`` o None. Un
+        # track cuya última posición cae dentro de este rectángulo NO muere
+        # por timeout (ni ``pending_max_frames`` ni ``max_disappeared``):
+        # se mantiene PENDING indefinidamente mientras la predicción Kalman
+        # quede dentro del ROI. Cubre el caso "persona cruzó la línea y se
+        # quedó adentro mirando algo, el detector la pierde un rato, después
+        # sale" — sin keep-alive el track moriría adentro y el cruce nunca
+        # se contaría (no hay salida sintética). El static suppressor ya
+        # exenta este mismo ROI a nivel detección, así que la persona quieta
+        # sigue detectándose; el keep-alive es la red para los dropouts del
+        # detector. Settable post-construcción (main lo setea desde
+        # ``counter.roi``). None = sin keep-alive (back-compat).
+        self.keepalive_roi = keepalive_roi
+        # Cap del keep-alive en misses CONSECUTIVOS. "Eterno" haría que los
+        # huérfanos (persona que se fue y el detector nunca vuelve a verla,
+        # tras un re-id fallido que spawneó un track nuevo) se acumulen para
+        # siempre — clutter en el preview + costo Hungarian + riesgo de que
+        # un fantasma agarre por re-id a una persona nueva. Como
+        # ``disappeared`` se resetea con CUALQUIER hit, una persona realmente
+        # parada y detectada (aunque sea intermitente) nunca llega a este
+        # cap; solo los huérfanos reales lo alcanzan y se garbage-collectean.
+        # 600 frames ≈ 24s a 25fps — generoso para cualquier lingering real.
+        self.keepalive_max_frames = max(1, int(keepalive_max_frames))
         self._next_id = 0
         self._tracks: OrderedDict[int, Track] = OrderedDict()
 
@@ -619,16 +667,9 @@ class EuclideanTracker:
                 ambiguous = False
                 # Si el 2do-mejor existe (no es INF) y está dentro del
                 # ratio del best, el match es ambiguo.
-                if (
-                    second_row < INF / 2
-                    and best > ratio * second_row
-                ):
+                if second_row < INF / 2 and best > ratio * second_row:
                     ambiguous = True
-                if (
-                    not ambiguous
-                    and second_col < INF / 2
-                    and best > ratio * second_col
-                ):
+                if not ambiguous and second_col < INF / 2 and best > ratio * second_col:
                     ambiguous = True
                 if ambiguous:
                     consumed_d.add(c)
@@ -694,6 +735,7 @@ class EuclideanTracker:
     def _record_hit(self, track: Track, centroid: np.ndarray) -> None:
         centroid = np.asarray(centroid, dtype=float)
         track.positions.append(centroid.copy())
+        _trim_positions(track)
         track.disappeared = 0
         track.hits += 1
         if track.kalman is not None:
@@ -717,6 +759,20 @@ class EuclideanTracker:
         if track.state == CONFIRMED:
             track.state = PENDING
 
+        # FREEZE de tracks parados dentro del ROI: una persona quieta no se
+        # mueve, así que extrapolar su posición con la velocidad residual que
+        # traía al frenar la haría cruzar la línea y SALIR del ROI sola —
+        # disparando un conteo espurio. Cuando después cruza de verdad con un
+        # track fresco (el re-id falló porque el fantasma drifteó lejos), se
+        # cuenta una SEGUNDA vez = doble conteo. Por eso, pasada la grace
+        # window, un track dentro del keep-alive ROI se congela (no se empuja
+        # la predicción): positions[-1] queda clavado donde lo vimos por
+        # última vez. La grace window (`pending_grace_frames`) preserva la
+        # extrapolación para crossers RÁPIDOS dropeados 1-3 frames (que sí se
+        # están moviendo y necesitan que el predict complete el cruce).
+        in_keepalive_pre = self._inside_keepalive_roi(track)
+        freeze = in_keepalive_pre and track.disappeared > self.pending_grace_frames
+
         # Empujar la predicción Kalman a `positions` durante PENDING
         # así consumers downstream (counter line-cross, viewer) ven al
         # track moverse en lugar de quedar clavado en su última
@@ -724,11 +780,11 @@ class EuclideanTracker:
         # sale del FOV antes del próximo match nunca dispara el exit
         # branch del counter: la posición congelada queda IN-ROI, el
         # track muere por max_disappeared / pending_max_frames, y el
-        # `last_label` se pierde sin emitir CountEvent. La magnitud del
+        # balance neto de cruces se pierde sin emitir CountEvent. La magnitud del
         # paso se capea a `max_distance` para evitar teleportaciones
         # cuando Kalman extrapola con velocidad residual alta. `z`
         # carry-forwardea — Kalman 2D no modela depth.
-        if track.kalman is not None and track.positions:
+        if track.kalman is not None and track.positions and not freeze:
             last = track.positions[-1]
             xy_pred = track.kalman.position
             dx = float(xy_pred[0]) - float(last[0])
@@ -745,6 +801,22 @@ class EuclideanTracker:
                     dtype=float,
                 )
             )
+            _trim_positions(track)
+
+        # Keep-alive dentro del ROI: si la última posición (predicha) del
+        # track cae dentro del ROI de conteo, NO lo matamos por timeout —
+        # se mantiene PENDING. Modela la persona que cruzó y se quedó adentro
+        # (el detector la pierde un rato). Cuando vuelve a moverse, o re-id
+        # binde y vuelve a CONFIRMED, o la predicción Kalman la saca del ROI
+        # y entonces sí aplica el timeout normal. Acotado a
+        # ``keepalive_max_frames`` misses consecutivos para garbage-collectear
+        # huérfanos (re-id falló, persona ya no está); como ``disappeared`` se
+        # resetea con cualquier hit, el lingering real nunca llega al cap.
+        if (
+            self._inside_keepalive_roi(track)
+            and track.disappeared <= self.keepalive_max_frames
+        ):
+            return
 
         if track.state == PENDING and track.disappeared > self.pending_max_frames:
             track.state = LOST
@@ -753,6 +825,16 @@ class EuclideanTracker:
         # Aplicar también el cap legacy max_disappeared como upper bound.
         if track.disappeared > self.max_disappeared:
             track.state = LOST
+
+    def _inside_keepalive_roi(self, track: Track) -> bool:
+        """True si la última posición del track cae dentro del ROI de
+        keep-alive. Sin ROI configurado, siempre False (sin keep-alive)."""
+        roi = self.keepalive_roi
+        if roi is None or not track.positions:
+            return False
+        x_min, x_max, y_min, y_max = roi
+        last = track.positions[-1]
+        return x_min <= float(last[0]) <= x_max and y_min <= float(last[1]) <= y_max
 
 
 def stationary_track_ids(

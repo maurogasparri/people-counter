@@ -193,9 +193,7 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
                 ae_lock_cfg["initial_settle_seconds"]
             )
         if "resettle_seconds" in ae_lock_cfg:
-            capture_kwargs["resettle_seconds"] = float(
-                ae_lock_cfg["resettle_seconds"]
-            )
+            capture_kwargs["resettle_seconds"] = float(ae_lock_cfg["resettle_seconds"])
         cap = StereoCapture(**capture_kwargs)
     return cap
 
@@ -286,7 +284,10 @@ def build_mqtt(
 def build_wifi_ble(
     config: dict[str, Any],
     mqtt_client: Any,
-) -> tuple[DedupEngine, WifiBlePublisher, WiFiProbeCapture | None, BLEScanner | None] | None:
+) -> (
+    tuple[DedupEngine, WifiBlePublisher, WiFiProbeCapture | None, BLEScanner | None]
+    | None
+):
     """Arma la cadena WiFi/BLE: captura → dedup → publisher.
 
     Returns:
@@ -307,9 +308,7 @@ def build_wifi_ble(
     ble_anchor_cfg = wifi_cfg.get("ble_anchor", {}) or {}
     dedup = DedupEngine(
         db_path=dedup_db,
-        cross_window_seconds=float(
-            wifi_cfg.get("cross_protocol_window_seconds", 2.0)
-        ),
+        cross_window_seconds=float(wifi_cfg.get("cross_protocol_window_seconds", 2.0)),
         cross_rssi_delta=float(wifi_cfg.get("cross_protocol_rssi_delta", 5.0)),
         seqnum_stitch_enabled=bool(seqnum_cfg.get("enabled", True)),
         seqnum_stitch_window_seconds=float(seqnum_cfg.get("window_seconds", 30.0)),
@@ -324,9 +323,7 @@ def build_wifi_ble(
 
     def _on_probe(event: ProbeEvent) -> None:
         try:
-            dedup.process_detection(
-                event.mac, "wifi", event.rssi, seqnum=event.seqnum
-            )
+            dedup.process_detection(event.mac, "wifi", event.rssi, seqnum=event.seqnum)
         except Exception:
             logger.exception("dedup wifi process_detection falló")
 
@@ -343,6 +340,7 @@ def build_wifi_ble(
 
     ble_scanner: BLEScanner | None = None
     if bool(wifi_cfg.get("ble_enabled", True)):
+
         def _on_advert(advert: BLEAdvertisement) -> None:
             try:
                 dedup.process_detection(advert.mac, "ble", advert.rssi)
@@ -599,7 +597,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         calibration = load_calibration(cal_file)
     else:
         calibration = None
-        logger.warning("No hay archivo de calibración configurado — salteando rectificación")
+        logger.warning(
+            "No hay archivo de calibración configurado — salteando rectificación"
+        )
 
     # --- Cargar modelo de detección ---
     model_path = detect_cfg["model_path"]
@@ -682,18 +682,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         max_distance=float(
             tracker_cfg.get("max_distance_px", track_cfg["max_distance_px"])
         ),
-        max_depth_delta=float(
-            tracker_cfg.get("depth_gate_m", sm_cfg["depth_gate_m"])
-        ) * 1000.0,
-        confirm_frames=int(
-            tracker_cfg.get("confirm_frames", sm_cfg["confirm_frames"])
-        ),
+        max_depth_delta=float(tracker_cfg.get("depth_gate_m", sm_cfg["depth_gate_m"]))
+        * 1000.0,
+        confirm_frames=int(tracker_cfg.get("confirm_frames", sm_cfg["confirm_frames"])),
         pending_max_frames=int(
             tracker_cfg.get("pending_max_frames", sm_cfg["pending_max_frames"])
         ),
-        reid_gate_px=float(
-            tracker_cfg.get("reid_gate_px", sm_cfg["reid_gate_px"])
-        ),
+        reid_gate_px=float(tracker_cfg.get("reid_gate_px", sm_cfg["reid_gate_px"])),
         # Default 0.5 = nueva semántica production-grade (track sin obs
         # converge a quieto en ~3 frames). 1.0 desactiva (back-compat).
         # tracker_cfg precedence permite override per-site vía shadow.
@@ -726,6 +721,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 sm_cfg.get("ambiguous_match_ratio", 1.0),
             )
         ),
+        # Cap del keep-alive dentro del ROI (misses consecutivos). Garbage-
+        # collectea fantasmas huérfanos sin tocar el lingering real (que
+        # resetea disappeared con cualquier hit). Optional; default 600 ≈ 24s.
+        keepalive_max_frames=int(
+            tracker_cfg.get(
+                "keepalive_max_frames",
+                sm_cfg.get("keepalive_max_frames", 600),
+            )
+        ),
     )
 
     # Static FP suppressor: defense-in-depth contra detecciones que el
@@ -742,9 +746,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             cell_size_px=int(ss_cfg.get("cell_size_px", 30)),
             window_seconds=float(ss_cfg.get("window_seconds", 15.0)),
             hit_rate_threshold=float(ss_cfg.get("hit_rate_threshold", 0.7)),
-            min_samples_for_judgment=int(
-                ss_cfg.get("min_samples_for_judgment", 8)
-            ),
+            min_samples_for_judgment=int(ss_cfg.get("min_samples_for_judgment", 8)),
         )
         logger.info(
             "static_suppressor_enabled cell=%dpx window=%.1fs threshold=%.2f",
@@ -805,9 +807,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # del cráneo en el slice nearest del histograma sin promediar con
     # speckle near-camera de SGBM. Ver head_depth_in_bbox docstring para
     # rationale completo.
-    head_depth_blob_percentile = float(
-        head_depth_cfg.get("blob_percentile", 75.0)
-    )
+    head_depth_blob_percentile = float(head_depth_cfg.get("blob_percentile", 75.0))
 
     height_cfg = config.get("height", {}) or {}
     height_sanity_min_mm = _resolve_height_bound_mm(
@@ -824,8 +824,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
 
     logger.info(
-        "Height bounds (mount=%.2fm): "
-        "head_depth=[%.2f, %.2f]m, sanity=[%.2f, %.2f]m",
+        "Height bounds (mount=%.2fm): head_depth=[%.2f, %.2f]m, sanity=[%.2f, %.2f]m",
         mount_m_init,
         head_depth_min_mm / 1000.0,
         head_depth_max_mm / 1000.0,
@@ -927,9 +926,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # post-outage. 10s default sirve a PoC + flotas chicas; subir a 30s
     # solo si la flota es grande (50+ devices que pueden coincidir en
     # reboots). Eventos se bufferean local durante la espera.
-    startup_jitter = float(
-        config.get("mqtt", {}).get("startup_jitter_seconds", 10.0)
-    )
+    startup_jitter = float(config.get("mqtt", {}).get("startup_jitter_seconds", 10.0))
     mqtt_client.connect(startup_jitter_seconds=startup_jitter)
 
     if shadow_enabled:
@@ -1249,9 +1246,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         )
                     )
                     telem["error"] = "invalid_schedule"
-                    telem["schedule_error_detail"] = config.get(
-                        "_schedule_error", ""
-                    )
+                    telem["schedule_error_detail"] = config.get("_schedule_error", "")
                     mqtt_client.publish_event("telemetry", telem)
                     last_telem = telem_now
                 if telem_now - last_watchdog >= 60.0:
@@ -1302,8 +1297,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # adult/child, no para la posición del cruce.)
             if counter is None:
                 counter = build_counter(config)
+                # Keep-alive del tracker dentro del ROI de conteo: un track
+                # que cruzó la línea y se queda adentro (mirando algo) no
+                # debe morir por timeout antes de salir — si no, el cruce
+                # nunca se cuenta (no hay salida sintética). El static
+                # suppressor ya exenta este mismo ROI a nivel detección.
+                tracker.keepalive_roi = counter.roi
                 logger.info(
-                    "Counter inicializado: %s", type(counter).__name__
+                    "Counter inicializado: %s (keepalive_roi=%s)",
+                    type(counter).__name__,
+                    counter.roi,
                 )
 
             # --- Setear focal length + baseline desde la calibración ---
@@ -1409,9 +1412,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # ni new_track_threshold están seteados, spawn_thr == detect_floor
             # y el bucket match-only queda vacío (flow legacy single-stage).
             if spawn_thr > detect_floor:
-                detections = [
-                    d for d in all_detections if d.confidence >= spawn_thr
-                ]
+                detections = [d for d in all_detections if d.confidence >= spawn_thr]
                 low_conf_detections = [
                     d for d in all_detections if d.confidence < spawn_thr
                 ]
@@ -1693,9 +1694,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 bucket_secs = float(
                     config.get("analytics", {}).get("bucket_seconds", 900)
                 )
-                bucket_15min = (
-                    int(event.timestamp / bucket_secs) * bucket_secs
-                )
+                bucket_15min = int(event.timestamp / bucket_secs) * bucket_secs
 
                 payload = {
                     # Label interno ('ingress'/'egress') -> direccion canonica
@@ -1771,11 +1770,24 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     if _scf_enabled
                     else set()
                 )
+                # Fantasmas congelados del keep-alive: PENDING que solo siguen
+                # vivos porque están dentro del ROI y excedieron el
+                # pending_max_frames normal (re-id falló, son huérfanos). Se
+                # esconden del preview + del contador — no afectan el conteo
+                # (un track congelado no cruza ni sale del ROI solo).
+                _pend_cap = tracker.pending_max_frames
+                phantom_ids = {
+                    tid
+                    for tid, t in tracks.items()
+                    if getattr(t, "state", None) == "pending"
+                    and int(getattr(t, "disappeared", 0) or 0) > _pend_cap
+                }
+                hidden_ids = clutter_ids | phantom_ids
                 confirmed_or_pending = sum(
                     1
                     for tid, t in tracks.items()
                     if getattr(t, "state", None) in ("confirmed", "pending")
-                    and tid not in clutter_ids
+                    and tid not in hidden_ids
                 )
                 now_mono = time.monotonic()
                 # Tráfico exterior: query al dedup throttleada (~cada 2s) y
@@ -1826,16 +1838,19 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             last_depth_panel = depth_to_colormap(depth_map)
                         elif last_depth_panel is None:
                             last_depth_panel = depth_to_colormap(None)
-                        # Esconder el clutter estático del preview (tracks
-                        # fantasma fuera del ROI que no se mueven).
+                        # Esconder del preview el clutter estático (fuera del
+                        # ROI, sin moverse) y los fantasmas congelados del
+                        # keep-alive (PENDING huérfanos dentro del ROI).
                         viewer_tracks = (
-                            {tid: t for tid, t in tracks.items() if tid not in clutter_ids}
-                            if clutter_ids
+                            {
+                                tid: t
+                                for tid, t in tracks.items()
+                                if tid not in hidden_ids
+                            }
+                            if hidden_ids
                             else tracks
                         )
-                        left_annot = annotate_left(
-                            rect_l, detections, viewer_tracks, counter
-                        )
+                        left_annot = annotate_left(rect_l, viewer_tracks, counter)
                         composite = compose_3panel(
                             left_annot,
                             rect_r,
@@ -1856,8 +1871,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # fresco. Limpiar el event al consumir para no re-disparar.
             now = time.time()
             telem_due = (
-                now - last_telem >= telem_interval
-                or _first_telem_event.is_set()
+                now - last_telem >= telem_interval or _first_telem_event.is_set()
             )
             if telem_due:
                 _first_telem_event.clear()

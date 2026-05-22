@@ -135,13 +135,10 @@ def test_commit_with_no_observations_returns_none(tmp_path: Path):
     assert mgr.commit(ev.track_id, ev.timestamp) is None
 
 
-def test_two_full_cycles_produce_two_paths(tmp_path: Path, monkeypatch):
+def test_two_full_cycles_produce_two_paths(tmp_path: Path):
     """A single track that completes two full ingress/egress cycles must
     produce two distinct JPGs (one per event), without state leaking
-    between cycles. Patcheamos U-turn cancellation OFF — el ROI por
-    default cancelaría el segundo cycle (ver test_uturn_zone_* en
-    test_counter.py). Este test cubre el manager, no la cancelación."""
-    monkeypatch.setattr(Counter, "_try_cancel_uturn", lambda *a, **kw: False)
+    between cycles."""
     mgr = BestFrameManager(tmp_path, buffer_size=10)
     counter = Counter(lines=[_line_h()], roi=ROI)
     track = _track([[300, 210, 3000]])

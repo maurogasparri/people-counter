@@ -1,4 +1,5 @@
 """Tests para el tracker Euclidiano 3D (Hungarian + state machine)."""
+
 import numpy as np
 
 from src.tracking.tracker import (
@@ -95,9 +96,7 @@ def test_hungarian_globally_optimal_assignment():
     Hungarian picks B-D2=1, A-D1=4, C-D3=10 (sum 15) — so the track at
     x=0 lands on the detection at x=4, which is clearly the correct ID.
     """
-    tracker = EuclideanTracker(
-        max_distance=25, max_depth_delta=1e9, confirm_frames=1
-    )
+    tracker = EuclideanTracker(max_distance=25, max_depth_delta=1e9, confirm_frames=1)
     tracker.update(
         [
             np.array([0.0, 100.0, 3000.0]),
@@ -124,9 +123,7 @@ def test_hungarian_globally_optimal_assignment():
 
 def test_depth_gate_rejects_impossible_match():
     """Close in pixels but very far in depth -> not the same person."""
-    tracker = EuclideanTracker(
-        max_distance=50, max_depth_delta=500, confirm_frames=1
-    )
+    tracker = EuclideanTracker(max_distance=50, max_depth_delta=500, confirm_frames=1)
     tracker.update([np.array([100, 200, 1000])])  # near camera
     tracks = tracker.update([np.array([102, 201, 5000])])  # suddenly far
     # Depth gate rejected the match -> 2 tracks exist (old + newly registered)
@@ -152,9 +149,7 @@ def test_candidate_promotes_to_confirmed_after_n_frames():
 
 
 def test_confirmed_becomes_pending_on_miss():
-    tracker = EuclideanTracker(
-        max_distance=50, confirm_frames=2, pending_max_frames=5
-    )
+    tracker = EuclideanTracker(max_distance=50, confirm_frames=2, pending_max_frames=5)
     tracker.update([np.array([100, 200, 3000])])
     tracker.update([np.array([101, 200, 3000])])
     assert list(tracker.tracks.values())[0].state == CONFIRMED
@@ -217,6 +212,128 @@ def test_pending_timeout_becomes_lost_and_new_id_issued():
     new_ids = list(tracks.keys())
     assert tid not in new_ids
     assert len(new_ids) == 1
+
+
+def test_keepalive_roi_keeps_pending_alive_inside():
+    """Un track PENDING cuya posición cae dentro del keepalive_roi NO muere
+    por timeout, ni siquiera pasados pending_max_frames y max_disappeared.
+    Modela "cruzó y se quedó adentro del ROI mirando algo"."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=3,
+        max_disappeared=5,
+        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+    )
+    # Track estático dentro del ROI (velocidad ~0 → la predicción Kalman
+    # se queda en el lugar, dentro del ROI).
+    tracker.update([np.array([100, 200, 3000])])
+    tracker.update([np.array([100, 200, 3000])])
+    tid = list(tracker.tracks.keys())[0]
+    assert tracker.tracks[tid].state == CONFIRMED
+
+    # Muchísimos misses, mucho más que ambos caps de timeout.
+    for _ in range(50):
+        tracker.update([])
+    # Sigue vivo (PENDING) porque su posición quedó dentro del ROI.
+    assert tid in tracker.tracks
+    assert tracker.tracks[tid].state == PENDING
+    # Y el historial de posiciones está acotado por el cap.
+    assert len(tracker.tracks[tid].positions) <= 512
+
+
+def test_keepalive_roi_recovers_to_confirmed_after_long_gap():
+    """Tras un gap largo dentro del ROI, una detección que reaparece cerca
+    re-identifica el MISMO track (preservando ID + meta del counter)."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=3,
+        max_disappeared=5,
+        reid_gate_px=60,
+        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+    )
+    tracker.update([np.array([100, 200, 3000])])
+    tracker.update([np.array([100, 200, 3000])])
+    tid = list(tracker.tracks.keys())[0]
+    for _ in range(30):
+        tracker.update([])
+    assert tracker.tracks[tid].state == PENDING
+    # Reaparece cerca → re-id al mismo track.
+    tracker.update([np.array([105, 200, 3000])])
+    assert tid in tracker.tracks
+    assert tracker.tracks[tid].state == CONFIRMED
+
+
+def test_keepalive_roi_freezes_standing_track_no_drift_out():
+    """Un track que va a PENDING DENTRO del ROI con velocidad residual
+    (persona que venía caminando y frenó) se CONGELA pasada la grace window
+    — no sigue extrapolando hacia abajo hasta cruzar la línea y salir del
+    ROI solo. Sin freeze, ese drift dispararía un conteo espurio (y la
+    persona después cruzaría de verdad con un track fresco = doble conteo)."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=5,
+        max_disappeared=10,
+        pending_grace_frames=3,
+        pending_velocity_decay=1.0,  # peor caso: sin decay
+        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+    )
+    # Caminando hacia abajo: velocidad ~ +10 px/frame en y, dentro del ROI.
+    tracker.update([np.array([100, 200, 3000])])
+    tracker.update([np.array([100, 210, 3000])])
+    tid = list(tracker.tracks.keys())[0]
+    assert tracker.tracks[tid].state == CONFIRMED
+
+    # Muchos misses: durante la grace (3) extrapola, después congela.
+    for _ in range(30):
+        tracker.update([])
+    assert tid in tracker.tracks  # kept-alive
+    y_final = float(tracker.tracks[tid].positions[-1][1])
+    # Congelado dentro del ROI (y < 300), no drifteó hasta salir. La grace
+    # de 3 frames a +10/frame lo deja ~240; el freeze lo clava ahí.
+    assert y_final < 270, f"el track drifteó a y={y_final} (deberia congelarse ~240)"
+
+
+def test_keepalive_roi_capped_orphan_dies():
+    """El keep-alive está acotado a keepalive_max_frames misses consecutivos:
+    un huérfano (re-id falló, persona ya no está) se garbage-collectea pasado
+    el cap, en vez de quedar como fantasma eterno acumulándose en el preview."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=3,
+        max_disappeared=10,
+        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+        keepalive_max_frames=5,
+    )
+    tracker.update([np.array([100, 200, 3000])])
+    tracker.update([np.array([100, 200, 3000])])
+    tid = list(tracker.tracks.keys())[0]
+    # Misses por encima del cap del keep-alive.
+    for _ in range(8):  # > keepalive_max_frames=5
+        tracker.update([])
+    assert tid not in tracker.tracks
+
+
+def test_keepalive_roi_does_not_protect_outside():
+    """Un track FUERA del keepalive_roi muere normalmente por timeout —
+    el keep-alive solo aplica dentro del ROI."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=5,
+        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+    )
+    # Track fuera del ROI (x=400 > x_max=200).
+    tracker.update([np.array([400, 400, 3000])])
+    tracker.update([np.array([400, 400, 3000])])
+    tid = list(tracker.tracks.keys())[0]
+    assert tracker.tracks[tid].state == CONFIRMED
+    for _ in range(6):  # > pending_max_frames
+        tracker.update([])
+    assert tid not in tracker.tracks
 
 
 def test_reid_gate_rejects_far_reappearance():
@@ -301,17 +418,21 @@ def test_pass2_does_not_misroute_when_pass1_was_clean():
         pending_max_frames=20,
         reid_gate_px=300,
     )
-    tracker.update([
-        np.array([100, 200, 3000]),
-        np.array([400, 200, 3000]),
-    ])
+    tracker.update(
+        [
+            np.array([100, 200, 3000]),
+            np.array([400, 200, 3000]),
+        ]
+    )
     tids_before = sorted(tracker.tracks.keys())
 
     # Both move within the tight gate; pass 1 binds both.
-    tracks = tracker.update([
-        np.array([110, 205, 3000]),
-        np.array([405, 198, 3000]),
-    ])
+    tracks = tracker.update(
+        [
+            np.array([110, 205, 3000]),
+            np.array([405, 198, 3000]),
+        ]
+    )
     assert sorted(tracks.keys()) == tids_before
     for t in tracks.values():
         assert t.state == CONFIRMED

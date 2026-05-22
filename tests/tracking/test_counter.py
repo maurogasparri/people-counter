@@ -168,17 +168,15 @@ def test_egress_counts_on_exit():
     assert counter.total_in == 0
 
 
-def test_same_track_two_full_cycles_cancel_via_uturn(monkeypatch):
-    """A track that completes two full cycles back-to-back se cancela
-    mutuamente vía U-turn (el ROI ES la zona de cancelación).
+def test_same_track_two_full_cycles_both_count():
+    """A track that completes two full cycles back-to-back cuenta AMBOS.
 
     Antiglitch: el counter resetea meta después de cada evento emitido
-    así el mismo track puede producir cycles separados; pero si los
-    cycles ocurren dentro de la ventana U-turn (default 5s), se cancelan
-    — modela "persona entró, dudó, volvió a salir" como neutral, no
-    como 1 IN + 1 OUT espurios. Para validar el mecanismo de reset de
-    meta independiente de U-turn, se patchea la ventana a 0."""
-    monkeypatch.setattr(Counter, "_try_cancel_uturn", lambda *a, **kw: False)
+    así el mismo track puede producir cycles separados. Una persona que
+    entra, cruza y sale (ingress) y luego vuelve a entrar, cruzar y salir
+    por el otro lado (egress) es un round-trip REAL — cuenta 1 IN + 1 OUT.
+    (Antes el U-turn cancellation lo neutralizaba; se removió porque
+    cancelaba round-trips legítimos.)"""
     counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 210, 3000]])
 
@@ -192,8 +190,8 @@ def test_same_track_two_full_cycles_cancel_via_uturn(monkeypatch):
     assert counter.total_out == 0
 
     # Cycle 2: same track re-enters from below and crosses to above.
-    # Con U-turn deshabilitado, el reset de meta permite contar el
-    # segundo cycle como egress independiente.
+    # El reset de meta permite contar el segundo cycle como egress
+    # independiente.
     _advance(counter, track, [300, 380, 3000])
     _advance(counter, track, [300, 310, 3000])
     _advance(counter, track, [300, 290, 3000])
@@ -202,33 +200,9 @@ def test_same_track_two_full_cycles_cancel_via_uturn(monkeypatch):
     assert counter.total_in == 1
     assert counter.total_out == 1
 
-
-def test_same_track_two_full_cycles_within_window_cancel():
-    """Con U-turn enabled (default — ROI configurado), dos cycles
-    back-to-back del mismo track dentro de la ventana se cancelan
-    mutuamente: 1 IN emitido, 1 OUT cancela el IN, net 0/0."""
-    counter = Counter(lines=[_line_h()], roi=ROI)
-    track = _make_track(1, [[300, 210, 3000]])
-
-    counter._process_track(track)
-    _advance(counter, track, [300, 280, 3000])
-    _advance(counter, track, [300, 320, 3000])
-    ev1 = _advance(counter, track, [300, 420, 3000])
-    assert ev1 is not None and ev1.direction == "ingress"
-    assert counter.total_in == 1
-
-    _advance(counter, track, [300, 380, 3000])
-    _advance(counter, track, [300, 310, 3000])
-    _advance(counter, track, [300, 290, 3000])
-    ev2 = _advance(counter, track, [300, 180, 3000])
-    # El egress cancela el ingress previo: ev2=None, totals vuelven a 0.
-    assert ev2 is None
-    assert counter.total_in == 0
-    assert counter.total_out == 0
-    # El breakdown horario queda consistente con los totales: el ingress que
-    # se contó fue revertido al cancelarse (antes quedaba colgado +1).
-    assert counter.hourly_in_out() == []
+    # El breakdown horario queda consistente con los totales.
     assert sum(h["in"] for h in counter.hourly_in_out()) == counter.total_in
+    assert sum(h["out"] for h in counter.hourly_in_out()) == counter.total_out
 
 
 def test_oscillation_without_full_cycle_does_not_count_twice():
@@ -251,23 +225,46 @@ def test_oscillation_without_full_cycle_does_not_count_twice():
     assert counter.total_out == 0
 
 
-def test_indeciso_with_two_way_line_counts_last_crossing():
-    """A line labelled in BOTH directions counts the most recent crossing.
+def test_indeciso_with_two_way_line_cancels_net_zero():
+    """A line labelled in BOTH directions: cruzar y re-cruzar dentro del
+    ROI se cancela (balance neto 0) → NO cuenta.
 
-    Track enters above, crosses below (ingress), comes back above (egress),
-    exits above. With the old ROICounter this was an "indeciso" non-event;
-    with the unified counter the last crossing wins, so the track is counted
-    as egress (its net movement is "back to where it came from" but the
-    final transit was bottom->top, which is the egress label).
+    Track entra arriba, cruza abajo (ingress, neto +1), vuelve arriba
+    (egress, neto 0), sale arriba. Es la "duda en la puerta": entró,
+    cruzó, se arrepintió y volvió sin entrar a la tienda. El balance neto
+    queda en 0 → ningún evento. (El viejo comportamiento "gana el último
+    cruce" contaba egress acá, que era incorrecto.)
     """
     counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 250, 3000]])
     counter._process_track(track)
-    _advance(counter, track, [300, 310, 3000])  # crossed below: ingress
-    _advance(counter, track, [300, 280, 3000])  # back above: egress
+    _advance(counter, track, [300, 310, 3000])  # crossed below: ingress (+1)
+    _advance(counter, track, [300, 280, 3000])  # back above: egress (net 0)
     ev = _advance(counter, track, [300, 180, 3000])  # exit above
+    assert ev is None
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_cross_then_linger_then_exit_counts_once():
+    """Persona entra al ROI, cruza la línea (ingress), deambula DENTRO
+    del ROI sin volver a cruzar (mira un cartel, etc.) y luego sale por
+    el lado de adentro. Debe contar 1 ingress — el lingering sin re-cruce
+    no afecta el balance neto. (Asume que el track SOBREVIVE el lingering;
+    si muere adentro del ROI no hay exit y no cuenta — ver tracking.)"""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 250, 3000]])  # entry above line (y=300)
+    counter._process_track(track)
+    _advance(counter, track, [300, 350, 3000])  # cruza abajo: ingress (+1)
+    # Deambula dentro del ROI, abajo de la línea, sin re-cruzar.
+    _advance(counter, track, [320, 360, 3000])
+    _advance(counter, track, [340, 355, 3000])
+    _advance(counter, track, [300, 380, 3000])
+    ev = _advance(counter, track, [300, 520, 3000])  # exit abajo del ROI
     assert ev is not None
-    assert ev.direction == "egress"
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+    assert counter.total_out == 0
 
 
 def test_indeciso_with_one_way_line_does_not_count():
@@ -348,11 +345,12 @@ def test_no_count_on_track_death_inside_roi_after_crossing():
     assert counter.total_out == 0
 
 
-def test_uturn_zone_cancels_in_followed_by_out():
-    """Persona entra al ROI cruzando IN, sale del ROI (emite ingress),
-    re-entra al ROI cruzando OUT dentro de la ventana → U-turn detectado
-    (el ROI es la zona de cancelación), el ingress previo se cancela y
-    el OUT NO se emite. Total IN/OUT queda en 0 (net neutral)."""
+def test_in_followed_by_out_both_count():
+    """Persona entra al ROI cruzando IN y sale (emite ingress), luego
+    re-entra cruzando OUT y sale (emite egress) → 1 IN + 1 OUT. Es un
+    round-trip real y debe contar ambos. (Antes el U-turn cancellation
+    cancelaba el IN cuando el OUT caía dentro de los 5s — se removió
+    porque ese escenario es tráfico legítimo, no una duda en la puerta.)"""
     counter = Counter(lines=[_line_h()], roi=ROI)
     track = _make_track(1, [[300, 150, 3000]])  # outside, above line
     counter.check_all({1: track})
@@ -366,7 +364,7 @@ def test_uturn_zone_cancels_in_followed_by_out():
     assert events[0].direction == "ingress"
     assert counter.total_in == 1
 
-    # Persona re-entra, cruza OUT, sale north.
+    # Persona re-entra (track nuevo), cruza OUT, sale north.
     track2 = _make_track(2, [[300, 450, 3000]])
     counter.check_all({2: track2})
     track2.positions.append(np.array([300, 350, 3000]))  # entry south
@@ -376,76 +374,9 @@ def test_uturn_zone_cancels_in_followed_by_out():
     track2.positions.append(np.array([300, 150, 3000]))  # exit north
     events2 = counter.check_all({2: track2})
 
-    # El OUT debería cancelar el IN previo: 0 eventos emitidos, totals
-    # vuelven a 0.
-    assert events2 == []
-    assert counter.total_in == 0
-    assert counter.total_out == 0
-
-
-def test_uturn_zone_does_not_cancel_outside_window(monkeypatch):
-    """Eventos opuestos fuera de la ventana NO se cancelan — visitantes
-    legítimos que entran y salen mucho después siguen contando como
-    1 IN + 1 OUT independientes."""
-    import time as _time
-
-    # Patchear la constante de clase para no esperar 5s reales en test.
-    monkeypatch.setattr(Counter, "UTURN_WINDOW_SECONDS", 0.1)
-    counter = Counter(lines=[_line_h()], roi=ROI)
-    track = _make_track(1, [[300, 150, 3000]])
-    counter.check_all({1: track})
-    track.positions.append(np.array([300, 250, 3000]))
-    counter.check_all({1: track})
-    track.positions.append(np.array([300, 350, 3000]))
-    counter.check_all({1: track})
-    track.positions.append(np.array([300, 450, 3000]))
-    counter.check_all({1: track})
-    assert counter.total_in == 1
-
-    # Esperar más que la ventana.
-    _time.sleep(0.15)
-
-    track2 = _make_track(2, [[300, 450, 3000]])
-    counter.check_all({2: track2})
-    track2.positions.append(np.array([300, 350, 3000]))
-    counter.check_all({2: track2})
-    track2.positions.append(np.array([300, 250, 3000]))
-    counter.check_all({2: track2})
-    track2.positions.append(np.array([300, 150, 3000]))
-    events2 = counter.check_all({2: track2})
-
-    # Ambos eventos legítimos — la window expiró antes del 2do.
+    # Sin cancelación: el OUT cuenta como egress independiente.
     assert len(events2) == 1
     assert events2[0].direction == "egress"
-    assert counter.total_in == 1
-    assert counter.total_out == 1
-
-
-def test_uturn_does_not_cancel_when_window_disabled(monkeypatch):
-    """Con UTURN_WINDOW_SECONDS=0, la cancelación está efectivamente
-    deshabilitada — dos eventos opuestos consecutivos cuentan ambos.
-    Documenta cómo escapar del comportamiento default si algún site
-    necesita desactivar la cancelación."""
-    monkeypatch.setattr(Counter, "_try_cancel_uturn", lambda *a, **kw: False)
-    counter = Counter(lines=[_line_h()], roi=ROI)
-    track = _make_track(1, [[300, 150, 3000]])
-    counter.check_all({1: track})
-    track.positions.append(np.array([300, 250, 3000]))
-    counter.check_all({1: track})
-    track.positions.append(np.array([300, 350, 3000]))
-    counter.check_all({1: track})
-    track.positions.append(np.array([300, 450, 3000]))
-    counter.check_all({1: track})
-
-    track2 = _make_track(2, [[300, 450, 3000]])
-    counter.check_all({2: track2})
-    track2.positions.append(np.array([300, 350, 3000]))
-    counter.check_all({2: track2})
-    track2.positions.append(np.array([300, 250, 3000]))
-    counter.check_all({2: track2})
-    track2.positions.append(np.array([300, 150, 3000]))
-    counter.check_all({2: track2})
-
     assert counter.total_in == 1
     assert counter.total_out == 1
 
@@ -729,14 +660,9 @@ def test_reset_daily():
     assert counter.totals == {"ingress": 0, "egress": 0}
 
 
-def test_check_all_processes_multiple_tracks(monkeypatch):
-    # Patcheamos la ventana U-turn a 0 — el test cubre el procesamiento
-    # batch de múltiples tracks. Con U-turn enabled (default), un IN +
-    # OUT en el mismo ROI dentro de la ventana cancelarían (cubierto
-    # por test_uturn_zone_cancels_in_followed_by_out). Acá queremos
-    # verificar que check_all efectivamente emite ambos eventos cuando
-    # la cancelación no aplica.
-    monkeypatch.setattr(Counter, "_try_cancel_uturn", lambda *a, **kw: False)
+def test_check_all_processes_multiple_tracks():
+    # check_all debe emitir un evento por cada track que completa su ciclo
+    # en el mismo batch.
     counter = Counter(lines=[_line_h()], roi=ROI)
     # Track 1: full ingress cycle
     t1 = _make_track(1, [[200, 220, 3000]])
@@ -764,10 +690,10 @@ def test_check_all_processes_multiple_tracks(monkeypatch):
 def test_debounce_filters_jitter_around_line():
     """Track parado al lado de la línea con micro-jitter no debe contar.
 
-    Sin debounce: cada flip de lado por jitter actualiza last_label, y al
-    salir del ROI el contador dispara un evento espurio. Con
-    min_crossing_movement_px=3.0, los movimientos sub-3px (medidos contra
-    la última posición no-debounced) se ignoran y no fabrican cruces.
+    Con un número IMPAR de flips por jitter, el balance neto no se cancela
+    solo; el debounce es la red que evita que esos micro-flips se registren
+    como cruces. Con min_crossing_movement_px=3.0, los movimientos sub-3px
+    (medidos contra la última posición no-debounced) se ignoran.
     """
     counter = Counter(
         lines=[_line_h()],
@@ -787,8 +713,8 @@ def test_debounce_filters_jitter_around_line():
     # quedarían registrados como cruces.
     for y in (299.5, 300.5, 299.0, 300.7, 297.5, 300.2, 298.8):
         _advance(counter, track, [300, y, 3000])
-    # Sale del ROI por arriba (regreso). Si el debounce funcionó, no
-    # tiene last_label seteado y no dispara evento.
+    # Sale del ROI por arriba (regreso). Si el debounce funcionó, ningún
+    # cruce se registró (balance neto 0) y no dispara evento.
     ev = _advance(counter, track, [300, 180, 3000])
     assert ev is None
     assert counter.total_in == 0
@@ -814,22 +740,22 @@ def test_debounce_does_not_block_real_crossing():
     assert counter.total_in == 1
 
 
-def test_debounce_default_disabled():
-    """min_crossing_movement_px=0 (default) preserva comportamiento legacy."""
+def test_oscillation_nets_to_zero_without_debounce():
+    """Aún con debounce desactivado (min_crossing_movement_px=0), una
+    oscilación simétrica (cruzar y re-cruzar) NO cuenta: el balance neto
+    de la visita queda en 0. El debounce sigue siendo útil para jitter
+    asimétrico, pero la cancelación neta cubre el caso simétrico sola."""
     counter = Counter(lines=[_line_h()], roi=ROI)
-    # Mismo escenario que test_debounce_filters_jitter_around_line, pero
-    # sin threshold — el último flip dentro del ROI gana, así que el exit
-    # dispara según el último cruce registrado.
     track = _make_track(1, [[300, 210, 3000]])
     counter._process_track(track)
-    _advance(counter, track, [300, 298, 3000])
-    # Cruce real abajo, después oscila por arriba — el último cruce gana.
-    _advance(counter, track, [300, 305, 3000])  # cruzó, ahora abajo (last_label=ingress)
-    _advance(counter, track, [300, 295, 3000])  # cruzó al revés (last_label=egress)
+    _advance(counter, track, [300, 298, 3000])  # arriba
+    _advance(counter, track, [300, 305, 3000])  # cruzó abajo (neto +1)
+    _advance(counter, track, [300, 295, 3000])  # cruzó arriba (neto 0)
     ev = _advance(counter, track, [300, 180, 3000])  # exit arriba
-    # Sin debounce el último cruce dentro del ROI es egress, y al salir
-    # arriba ese label se emite — el legacy permite que jitter cuente.
-    assert ev is not None and ev.direction == "egress"
+    # Neto 0 → no cuenta, sin importar el debounce.
+    assert ev is None
+    assert counter.total_in == 0
+    assert counter.total_out == 0
 
 
 def test_entry_side_uses_last_outside_pos_under_detection_gap():
