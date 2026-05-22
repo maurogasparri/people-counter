@@ -400,6 +400,13 @@ counter:
 wifi_ble:
   enabled: true                     # Master switch (overrideable desde cloud).
   ble_enabled: true                 # Captura de advertising BLE.
+  randomized_only: true             # Contar SOLO dispositivos "humanos": WiFi
+                                    # con MAC randomizada (locally-administered
+                                    # bit) + BLE con address type random (RPA).
+                                    # Descarta infra/IoT fijo (MAC global / BLE
+                                    # public: APs-como-cliente, smart-TVs,
+                                    # beacons, parlantes). false = contar todo
+                                    # (sites donde se quiera el total crudo).
   rssi_passerby_threshold: -75      # Presente en la zona.
   rssi_shopper_threshold: -55       # Muy cerca / entró.
 

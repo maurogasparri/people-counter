@@ -51,6 +51,23 @@ class ProbeEvent:
     seqnum: int | None = None
 
 
+def is_randomized_mac(mac: str) -> bool:
+    """True si la MAC tiene el bit *locally administered* seteado (bit 1 del
+    primer octeto, 0x02). iOS y Android randomizan la MAC de probe seteando
+    ese bit → una MAC randomizada es casi siempre un teléfono humano. Las MAC
+    *globales* (LA bit en 0) son la OUI quemada del fabricante → suelen ser
+    infraestructura/IoT fijo (impresoras, smart-TVs, APs como clientes, etc.).
+    Filtrar a randomizadas es el heurístico estándar para contar humanos.
+
+    MAC malformada / vacía → False (no contar lo que no se puede parsear).
+    """
+    try:
+        first_octet = int(mac.split(":")[0], 16)
+    except (ValueError, AttributeError, IndexError):
+        return False
+    return bool(first_octet & 0x02)
+
+
 class WiFiProbeCapture:
     """Captura probe requests WiFi en monitor mode.
 
@@ -74,8 +91,13 @@ class WiFiProbeCapture:
         hop_interval: float = DEFAULT_HOP_INTERVAL,
         channels_24: Optional[list[int]] = None,
         channels_5: Optional[list[int]] = None,
+        randomized_only: bool = True,
     ) -> None:
         self.interface = interface
+        # Contar solo probes de MACs randomizadas (locally-administered) =
+        # teléfonos humanos; descartar MACs globales = infra/IoT fijo. Ver
+        # is_randomized_mac. Apagable por config para sites que necesiten todo.
+        self.randomized_only = randomized_only
         # En RPi5 con CYW43455 + nexmon, el chip solo soporta una vif a
         # la vez — airmon-ng falla al crear ``wlan0mon`` como vif paralelo
         # con "Operation not supported (-95)". El approach correcto es
@@ -227,6 +249,26 @@ class WiFiProbeCapture:
                         f"stderr={result.stderr.strip()!r}"
                     )
 
+            # nexmon: activar monitor mode CON radiotap en el FIRMWARE. Sin
+            # esto, ``iw set type monitor`` deja el interface en type=monitor
+            # pero el firmware sigue entregando frames Ethernet (el netdev
+            # reporta DLT EN10MB, no IEEE802_11_RADIO) → scapy parsea Ether y
+            # no ve ningún Dot11/probe. ``-m2`` = monitor + radiotap header.
+            # (El capture loop además re-parsea los bytes crudos como RadioTap
+            # porque el netdev igual reporta ARPHRD_ETHER — ver _capture_loop.)
+            nx = subprocess.run(
+                ["nexutil", "-m2"],
+                capture_output=True,
+                text=True,
+                timeout=self._SUBPROCESS_TIMEOUT_S,
+            )
+            if nx.returncode != 0:
+                raise RuntimeError(
+                    f"nexutil -m2 falló (exit={nx.returncode} "
+                    f"stderr={nx.stderr.strip()!r}). Sin monitor+radiotap del "
+                    "firmware no hay captura WiFi."
+                )
+
             # Verifica que el type sea monitor
             verify = subprocess.run(
                 ["iw", "dev", self.interface, "info"],
@@ -247,7 +289,8 @@ class WiFiProbeCapture:
         except FileNotFoundError as e:
             raise RuntimeError(
                 f"Required tool not found: {e}. "
-                "Install with: sudo apt install aircrack-ng iw"
+                "Install with: sudo apt install aircrack-ng iw rfkill; "
+                "nexutil se compila aparte (ver scripts/setup_device.sh)."
             ) from e
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(
@@ -435,6 +478,17 @@ class WiFiProbeCapture:
         logging.getLogger("scapy").setLevel(logging.ERROR)
 
         def _handle_packet(pkt: Any) -> None:
+            # El driver brcmfmac-nexmon entrega frames con header radiotap pero
+            # reporta el netdev como ARPHRD_ETHER (DLT EN10MB), así que scapy
+            # los parsea como Ethernet y no encuentra la capa Dot11. Re-
+            # interpretamos los bytes crudos como RadioTap para recuperar el
+            # 802.11. Si el setup ya entregara radiotap nativo (otro driver),
+            # el primer haslayer(Dot11) corta sin re-parsear.
+            if not pkt.haslayer(Dot11):
+                try:
+                    pkt = RadioTap(bytes(pkt))
+                except Exception:
+                    return
             if not pkt.haslayer(Dot11):
                 return
 
@@ -446,6 +500,11 @@ class WiFiProbeCapture:
 
             mac = dot11.addr2
             if mac is None:
+                return
+
+            # Solo contar dispositivos "humanos": MACs randomizadas (LA bit).
+            # Las MACs globales son infra/IoT fijo (ver is_randomized_mac).
+            if self.randomized_only and not is_randomized_mac(mac):
                 return
 
             # Extrae el RSSI del header RadioTap

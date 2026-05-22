@@ -327,8 +327,14 @@ def build_wifi_ble(
         except Exception:
             logger.exception("dedup wifi process_detection falló")
 
+    # Filtrar a dispositivos "humanos" (MACs randomizadas WiFi / address type
+    # random BLE). True por default; apagable per-site para contar todo.
+    randomized_only = bool(wifi_cfg.get("randomized_only", True))
+
     try:
-        wifi_capture = WiFiProbeCapture(interface=iface, on_probe=_on_probe)
+        wifi_capture = WiFiProbeCapture(
+            interface=iface, on_probe=_on_probe, randomized_only=randomized_only
+        )
         # Setup async: NO bloquea el arranque del pipeline. El radio brcmfmac
         # tarda ~1min en inicializar tras el boot (rfkill soft-block hasta que
         # el driver levanta); el setup reintenta en background y arranca la
@@ -351,7 +357,9 @@ def build_wifi_ble(
                 logger.exception("dedup ble process_detection falló")
 
         try:
-            ble_scanner = BLEScanner(on_advert=_on_advert)
+            ble_scanner = BLEScanner(
+                on_advert=_on_advert, randomized_only=randomized_only
+            )
             ble_scanner.start()
             logger.info("ble_scanner_started")
         except Exception:

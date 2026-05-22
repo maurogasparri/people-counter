@@ -4,7 +4,37 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-from src.wifi_ble.ble_scan import BLEAdvertisement, BLEScanner
+from src.wifi_ble.ble_scan import (
+    BLEAdvertisement,
+    BLEScanner,
+    ble_address_is_random,
+)
+
+
+class _FakeBLEDevice:
+    def __init__(self, address_type=None, has_details=True):
+        self.address = "AA:BB:CC:DD:EE:FF"
+        if has_details:
+            props = {} if address_type is None else {"AddressType": address_type}
+            self.details = {"props": props}
+        else:
+            self.details = None
+
+
+def test_ble_address_is_random_random_type():
+    assert ble_address_is_random(_FakeBLEDevice(address_type="random")) is True
+
+
+def test_ble_address_is_random_public_type():
+    # public = OUI real = infra/IoT fijo -> no contar
+    assert ble_address_is_random(_FakeBLEDevice(address_type="public")) is False
+
+
+def test_ble_address_is_random_unknown_counts():
+    # Sin AddressType / sin details: fallback a True (no sobre-filtrar humanos).
+    assert ble_address_is_random(_FakeBLEDevice(address_type=None)) is True
+    assert ble_address_is_random(_FakeBLEDevice(has_details=False)) is True
+    assert ble_address_is_random(object()) is True
 
 
 # ---------------------------------------------------------------------------

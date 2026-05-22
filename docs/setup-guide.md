@@ -175,11 +175,65 @@ El CYW43455 integrado no soporta monitor mode por defecto. Los paquetes de nexmo
 Referencia: https://www.kali.org/blog/raspberry-pi-wi-fi-glow-up/
 
 ```bash
-sudo apt install -y dkms aircrack-ng tcpdump
+sudo apt install -y dkms aircrack-ng tcpdump rfkill network-manager
 wget http://http.kali.org/pool/non-free-firmware/f/firmware-nexmon/firmware-nexmon_0.2_all.deb
 wget http://http.kali.org/pool/contrib/b/brcmfmac-nexmon-dkms/brcmfmac-nexmon-dkms_6.12.2_all.deb
 sudo dpkg -i --force-overwrite firmware-nexmon_0.2_all.deb
 sudo dpkg -i brcmfmac-nexmon-dkms_6.12.2_all.deb
+```
+
+### nexutil (monitor mode con radiotap)
+
+El firmware + driver solos NO alcanzan: `iw set type monitor` deja la interfaz
+en `type=monitor` pero el firmware sigue entregando frames **Ethernet** (DLT
+`EN10MB`, no `IEEE802_11_RADIO`) → scapy no ve ningún 802.11 y se capturan
+**cero probes**. Hace falta `nexutil -m2` (activa monitor + radiotap en el
+firmware). No hay paquete; se compila del repo nexmon (sparse checkout, solo
+`utilities/` + `patches/include`, sin bajar los blobs de firmware):
+
+```bash
+sudo apt install -y libnl-3-dev
+sudo git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/seemoo-lab/nexmon.git /usr/src/nexmon-tools
+sudo git -C /usr/src/nexmon-tools sparse-checkout set \
+    utilities/nexutil utilities/libnexio utilities/libargp patches/include
+sudo make -C /usr/src/nexmon-tools/utilities/nexutil
+sudo install -m 755 /usr/src/nexmon-tools/utilities/nexutil/nexutil /usr/local/bin/nexutil
+```
+
+El pipeline corre `nexutil -m2` en `setup_monitor_mode()` y re-parsea los
+frames como radiotap (el netdev igual reporta `ARPHRD_ETHER`). Verificación
+tras el setup: `sudo nexutil -m` debe devolver `monitor: 2`, y una captura
+`sudo tcpdump -i wlan0 -c 3` debe mostrar tráfico (los frames vienen con
+header radiotap aunque tcpdump los rotule raro).
+
+### Prerequisitos del monitor mode (rfkill / NM / systemd-rfkill)
+
+Sin estos tres pasos el WiFi queda `soft-blocked` por rfkill en el boot y el
+monitor mode nunca arranca (`ip link set wlan0 up` → *"Operation not possible
+due to RF-kill"*). Descubiertos en el bring-up del piloto:
+
+```bash
+# 1. udev rule — EL FIX CLAVE. El pipeline (people-counter.service) corre como
+#    User=pi; `rfkill unblock` escribe el device node /dev/rfkill, que por
+#    default es `crw-rw-r-- root root` → como pi falla con "cannot open
+#    /dev/rfkill: Permission denied" (CAP_NET_ADMIN no bypassa el DAC del
+#    device node; `iw set type monitor` sí anda porque usa netlink). Ponerlo en
+#    grupo netdev (pi ya pertenece) deja que el pipeline se desbloquee solo.
+sudo cp /usr/src/people-counter/config/udev-rfkill.rules \
+    /etc/udev/rules.d/90-rfkill.rules
+
+# 2. wlan0 fuera de NetworkManager — interfaz dedicada a probing (la red va por
+#    Ethernet). Sin esto NM la administra y la re-bloquea al inicializarse.
+sudo mkdir -p /etc/NetworkManager/conf.d
+sudo cp /usr/src/people-counter/config/networkmanager-unmanage-wlan0.conf \
+    /etc/NetworkManager/conf.d/99-unmanage-wlan0.conf
+
+# 3. systemd-rfkill: que no restaure (ni pelee, es socket-activated) el estado
+#    'blocked' guardado al boot.
+sudo systemctl mask systemd-rfkill.service systemd-rfkill.socket
+sudo rm -f /var/lib/systemd/rfkill/*wlan*
+
 sudo reboot
 ```
 
@@ -511,13 +565,18 @@ sale del entorno controlado.
   `sudo apt install python3-picamera2`.
 - **"Unknown error 524" en airmon-ng**: es esperado con nexmon en RPi5,
   no afecta la captura.
-- **`airmon-ng start wlan0` se cuelga indefinidamente**: phy0 está
-  soft-blocked por rfkill. Diagnóstico:
-  `sudo rfkill list wifi` → `Soft blocked: yes`. Fix:
-  `sudo rfkill unblock wifi`. El pipeline lo hace automáticamente en
-  `setup_monitor_mode()` desde el commit que agregó rfkill unblock,
-  pero si rebooteás con WiFi disabled en raspi-config, conviene tenerlo
-  como step explícito antes del primer arranque del wifi-monitor service.
+- **`wifi_probe_capture_setup_scheduled` pero `wifi=False` en telemetry / el
+  log muestra `wifi_setup_async_retry` o `... RF-kill`**: phy0 quedó
+  soft-blocked por rfkill y el pipeline (que corre como `User=pi`) NO pudo
+  desbloquearlo. Diagnóstico: `sudo rfkill list wifi` → `Soft blocked: yes`, y
+  `ls -la /dev/rfkill` → si es `root root`, pi no puede escribirlo. **Causa
+  raíz**: `rfkill unblock` necesita escribir `/dev/rfkill`, y el default
+  `crw-rw-r-- root root` solo deja a root (CAP_NET_ADMIN no bypassa el DAC del
+  device node; por eso `iw set type monitor` sí anda pero el unblock no).
+  **Fix permanente**: los 3 pasos del paso 6 (udev rule de /dev/rfkill →
+  grupo netdev, NM unmanage de wlan0, mask de systemd-rfkill). Verificar que
+  `/dev/rfkill` quedó `root netdev` tras aplicar la udev rule + reboot. Como
+  workaround puntual (root): `sudo rfkill unblock all`.
 - **MQTT cuelga al arrancar el pipeline**: si los logs llegan hasta
   `MQTT client initialized` y se quedan ahí sin loguear `MQTT connecting
   to ...`, el cliente está intentando IPv6 sin route. Verificar con

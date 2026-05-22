@@ -116,13 +116,60 @@ fi
 dpkg -i --force-overwrite "/tmp/$NEXMON_FW"
 dpkg -i "/tmp/$NEXMON_DKMS"
 
-# rfkill: si el device booteó con WiFi disabled (default cuando se hace
-# raspi-config nonint do_boot_behaviour B1 sin asociar a una red),
-# phy0 queda soft-blocked y airmon-ng se cuelga al iniciar el pipeline.
-# Desbloqueamos persistentemente — el ExecStartPre del wifi-monitor
-# service también lo hace en runtime para máxima resiliencia.
-apt install -y rfkill
-rfkill unblock wifi
+# --- nexutil: activa monitor mode CON radiotap en el firmware ---
+# Sin nexutil, `iw set type monitor` deja el interface en type=monitor pero el
+# firmware entrega frames Ethernet (DLT EN10MB) y scapy no ve ningún 802.11 →
+# CERO probes capturados (descubierto en el piloto). No hay paquete apt; se
+# compila del repo nexmon (solo utilities/ + patches/include vía sparse
+# checkout, sin bajar los blobs de firmware).
+if ! command -v nexutil >/dev/null 2>&1; then
+    info "  Building nexutil from nexmon (sparse checkout, utilities only)"
+    apt install -y libnl-3-dev
+    NEXMON_SRC=/usr/src/nexmon-tools
+    rm -rf "$NEXMON_SRC"
+    git clone --depth 1 --filter=blob:none --sparse \
+        https://github.com/seemoo-lab/nexmon.git "$NEXMON_SRC"
+    git -C "$NEXMON_SRC" sparse-checkout set \
+        utilities/nexutil utilities/libnexio utilities/libargp patches/include
+    make -C "$NEXMON_SRC/utilities/nexutil"
+    install -m 755 "$NEXMON_SRC/utilities/nexutil/nexutil" /usr/local/bin/nexutil
+    info "  nexutil instalado en /usr/local/bin/nexutil"
+fi
+
+# --- Prerequisitos de monitor mode (rfkill / NM / systemd-rfkill) ---
+# Descubiertos en el bring-up del piloto. El device bootea con WiFi
+# soft-blocked por rfkill (default headless), y el monitor mode no arranca
+# por una cadena de causas; las tres piezas de abajo lo resuelven de forma
+# durable.
+apt install -y rfkill network-manager
+
+# 1. udev rule — EL FIX DE FONDO. El pipeline (people-counter.service) corre
+#    como User=pi; `rfkill unblock` escribe el device node /dev/rfkill, que por
+#    default es `crw-rw-r-- root root` → solo root escribe. Como pi falla con
+#    "cannot open /dev/rfkill: Permission denied" y el monitor mode nunca
+#    arranca (ip link up → RF-kill). La regla pone /dev/rfkill en grupo netdev
+#    (pi ya pertenece) con escritura → el pipeline se desbloquea a sí mismo.
+info "  Installing udev rule for /dev/rfkill (netdev write access)"
+cp "$REPO_DIR/config/udev-rfkill.rules" /etc/udev/rules.d/90-rfkill.rules
+udevadm control --reload && udevadm trigger --subsystem-match=misc || true
+
+# 2. NetworkManager — wlan0 unmanaged. Interfaz dedicada a probing (la red va
+#    por Ethernet); sin esto NM la administra y la re-bloquea al inicializarse.
+info "  Marking wlan0 unmanaged in NetworkManager"
+mkdir -p /etc/NetworkManager/conf.d
+cp "$REPO_DIR/config/networkmanager-unmanage-wlan0.conf" \
+    /etc/NetworkManager/conf.d/99-unmanage-wlan0.conf
+nmcli general reload 2>/dev/null || true
+
+# 3. systemd-rfkill enmascarado + saved-state de wlan limpiado. systemd-rfkill
+#    restaura al boot el estado 'blocked' guardado Y, socket-activated, pelea
+#    contra cada unblock → enmascararlo evita ese loop.
+info "  Masking systemd-rfkill (avoids restoring/fighting the blocked state)"
+systemctl mask systemd-rfkill.service systemd-rfkill.socket 2>/dev/null || true
+rm -f /var/lib/systemd/rfkill/*wlan* 2>/dev/null || true
+
+# Unblock inmediato (los archivos de arriba aplican al reboot final igual).
+rfkill unblock all || true
 
 # =========================================================================
 # Step 7: Project dependencies

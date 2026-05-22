@@ -11,9 +11,25 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def ble_address_is_random(device: Any) -> bool:
+    """True si el address type BLE es ``random`` (RPA resolvable de iOS /
+    aleatoria de Android = teléfono humano), False si ``public`` (OUI real
+    del fabricante = infra/IoT fijo: beacons, smart-home, parlantes).
+
+    Lee el tipo del backend BlueZ vía ``device.details['props']['AddressType']``.
+    Si no se puede determinar (otro backend, estructura distinta), devuelve
+    True para NO sobre-filtrar humanos — preferimos contar de más a tirar un
+    teléfono real."""
+    try:
+        addr_type = device.details["props"]["AddressType"]
+    except (AttributeError, TypeError, KeyError):
+        return True
+    return addr_type == "random"
 
 
 @dataclass
@@ -41,15 +57,21 @@ class BLEScanner:
         self,
         on_advert: Optional[Callable[[BLEAdvertisement], None]] = None,
         scan_duration_seconds: float = 0,
+        randomized_only: bool = True,
     ) -> None:
         """Inicializa el scanner BLE.
 
         Args:
             on_advert: Callback para cada advertisement detectado.
             scan_duration_seconds: Cuánto escanear. 0 = escanea hasta que se llame stop().
+            randomized_only: Si True (default), solo cuenta dispositivos con
+                address type *random* (RPA de iOS, randomizadas de Android =
+                teléfonos humanos) y descarta los *public* (OUI real = infra/
+                IoT fijo: beacons, smart-home, parlantes). Apagable por config.
         """
         self.on_advert = on_advert
         self.scan_duration = scan_duration_seconds
+        self.randomized_only = randomized_only
         self._stop_event = threading.Event()
         self._scan_thread: Optional[threading.Thread] = None
         self._advert_count = 0
@@ -145,6 +167,11 @@ class BLEScanner:
 
         def _detection_callback(device, advertisement_data) -> None:
             if self._stop_event.is_set():
+                return
+
+            # Solo contar dispositivos "humanos": address type random (RPA/
+            # aleatoria = teléfono). Los public (OUI real) son infra/IoT fijo.
+            if self.randomized_only and not ble_address_is_random(device):
                 return
 
             mac = device.address

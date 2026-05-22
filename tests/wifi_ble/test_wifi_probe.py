@@ -11,7 +11,20 @@ from src.wifi_ble.wifi_probe import (
     DEFAULT_HOP_INTERVAL,
     ProbeEvent,
     WiFiProbeCapture,
+    is_randomized_mac,
 )
+
+
+def test_is_randomized_mac():
+    # LA bit (0x02) seteado en el primer octeto = randomizada (humano).
+    assert is_randomized_mac("DE:AD:BE:EF:00:01") is True  # 0xDE & 0x02
+    assert is_randomized_mac("F2:11:22:33:44:55") is True  # 0xF2 & 0x02
+    # MAC global (OUI real, LA bit en 0) = infra/IoT.
+    assert is_randomized_mac("B8:27:EB:00:00:01") is False  # OUI RPi
+    assert is_randomized_mac("3C:84:6A:90:C0:BE") is False  # 0x3C & 0x02 = 0
+    # Malformada / vacía -> no contar.
+    assert is_randomized_mac("") is False
+    assert is_randomized_mac("ZZ:ZZ") is False
 
 
 def test_setup_and_start_async_retries_until_radio_ready():
@@ -141,6 +154,30 @@ def test_setup_monitor_mode_calls_expected_commands(mock_run):
     )
     # ip link up/down sobre wlan0
     assert any("ip" in str(c) and "link" in str(c) for c in calls)
+    # nexutil -m2 (monitor + radiotap en el firmware nexmon)
+    assert any("nexutil" in str(c) and "-m2" in str(c) for c in calls)
+
+
+@patch("src.wifi_ble.wifi_probe.subprocess.run")
+def test_setup_monitor_mode_raises_if_nexutil_fails(mock_run):
+    """Si nexutil -m2 falla, el setup raisea — sin monitor+radiotap del
+    firmware el interface no entrega frames 802.11 y no hay captura."""
+
+    def _run_side_effect(*args, **kwargs):
+        cmd = args[0]
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if "info" in cmd:
+            result.stdout = "Interface wlan0\n\ttype monitor\n"
+        if "nexutil" in cmd:
+            result.returncode = 1
+            result.stderr = "ioctl error"
+        return result
+
+    mock_run.side_effect = _run_side_effect
+    cap = WiFiProbeCapture(interface="wlan0")
+    cap._MONITOR_SETUP_ATTEMPTS = 1
+    with pytest.raises(RuntimeError, match="nexutil -m2"):
+        cap.setup_monitor_mode()
 
 
 @patch("src.wifi_ble.wifi_probe.subprocess.run")

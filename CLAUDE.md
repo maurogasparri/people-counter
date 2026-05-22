@@ -69,8 +69,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Captura WiFi/BLE
 
-- **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**.
+- **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**. Monitor mode requiere `nexutil -m2` (radiotap en el firmware) — sin eso el netdev entrega frames Ethernet (DLT EN10MB) y scapy no ve 802.11; el capture loop re-parsea los bytes crudos como `RadioTap()`. nexutil se compila aparte (ver `setup_device.sh`). El pipeline corre como `User=pi`: `/dev/rfkill` necesita estar en grupo `netdev` (udev rule) para que el unblock funcione.
 - **BLE**: bleak (D-Bus de BlueZ), escaneo pasivo.
+- **Solo dispositivos "humanos"** (`wifi_ble.randomized_only`, default true): se cuentan solo MACs WiFi randomizadas (locally-administered bit 0x02) y BLE con `AddressType=random` (RPA iOS / aleatoria Android). Las MAC globales WiFi y los BLE `public` (OUI real) son infra/IoT fijo (APs-como-cliente, smart-TVs, beacons, parlantes) y se descartan antes de hashear. Apagable per-site. Nota: las rotaciones de RPA BLE de un mismo teléfono son todas `random` — eso lo resuelve el stitching, no este filtro.
 - **Hashing**: SHA-256 truncado a 16 bytes. **Nunca MACs crudas**.
 - **Dedup → hash groups con stitching** (`src/wifi_ble/dedup.py`): los hashes se asocian a un `group_id` por identidad del dispositivo. Cada call de `process_detection` aplica 3 reglas en orden y joina al grupo más reciente que matchee:
   1. **Seqnum continuity (WiFi-only)** — el seqnum 802.11 (12 bits, del header `dot11.SC >> 4`) es contador del chip y tiende a ser continuo cross-MAC-rotation. Match: Δseqnum ≤ `max_delta` (default 100, considerando wrap mod 4096) + ΔRSSI ≤ 5dBm + Δt ≤ 30s. Defeated por Apple H1+ (iPhone 12+) que resetea seqnum on MAC change; sigue funcionando en Android.
