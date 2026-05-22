@@ -182,6 +182,9 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
             resolution=_runtime_resolution(config),
             fps=_runtime_fps(config),
             max_exposure_us=max_exposure_us,
+            # Captura async (thread productor) — saca los ~22ms de captura
+            # del critical path. Default True; setear false como fallback.
+            async_capture=vision_cfg.get("async_capture", True),
         )
         if raw_size is not None:
             capture_kwargs["sensor_raw_size"] = tuple(raw_size)

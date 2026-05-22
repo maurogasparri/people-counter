@@ -19,16 +19,18 @@ from src.vision.detect import (
 
 class TestPreprocess:
     def test_output_shape(self):
+        # Formato nativo de Hailo: (1, H, W, 3) uint8 RGB (antes float32 NCHW).
         frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
         blob, scale, pad_x, pad_y = preprocess(frame)
-        assert blob.shape == (1, 3, 640, 640)
-        assert blob.dtype == np.float32
+        assert blob.shape == (1, 640, 640, 3)
+        assert blob.dtype == np.uint8
 
-    def test_normalized_range(self):
+    def test_uint8_range_and_contiguous(self):
         frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
         blob, _, _, _ = preprocess(frame)
-        assert blob.min() >= 0.0
-        assert blob.max() <= 1.0
+        assert blob.min() >= 0 and blob.max() <= 255
+        # Hailo requiere el buffer contiguo.
+        assert blob.flags["C_CONTIGUOUS"]
 
     def test_scale_and_padding(self):
         # 640x480 → scale to fit 640x640 → scale = 1.0 on width

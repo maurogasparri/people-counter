@@ -159,23 +159,16 @@ class HailoBackend:
     def infer(self, preprocessed: np.ndarray) -> Any:
         """Corre inferencia en Hailo-8L.
 
-        El modelo HEF espera input uint8 NHWC. Este método maneja la
-        conversión desde el blob float32 NCHW producido por preprocess().
+        ``preprocess()`` ya entrega ``(1, H, W, 3)`` uint8 RGB contiguo — el
+        formato nativo del HEF. No hay conversión per-frame (antes había un
+        round-trip float32→uint8 que dominaba el costo).
 
         Returns:
             Para HEFs single-output, el output unwrappeado (batch dim
             stripped). Para HEFs multi-output, una lista de arrays
             per-output en el orden declarado del HEF.
         """
-        # preprocess() saca (1, 3, H, W) float32 [0,1]
-        # Hailo espera (1, H, W, 3) uint8 [0,255]
-        if preprocessed.ndim == 4 and preprocessed.shape[1] == 3:
-            preprocessed = preprocessed.transpose(0, 2, 3, 1)
-        img = (preprocessed * 255).clip(0, 255).astype(np.uint8)
-
-        result = self._pipeline.infer(
-            {self._input_name: np.ascontiguousarray(img)}
-        )
+        result = self._pipeline.infer({self._input_name: preprocessed})
 
         if len(self._output_names) == 1:
             # Stripear batch dim; para YOLOv8-NMS esto da la lista de
@@ -219,8 +212,14 @@ class OpenCVBackend:
         logger.info("opencv_backend_loaded", extra={"path": onnx_path})
 
     def infer(self, preprocessed: np.ndarray) -> np.ndarray:
-        """Corre inferencia vía OpenCV DNN."""
-        self._net.setInput(preprocessed)
+        """Corre inferencia vía OpenCV DNN.
+
+        ``preprocess()`` entrega uint8 NHWC (nativo de Hailo); cv2.dnn quiere
+        float32 NCHW normalizado, así que la conversión vive acá (path de dev,
+        donde el costo no importa).
+        """
+        blob = preprocessed.astype(np.float32).transpose(0, 3, 1, 2) / 255.0
+        self._net.setInput(blob)
         output = self._net.forward()
         return output
 
@@ -243,9 +242,13 @@ def preprocess(
         input_size: ``(width, height)`` target para el modelo.
 
     Returns:
-        ``(blob, scale, pad_x, pad_y)`` donde:
+        ``(img, scale, pad_x, pad_y)`` donde:
 
-        - ``blob``: ``(1, 3, H, W)`` float32 normalizado [0, 1].
+        - ``img``: ``(1, H, W, 3)`` uint8 RGB [0, 255] — el formato NATIVO del
+          HEF Hailo. Antes se devolvía float32 NCHW normalizado, pero el
+          backend Hailo lo deshacía (×255 + uint8 + transpose) cada frame: un
+          round-trip de ~5MB en float32 que dominaba el costo de "detect". El
+          backend OpenCV (dev) convierte a float32 NCHW en su ``infer``.
         - ``scale``: Factor de escala aplicado durante el resize.
         - ``pad_x, pad_y``: Offsets de padding en pixels.
     """
@@ -265,11 +268,10 @@ def preprocess(
     padded = np.full((target_h, target_w, 3), 114, dtype=np.uint8)
     padded[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
 
-    # HWC BGR → CHW RGB, normalizar a [0, 1]
-    blob = padded[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255.0
-    blob = np.expand_dims(blob, axis=0)  # Agregar batch dimension
+    # HWC BGR → NHWC RGB uint8 (formato nativo del HEF; sin float ni transpose).
+    img = np.ascontiguousarray(padded[:, :, ::-1][np.newaxis, ...])
 
-    return blob, scale, pad_x, pad_y
+    return img, scale, pad_x, pad_y
 
 
 # ---------------------------------------------------------------------------

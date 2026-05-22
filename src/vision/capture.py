@@ -7,6 +7,7 @@ Soporta tres modos:
 """
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -42,6 +43,7 @@ class StereoCapture:
         sensor_raw_size: tuple[int, int] = CANONICAL_RAW_SIZE,
         initial_settle_seconds: float = 2.0,
         resettle_seconds: float = 1.5,
+        async_capture: bool = True,
     ) -> None:
         """Inicializa la captura estéreo.
 
@@ -85,6 +87,13 @@ class StereoCapture:
                 re-lockear en ``resettle_and_lock()``. Patrón del wizard:
                 lock inicial → operador apreta Comenzar → re-settle →
                 re-lock.
+            async_capture: Cuando es True (default), ``read_with_metadata``
+                NO bloquea esperando el frame: un thread productor captura
+                el par sincronizado en background a un "latest slot" y la
+                lectura devuelve el último par disponible. Solapa la captura
+                (~22ms, bloqueante en picamera2) con el cómputo del pipeline
+                → la captura sale del critical path. False = lectura
+                bloqueante clásica (fallback / setup tools).
         """
         self.cam_left_id = cam_left_id
         self.cam_right_id = cam_right_id
@@ -99,6 +108,17 @@ class StereoCapture:
         self._cam_left = None
         self._cam_right = None
         self._executor: Optional[ThreadPoolExecutor] = None
+        # Captura async (double-buffering): thread productor + latest-slot.
+        self.async_capture = bool(async_capture)
+        self._stream_thread: Optional[threading.Thread] = None
+        self._stream_stop = threading.Event()
+        self._slot_ready = threading.Event()      # thread -> consumidor: par listo
+        self._slot_consumed = threading.Event()   # consumidor -> thread: backpressure
+        self._stream_lock = threading.Lock()
+        self._stream_slot: Optional[
+            tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]
+        ] = None
+        self._stream_error: Optional[str] = None
 
     def open(self) -> None:
         """Abre ambos streams de cámara vía picamera2.
@@ -272,6 +292,10 @@ class StereoCapture:
         if self._cam_left is None or self._cam_right is None or self._executor is None:
             raise RuntimeError("Cámaras no abiertas. Llamar open() primero.")
 
+        if self.async_capture:
+            slot = self._read_async_slot()
+            return slot[0], slot[1]
+
         try:
             fut_l = self._executor.submit(self._cam_left.capture_array, "main")
             fut_r = self._executor.submit(self._cam_right.capture_array, "main")
@@ -294,6 +318,9 @@ class StereoCapture:
     ) -> tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]:
         """Lee par de frames con timestamps de sensor (ns) y temperaturas (°C).
 
+        Con ``async_capture`` (default) devuelve el último par capturado por
+        el thread productor SIN bloquear; si no, captura de forma bloqueante.
+
         La temperatura viene de la key SensorTemperature de la metadata de
         picamera2 cuando está disponible (el IMX708 en RPi5 la expone). Devuelve
         None por cámara si la key no está — builds más viejos de libcamera o
@@ -302,6 +329,41 @@ class StereoCapture:
         if self._cam_left is None or self._cam_right is None or self._executor is None:
             raise RuntimeError("Cámaras no abiertas. Llamar open() primero.")
 
+        if self.async_capture:
+            return self._read_async_slot()
+
+        return self._capture_pair_with_metadata()
+
+    def _read_async_slot(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]:
+        """Devuelve el último par del thread productor (frames + metadata) SIN
+        bloquear, y libera al thread para capturar el siguiente. Consumidor
+        único (el pipeline usa read() O read_with_metadata, no ambos)."""
+        self._ensure_stream_started()
+        if not self._slot_ready.wait(timeout=5.0):
+            with self._stream_lock:
+                err = self._stream_error
+            raise RuntimeError(
+                f"Timeout esperando el frame del stream de captura: {err}"
+            )
+        with self._stream_lock:
+            slot = self._stream_slot
+            err = self._stream_error
+        if slot is None:
+            raise RuntimeError(f"Captura async sin frame disponible: {err}")
+        # Liberá al thread para que capture el SIGUIENTE par mientras el
+        # pipeline procesa éste (overlap one-ahead, sin free-run).
+        self._slot_ready.clear()
+        self._slot_consumed.set()
+        return slot
+
+    def _capture_pair_with_metadata(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]:
+        """Captura BLOQUEANTE de un par sincronizado + metadata. Lógica core
+        compartida por la lectura síncrona y el thread de streaming. Las dos
+        cámaras se capturan en paralelo (executor)."""
         def _grab(cam):
             req = cam.capture_request()
             try:
@@ -327,8 +389,54 @@ class StereoCapture:
 
         return frame_l, frame_r, ts_l, ts_r, temp_l, temp_r
 
+    def _ensure_stream_started(self) -> None:
+        """Lanza (idempotente) el thread productor de captura. Se llama lazy
+        en el primer read async — así todo el setup de AE (settle/lock, que
+        usa capture_metadata) ya terminó y no compite con el thread."""
+        if self._stream_thread is not None:
+            return
+        self._stream_stop.clear()
+        self._slot_ready.clear()
+        self._slot_consumed.clear()
+        self._stream_thread = threading.Thread(
+            target=self._stream_loop, name="stereo-stream", daemon=True
+        )
+        self._stream_thread.start()
+        logger.info("stereo_async_capture_started")
+
+    def _stream_loop(self) -> None:
+        """Captura pares de forma continua a ``_stream_slot``. Corre en su
+        propio thread; el main loop consume el último par sin bloquear. La
+        cámara corre más rápido que el cómputo del pipeline, así que siempre
+        hay un frame fresco listo y el consumidor nunca espera."""
+        while not self._stream_stop.is_set():
+            try:
+                pair = self._capture_pair_with_metadata()
+            except Exception as e:
+                with self._stream_lock:
+                    self._stream_error = str(e)
+                logger.exception("stereo_stream_capture_failed")
+                self._stream_stop.wait(0.05)  # backoff: no spinear en error
+                continue
+            with self._stream_lock:
+                self._stream_slot = pair
+                self._stream_error = None
+            self._slot_ready.set()
+            # Backpressure: esperar a que el consumidor tome este par antes de
+            # capturar el siguiente. Sin esto el thread free-runea (captura más
+            # rápido que el consumo) y desperdicia CPU/ancho de banda con el
+            # cvtColor, compitiéndole al main loop (medido: bajaba los FPS).
+            self._slot_consumed.wait()
+            self._slot_consumed.clear()
+
     def close(self) -> None:
         """Libera los recursos de las cámaras."""
+        # Frenar el thread productor ANTES del executor (el thread lo usa).
+        if self._stream_thread is not None:
+            self._stream_stop.set()
+            self._slot_consumed.set()  # desbloquea el thread si espera backpressure
+            self._stream_thread.join(timeout=2.0)
+            self._stream_thread = None
         if self._executor is not None:
             self._executor.shutdown(wait=True)
             self._executor = None

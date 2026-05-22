@@ -115,6 +115,17 @@ vision:
                                     # Path al .npz de calibración estéreo.
                                     # Mismo path en cada install; el contenido
                                     # es per-device.
+  async_capture: true               # Captura double-buffered: un thread
+                                    # productor mantiene el último par estéreo
+                                    # listo y el pipeline lo lee sin bloquear.
+                                    # picamera2.capture_request bloquea ~22ms
+                                    # esperando el frame; el profiling mostró
+                                    # que era la etapa MÁS cara del loop (~31%).
+                                    # Con esto la captura se SOLAPA con el
+                                    # cómputo (detect/SGBM/track) y sale del
+                                    # critical path → ~14→~20 FPS. false =
+                                    # lectura bloqueante clásica (fallback si
+                                    # el thread diera problemas).
 
   # --- Semi-Global Block Matching ---
   sgbm:
@@ -637,19 +648,20 @@ tracking:
                                     # linealmente con la resolución runtime
                                     # si la cambiás.
   state_machine:
-    confirm_frames: 2               # Hits para promover CANDIDATE -> CONFIRMED.
-                                    # 2 frames es el sweet spot: filtra FPs
-                                    # de 1 frame (flicker) pero spawna lo bastante
-                                    # rápido para que el bbox aparezca antes del
-                                    # ROI a velocidad de caminata (a 12 fps son
-                                    # ~150ms = ~21cm, holgura suficiente sobre
-                                    # ROIs típicos). Combinado con
-                                    # static_suppressor + cluster_distance_px,
-                                    # los FPs sostenidos también se filtran sin
-                                    # necesidad de subir a 3. Bajar a 1 solo si
-                                    # el detector tiene dropeos agresivos
-                                    # frame-a-frame; subir a 3 si static_suppressor
-                                    # está OFF en el sitio y se ven ghosts.
+    confirm_frames: 3               # Hits para promover CANDIDATE -> CONFIRMED.
+                                    # SUBIDO a 3 (de 2) en el piloto: FPs de
+                                    # clutter flickery (el detector dispara sobre
+                                    # estructura fija ~15-20% de los frames)
+                                    # confirmaban en 2 frames y spawneaban tracks
+                                    # fantasma PENDING fuera del ROI (clutter
+                                    # visual; el conteo NO se afecta, es por ROI).
+                                    # El static_suppressor no los caza porque
+                                    # flickerean por debajo de su hit_rate_threshold.
+                                    # 3 frames consecutivos filtra la mayoría. A
+                                    # 14 fps son ~215ms = ~30cm: sigue apareciendo
+                                    # antes del ROI a paso de caminata. Bajar a 2
+                                    # solo si el detector dropea frame-a-frame y se
+                                    # pierden pasadas rápidas.
     pending_max_frames: 30          # Misses antes de PENDING -> LOST. A
                                     # 26 fps son ~1.15s para recovery.
                                     # Mantener generoso reduce track
