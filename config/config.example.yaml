@@ -440,6 +440,18 @@ wifi_ble:
                                     # Nuevas MACs WiFi con RSSI compatible al
                                     # BLE ancla durante ese tiempo se mergean.
 
+  fingerprint_stitching:
+    enabled: true                   # Regla 4: re-une rotaciones por fingerprint
+                                    # estable (IEs en WiFi, manufacturer-data en
+                                    # BLE), mismo protocolo. Cubre el caso que el
+                                    # seqnum no agarra — iOS resetea el seqnum al
+                                    # rotar la MAC pero el fingerprint es estable.
+                                    # Tambien actua de filtro DURO en la regla 1
+                                    # (fingerprints distintos = otro device).
+    window_seconds: 900             # Ventana del match por fingerprint. 900s
+                                    # cubre tanto la rotacion de MAC WiFi (~min)
+                                    # como la de RPA BLE (~15min).
+
 
 # =============================================================================
 # MQTT — AWS IoT Core (certs per-device + endpoint, shape de topic fleet-wide)

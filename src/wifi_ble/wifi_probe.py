@@ -22,14 +22,41 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from src.wifi_ble.fingerprint import wifi_fingerprint
+
 logger = logging.getLogger(__name__)
 
 PROBE_REQUEST_SUBTYPE = 4
 
-# Secuencia de channel hopping: 2.4 GHz (1-13) + canales 5 GHz comunes
-CHANNELS_24GHZ = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-CHANNELS_5GHZ = [36, 40, 44, 48, 52, 56, 60, 64, 149, 153, 157, 161, 165]
-DEFAULT_HOP_INTERVAL = 0.3  # segundos por canal
+# Channel hopping ponderado. Solo los 3 canales NO solapados de 2.4 GHz (1/6/11)
+# concentran la mayoría del tráfico de probes; un probe enviado en un canal
+# solapado (3, 8, etc.) salpica energía a 1/6/11, así que barrer los 13 es
+# desperdicio. En 5 GHz solo UNII-1 (36-48) y UNII-3 (149-165) son libres;
+# UNII-2 (52-144) es DFS y el driver suele rechazar escucharlo sin un AP
+# detectado → se saltea. La secuencia de hopping (ver _build_hop_sequence)
+# visita 1/6/11 una vez por cada canal de 5 GHz intercalado, sesgando fuerte a
+# 2.4 GHz donde está el grueso del tráfico.
+CHANNELS_24GHZ = [1, 6, 11]
+CHANNELS_5GHZ = [36, 40, 44, 48, 149, 153, 157, 161]
+DEFAULT_HOP_INTERVAL = 0.3  # segundos por canal (200-300ms: sweet spot)
+
+
+def _build_hop_sequence(
+    channels_24: list[int], channels_5: list[int]
+) -> list[int]:
+    """Construye la secuencia de hopping ponderada hacia 2.4/no-solapados.
+
+    Por cada canal de 5 GHz emite el bloque completo de 2.4 (1/6/11) y luego
+    ese canal de 5 — p.ej. [1,6,11,36, 1,6,11,40, ...]. Así 1/6/11 se visitan
+    ``len(channels_5)`` veces por ciclo y cada canal de 5 GHz una sola vez. Sin
+    canales de 5 GHz, queda solo el barrido de 2.4."""
+    if not channels_5:
+        return list(channels_24)
+    seq: list[int] = []
+    for c5 in channels_5:
+        seq.extend(channels_24)
+        seq.append(c5)
+    return seq
 
 
 @dataclass
@@ -49,6 +76,10 @@ class ProbeEvent:
     channel: int
     timestamp: float
     seqnum: int | None = None
+    # Fingerprint estable de los Information Elements del probe (ver
+    # src.wifi_ble.fingerprint). Sobrevive la rotación de MAC → el dedup lo usa
+    # para re-unir rotaciones que el seqnum no cubre (iOS). "" si no se pudo.
+    fingerprint: str = ""
 
 
 def is_randomized_mac(mac: str) -> bool:
@@ -107,7 +138,9 @@ class WiFiProbeCapture:
         self.mon_interface = interface
         self.on_probe = on_probe
         self.hop_interval = hop_interval
-        self.channels = (channels_24 or CHANNELS_24GHZ) + (channels_5 or CHANNELS_5GHZ)
+        self.channels = _build_hop_sequence(
+            channels_24 or CHANNELS_24GHZ, channels_5 or CHANNELS_5GHZ
+        )
         self._stop_event = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
         self._hop_thread: Optional[threading.Thread] = None
@@ -459,7 +492,7 @@ class WiFiProbeCapture:
     def _capture_loop(self) -> None:
         """Captura probe requests con scapy sobre la interfaz monitor."""
         try:
-            from scapy.all import Dot11, Dot11ProbeReq, RadioTap, sniff
+            from scapy.all import Dot11, Dot11Elt, Dot11ProbeReq, RadioTap, sniff
         except ImportError:
             logger.error(
                 "scapy_not_installed",
@@ -537,6 +570,19 @@ class WiFiProbeCapture:
             except (AttributeError, TypeError):
                 pass
 
+            # Fingerprint estable: recorre la cadena de Information Elements
+            # (tag, value) y la pasa a wifi_fingerprint. Sobrevive la rotación
+            # de MAC. Bound de 64 IEs por las dudas (frame malformado).
+            elements: list[tuple[int, bytes]] = []
+            elt = pkt.getlayer(Dot11Elt)
+            while isinstance(elt, Dot11Elt) and len(elements) < 64:
+                try:
+                    elements.append((int(elt.ID), bytes(elt.info)))
+                except (AttributeError, TypeError):
+                    pass
+                elt = elt.payload.getlayer(Dot11Elt)
+            fingerprint = wifi_fingerprint(elements)
+
             event = ProbeEvent(
                 mac=mac,
                 rssi=rssi,
@@ -544,6 +590,7 @@ class WiFiProbeCapture:
                 channel=self._current_channel,
                 timestamp=time.time(),
                 seqnum=seqnum,
+                fingerprint=fingerprint,
             )
 
             self._probe_count += 1

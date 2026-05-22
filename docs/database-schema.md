@@ -46,8 +46,8 @@ erDiagram
         timestamptz bucket_15min    "device-aligned, join key temporal"
         timestamptz bucket_hour     "GENERATED desde period_start"
         date        bucket_day      "GENERATED desde period_start"
-        int         passersby       "post stitching L1+L2+L3"
-        int         shoppers        "RSSI cercano"
+        int         passersby       "post stitching (4 reglas)"
+        int         shoppers        "RSSI cercano (por max_rssi)"
         timestamptz received_at
     }
 
@@ -89,10 +89,26 @@ erDiagram
 
 ## Modelo de joins
 
-**No hay foreign keys formales** — `store_id` y `device_id` son `TEXT` libres.
-Esto es por diseño: el sistema no tiene una tabla `stores` ni `devices` (PoC
-con 1-3 locales) y agregarlas sería over-engineering. Los joins son por
-**convención de naming**:
+**Las tablas de hechos no tienen foreign keys hacia las dimensiones** —
+`store_id` y `device_id` son `TEXT` libres en `count_events`,
+`wifi_ble_summary`, `telemetry`, `pos_transactions`. Es deliberado: la Lambda
+escribe hechos y NO debe fallar si un site todavía no se registró; Grafana hace
+LEFT JOIN. Los joins de hechos son por **convención de naming**.
+
+Sí existen dos tablas de **dimensiones** (agregadas 2026-05-22, sembradas en
+provisioning vía `scripts/provision.py` / `scripts/reset_dedup.py`... ver
+`provision.py create --latitude/--longitude`):
+
+- **`sites`** (PK `store_id`): `store_name`, `latitude`/`longitude` (DOUBLE
+  PRECISION, para el geomap de Grafana), `timezone`, `address`.
+- **`devices`** (PK `device_id`, FK → `sites.store_id`): `cam_label`,
+  `firmware_version`, `installed_at`.
+
+Sirven para el geomap, los dropdowns de filtro de Grafana (template vars desde
+una tabla chica en vez de `SELECT DISTINCT` sobre los hechos) y labels
+human-readable. La única FK del schema es `devices → sites`. DDL en
+`infra/sql/bootstrap.sql` (fuera del bloque de DROP — no se borran al
+re-bootstrap). Los joins:
 
 - **`store_id`**: presente en las 4 tablas. Mismo string en todos lados (ej.
   `ar-recoleta`). Es el join key principal para cualquier reporte by-store.
@@ -219,8 +235,10 @@ erDiagram
         text     group_id      "identidad inferida del dispositivo"
         real     first_seen    "epoch seconds"
         real     last_seen     "epoch seconds, para windows del stitching"
-        real     rssi          "para regla L2 cross-protocol delta-RSSI"
+        real     rssi          "ULTIMA lectura — para deltas de RSSI del stitching"
+        real     max_rssi      "RSSI mas fuerte vista — clasifica passerby/shopper (estable)"
         integer  seqnum        "WiFi 802.11 SC, nullable para BLE"
+        text     fingerprint   "fingerprint estable (IEs WiFi / mfg-data BLE), regla 4"
     }
 ```
 
@@ -256,9 +274,10 @@ holgado.
 
 ## `hash_groups` — stitching state (`src/wifi_ble/dedup.py`)
 
-State persistente del dedup L1+L2+L3 con stitching para combatir MAC
-randomization. Una fila por `(hash, protocol)`; el `group_id` es la
-agrupación de identidad inferida por las 3 reglas.
+State persistente del dedup con stitching para combatir MAC randomization. Una
+fila por `(hash, protocol)`; el `group_id` es la agrupación de identidad
+inferida por las **4 reglas** (seqnum continuity, cross-protocol L2, BLE
+anchoring, fingerprint continuity — ver CLAUDE.md).
 
 | Columna | Tipo | Notas |
 |---|---|---|
@@ -266,9 +285,11 @@ agrupación de identidad inferida por las 3 reglas.
 | `protocol` | TEXT | Parte del PK. `wifi` o `ble` |
 | `group_id` | TEXT | UUID del grupo. Múltiples (hash, protocol) comparten group_id si las reglas los mergearon |
 | `first_seen` | REAL | epoch seconds — primer aparición del hash |
-| `last_seen` | REAL | epoch seconds — última observación. Drives las windows (2s cross-protocol, 30s seqnum, 15min BLE anchoring) |
-| `rssi` | REAL | RSSI de la última observación. Regla L2 chequea ΔRSSI ≤ 5 dBm |
+| `last_seen` | REAL | epoch seconds — última observación. Drives las windows (2s cross-protocol, 30s seqnum, 15min BLE anchoring/fingerprint) |
+| `rssi` | REAL | RSSI de la **última** observación. La usan los deltas de RSSI del stitching (quieren la señal reciente) |
+| `max_rssi` | REAL | RSSI **más fuerte** vista. `get_traffic_counts` clasifica passerby/shopper sobre esta → conteo estable (un device que estuvo cerca cuenta de forma monótona, sin flapping) |
 | `seqnum` | INTEGER | 802.11 sequence number (12 bits, del header `dot11.SC >> 4`). NULL para BLE. Regla seqnum continuity chequea Δseqnum ≤ 100 mod 4096 |
+| `fingerprint` | TEXT | Fingerprint estable (orden de IEs + caps en WiFi; company ID + Continuity de Apple en BLE). Regla 4: re-une rotaciones que el seqnum no agarra; filtro duro en la regla 1 |
 
 **PK compuesto**: `(hash, protocol)` — el mismo hash en protocolos distintos
 es entrada separada (un device puede emitir hashes WiFi y BLE diferentes
@@ -276,11 +297,14 @@ pero pertenece al mismo `group_id`).
 
 **Indexes**:
 - `idx_hash_groups_group (group_id)` — `get_stitching_ratio()` cuenta DISTINCT groups
-- `idx_hash_groups_last_seen (last_seen)` — `reset_daily()` purga rows viejas
+- `idx_hash_groups_last_seen (last_seen)` — windows del stitching
+- `idx_hash_groups_fp (protocol, fingerprint)` — lookup de la regla 4
 
-**Rotación**: `reset_daily()` borra rows con `last_seen` >24h. Llamado desde
-el supervisor del wifi/ble service al cruzar medianoche. Previene que un MAC
-quemado siga matcheando para siempre + limpia el disco.
+**Rotación**: `reset_daily()` hace `DELETE FROM hash_groups` (wipe completo).
+Lo dispara `people-counter-reset.timer` a las 04:00 vía
+`scripts/reset_dedup.py` (config-aware: resuelve el path del sqlite igual que
+el pipeline). Boundary diario de privacidad + analytics; el stitching
+cross-día no tiene sentido con MAC/RPA rotando igual.
 
 **Privacy critical**: este archivo es el ÚNICO lugar que guarda el seqnum y
 las marcas temporales fine-grained. Nunca se publica por MQTT — el publisher
@@ -291,9 +315,9 @@ emite solo el count agregado de `DISTINCT group_id` (`passersby`, `shoppers`).
 **No**. Ambos schemas son lean:
 - `messages` tiene 5 columnas, todas usadas en el lifecycle
   enqueue → get_pending → mark_sent → purge_old.
-- `hash_groups` tiene 7 columnas, cada una hace match con una regla del
-  stitching (L1 seqnum, L2 cross-protocol, L3 BLE anchoring) o con la
-  rotación diaria.
+- `hash_groups` tiene 9 columnas, cada una sirve a una regla del stitching
+  (seqnum, cross-protocol, BLE anchoring, fingerprint), a la clasificación
+  passerby/shopper (`max_rssi`) o a la rotación diaria.
 
 El cleanup del payload server-side (drop de scaling_factor, total_in, etc.)
 no afecta al SQLite local: `messages.payload` es JSON blob — los campos

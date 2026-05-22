@@ -73,10 +73,11 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **BLE**: bleak (D-Bus de BlueZ), escaneo pasivo.
 - **Solo dispositivos "humanos"** (`wifi_ble.randomized_only`, default true): se cuentan solo MACs WiFi randomizadas (locally-administered bit 0x02) y BLE con `AddressType=random` (RPA iOS / aleatoria Android). Las MAC globales WiFi y los BLE `public` (OUI real) son infra/IoT fijo (APs-como-cliente, smart-TVs, beacons, parlantes) y se descartan antes de hashear. Apagable per-site. Nota: las rotaciones de RPA BLE de un mismo teléfono son todas `random` — eso lo resuelve el stitching, no este filtro.
 - **Hashing**: SHA-256 truncado a 16 bytes. **Nunca MACs crudas**.
-- **Dedup → hash groups con stitching** (`src/wifi_ble/dedup.py`): los hashes se asocian a un `group_id` por identidad del dispositivo. Cada call de `process_detection` aplica 3 reglas en orden y joina al grupo más reciente que matchee:
+- **Dedup → hash groups con stitching** (`src/wifi_ble/dedup.py`): los hashes se asocian a un `group_id` por identidad del dispositivo. Cada call de `process_detection` aplica 4 reglas y joina al grupo más reciente que matchee:
   1. **Seqnum continuity (WiFi-only)** — el seqnum 802.11 (12 bits, del header `dot11.SC >> 4`) es contador del chip y tiende a ser continuo cross-MAC-rotation. Match: Δseqnum ≤ `max_delta` (default 100, considerando wrap mod 4096) + ΔRSSI ≤ 5dBm + Δt ≤ 30s. Defeated por Apple H1+ (iPhone 12+) que resetea seqnum on MAC change; sigue funcionando en Android.
   2. **Cross-protocol L2 (short window)** — WiFi MAC y BLE addr observados dentro de `cross_protocol_window_seconds` (default 2s) con ΔRSSI ≤ 5dBm = mismo dispositivo. Es el L2 histórico.
   3. **BLE anchoring (long window)** — durante la vida de un BLE RPA (~15min iOS), nuevas WiFi MACs con RSSI compatible se mergean al grupo del BLE existente. Cubre el caso "WiFi rota cada 2min, BLE cada 15min" donde la regla 2 (2s) no alcanza.
+  4. **Fingerprint continuity (mismo protocolo)** — fingerprint estable (orden de IEs + HT/VHT/HE caps en WiFi; company ID + subtipos Continuity de Apple + service UUIDs + TX power en BLE; ver `src/wifi_ble/fingerprint.py`) que sobrevive la rotación de MAC/RPA. Mismo fingerprint + RSSI compatible + ventana = mismo aparato. Cubre lo que el seqnum NO agarra: **Apple H1+ resetea el seqnum al rotar la MAC** pero el fingerprint es estable. Además actúa de **filtro duro** en la regla 1 (seqnums que coinciden por azar pero con fingerprint distinto = dispositivos distintos). Caveat: dos devices idénticos co-presentes pueden mergearse (leve subconteo); el gate de RSSI lo acota.
   Los counts publicados (`passersby`, `shoppers`) son `DISTINCT group_id`, no distinct hashes. L3 inter-cámara queda reservado para deploys multi-cam (no aplica al PoC con 1 device/sucursal).
 - **Privacy del stitching**: el seqnum y los timestamps quedan SOLO en `wifi_ble_dedup.sqlite` local (rotado diario via `reset_daily`). El MQTT publish sigue mandando counts agregados, nunca hashes ni seqnums ni MACs crudas.
 - **Stitching canary**: `dedup.get_stitching_ratio()` = `groups / hashes` del día. 1.0 = ningún stitch (cada hash es su propio "visitor"), 0.5 = mitad de los hashes se mergearon. Va en el payload de telemetry (`wifi_ble_stitching_ratio`) y la columna homónima de la tabla `telemetry` — canary para detectar si la flota corre con OS que defeatean las reglas.
@@ -123,7 +124,7 @@ people-counter/
 ├── src/
 │   ├── vision/         <- capture, calibration, depth, detect, static_suppressor, world_coords, best_frame
 │   ├── tracking/       <- tracker (Kalman + state machine), counter (ROI + line crossings)
-│   ├── wifi_ble/       <- wifi_probe, ble_scan, hasher, dedup
+│   ├── wifi_ble/       <- wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher
 │   ├── mqtt/           <- client (AWS IoT), buffer (SQLite outbox)
 │   ├── cloud/          <- persist_event Lambda (IoT Rules → Postgres)
 │   ├── status/         <- led, health, monitor (background thread)
@@ -137,7 +138,8 @@ people-counter/
 │   ├── diagnose_bracket.py <- QC de ensamble del bracket (pitch/yaw/roll/offset L↔R sin calib previa)
 │   ├── preview.py      <- preview live MJPEG L|R (browser-driven)
 │   ├── download_model.py, capture_baseline_frames.py, rescale_calibration.py
-│   ├── provision.py    <- create/deploy/harvest/reprovision/list (disaster recovery)
+│   ├── provision.py    <- create/deploy/harvest/reprovision/list (disaster recovery) + seed sites/devices en RDS (psycopg+boto3)
+│   ├── reset_dedup.py  <- reset diario del dedup (config-aware, lo llama people-counter-reset.service)
 │   ├── verify_hardware.py, setup_device.sh
 │   └── training/       <- train_head_detector.ipynb (Kaggle T4, descarga directo de Roboflow),
 │                          bench_detector.py, bench_roboflow_api.py, capture_mjpeg.py,
@@ -160,7 +162,7 @@ people-counter/
 | S4 | Calibración | **DONE** — fisheye K-B, board en `calibration/`, diagnose_depth |
 | S5 | Detección | **DONE** — YOLOv8n single-class cenital, HEF compilado, deployable. Modelo activo: `people-counter-detector` (multi-site, ~945 imgs, labeling con Smart Polygon click-por-imagen + hard negatives explícitos) |
 | S6 | Tracking + counting | **DONE** — tracker Kalman + counter ROI/línea (E2E validado) |
-| S7 | WiFi/BLE | **DONE** — nexmon + bleak, hashing + dedup L1/L2 |
+| S7 | WiFi/BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos (randomized), hashing + dedup 4 reglas (incl. fingerprint) |
 | S8 | MQTT | **DONE** — IoT Core + buffer SQLite + replay |
 | S9 | Cloud | **DONE** — CloudFormation + Lambda persist_event + EC2 Postgres/Grafana |
 | S10 | Integración | **DONE** — pipeline E2E en RPi5 |

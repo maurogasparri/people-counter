@@ -117,6 +117,11 @@ fuente visual de estado.
 ```bash
 sudo raspi-config nonint do_boot_behaviour B1
 
+# Dominio regulatorio WiFi: habilita los canales permitidos del país para el
+# monitor mode (sin esto, el regdomain "world" restringe parte de 5 GHz y el
+# hopping pierde esos canales). Cambiar AR por el código del país del deploy.
+sudo raspi-config nonint do_wifi_country AR
+
 # Preferir IPv4 en getaddrinfo. Si la red del local no rutea IPv6
 # (caso típico de ISPs residenciales/comerciales sin IPv6 nativo),
 # getaddrinfo devuelve la AAAA primero y paho-mqtt intenta IPv6 →
@@ -192,7 +197,7 @@ firmware). No hay paquete; se compila del repo nexmon (sparse checkout, solo
 `utilities/` + `patches/include`, sin bajar los blobs de firmware):
 
 ```bash
-sudo apt install -y libnl-3-dev
+sudo apt install -y git build-essential libnl-3-dev
 sudo git clone --depth 1 --filter=blob:none --sparse \
     https://github.com/seemoo-lab/nexmon.git /usr/src/nexmon-tools
 sudo git -C /usr/src/nexmon-tools sparse-checkout set \

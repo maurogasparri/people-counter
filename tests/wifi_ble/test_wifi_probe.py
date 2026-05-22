@@ -11,6 +11,7 @@ from src.wifi_ble.wifi_probe import (
     DEFAULT_HOP_INTERVAL,
     ProbeEvent,
     WiFiProbeCapture,
+    _build_hop_sequence,
     is_randomized_mac,
 )
 
@@ -94,8 +95,12 @@ def test_probe_event_fields():
 
 def test_default_channels():
     cap = WiFiProbeCapture(interface="wlan0")
-    assert cap.channels == CHANNELS_24GHZ + CHANNELS_5GHZ
+    # Secuencia ponderada: 1/6/11 visitados una vez por cada canal de 5 GHz.
+    assert cap.channels == _build_hop_sequence(CHANNELS_24GHZ, CHANNELS_5GHZ)
     assert cap.hop_interval == DEFAULT_HOP_INTERVAL
+    # 2.4 GHz solo 1/6/11 (no solapados); 5 GHz sin DFS (52-144).
+    assert CHANNELS_24GHZ == [1, 6, 11]
+    assert all(not (52 <= c <= 144) for c in CHANNELS_5GHZ)
 
 
 def test_custom_channels():
@@ -103,7 +108,17 @@ def test_custom_channels():
         channels_24=[1, 6, 11],
         channels_5=[36, 40],
     )
-    assert cap.channels == [1, 6, 11, 36, 40]
+    # Interleave: [1,6,11, 36, 1,6,11, 40]
+    assert cap.channels == [1, 6, 11, 36, 1, 6, 11, 40]
+
+
+def test_build_hop_sequence_weights_24ghz():
+    seq = _build_hop_sequence([1, 6, 11], [36, 40, 44])
+    # 1/6/11 aparecen una vez por cada canal de 5 GHz (3 veces); cada 5 GHz una.
+    assert seq.count(1) == 3 and seq.count(6) == 3 and seq.count(11) == 3
+    assert seq.count(36) == 1 and seq.count(40) == 1 and seq.count(44) == 1
+    # Sin canales de 5 GHz, solo el barrido de 2.4.
+    assert _build_hop_sequence([1, 6, 11], []) == [1, 6, 11]
 
 
 def test_initial_state():

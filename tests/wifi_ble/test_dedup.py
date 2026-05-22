@@ -227,7 +227,7 @@ def test_seqnum_stitch_rssi_too_different():
 def test_seqnum_stitch_outside_window():
     """Seqnum cercano pero >30s aparte -> grupos distintos."""
     engine, _ = _make_engine(seqnum_window=1.0)  # 1s window — easy to exceed
-    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
     time.sleep(1.2)
     r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=1005)
     assert r2["unified"] is False
@@ -236,7 +236,7 @@ def test_seqnum_stitch_outside_window():
 def test_seqnum_stitch_disabled():
     """Con seqnum_stitch_enabled=False, MACs distintas son grupos distintos."""
     engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
-    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000)
     r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=1005)
     assert r2["unified"] is False
 
@@ -244,7 +244,7 @@ def test_seqnum_stitch_disabled():
 def test_seqnum_stitch_requires_seqnum_present():
     """Sin seqnum (e.g. scapy no pudo parsear), no aplica regla 1."""
     engine, _ = _make_engine(ble_anchor_enabled=False)
-    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=None)
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=None)
     r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=None)
     assert r2["unified"] is False  # ningun seqnum -> regla 1 no aplica
 
@@ -252,7 +252,7 @@ def test_seqnum_stitch_requires_seqnum_present():
 def test_seqnum_wrap_around():
     """Seqnum 4090 + 5 con wrap = delta 11, dentro de max_delta=100."""
     engine, _ = _make_engine()
-    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=4090)
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, seqnum=4090)
     r2 = engine.process_detection("BB:00:00:00:00:01", "wifi", -61.0, seqnum=5)
     assert r2["unified"] is True
 
@@ -387,3 +387,55 @@ def test_three_phones_close_together_count_as_three():
     engine.process_detection("CC:00:00:00:00:02", "wifi", -56.0, seqnum=210)
 
     assert engine.get_unique_count() == 3
+
+
+# ---------------------------------------------------------------------------
+# Regla 4 — fingerprint continuity (mismo protocolo) + filtro duro
+# ---------------------------------------------------------------------------
+
+
+def test_fingerprint_stitch_merges_rotation_without_seqnum():
+    """Mismo fingerprint + RSSI compatible + ventana, SIN seqnum continuity
+    (iOS lo resetea al rotar) -> mismo group_id (regla 4)."""
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
+    fp = "deadbeefcafe0001"
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, fingerprint=fp)
+    r2 = engine.process_detection("BB:00:00:00:00:02", "wifi", -61.0, fingerprint=fp)
+    assert r2["unified"] is True
+    assert r1["group_id"] == r2["group_id"]
+    assert engine.get_unique_count() == 1
+
+
+def test_fingerprint_distinct_no_stitch():
+    """Fingerprints distintos -> grupos distintos (no se mergean)."""
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
+    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, fingerprint="fp_a")
+    r2 = engine.process_detection("BB:00:00:00:00:02", "wifi", -61.0, fingerprint="fp_b")
+    assert r2["unified"] is False
+    assert r1["group_id"] != r2["group_id"]
+
+
+def test_fingerprint_hard_filter_blocks_seqnum_coincidence():
+    """Seqnums continuos (delta chico) PERO fingerprints distintos -> NO mergea
+    (filtro duro): dos devices cuyos seqnums coincidieron por casualidad."""
+    engine, _ = _make_engine(seqnum_enabled=True, ble_anchor_enabled=False)
+    r1 = engine.process_detection(
+        "AA:00:00:00:00:01", "wifi", -60.0, seqnum=1000, fingerprint="fp_a"
+    )
+    r2 = engine.process_detection(
+        "BB:00:00:00:00:02", "wifi", -61.0, seqnum=1005, fingerprint="fp_b"
+    )
+    assert r2["unified"] is False
+    assert r1["group_id"] != r2["group_id"]
+
+
+def test_traffic_counts_uses_max_rssi_not_latest():
+    """Un device que UNA vez estuvo cerca sigue contando como shopper aunque su
+    RSSI baje despues — get_traffic_counts usa el MAX, no la ultima lectura
+    (evita el flapping 6->7->6 del contador)."""
+    engine, _ = _make_engine()
+    # Mismo hash: primero cerca (-50 >= -55 shopper), despues lejos (-80).
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -50.0, fingerprint="fp1")
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -80.0, fingerprint="fp1")
+    counts = engine.get_traffic_counts(rssi_passerby=-75.0, rssi_shopper=-55.0)
+    assert counts["shoppers"] == 1  # estable: cuenta por max_rssi (-50), no -80

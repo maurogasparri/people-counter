@@ -42,6 +42,13 @@ info "Step 4: Configuring system..."
 info "  Disabling desktop (headless mode)"
 raspi-config nonint do_boot_behaviour B1
 
+# Dominio regulatorio WiFi: habilita los canales permitidos del pais para el
+# monitor mode. Sin esto, el regdomain 00 (world) restringe parte de 5 GHz y
+# el channel hopping pierde esos canales. Default AR (PoC argentino);
+# override con WIFI_COUNTRY=XX para otra jurisdiccion.
+info "  Setting WiFi regulatory domain (${WIFI_COUNTRY:-AR})"
+raspi-config nonint do_wifi_country "${WIFI_COUNTRY:-AR}" || true
+
 # IPv4 precedence cuando la red no tiene IPv6 routable.
 # Sin esto, getaddrinfo devuelve la AAAA primero y paho-mqtt (y otros
 # clientes) intenta IPv6 → SYN al vacío → cuelgue ~60-130s antes de
@@ -124,7 +131,7 @@ dpkg -i "/tmp/$NEXMON_DKMS"
 # checkout, sin bajar los blobs de firmware).
 if ! command -v nexutil >/dev/null 2>&1; then
     info "  Building nexutil from nexmon (sparse checkout, utilities only)"
-    apt install -y libnl-3-dev
+    apt install -y git build-essential libnl-3-dev
     NEXMON_SRC=/usr/src/nexmon-tools
     rm -rf "$NEXMON_SRC"
     git clone --depth 1 --filter=blob:none --sparse \

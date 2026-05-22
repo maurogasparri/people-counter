@@ -7,7 +7,8 @@ Sistema de conteo de personas de bajo costo para locales comerciales, basado en 
 - **Cuenta personas** que entran y salen de un local en tiempo real usando profundidad por cámara estéreo + YOLOv8n en acelerador Hailo-8L
 - **Detecta tráfico exterior** vía captura pasiva de probe requests WiFi y advertising BLE
 - **Clasifica tráfico** con umbrales duales de RSSI: transeúntes (-75 dBm) vs compradores (-55 dBm), calculando Turn In Rate
-- **Deduplica** WiFi/BLE local en el device via hash groups con stitching: seqnum continuity 802.11 (anti MAC-randomization), cross-protocol L2 (WiFi+BLE simultáneo), y BLE anchoring (durante la vida de un RPA ~15min). Los counts publicados son distinct grupos, no distinct hashes. La L3 inter-cámara queda reservada para deploys multi-cam por local (no aplica al PoC con 1 device/sucursal).
+- **Cuenta solo dispositivos "humanos"** en el tráfico exterior: WiFi con MAC randomizada (locally-administered bit) y BLE con address type *random* — los identificadores globales (OUI real) son infra/IoT fijo (APs, smart-TVs, beacons) y se descartan.
+- **Deduplica** WiFi/BLE local en el device via hash groups con stitching de 4 reglas: seqnum continuity 802.11 (anti MAC-randomization), cross-protocol L2 (WiFi+BLE simultáneo), BLE anchoring (durante la vida de un RPA ~15min), y fingerprint continuity (IEs en WiFi / manufacturer-data en BLE, estable a la rotación — cubre lo que el seqnum no agarra, ej. iOS que resetea el seqnum). Los counts publicados son distinct grupos, no distinct hashes. La L3 inter-cámara queda reservada para deploys multi-cam por local (no aplica al PoC con 1 device/sucursal).
 - **Transmite metadatos** a AWS vía MQTT con buffer local SQLite para resiliencia offline
 - **Respeta horarios operativos** vía AWS IoT Device Shadow (configuración pushada desde la nube)
 
@@ -46,7 +47,7 @@ El dispositivo corre tres servicios systemd independientes:
 | Servicio | Proceso | Qué hace |
 |---------|---------|----------|
 | `people-counter.service` | `src/main.py` | Pipeline de visión: capture → rectify → depth → detect → track → count → MQTT |
-| `wifi-monitor.service` | `airmon-ng` | Pone el WiFi en monitor mode para captura de probe requests |
+| `wifi-monitor.service` | `rfkill unblock` + `airmon-ng check kill` | Libera wlan0 al boot (destraba rfkill + mata NM/wpa); el pipeline lo pasa a monitor mode (`iw` + `nexutil -m2`) |
 | `people-counter-reset.timer` | Diario a las 04:00 | Resetea contadores de dedup y totales de conteo para el nuevo día comercial |
 
 El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT. La dedup L3 inter-cámara queda reservada para deploys multi-cam future work (no aplica al PoC con 1 device/sucursal).
@@ -312,7 +313,7 @@ Defense-in-depth runtime (independiente del modelo):
 src/
 ├── vision/          # Captura estéreo (picamera2), calibración ChArUco, profundidad SGBM + WLS, detección YOLOv8n (Hailo + OpenCV), world_coords para altura de cabeza, report HTML
 ├── tracking/        # Tracker euclidiano 3D + contador por línea virtual / ROI con height_class por track
-├── wifi_ble/        # Captura de probes WiFi (nexmon + seqnum 802.11), scan BLE (bleak), hashing, dedup a hash groups con stitching (seqnum continuity + cross-protocol L2 + BLE anchoring)
+├── wifi_ble/        # Captura de probes WiFi (nexmon + radiotap, hopping ponderado 1/6/11), scan BLE (bleak), fingerprint (IEs/manufacturer-data), hashing, dedup a hash groups con stitching de 4 reglas (seqnum + cross-protocol L2 + BLE anchoring + fingerprint)
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
 ├── cloud/           # Lambda persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState

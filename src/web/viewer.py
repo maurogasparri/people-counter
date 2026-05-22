@@ -140,7 +140,7 @@ _HTML = """<!DOCTYPE html>
       </div>
     </div>
     <div class='stream'>
-      <img src='/stream' alt='live stream'/>
+      <img id='stream' src='/stream' alt='live stream' onerror='reloadStream()'/>
       <div class='cap'>L | R | disparidad</div>
     </div>
   </div>
@@ -148,9 +148,22 @@ _HTML = """<!DOCTYPE html>
     const $=id=>document.getElementById(id);
     const fmtT=e=>e?new Date(e*1000).toLocaleTimeString('es-AR',{hour12:false}):'—';
     const fmtR=r=>(r==null)?'—':Math.round(r)+' dBm';
+    // El <img> MJPEG no se reconecta solo cuando el server se reinicia (a
+    // diferencia del polling de /stats). reloadStream fuerza una nueva
+    // conexión con cache-buster; lo dispara onerror y la recuperación de
+    // /stats (detecta que el server volvió tras una falla).
+    let _streamReloadAt=0;
+    function reloadStream(){
+      const now=Date.now();
+      if(now-_streamReloadAt<1500)return;  // debounce
+      _streamReloadAt=now;
+      setTimeout(()=>{$('stream').src='/stream?t='+now;},800);
+    }
+    let _statsOk=true;
     async function tick(){
       try{
         const s=await (await fetch('/stats',{cache:'no-store'})).json();
+        if(!_statsOk){_statsOk=true;reloadStream();}  // server volvió → reconectar video
         $('site').textContent=s.store_name||'—';
         $('device').textContent=s.device_id||'—';
         $('hours').textContent=s.operating_hours||'—';
@@ -178,7 +191,7 @@ _HTML = """<!DOCTYPE html>
           `<td>${fmtT(r.last_seen)}</td><td>${fmtR(r.rssi)}</td>`+
           `<td><span class='pill ${r.classification}'>${r.classification}</span></td></tr>`
         ).join(''):"<tr><td class='empty' colspan='4'>Sin registros</td></tr>";
-      }catch(e){}
+      }catch(e){_statsOk=false;}
     }
     setInterval(tick,1000);tick();
   </script>

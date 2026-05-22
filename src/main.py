@@ -306,6 +306,7 @@ def build_wifi_ble(
     )
     seqnum_cfg = wifi_cfg.get("seqnum_stitching", {}) or {}
     ble_anchor_cfg = wifi_cfg.get("ble_anchor", {}) or {}
+    fp_cfg = wifi_cfg.get("fingerprint_stitching", {}) or {}
     dedup = DedupEngine(
         db_path=dedup_db,
         cross_window_seconds=float(wifi_cfg.get("cross_protocol_window_seconds", 2.0)),
@@ -316,6 +317,8 @@ def build_wifi_ble(
         seqnum_rssi_delta=float(seqnum_cfg.get("rssi_delta", 5.0)),
         ble_anchor_enabled=bool(ble_anchor_cfg.get("enabled", True)),
         ble_anchor_window_seconds=float(ble_anchor_cfg.get("window_seconds", 900.0)),
+        fingerprint_stitch_enabled=bool(fp_cfg.get("enabled", True)),
+        fingerprint_stitch_window_seconds=float(fp_cfg.get("window_seconds", 900.0)),
     )
 
     wifi_capture: WiFiProbeCapture | None = None
@@ -323,7 +326,13 @@ def build_wifi_ble(
 
     def _on_probe(event: ProbeEvent) -> None:
         try:
-            dedup.process_detection(event.mac, "wifi", event.rssi, seqnum=event.seqnum)
+            dedup.process_detection(
+                event.mac,
+                "wifi",
+                event.rssi,
+                seqnum=event.seqnum,
+                fingerprint=event.fingerprint,
+            )
         except Exception:
             logger.exception("dedup wifi process_detection falló")
 
@@ -352,7 +361,9 @@ def build_wifi_ble(
 
         def _on_advert(advert: BLEAdvertisement) -> None:
             try:
-                dedup.process_detection(advert.mac, "ble", advert.rssi)
+                dedup.process_detection(
+                    advert.mac, "ble", advert.rssi, fingerprint=advert.fingerprint
+                )
             except Exception:
                 logger.exception("dedup ble process_detection falló")
 

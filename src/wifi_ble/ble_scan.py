@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from src.wifi_ble.fingerprint import ble_fingerprint
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,10 @@ class BLEAdvertisement:
     rssi: float
     name: Optional[str]
     timestamp: float
+    # Fingerprint estable (company ID + subtipos Continuity de Apple + service
+    # UUIDs + TX power). Sobrevive la rotación de RPA → el dedup re-une las
+    # rotaciones de un mismo teléfono. "" si no hay nada fingerprinteable.
+    fingerprint: str = ""
 
 
 class BLEScanner:
@@ -178,11 +184,19 @@ class BLEScanner:
             rssi = advertisement_data.rssi if advertisement_data.rssi else -100
             name = advertisement_data.local_name
 
+            # Fingerprint estable de la advertising data (no del addr que rota).
+            fingerprint = ble_fingerprint(
+                getattr(advertisement_data, "manufacturer_data", None),
+                getattr(advertisement_data, "service_uuids", None),
+                getattr(advertisement_data, "tx_power", None),
+            )
+
             advert = BLEAdvertisement(
                 mac=mac,
                 rssi=float(rssi),
                 name=name,
                 timestamp=time.time(),
+                fingerprint=fingerprint,
             )
 
             self._advert_count += 1

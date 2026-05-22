@@ -86,6 +86,8 @@ class DedupEngine:
         seqnum_rssi_delta: float = 5.0,
         ble_anchor_enabled: bool = True,
         ble_anchor_window_seconds: float = 900.0,
+        fingerprint_stitch_enabled: bool = True,
+        fingerprint_stitch_window_seconds: float = 900.0,
     ) -> None:
         """
         Args:
@@ -118,6 +120,11 @@ class DedupEngine:
         self.seqnum_rssi_delta = seqnum_rssi_delta
         self.ble_anchor_enabled = ble_anchor_enabled
         self.ble_anchor_window = ble_anchor_window_seconds
+        # Regla 4: stitching por fingerprint (mismo protocolo). Re-une
+        # rotaciones que el seqnum no cubre — iOS resetea el seqnum al rotar
+        # la MAC, pero el fingerprint de IEs/manufacturer-data es estable.
+        self.fingerprint_stitch_enabled = fingerprint_stitch_enabled
+        self.fingerprint_stitch_window = fingerprint_stitch_window_seconds
         self._ensure_db()
 
     def _ensure_db(self) -> None:
@@ -135,16 +142,30 @@ class DedupEngine:
                     first_seen   REAL NOT NULL,
                     last_seen    REAL NOT NULL,
                     rssi         REAL,
+                    max_rssi     REAL,
                     seqnum       INTEGER,
+                    fingerprint  TEXT,
                     PRIMARY KEY (hash, protocol)
                 )
                 """
             )
+            # Migración para DBs creadas antes de columnas nuevas (SQLite no
+            # tiene ADD COLUMN IF NOT EXISTS).
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(hash_groups)")}
+            if "fingerprint" not in cols:
+                conn.execute("ALTER TABLE hash_groups ADD COLUMN fingerprint TEXT")
+            if "max_rssi" not in cols:
+                conn.execute("ALTER TABLE hash_groups ADD COLUMN max_rssi REAL")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hash_groups_group ON hash_groups(group_id)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hash_groups_last_seen ON hash_groups(last_seen)"
+            )
+            # Índice para la regla 4 (lookup por fingerprint + protocolo).
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hash_groups_fp "
+                "ON hash_groups(protocol, fingerprint)"
             )
 
     # ----- API publica -----
@@ -156,6 +177,7 @@ class DedupEngine:
         rssi: float,
         salt: str = "",
         seqnum: int | None = None,
+        fingerprint: str = "",
     ) -> dict:
         """Procesa una deteccion individual de WiFi o BLE.
 
@@ -186,11 +208,18 @@ class DedupEngine:
             ).fetchone()
 
             if existing:
+                # rssi = última lectura (la usan las reglas de stitching, que
+                # quieren la RSSI reciente). max_rssi = la más fuerte vista
+                # (la usa get_traffic_counts: un device que UNA vez estuvo
+                # cerca cuenta como shopper de forma estable, sin flapping
+                # cuando la RSSI oscila alrededor del threshold).
                 conn.execute(
                     """UPDATE hash_groups
-                       SET last_seen = ?, rssi = ?, seqnum = COALESCE(?, seqnum)
+                       SET last_seen = ?, rssi = ?,
+                           max_rssi = MAX(COALESCE(max_rssi, ?), ?),
+                           seqnum = COALESCE(?, seqnum)
                        WHERE hash = ? AND protocol = ?""",
-                    (now, rssi, seqnum, mac_hash, protocol),
+                    (now, rssi, rssi, rssi, seqnum, mac_hash, protocol),
                 )
                 return {
                     "is_new": False,
@@ -201,7 +230,7 @@ class DedupEngine:
 
             # 2. Hash nuevo. Buscar grupos candidatos para hacer stitching.
             group_id = self._find_candidate_group(
-                conn, protocol, rssi, seqnum, now
+                conn, protocol, rssi, seqnum, now, fingerprint
             )
             unified = group_id is not None
             if group_id is None:
@@ -209,9 +238,11 @@ class DedupEngine:
 
             conn.execute(
                 """INSERT INTO hash_groups
-                   (hash, protocol, group_id, first_seen, last_seen, rssi, seqnum)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (mac_hash, protocol, group_id, now, now, rssi, seqnum),
+                   (hash, protocol, group_id, first_seen, last_seen, rssi,
+                    max_rssi, seqnum, fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (mac_hash, protocol, group_id, now, now, rssi, rssi, seqnum,
+                 fingerprint),
             )
 
             if unified:
@@ -236,6 +267,7 @@ class DedupEngine:
         rssi: float,
         seqnum: int | None,
         now: float,
+        fingerprint: str = "",
     ) -> str | None:
         """Encuentra el group_id mas reciente que matchea alguna regla de stitching.
 
@@ -244,97 +276,94 @@ class DedupEngine:
         prioriza la observacion mas fresca como mas probable de ser la misma
         persona.
 
-        Las 3 reglas se evaluan en una sola query union — devuelve el match
-        de cualquier regla, ordenado por recencia.
+        4 reglas (ver docstring del modulo). Cada candidato es ``(group_id,
+        last_seen)``; se juntan de todas las reglas y gana el mas reciente.
         """
         other_protocol = "ble" if protocol == "wifi" else "wifi"
-        rules: list[tuple[str, tuple]] = []
+        candidates: list[tuple[str, float]] = []
 
-        # Regla 1: seqnum continuity (WiFi-only, requiere seqnum no-None).
+        # Regla 1: seqnum continuity (WiFi-only). El seqnum delta se valida en
+        # Python (mod 4096). Filtro DURO por fingerprint: si el candidato y la
+        # deteccion tienen fingerprint conocido y DISTINTO, son dispositivos
+        # distintos aunque el seqnum coincida (12 bits → colisiones posibles).
         if (
             self.seqnum_stitch_enabled
             and protocol == "wifi"
             and seqnum is not None
         ):
-            # Filtramos por (a) protocol=wifi, (b) tienen seqnum, (c) rssi
-            # cercano, (d) dentro de la ventana de stitching. La distancia de
-            # seqnum la calculamos en Python despues (mod 4096 no es trivial
-            # de expresar en SQL portable).
-            rules.append(
-                (
-                    """SELECT group_id, seqnum, last_seen FROM hash_groups
-                       WHERE protocol = 'wifi'
-                         AND seqnum IS NOT NULL
-                         AND rssi IS NOT NULL
-                         AND ABS(rssi - ?) <= ?
-                         AND last_seen >= ?""",
-                    (rssi, self.seqnum_rssi_delta, now - self.seqnum_stitch_window),
-                )
-            )
+            rows = conn.execute(
+                """SELECT group_id, seqnum, last_seen, fingerprint FROM hash_groups
+                   WHERE protocol = 'wifi'
+                     AND seqnum IS NOT NULL
+                     AND rssi IS NOT NULL
+                     AND ABS(rssi - ?) <= ?
+                     AND last_seen >= ?""",
+                (rssi, self.seqnum_rssi_delta, now - self.seqnum_stitch_window),
+            ).fetchall()
+            for group_id, cand_seqnum, last_seen, cand_fp in rows:
+                if _seqnum_delta(int(cand_seqnum), seqnum) > self.seqnum_max_delta:
+                    continue
+                if fingerprint and cand_fp and cand_fp != fingerprint:
+                    continue  # filtro duro: fingerprints distintos = otro device
+                candidates.append((group_id, last_seen))
 
-        # Regla 2: cross-protocol L2 short window.
-        rules.append(
-            (
-                """SELECT group_id, NULL AS seqnum, last_seen FROM hash_groups
+        # Regla 2: cross-protocol L2 short window. Sin filtro de fingerprint:
+        # WiFi y BLE tienen namespaces de fingerprint distintos, no comparables.
+        for group_id, last_seen in conn.execute(
+            """SELECT group_id, last_seen FROM hash_groups
+               WHERE protocol = ?
+                 AND rssi IS NOT NULL
+                 AND ABS(rssi - ?) <= ?
+                 AND last_seen >= ?""",
+            (other_protocol, rssi, self.cross_rssi_delta, now - self.cross_window),
+        ).fetchall():
+            candidates.append((group_id, last_seen))
+
+        # Regla 3: BLE anchor long window — grupo con miembro del otro protocolo
+        # activo en los ultimos N seg, RSSI compatible.
+        if self.ble_anchor_enabled:
+            anchor_protocol = "ble" if protocol == "wifi" else "wifi"
+            for group_id, last_seen in conn.execute(
+                """SELECT group_id, last_seen FROM hash_groups
                    WHERE protocol = ?
                      AND rssi IS NOT NULL
                      AND ABS(rssi - ?) <= ?
                      AND last_seen >= ?""",
-                (other_protocol, rssi, self.cross_rssi_delta, now - self.cross_window),
-            )
-        )
+                (anchor_protocol, rssi, self.cross_rssi_delta, now - self.ble_anchor_window),
+            ).fetchall():
+                candidates.append((group_id, last_seen))
 
-        # Regla 3: BLE anchor long window — un grupo con algun BLE miembro
-        # activo en los ultimos N seg, RSSI compatible con esta deteccion.
-        # Aplica tanto a una nueva WiFi MAC (ancla al BLE existente) como
-        # a una nueva BLE addr (ancla al WiFi existente si el dispositivo
-        # rota ambos en paralelo).
-        if self.ble_anchor_enabled:
-            anchor_protocol = "ble" if protocol == "wifi" else "wifi"
-            rules.append(
+        # Regla 4: fingerprint continuity (MISMO protocolo). Re-une rotaciones
+        # que el seqnum no cubre — iOS resetea el seqnum al rotar la MAC, pero
+        # el fingerprint de IEs (WiFi) / manufacturer-data (BLE) es estable.
+        # Mismo fingerprint + RSSI compatible + dentro de la ventana = mismo
+        # aparato. Requiere fingerprint no vacio. (Caveat: dos devices identicos
+        # co-presentes pueden mergearse → leve subconteo; aceptado vs el
+        # sobreconteo que arregla, y el gate de RSSI lo acota.)
+        if self.fingerprint_stitch_enabled and fingerprint:
+            for group_id, last_seen in conn.execute(
+                """SELECT group_id, last_seen FROM hash_groups
+                   WHERE protocol = ?
+                     AND fingerprint = ?
+                     AND rssi IS NOT NULL
+                     AND ABS(rssi - ?) <= ?
+                     AND last_seen >= ?""",
                 (
-                    """SELECT group_id, NULL AS seqnum, last_seen FROM hash_groups
-                       WHERE protocol = ?
-                         AND rssi IS NOT NULL
-                         AND ABS(rssi - ?) <= ?
-                         AND last_seen >= ?""",
-                    (
-                        anchor_protocol,
-                        rssi,
-                        self.cross_rssi_delta,
-                        now - self.ble_anchor_window,
-                    ),
-                )
-            )
-
-        # Ejecutar las reglas y juntar candidates. Cada regla devuelve
-        # (group_id, seqnum, last_seen).
-        candidates: list[tuple[str, int | None, float]] = []
-        for sql, params in rules:
-            for row in conn.execute(sql, params).fetchall():
-                candidates.append(row)
+                    protocol,
+                    fingerprint,
+                    rssi,
+                    self.cross_rssi_delta,
+                    now - self.fingerprint_stitch_window,
+                ),
+            ).fetchall():
+                candidates.append((group_id, last_seen))
 
         if not candidates:
             return None
 
-        # Para la regla 1, validar seqnum delta en Python (mod 4096).
-        # Para las otras reglas, todo candidato es valido — son matches por RSSI+time.
-        # Aplicamos el filtro de seqnum solo a los rows que VINIERON con seqnum
-        # (regla 1) — los de regla 2/3 vienen con seqnum=None del NULL en SQL
-        # y pasan tal cual.
-        valid: list[tuple[str, float]] = []
-        for group_id, candidate_seqnum, last_seen in candidates:
-            if candidate_seqnum is not None and seqnum is not None:
-                if _seqnum_delta(int(candidate_seqnum), seqnum) > self.seqnum_max_delta:
-                    continue
-            valid.append((group_id, last_seen))
-
-        if not valid:
-            return None
-
         # Multi-match: el grupo con last_seen mas reciente.
-        valid.sort(key=lambda x: x[1], reverse=True)
-        return valid[0][0]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
 
     def get_unique_count(self) -> int:
         """Devuelve el total de grupos unicos del dia actual.
@@ -371,7 +400,11 @@ class DedupEngine:
         """
         with sqlite3.connect(self.db_path) as conn:
             def _count(threshold: float) -> int:
-                where = "rssi IS NOT NULL AND rssi >= ?"
+                # COALESCE(max_rssi, rssi): cuenta sobre la RSSI MÁS FUERTE
+                # vista (no la última) → un device que estuvo cerca cuenta como
+                # shopper de forma estable. Fallback a rssi para filas viejas
+                # sin max_rssi.
+                where = "COALESCE(max_rssi, rssi) IS NOT NULL AND COALESCE(max_rssi, rssi) >= ?"
                 params: list = [threshold]
                 if protocol is not None:
                     where += " AND protocol = ?"
