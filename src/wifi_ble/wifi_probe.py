@@ -89,6 +89,7 @@ class WiFiProbeCapture:
         self._stop_event = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
         self._hop_thread: Optional[threading.Thread] = None
+        self._setup_thread: Optional[threading.Thread] = None
         self._current_channel = 0
         self._probe_count = 0
 
@@ -119,8 +120,50 @@ class WiFiProbeCapture:
     # try/except y degrada (pipeline sigue sin WiFi probing).
     _SUBPROCESS_TIMEOUT_S = 15.0
 
+    # Retry del setup de monitor mode. En el arranque del device, el
+    # people-counter levanta ~8s después del boot, cuando NetworkManager /
+    # wpa_supplicant todavía se están inicializando: el ``rfkill unblock`` toma,
+    # pero NM RE-bloquea wlan0 segundos después y el ``ip link up`` falla con
+    # "Operation not possible due to RF-kill". Una vez que NM se asienta el
+    # unblock pega y se queda. Reintentar (re-unblock incluido) tolera ese race
+    # sin depender del timing del boot — más robusto que ordenar por systemd.
+    _MONITOR_SETUP_ATTEMPTS = 5
+    _MONITOR_SETUP_RETRY_DELAY_S = 2.0
+
     def setup_monitor_mode(self) -> None:
-        """Pone la interfaz wlan0 en monitor mode.
+        """Pone wlan0 en monitor mode, con retry para el race del boot.
+
+        Reintenta ``_setup_monitor_once`` hasta ``_MONITOR_SETUP_ATTEMPTS``
+        veces porque NetworkManager puede re-bloquear wlan0 vía rfkill justo
+        después del unblock mientras se inicializa en el arranque. Cada intento
+        re-hace el unblock + kill, así eventualmente le gana al race.
+
+        Raises:
+            RuntimeError: Si tras todos los reintentos sigue fallando (tool no
+                instalado, firmware colgado, o el bloqueo no se libera).
+        """
+        last_err: Optional[Exception] = None
+        for attempt in range(1, self._MONITOR_SETUP_ATTEMPTS + 1):
+            try:
+                self._setup_monitor_once()
+                return
+            except RuntimeError as e:
+                last_err = e
+                if attempt < self._MONITOR_SETUP_ATTEMPTS:
+                    logger.warning(
+                        "monitor_mode_setup_retry",
+                        extra={
+                            "attempt": attempt,
+                            "max_attempts": self._MONITOR_SETUP_ATTEMPTS,
+                            "error": str(e),
+                        },
+                    )
+                    time.sleep(self._MONITOR_SETUP_RETRY_DELAY_S)
+        assert last_err is not None
+        raise last_err
+
+    def _setup_monitor_once(self) -> None:
+        """Un intento de poner wlan0 en monitor mode.
 
         Approach específico para RPi5 + CYW43455 + nexmon: el chip solo
         soporta una vif simultánea, así que en vez de crear un wlan0mon
@@ -141,8 +184,13 @@ class WiFiProbeCapture:
             # esperando respuesta del driver. Best-effort: si rfkill no
             # está instalado o el comando falla, seguimos.
             try:
+                # ``all`` (no ``wifi``): en el arranque del device el bloqueo
+                # puede estar en un switch rfkill que el alias ``wifi`` no
+                # cubre; ``all`` los destraba todos (BT incluido — también lo
+                # queremos para BLE). Verificado empíricamente que ``all``
+                # libera cuando ``wifi`` no alcanza.
                 subprocess.run(
-                    ["rfkill", "unblock", "wifi"],
+                    ["rfkill", "unblock", "all"],
                     capture_output=True,
                     timeout=self._SUBPROCESS_TIMEOUT_S,
                 )
@@ -233,6 +281,66 @@ class WiFiProbeCapture:
         except Exception:
             logger.exception("Failed to restore managed mode")
 
+    # Presupuesto del setup async. En el arranque del device, el radio
+    # brcmfmac/CYW43455 sigue inicializando durante el primer ~minuto: el
+    # rfkill queda soft-blocked y el unblock no toma efecto hasta que el
+    # driver termina de levantar (independiente de NM/systemd-rfkill). En vez
+    # de bloquear el pipeline (cámara/MQTT) esperando, hacemos el setup en un
+    # thread y reintentamos pacientemente hasta este deadline. WiFi probing es
+    # no-crítico: si no logra, el pipeline degrada (telemetría wifi=None).
+    # Deadline generoso: en la Pi piloto el radio CYW43455 tardó ~5min reales
+    # tras el boot en aceptar el unblock (el rfkill queda soft-blocked hasta que
+    # el firmware termina de levantar). Como el setup es async (no bloquea el
+    # pipeline), un deadline largo no cuesta nada y cubre boots lentos.
+    _ASYNC_SETUP_DEADLINE_S = 420.0
+    _ASYNC_SETUP_INTERVAL_S = 8.0
+
+    def setup_and_start_async(self) -> None:
+        """Arranca el setup de monitor mode + captura en un thread background.
+
+        No bloquea al caller: el pipeline de visión sigue arrancando mientras
+        el radio WiFi termina de inicializar. Reintenta hasta
+        ``_ASYNC_SETUP_DEADLINE_S`` y, al lograr monitor mode, arranca la
+        captura. Si se agota el deadline, deja WiFi probing off (degrade)."""
+        if self._setup_thread is not None and self._setup_thread.is_alive():
+            logger.warning("wifi_setup_already_running")
+            return
+        self._stop_event.clear()
+        self._setup_thread = threading.Thread(
+            target=self._setup_and_start_loop, daemon=True, name="wifi-setup"
+        )
+        self._setup_thread.start()
+
+    def _setup_and_start_loop(self) -> None:
+        deadline = time.monotonic() + self._ASYNC_SETUP_DEADLINE_S
+        attempt = 0
+        while not self._stop_event.is_set():
+            attempt += 1
+            try:
+                self.setup_monitor_mode()
+                self.start()
+                logger.info(
+                    "wifi_probe_capture_started_async",
+                    extra={"interface": self.interface, "attempts": attempt},
+                )
+                return
+            except RuntimeError as e:
+                if time.monotonic() >= deadline:
+                    logger.error(
+                        "wifi_probe_setup_gave_up — sin WiFi probing tras %.0fs (%d intentos): %s",
+                        self._ASYNC_SETUP_DEADLINE_S,
+                        attempt,
+                        e,
+                    )
+                    return
+                logger.warning(
+                    "wifi_setup_async_retry",
+                    extra={"attempt": attempt, "error": str(e)},
+                )
+                # Espera interrumpible: si el pipeline para, salimos ya.
+                if self._stop_event.wait(self._ASYNC_SETUP_INTERVAL_S):
+                    return
+
     def start(self) -> None:
         """Arranca captura asíncrona de probes y channel hopping."""
         if self._capture_thread is not None:
@@ -259,6 +367,9 @@ class WiFiProbeCapture:
     def stop(self) -> None:
         """Detiene la captura y el channel hopping."""
         self._stop_event.set()
+        if self._setup_thread is not None:
+            self._setup_thread.join(timeout=5.0)
+            self._setup_thread = None
         if self._capture_thread is not None:
             self._capture_thread.join(timeout=5.0)
             self._capture_thread = None

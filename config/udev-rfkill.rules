@@ -1,0 +1,16 @@
+# People Counter — acceso a /dev/rfkill para el grupo netdev.
+#
+# El pipeline (people-counter.service) corre como User=pi con caps acotadas
+# (CAP_NET_ADMIN/NET_RAW). `iw set type monitor` funciona (netlink nl80211,
+# gateado por CAP_NET_ADMIN), PERO `rfkill unblock` escribe el device node
+# /dev/rfkill, que por default es `crw-rw-r-- root root` → solo root puede
+# escribir. Como pi, el unblock falla con "cannot open /dev/rfkill: Permission
+# denied" y el monitor mode nunca arranca (ip link up → RF-kill).
+#
+# Esta regla pone /dev/rfkill en el grupo netdev con escritura de grupo; pi ya
+# pertenece a netdev, así que el pipeline puede destrabar el WiFi por sí mismo
+# (su retry async lo logra en cuanto el driver brcmfmac registra el switch).
+#
+# Deploy: copiar a /etc/udev/rules.d/90-rfkill.rules + `udevadm control
+# --reload && udevadm trigger --subsystem-match=misc` (o reboot).
+KERNEL=="rfkill", SUBSYSTEM=="misc", GROUP="netdev", MODE="0664"

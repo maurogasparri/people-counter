@@ -14,6 +14,47 @@ from src.wifi_ble.wifi_probe import (
 )
 
 
+def test_setup_and_start_async_retries_until_radio_ready():
+    """El setup async no bloquea y reintenta hasta que el radio levanta:
+    setup_monitor_mode falla 2 veces (radio aún inicializando en el boot) y al
+    3er intento funciona → arranca la captura. Modela el ~1min de init del
+    brcmfmac tras el boot sin frenar el pipeline."""
+    cap = WiFiProbeCapture(interface="wlan0")
+    cap._ASYNC_SETUP_INTERVAL_S = 0.01  # sin esperas largas en el test
+    state = {"setup_calls": 0}
+
+    def _setup():
+        state["setup_calls"] += 1
+        if state["setup_calls"] < 3:
+            raise RuntimeError("Operation not possible due to RF-kill")
+
+    cap.setup_monitor_mode = _setup  # type: ignore[method-assign]
+    cap.start = MagicMock()  # type: ignore[method-assign]
+
+    cap.setup_and_start_async()  # no bloquea
+    cap._setup_thread.join(timeout=5.0)
+
+    assert state["setup_calls"] == 3
+    cap.start.assert_called_once()
+
+
+def test_setup_and_start_async_gives_up_after_deadline():
+    """Si el radio nunca levanta, el setup async se rinde al deadline sin
+    bloquear ni crashear (degrade: pipeline sigue sin WiFi)."""
+    cap = WiFiProbeCapture(interface="wlan0")
+    cap._ASYNC_SETUP_DEADLINE_S = 0.0  # se rinde tras el 1er intento fallido
+    cap._ASYNC_SETUP_INTERVAL_S = 0.01
+    cap.setup_monitor_mode = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("nexmon firmware crashed")
+    )
+    cap.start = MagicMock()  # type: ignore[method-assign]
+
+    cap.setup_and_start_async()
+    cap._setup_thread.join(timeout=5.0)
+
+    cap.start.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # ProbeEvent
 # ---------------------------------------------------------------------------
@@ -110,6 +151,7 @@ def test_setup_monitor_mode_raises_if_verify_fails(mock_run):
         returncode=0, stdout="type managed", stderr=""
     )
     cap = WiFiProbeCapture(interface="wlan0")
+    cap._MONITOR_SETUP_ATTEMPTS = 1  # sin retry: el verify falla determinístico
     with pytest.raises(RuntimeError, match="no quedó en monitor mode"):
         cap.setup_monitor_mode()
 
@@ -121,8 +163,39 @@ def test_setup_monitor_mode_raises_if_verify_fails(mock_run):
 def test_setup_monitor_mode_missing_tool(mock_run):
     """Sin ``iw`` instalado el setup raisea con guidance de install."""
     cap = WiFiProbeCapture()
+    cap._MONITOR_SETUP_ATTEMPTS = 1  # sin retry: tool faltante no se arregla
     with pytest.raises(RuntimeError, match="Required tool not found"):
         cap.setup_monitor_mode()
+
+
+@patch("src.wifi_ble.wifi_probe.time.sleep")  # sin delay real en el retry
+@patch("src.wifi_ble.wifi_probe.subprocess.run")
+def test_setup_monitor_mode_retries_on_rfkill_race(mock_run, _mock_sleep):
+    """Si el primer intento falla con RF-kill (NM re-bloquea wlan0 en el boot
+    antes de asentarse), el setup reintenta y termina logrando monitor mode."""
+    state = {"attempt": 0}
+
+    def _run_side_effect(*args, **kwargs):
+        cmd = args[0]
+        # ``ip link set wlan0 up`` falla con RF-kill SOLO en el 1er intento.
+        if "ip" in cmd and "up" in cmd:
+            state["attempt"] += 1
+            if state["attempt"] == 1:
+                return MagicMock(
+                    returncode=2,
+                    stdout="",
+                    stderr="RTNETLINK answers: Operation not possible due to RF-kill",
+                )
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if "info" in cmd:
+            result.stdout = "Interface wlan0\n\ttype monitor\n"
+        return result
+
+    mock_run.side_effect = _run_side_effect
+    cap = WiFiProbeCapture(interface="wlan0")
+    cap.setup_monitor_mode()  # no debe raisear: reintenta y logra
+    # El 'ip link up' se intentó 2 veces (falló, reintentó OK).
+    assert state["attempt"] == 2
 
 
 # ---------------------------------------------------------------------------

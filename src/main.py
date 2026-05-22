@@ -329,9 +329,12 @@ def build_wifi_ble(
 
     try:
         wifi_capture = WiFiProbeCapture(interface=iface, on_probe=_on_probe)
-        wifi_capture.setup_monitor_mode()
-        wifi_capture.start()
-        logger.info("wifi_probe_capture_started", extra={"interface": iface})
+        # Setup async: NO bloquea el arranque del pipeline. El radio brcmfmac
+        # tarda ~1min en inicializar tras el boot (rfkill soft-block hasta que
+        # el driver levanta); el setup reintenta en background y arranca la
+        # captura cuando el radio está listo. WiFi probing es no-crítico.
+        wifi_capture.setup_and_start_async()
+        logger.info("wifi_probe_capture_setup_scheduled", extra={"interface": iface})
     except Exception:
         logger.exception(
             "wifi_probe_capture_init_failed — el pipeline sigue sin WiFi probing"

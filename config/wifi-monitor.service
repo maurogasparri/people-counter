@@ -1,12 +1,20 @@
 [Unit]
 Description=Libera wlan0 para WiFi probing en monitor mode (Pi 5 / CYW43455)
-After=network-pre.target
+After=network-pre.target systemd-rfkill.service
 Before=people-counter.service
 Wants=network-pre.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# rfkill unblock PRIMERO: systemd-rfkill restaura al boot el ultimo estado
+# guardado del WiFi. Si quedo soft-blocked (ej. boot sin asociar a red),
+# `ip link set wlan0 up` falla con "Operation not possible due to RF-kill" y el
+# monitor mode nunca arranca. Corremos esto despues de systemd-rfkill (ver
+# After=) para ganarle al restore — el unblock en el codigo del pipeline puede
+# perder ese race en el arranque. `unblock all` por si el bloqueo no quedo
+# etiquetado como wifi.
+ExecStart=/usr/sbin/rfkill unblock all
 # La Pi 5 (CYW43455/brcmfmac) NO soporta una vif `wlan0mon` paralela, asi que
 # `airmon-ng start wlan0` falla (Device or resource busy) — ese era el bug del
 # servicio original. El pipeline (people-counter) convierte wlan0 a monitor

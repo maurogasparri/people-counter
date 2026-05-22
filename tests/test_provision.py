@@ -34,6 +34,15 @@ def _make_args(**kwargs) -> argparse.Namespace:
         "endpoint": "test.iot.us-east-1.amazonaws.com",
         "skip_aws": True,
         "force": False,
+        # Metadata de dimensiones + seed RDS (skip_db: no tocar RDS en tests).
+        "latitude": None,
+        "longitude": None,
+        "timezone": None,
+        "address": None,
+        "cam_label": None,
+        "skip_db": True,
+        "stack_name": "people-counter-dev",
+        "region": "us-east-1",
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
