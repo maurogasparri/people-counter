@@ -1078,7 +1078,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     _scf_enabled = bool(_scf.get("enabled", True))
     _scf_min_frames = int(_scf.get("min_frames", 20))
     _scf_max_move_px = float(_scf.get("max_movement_px", 50.0))
-    _last_cdbg = 0.0  # TEMP DIAG (clutter) — remover tras tunear
 
     try:
         while running:
@@ -1779,32 +1778,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     and tid not in clutter_ids
                 )
                 now_mono = time.monotonic()
-                # TEMP DIAG (clutter): por qué un track ghost sobrevive el filtro.
-                if now_mono - _last_cdbg >= 2.0:
-                    _roi = counter.roi if counter is not None else None
-                    _ci = []
-                    for _tid, _t in tracks.items():
-                        if getattr(_t, "state", None) not in ("confirmed", "pending"):
-                            continue
-                        _ps = getattr(_t, "positions", None) or []
-                        if not _ps:
-                            continue
-                        _cx, _cy = float(_ps[-1][0]), float(_ps[-1][1])
-                        _inr = bool(
-                            _roi and _roi[0] <= _cx <= _roi[1] and _roi[2] <= _cy <= _roi[3]
-                        )
-                        _mv = max(
-                            max(float(p[0]) for p in _ps) - min(float(p[0]) for p in _ps),
-                            max(float(p[1]) for p in _ps) - min(float(p[1]) for p in _ps),
-                        )
-                        _ci.append(
-                            (_tid, _t.state, int(_cx), int(_cy),
-                             "IN" if _inr else "out", int(_mv), len(_ps),
-                             _tid in clutter_ids)
-                        )
-                    if _ci:
-                        logger.info("CLUTTERDBG roi=%s %s", _roi, _ci)
-                    _last_cdbg = now_mono
                 # Tráfico exterior: query al dedup throttleada (~cada 2s) y
                 # cacheada — sqlite no debe pegarse a full FPS.
                 if wifi_ble is not None and now_mono - _last_ext_ts >= 2.0:
