@@ -264,12 +264,10 @@ FROM wifi_ble_summary
 GROUP BY bucket_15min, store_id;
 
 -- =============================================================================
--- Counting agregado por bucket (15min device-aligned)
+-- Counting agregado por bucket (15min — server-derived via GENERATED)
 -- =============================================================================
--- bucket_15min es device-pre-calculado vía `floor(ts / 900) * 900`
--- (COUNTING_BUCKET_SECONDS, constante de diseño coherente con el nombre de
--- la columna — NO configurable). La columna RDS es regular (no GENERATED)
--- así rows viejos preservan su bucket original.
+-- bucket_15min es GENERATED ALWAYS AS STORED desde event_ts (ver tabla
+-- arriba). Nunca es NULL; el device manda event_ts crudo y RDS deriva.
 
 CREATE OR REPLACE VIEW counting_by_bucket AS
 SELECT
@@ -280,7 +278,6 @@ SELECT
     COUNT(*) FILTER (WHERE direction = 'in')
       - COUNT(*) FILTER (WHERE direction = 'out') AS net
 FROM count_events
-WHERE bucket_15min IS NOT NULL
 GROUP BY store_id, bucket_15min;
 
 -- =============================================================================
@@ -295,7 +292,7 @@ CREATE OR REPLACE VIEW turn_in_rate_by_bucket AS
 WITH ins AS (
     SELECT store_id, bucket_15min, COUNT(*) AS ins
     FROM count_events
-    WHERE direction = 'in' AND bucket_15min IS NOT NULL
+    WHERE direction = 'in'
     GROUP BY store_id, bucket_15min
 )
 SELECT
@@ -355,7 +352,6 @@ WITH visits AS (
     SELECT store_id, bucket_15min,
            COUNT(*) FILTER (WHERE direction = 'in') AS visits
     FROM count_events
-    WHERE bucket_15min IS NOT NULL
     GROUP BY store_id, bucket_15min
 ),
 pos_agg AS (
