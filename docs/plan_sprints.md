@@ -4,7 +4,7 @@
 **Stack:** Raspberry Pi 5 + Hailo-8L + IMX708 estéreo + WiFi/BLE + AWS
 **Modelo de trabajo:** Claude Code escribe el código bajo dirección humana; el humano dirige, decide arquitectura y valida con hardware
 **Duración:** 12 sprints semanales
-**Esfuerzo total estimado:** 118.5 horas
+**Esfuerzo total estimado:** 119.5 horas
 
 ---
 
@@ -222,43 +222,32 @@
 
 ---
 
-## Instrucciones para Claude Code (reorganización del repo)
+## Convención de commits (aplicada)
 
-Usar este plan como referencia oficial para revisar y reordenar el historial del repositorio.
+El historial del repo fue reorganizado el **2026-05-23** para alinearlo con este plan: 508 commits originales → **122 commits** vía squash por `(fecha, sprint primario)`, con prefijo de sprint/tarea obligatorio en el subject. El tree del HEAD es bit-identical al pre-rewrite (zero pérdida de código). El detalle de la reorganización vive en [docs/commit_mapping.md](commit_mapping.md).
 
-**Tareas sugeridas para Claude Code:**
-
-1. **Mapear cada commit a su tarea del plan**: por cada commit del repo, identificar a qué tarea de qué sprint pertenece su contenido principal.
-
-2. **Identificar tandas para squash**: agrupar commits consecutivos sobre la misma tarea (especialmente UX iteration en wizards) en un único commit por tarea.
-
-3. **Reescribir mensajes de commit ambiguos**: para los commits que tengan mensajes vagos (ej: "Update README and CLAUDE.md"), reescribir con un mensaje claro que refleje la tarea del plan correspondiente.
-
-4. **Reordenar cronológicamente por sprint**: el orden ideal del historial es S1 → S2 → S3 → ... → S12, con los commits agrupados dentro de cada sprint por tarea.
-
-5. **Para commits que toquen múltiples tareas o sprints**: el criterio por defecto es **dividir** el commit en múltiples commits separados con `git rebase -i` + `edit` + `git reset HEAD~1` + commits parciales, uno por tarea/sprint, para que el esfuerzo quede correctamente atribuido en cada lugar. La excepción es cuando la división complica la legibilidad sin agregar valor: en esos casos se puede mantener el commit unificado, pero el mensaje debe explicitar **claramente qué partes pertenecen a cada tarea/sprint** y el esfuerzo correspondiente a cada uno se imputa al sprint dominante (no se duplica).
-
-6. **Unificar commits de actividad principal con sus commits de documentación rezagada**: durante el desarrollo es frecuente hacer un *commit* de código y olvidar actualizar la documentación asociada, generando un *commit* posterior de "docs: actualizar X" o "README: reflejar Y". Estos *commits* de documentación rezagada deben fusionarse (squash) con el *commit* de la actividad principal que los origina, dado que conceptualmente forman parte del mismo trabajo. Aplica especialmente a:
-   - *Commits* de actualización de `README.md` / `CLAUDE.md` que siguen a un *commit* de feature
-   - *Commits* de actualización de guías en `docs/` que siguen a cambios en código relacionado
-   - *Commits* de actualización de `config.example.yaml` que siguen a cambios en `src/config/`
-   - *Commits* de actualización de tests que siguen al *commit* del módulo testeado (si fueron olvidados originalmente)
-
-   El *commit* resultante debe quedar bajo el *scope* de la actividad principal, no bajo `docs:`.
-
-7. **Validar que cada tarea del plan tenga al menos un commit asociado**: si alguna tarea queda sin commits, marcarlo como gap (probablemente sea actividad humana no codificable como labeling, captura de dataset, iteración con tablero físico, decisiones de arquitectura, etc.).
-
-**Format de commit recomendado (Conventional Commits con scope):**
+**Formato canónico del subject de commit:**
 
 ```
-<scope>: <descripción concisa de la tarea del plan>
+[S<N>/T<X>] <type>(<scope>): <descripción concisa>
 
-[contexto opcional sobre qué cambió y por qué]
-[referencia al sprint y tarea del plan si conviene]
+[body opcional con contexto]
+
+Co-Authored-By: ...
 ```
 
-Ejemplos:
-- `vision: implementar pipeline ChArUco fisheye (S3, EP-02)`
-- `tracking: tracker con asociación ByteTrack-style (S6, EP-05)`
-- `wifi_ble: stitching con 3 reglas sobre hash_groups (S7, EP-06)`
-- `infra: CloudFormation phaseado con Fargate + ALB (S9, EP-08)`
+| Caso | Ejemplo |
+|---|---|
+| Single task | `[S6/T6.3] fix(counter): debounce de jitter en line crossing` |
+| Multi-task mismo sprint | `[S6/T6.2,T6.3] feat(tracking): ghost pool + ID adoption` |
+| Multi-sprint | `[S6/T6.3][S8/T8.5] feat(tracking): canary track_stitching_ratio` |
+| Docs subordinados al feature | `[docs] docs(plan): regenerar mapping post-rewrite` |
+
+**Reglas operativas hacia adelante:**
+
+1. **Prefijo `[S<N>/T<X>]` obligatorio** en todo commit nuevo. Sprints ordenados ASC, tasks ASC dentro de cada bloque, sin "winner" — el commit es un container de contribuciones.
+2. **Pocos commits por día**. Idealmente 1 por sprint tocado. Iteraciones intra-día se acumulan con `git commit --amend` antes del primer push, no spamean el log.
+3. **Docs subordinados** (`README.md`, `CLAUDE.md`, guías de un feature ya commiteado) usan prefijo `[docs]` y se commitean junto al feature parent o como follow-up explícito.
+4. **Cero menciones de productos externos en el repo** (memorias internas separadas vivían en `memory/` gitignored y siguen ahí). El sanitizer del rewrite las removió de los mensajes históricos.
+
+El backup del estado pre-rewrite quedó como tag local `pre-rewrite-20260523-143821` (no pusheado al remote para mantener el repo público prolijo). El tree de los 508 commits originales sigue accesible vía ese tag por si en el futuro hace falta consultar SHAs viejos.

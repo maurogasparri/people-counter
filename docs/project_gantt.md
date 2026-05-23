@@ -5,13 +5,16 @@ con la estructura formal del plan de proyecto. Sirve como input para
 herramientas de project management (MS Project, GanttProject, etc.) y
 como referencia para estimar tareas similares a futuro.
 
-**Período medido**: 2026-04-02 → 2026-05-15 (44 días calendario, 31
+**Período medido**: 2026-04-02 → 2026-05-23 (52 días calendario, 36
 activos).
-**Esfuerzo medido**: ~100h efectivas en 55 sesiones (gaps ≥ 1.5h entre
-commits) + ~40h estimadas del bundle pre-existente que trajo el initial
-commit. **Total ≈ 140-145h**.
-**Modalidad**: solo developer, sesiones partidas mañana/noche (3.2h/día
-activo promedio, 50% de los días con doble turno).
+**Esfuerzo medido**: **132.0h efectivas** en **67 sesiones** (gaps ≥ 1.5h
+entre commits) + ~40h estimadas del bundle pre-existente que trajo el
+initial commit. **Total ≈ 170-175h**.
+**Modalidad**: solo developer, sesiones partidas mañana/noche (3.7h/día
+activo promedio, 42% de los días con doble turno mañana+tarde-noche
+detectado).
+**Métrica de fuente**: timestamps reconstruidos desde el tag local
+`pre-rewrite-20260523-143821` (508 commits originales, pre squash).
 
 > **Nota metodológica**. Horas derivadas de timestamps de commits
 > agrupados por gaps. Sesión = `(último commit − primer commit) + 30min
@@ -20,7 +23,7 @@ activo promedio, 50% de los días con doble turno).
 > de error está principalmente en el trabajo previo al primer commit de
 > cada sesión (research, debug manual en la Pi sin commit aún).
 >
-> **Datos medidos vs. proyecciones**. Las **~100h del PoC actual** salen
+> **Datos medidos vs. proyecciones**. Las **132h del PoC actual** salen
 > de timestamps reales — son datos. El **escenario optimizado** y el
 > **greenfield desde cero** son **proyecciones** basadas en asunciones
 > explícitas. Las proyecciones incluyen un buffer de +15% sobre la
@@ -35,23 +38,33 @@ activo promedio, 50% de los días con doble turno).
 
 ### PoC entregado (datos medidos)
 
-- **~100h efectivas en 44 días calendario** (2026-04-02 → 2026-05-15),
-  31 días activos, 55 sesiones partidas mañana/noche detectadas.
+- **132h efectivas en 52 días calendario** (2026-04-02 → 2026-05-23),
+  36 días activos, 67 sesiones partidas mañana/noche detectadas.
 - **+ ~40-60h estimadas del skeleton bundleado** en el initial commit
   (20 módulos en `src/` + ~130 tests + pyproject + main.py).
-- **Total real del proyecto: ~140-160h hands-on**.
+- **Total real del proyecto: ~170-190h hands-on**.
 
 ### Distribución del esfuerzo medido
 
-| Bloque | % del esfuerzo |
-|--------|--------------:|
-| Visión + calibración | **43%** |
-| Misc cross-cutting | 13% |
-| Detector (training + Hailo + tracker + counter) | 11% |
-| Tracking | 4% |
-| Docs + config + cleanup | 11% |
-| Infra (WiFi/BLE + MQTT + Cloud bring-up + Status LED + Provisioning) | **15%** |
-| Stitching post-MAC-randomization | 3% |
+Atribución por sprint (horas reconstruidas desde el tag pre-rewrite, sesión
+asignada proporcionalmente al sprint dominante de cada commit). Los "docs"
+agrupan README/CLAUDE/guías top-level que tocan varios sprints sin uno
+predominante.
+
+| Sprint / bloque | Horas | % del esfuerzo |
+|---|---:|---:|
+| S3 — Calibración estéreo | **29.0h** | **22.0%** |
+| Docs cross-cutting (README/CLAUDE/plan/gantt) | 29.7h | 22.5% |
+| S2 — Captura estéreo y servicios | **23.8h** | **18.0%** |
+| S9 — Servicios cloud y APIs | 10.2h | 7.7% |
+| S8 — Mensajería y telemetría | 7.6h | 5.8% |
+| S6 — Seguimiento y conteo | 7.5h | 5.7% |
+| S5 — Detección neuronal | 7.3h | 5.5% |
+| S11 — Validación y tests | 6.9h | 5.2% |
+| Misc / unmapped (configs, tooling cross) | 7.0h | 5.3% |
+| S7 — Captura WiFi y BLE | 2.5h | 1.9% |
+| S4 — Profundidad y ROI | 0.6h | 0.4% |
+| **Total** | **132.0h** | **100%** |
 
 ### Hitos del PoC
 
@@ -64,20 +77,37 @@ activo promedio, 50% de los días con doble turno).
 | M4 | Detector fine-tuned corriendo en Hailo | ✓ Done (05-08) |
 | M5 | Pipeline E2E con conteo validado | ✓ Done (05-08) |
 | **M6** | **Stack cloud desplegado E2E: device → IoT → Lambda IAM auth → RDS → Grafana HTTPS** | **✓ Done (05-15)** |
-| **M7** | **Dedup WiFi/BLE robusto a MAC randomization: hash groups con 3 reglas de stitching** | **✓ Done (05-15)** |
+| **M7** | **Dedup WiFi/BLE robusto a MAC randomization: hash groups con 4 reglas de stitching** | **✓ Done (05-15)** |
+| **M8** | **S9 cerrado: read-only PostgreSQL para socios + cloud DR documentado + Lambda POS ingest deployada (T9.8 + T9.10 + T9.11)** | **✓ Done (05-23)** |
+| **M9** | **Counter production-grade: 3-layer rescue cascade (ghost pool + decisive Kalman + death-emit guards) + telemetry canaries (track_stitching_ratio + ghost_adoption_count + death_emit_count)** | **✓ Done (05-22)** |
+| **M10** | **Repo reorganizado: 508 → 124 commits con prefijo `[S<N>/T<X>]` + sanitización + commit_mapping regenerado** | **✓ Done (05-23)** |
 | — | Dashboards funcionales (ECS Fargate Grafana 13 detrás de ALB sobre RDS Postgres) | **⊘ Pendiente** (CFN desplegado + datasource configurado, dashboards no construidos) |
 
 ### Iteraciones de diseño exploradas
 
-- **~12h del esfuerzo (~13%) se dedicaron a evaluación de alternativas
-  de diseño**: ~10h en calibración (comparativa OV5647 170° vs IMX708
-  120°, evaluación pinhole + rational vs. fisheye K-B, validación
-  del sensor mode canónico) + ~2h en tracker (refinamiento del modelo
-  de movimiento desde stub centroide a Kalman 4-D + matching ByteTrack-
-  style en mayo).
-- **Impacto en calendario: ~19 días** (46%) porque estas iteraciones se
-  ubicaron sobre el camino crítico (calibración → depth → tracker →
-  counter → detector encadenados).
+- **~18h del esfuerzo (~14%) se dedicaron a evaluación de alternativas
+  de diseño**:
+  - **~10h en calibración** (comparativa OV5647 170° vs IMX708 120°,
+    evaluación pinhole + rational vs. fisheye K-B, validación del
+    sensor mode canónico).
+  - **~2h en el tracker base** (refinamiento del modelo de movimiento
+    desde stub centroide a Kalman 4-D + matching estilo two-stage en
+    mayo).
+  - **~6h en la rescue cascade del counter** (mayo 21-23): tres capas
+    complementarias para no perder counts ante detector flakey o
+    crossers que se pierden mid-line — ghost pool / ID adoption,
+    decisive Kalman cross at exit, y death-emit-if-crossed con guards
+    anti-falso-positivo (had_outside_pos + visit_range). Cada capa
+    tiene su canary de telemetría (`ghost_adoption_count`,
+    `death_emit_count`, `track_stitching_ratio`) para observar el
+    balance "agresivo↔conservador" en la flota. El trade-off entre
+    capturar walked-then-lost-mid-line vs. evitar doble-conteo del
+    drift Kalman se documentó como "rescue con guardrails" en
+    CLAUDE.md.
+- **Impacto en calendario: ~20 días** (~38% del calendario) porque
+  estas iteraciones se ubicaron sobre el camino crítico (calibración →
+  depth → tracker → counter → detector encadenados, y la rescue
+  cascade del counter en el cierre del PoC).
 
 ### Detector — dimensionamiento del dataset
 
@@ -208,7 +238,7 @@ Totales por agrupación (medidos del repo):
 | Sub-tarea | T-code | Horas | Inicio | Fin | Predecesoras |
 |-----------|--------|-------|--------|-----|--------------|
 | Captura WiFi/BLE (nexmon + bleak) + hashing + scaffolding del dedup engine | T06 | 2.0 | 04-02 | 04-07 | T01 |
-| **Análisis de MAC randomization + diseño del modelo de dedup robusto** (técnicas evaluadas: PNL clustering, seqnum tracking, timing fingerprinting, BLE anchoring, channel timing analysis; selección + implementación de las 3 reglas que balancean accuracy vs privacy) | T20 | **~3.5** | 05-15 | 05-15 | T06, T17 |
+| **Análisis de MAC randomization + diseño del modelo de dedup robusto** (técnicas evaluadas: PNL clustering, seqnum tracking, timing fingerprinting, BLE anchoring, channel timing analysis; selección + implementación de las 4 reglas que balancean accuracy vs privacy) | T20 | **~3.5** | 05-15 | 05-15 | T06, T17 |
 
 > **T20 — análisis del problema y selección de técnicas**: iOS/Android
 > randomizan la MAC en probes cada ~2-15min como contramedida
@@ -218,13 +248,17 @@ Totales por agrupación (medidos del repo):
 > anchoring, channel timing analysis) con trade-offs documentados de
 > accuracy vs privacy regression vs costo de implementación.
 >
-> El modelo final usa **3 reglas complementarias** sobre el abstracto
+> El modelo final usa **4 reglas complementarias** sobre el abstracto
 > `hash_groups`: (1) **seqnum continuity 802.11** — el seqnum del chip
 > tiende a ser continuo cross-MAC-change (defeated por Apple H1+ con
 > reset, funciona en Android); (2) **cross-protocol L2 short window** —
 > WiFi+BLE simultáneo con RSSI compatible; (3) **BLE anchoring long
 > window** — durante la vida de un BLE RPA (~15min iOS), MACs WiFi con
-> RSSI compatible se asocian al grupo. PNL clustering y timing
+> RSSI compatible se asocian al grupo; (4) **fingerprint continuity** —
+> orden de IEs + HT/VHT/HE caps (WiFi) o company ID + Continuity
+> subtypes + service UUIDs + TX power (BLE) sobreviven la rotación de
+> MAC/RPA, agarrando el caso Apple H1+ donde el seqnum se resetea.
+> PNL clustering y timing
 > fingerprinting se rechazaron — el primero por cruzar la línea de
 > "fingerprinting comportamental" del producto (vendemos privacy-first),
 > el segundo por signal débil.
@@ -354,7 +388,7 @@ referencia.
 | M4 | Detector fine-tuned corriendo en Hailo | 05-08 | T14 | Dev / Pruebas detección |
 | M5 | Pipeline E2E con conteo validado | 05-08 | T16 | Pruebas integral |
 | **M6** | **Stack cloud desplegado E2E** (CFN aplicado + Lambda IAM auth + RDS schema + Grafana HTTPS) | **05-15** | **T10c+d+e** | **Infra (AWS)** |
-| **M7** | **Dedup robusto** (hash groups con 3 reglas de stitching: seqnum + cross-protocol L2 + BLE anchor) | **05-15** | **T20** | **Stitching** |
+| **M7** | **Dedup robusto** (hash groups con 4 reglas de stitching: seqnum + cross-protocol L2 + BLE anchor + fingerprint) | **05-15** | **T20** | **Stitching** |
 
 ---
 
@@ -478,18 +512,22 @@ gantt
 ## Horas por semana
 
 ```
-semana del     vis    det    trk    cfg    docs   otros    TOTAL
-─────────────────────────────────────────────────────────────────
-30-Mar        8.2h   0.3h    -      -      -      6.0h    14.1h   (arranque)
-06-Abr        4.9h    -     0.7h   0.7h   0.1h    2.0h     8.4h
-13-Abr        1.6h   0.5h    -     0.5h   0.7h    1.6h     4.9h   (semana corta)
-20-Abr       11.0h   1.2h   0.3h    -     1.6h    4.7h    18.8h   ← wizard sprint
-27-Abr        8.5h   4.0h   0.5h   1.5h   0.8h    2.9h    18.2h   ← detector + setup tools
-04-May        7.1h   4.4h   2.6h   1.1h    -      5.2h    19.4h   ← detector + tracking + runtime
-11-May        1.5h   1.0h   0.5h   1.3h   0.4h    1.1h     5.8h   (cleanup)
-                                                       cloud   stitch
-11-May (cont)  -      -      -      -     0.5h    7.0h   3.5h   11.0h   ← deployment del stack cloud (05-13/15) + dedup robusto WiFi/BLE (05-15)
+semana del      TOTAL    foco principal
+─────────────────────────────────────────────────────────────────────────────
+30-Mar (W14)    14.1h    arranque + bundle initial + scaffolding
+06-Abr (W15)     8.4h    captura + setup services
+13-Abr (W16)     4.9h    calibración (semana corta)
+20-Abr (W17)    18.8h    ← wizard sprint (focus_assist + calibrate UX)
+27-Abr (W18)    18.2h    detector + setup tools
+04-May (W19)    19.2h    detector + tracking + runtime
+11-May (W20)    28.0h    ← cloud deployment + dedup WiFi/BLE 4 reglas + counter parallax
+18-May (W21)    20.4h    ← S9 cierre (T9.8 + T9.10 + T9.11) + counter production-grade (rescue cascade) + repo organizado
+─────────────────────────────────────────────────────────────────────────────
+                132.0h
 ```
+
+Las dos últimas semanas concentraron **48.4h (37%) del esfuerzo** —
+cierre del cloud + hardening del tracker + organización del repo.
 
 ## Patrón diario detectado
 
@@ -506,16 +544,20 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
 
 - Sesión mañana típica: 07:00-10:30 (~3h)
 - Sesión noche típica: 18:00-23:00 (~4-5h) con trasnocheo ocasional hasta 01h
-- 50% de los días con doble turno
+- 42% de los días con doble turno mañana+tarde-noche detectado
+  (`{mañana <13h} ∩ {tarde-noche ≥17h}` no vacíos)
 
 ---
 
 ## Observaciones para planning futuro
 
-1. **Las iteraciones de diseño insumieron ~12h del total (13%)** — ver
-   sección "Iteraciones de diseño exploradas" abajo. La lección
-   concreta: un proyecto análogo apoyado en las decisiones consolidadas
-   en este repo ahorra el ~25% del tiempo de visión + tracking.
+1. **Las iteraciones de diseño insumieron ~18h del total (14%)** — ver
+   sección "Iteraciones de diseño exploradas" arriba. ~10h en
+   calibración (sensor + modelo de distorsión) + ~2h en el tracker
+   base + ~6h en la rescue cascade del counter (mayo 21-23). La
+   lección concreta: un proyecto análogo apoyado en las decisiones
+   consolidadas en este repo ahorra ~25-30% del tiempo de visión +
+   tracking + counter.
 2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Con el modelo de distorsión definido upfront y el sensor mode canónico documentado, son 3-4h. Para sensors/lenses nuevos presupuestar 1.5× del baseline consolidado.
 3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-ROI) probablemente cueste 6-10h cada uno.
 4. **Detector "barato" en horas locales pero caro en wall-clock** — 11h directas, pero hay 20+ días de calendario entre captura → label → train → compile porque cada etapa tiene wait externo (Roboflow labeling humano, Kaggle queue, Hailo compile en Docker).
