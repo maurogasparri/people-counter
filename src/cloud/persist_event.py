@@ -157,9 +157,9 @@ def _insert_counting(conn, event: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT INTO count_events
-                (device_id, store_id, event_ts, bucket_15min, direction,
+                (device_id, store_id, event_ts, direction,
                  track_id, confidence, height_class, height_m)
-            VALUES (%s, %s, %s, %s, %s,
+            VALUES (%s, %s, %s, %s,
                     %s, %s, %s, %s)
             ON CONFLICT (device_id, event_ts, track_id, direction) DO NOTHING
             """,
@@ -167,10 +167,11 @@ def _insert_counting(conn, event: dict[str, Any]) -> None:
                 device_id,
                 _infer_store_id(device_id),
                 _ts(data.get("event_time", event.get("timestamp"))),
-                # Acepta tanto la key nueva ("bucket_15min") como la legacy
-                # ("event_bucket") para no romper devices con firmware viejo
-                # durante un rollout escalonado.
-                _ts(data.get("bucket_15min", data.get("event_bucket"))),
+                # bucket_15min se omite — la columna RDS es GENERATED ALWAYS AS
+                # STORED desde event_ts (date_bin server-side). El device manda
+                # event_time RAW y Postgres deriva el bucket sin acoplar device
+                # ↔ schema. Devices con firmware viejo que aún mandan
+                # `bucket_15min` en el payload: la key se ignora silenciosamente.
                 data["direction"],
                 data.get("track_id"),
                 data.get("confidence"),
@@ -253,17 +254,19 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
 def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
     data = event["data"]
     device_id = event["device_id"]
-    # bucket_15min default == period_start (publisher manda ambos pre-alineados).
-    # Acepta legacy key "period_bucket" para devices con firmware viejo.
-    bucket_15min = data.get(
-        "bucket_15min", data.get("period_bucket", data["period_start"])
-    )
+    # bucket_15min: omitido — la columna RDS es GENERATED ALWAYS AS STORED
+    # desde period_start. Devices con firmware viejo que mandaban bucket_15min
+    # o period_bucket: las keys se ignoran silenciosamente.
+    # last_seen_ts: opcional, info diagnostica (cuándo fue la última detección
+    # dentro de la ventana). None si el device es viejo o la ventana fue vacía
+    # (en cuyo caso ni siquiera deberíamos llegar acá).
+    last_seen_ts = data.get("last_seen_ts")
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO wifi_ble_summary
-                (device_id, store_id, period_start, period_end, bucket_15min,
-                 passersby, shoppers)
+                (device_id, store_id, period_start, period_end,
+                 passersby, shoppers, last_seen_ts)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (device_id, period_start, period_end) DO NOTHING
             """,
@@ -272,9 +275,9 @@ def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
                 _infer_store_id(device_id),
                 _ts(data["period_start"]),
                 _ts(data["period_end"]),
-                _ts(bucket_15min),
                 data["passersby"],
                 data["shoppers"],
+                _ts(last_seen_ts) if last_seen_ts is not None else None,
             ),
         )
 

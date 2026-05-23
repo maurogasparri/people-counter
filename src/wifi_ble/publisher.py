@@ -159,23 +159,23 @@ class WifiBlePublisher:
             return 0
 
         try:
-            # period_bucket: como el publisher ya alinea period_start al
-            # múltiplo de _period (commit 8c797de), period_bucket == period_start.
-            # Lo mandamos explícito así Postgres lo guarda directo en la columna
-            # period_bucket (regular, no GENERATED) — facilita queries multi-bucket
-            # cuando los devices de la flota corren con summary_interval_seconds
-            # distintos (cada device contribuye N summaries dentro del mismo
-            # bucket_15min de RDS).
-            self._mqtt.publish_event(
-                "wifi_ble",
-                {
-                    "period_start": int(period_start),
-                    "period_end": int(period_end),
-                    "period_bucket": int(period_start),
-                    "passersby": summary["passersby"],
-                    "shoppers": summary["shoppers"],
-                },
-            )
+            # El device manda period_start (cuándo arrancó la ventana del
+            # summary, alineado al múltiplo de _period) + last_seen_ts
+            # (última detección real dentro de la ventana, informativa).
+            # NO manda bucket_15min — eso lo deriva Postgres server-side
+            # vía GENERATED ALWAYS AS (date_bin de period_start) STORED.
+            # Desacopla el device del bucket size del schema (migrar a
+            # bucket de 5min en RDS = ALTER TABLE sin tocar device).
+            payload = {
+                "period_start": int(period_start),
+                "period_end": int(period_end),
+                "passersby": summary["passersby"],
+                "shoppers": summary["shoppers"],
+            }
+            last_seen = summary.get("last_seen_ts")
+            if last_seen is not None:
+                payload["last_seen_ts"] = float(last_seen)
+            self._mqtt.publish_event("wifi_ble", payload)
             logger.info(
                 "wifi_ble_summary_published",
                 extra={

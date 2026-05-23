@@ -26,7 +26,7 @@ erDiagram
         text        device_id       "indexado"
         text        store_id        "join key principal"
         timestamptz event_ts        "indexado"
-        timestamptz bucket_15min    "device-aligned, join key temporal"
+        timestamptz bucket_15min    "GENERATED desde event_ts (server-side)"
         timestamptz bucket_hour     "GENERATED desde event_ts"
         date        bucket_day      "GENERATED desde event_ts"
         text        direction       "CHECK in_out"
@@ -43,11 +43,12 @@ erDiagram
         text        store_id        "join key"
         timestamptz period_start    "inicio ventana real medida"
         timestamptz period_end      "fin ventana real medida"
-        timestamptz bucket_15min    "device-aligned, join key temporal"
+        timestamptz bucket_15min    "GENERATED desde period_start (server-side)"
         timestamptz bucket_hour     "GENERATED desde period_start"
         date        bucket_day      "GENERATED desde period_start"
         int         passersby       "post stitching (4 reglas)"
         int         shoppers        "RSSI cercano (por max_rssi)"
+        timestamptz last_seen_ts    "ultimo visitor del periodo (diagnostico)"
         timestamptz received_at
     }
 
@@ -129,7 +130,7 @@ no necesiten `date_trunc`:
 
 | Columna | Tipo | Origen |
 |---|---|---|
-| `bucket_15min` | TIMESTAMPTZ | Device-aligned en count_events/wifi_ble (lo manda el device pre-calculado vía `floor(ts / 900) * 900` — constante de diseño `COUNTING_BUCKET_SECONDS`, NO configurable, alineada con el nombre de la columna). Server-derived GENERATED en pos_transactions (el POS no conoce el bucket). |
+| `bucket_15min` | TIMESTAMPTZ | **Server-derived `GENERATED ALWAYS AS STORED`** desde `event_ts` (count_events, pos_transactions) o `period_start` (wifi_ble_summary). El device manda timestamps crudos — desacopla device ↔ schema. Migrar a bucket de otro tamaño = `ALTER COLUMN` en RDS, sin tocar device/MQTT/Lambda. |
 | `bucket_hour` | TIMESTAMPTZ | GENERATED ALWAYS AS STORED — `date_trunc('hour', event_ts)` en todas las tablas. |
 | `bucket_day` | DATE | GENERATED ALWAYS AS STORED — `date_trunc('day', event_ts)::date` en todas las tablas excepto telemetry (no aplica naturalmente a samples de 5min). |
 

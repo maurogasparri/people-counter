@@ -351,7 +351,8 @@ def test_e2e_ingress_event_published(monkeypatch: pytest.MonkeyPatch) -> None:
     # como sanity check device-vs-server.
     assert "event_time" in event
     assert "track_id" in event
-    assert "bucket_15min" in event
+    # bucket_15min ya no está en el payload — server-derived via GENERATED en RDS.
+    assert "bucket_15min" not in event
 
 
 # ---------------------------------------------------------------------------

@@ -77,14 +77,15 @@ TELEMETRY_WINDOW_SIZE = 100
 # CheckViolation y el counting no llega a RDS.
 _WIRE_DIRECTION = {"ingress": "in", "egress": "out"}
 
-# Bucket de agregación temporal de counting fijo por diseño del schema RDS:
-# la columna `bucket_15min` (count_events / wifi_ble_summary) en Postgres está
-# nombrada con la granularidad explícita — cambiar este valor rompería el
-# contrato con el schema, los dashboards de Grafana y las views analíticas
-# (`counting_by_bucket`, `turn_in_rate_by_bucket`, hourly rollups). El device
-# pre-calcula `bucket_15min = floor(ts / 900) * 900` en el payload y Postgres
-# lo guarda como columna regular — históricos preservados, NO recomputable.
-COUNTING_BUCKET_SECONDS = 900
+# Máximo operativo del `wifi_ble.summary_interval_seconds`. Está alineado
+# con el bucket actual del schema RDS (`bucket_15min` server-derived =
+# 900s). Si en el futuro el schema migra a un bucket más fino (ej. bucket
+# de 5min), también hay que bajar este cap para que un summary del device
+# no abarque más de un bucket del schema (y por lo tanto el server pueda
+# atribuirlo a UN bucket determinístico vía `date_bin(period_start)`).
+# El bucket en sí NO lo calcula el device — el device manda timestamps
+# crudos y el schema deriva los buckets via GENERATED columns.
+_MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS = 900
 
 logger = logging.getLogger(__name__)
 
@@ -389,21 +390,21 @@ def build_wifi_ble(
             ble_scanner = None
 
     # Período del summary del WifiBlePublisher. Acotado a [30, 900]:
-    # - mínimo 30s evita MQTT flood (la dedup vía hash groups + el filtro
-    #   randomized_only ya garantizan que el publish carga datos
-    #   estadísticamente significativos en ~30s).
-    # - máximo 900s alineado con COUNTING_BUCKET_SECONDS = el bucket
-    #   analítico de la tabla. Cualquier valor mayor abriría "huecos" en
-    #   `wifi_ble_summary.bucket_15min` (faltarían summaries dentro de un
-    #   bucket de 15 min).
+    # - mínimo 30s evita MQTT flood + garantiza agregación estadísticamente
+    #   significativa (~30s da chance al stitching de juntar MAC rotations).
+    # - máximo 900s alineado con el bucket actual del schema RDS. Valores
+    #   mayores harían que un summary del device abarcara más de un bucket
+    #   server, rompiendo la atribución determinística.
     # Si el valor cae fuera de [30, 900], se loggea WARNING y se clampea.
     raw_interval = float(wifi_cfg.get("summary_interval_seconds", 900))
-    period_seconds = max(30.0, min(raw_interval, float(COUNTING_BUCKET_SECONDS)))
+    period_seconds = max(
+        30.0, min(raw_interval, float(_MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS))
+    )
     if period_seconds != raw_interval:
         logger.warning(
             "wifi_ble_summary_interval_clamped",
             extra={"raw": raw_interval, "clamped": period_seconds,
-                   "valid_range": [30, COUNTING_BUCKET_SECONDS]},
+                   "valid_range": [30, _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS]},
         )
 
     publisher = WifiBlePublisher(
@@ -1735,24 +1736,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
 
             # --- Publicar eventos de conteo ---
             for event in events:
-                # bucket_15min: alineamos event_time al múltiplo de
-                # COUNTING_BUCKET_SECONDS (900s = 15min, fijo por diseño
-                # del schema). El device pre-calcula y manda la columna en
-                # el payload — Postgres la guarda como columna regular,
-                # NO GENERATED, así rows viejos preservan su bucket
-                # original (históricamente correcto).
-                bucket_15min = (
-                    int(event.timestamp / COUNTING_BUCKET_SECONDS)
-                    * COUNTING_BUCKET_SECONDS
-                )
-
+                # El device manda event_time RAW (timestamp epoch del cruce
+                # real). El bucket_15min se deriva server-side via columna
+                # GENERATED — desacopla el device del schema bucket size:
+                # migrar a bucket_5min en RDS = ALTER TABLE sin tocar device
+                # ni Lambda ni MQTT.
                 payload = {
                     # Label interno ('ingress'/'egress') -> direccion canonica
                     # del wire/schema ('in'/'out'). Ver _WIRE_DIRECTION arriba.
                     "direction": _WIRE_DIRECTION.get(event.direction, event.direction),
                     "track_id": event.track_id,
                     "event_time": event.timestamp,
-                    "bucket_15min": bucket_15min,
                     "height_class": event.height_class,
                     "height_m": (
                         round(event.height_m, 2) if event.height_m is not None else None

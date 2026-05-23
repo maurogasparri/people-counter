@@ -60,7 +60,6 @@ Todos los topics comparten el mismo envelope (construido por
     "direction": "in",
     "track_id": 42,
     "event_time": 1779897130.456,
-    "bucket_15min": 1779896700,
     "height_class": "adult",
     "height_m": 1.78,
     "confidence": 0.91
@@ -71,8 +70,7 @@ Todos los topics comparten el mismo envelope (construido por
 |---|---|---|---|
 | `direction` | string | ✓ | `"in"` o `"out"` — qué dirección cruzó la línea |
 | `track_id` | int | recomendado | ID interno del tracker. Junto con `(device_id, event_ts, direction)` forma el UNIQUE constraint para idempotencia |
-| `event_time` | number | ✓ | epoch seconds del cruce real (no del publish). Si falta, fallback al `timestamp` del envelope |
-| `bucket_15min` | number | recomendado | epoch seconds alineado a múltiplos de 900 (15 min — constante de diseño del schema, no configurable). El device pre-calcula vía `floor(ts / 900) * 900` para que el server no recompute |
+| `event_time` | number | ✓ | epoch seconds del cruce real (no del publish). Si falta, fallback al `timestamp` del envelope. **El device manda timestamp crudo** — Postgres deriva `bucket_15min`, `bucket_hour`, `bucket_day` server-side via columnas GENERATED. |
 | `height_class` | string | nullable | `"adult"` \| `"child"` \| `"unknown"` (clasificación server-side desde `height_m`). Power US-05 breakdown |
 | `height_m` | number | nullable | Altura cruda del sujeto. Usado para debug de drift del `mounting_height_m` del config |
 | `confidence` | number | nullable | Score del detector \[0, 1\]. Debug-only |
@@ -147,19 +145,19 @@ sample timestamp no duplican.
 {
     "period_start": 1779896700,
     "period_end": 1779897600,
-    "period_bucket": 1779896700,
     "passersby": 160,
-    "shoppers": 27
+    "shoppers": 27,
+    "last_seen_ts": 1779897580.4
 }
 ```
 
 | Campo | Tipo | Requerido | Notas |
 |---|---|---|---|
-| `period_start` | number | ✓ | epoch seconds, inicio de la ventana real medida |
+| `period_start` | number | ✓ | epoch seconds, inicio de la ventana real medida (alineado al múltiplo de `summary_interval_seconds`). **Postgres deriva `bucket_15min` server-side** via GENERATED desde este timestamp. |
 | `period_end` | number | ✓ | epoch seconds, fin de la ventana |
-| `period_bucket` | number | recomendado | epoch seconds alineado a 15min. Default = `period_start` cuando ya viene pre-alineado. **Key alternativa**: `bucket_15min` (la Lambda acepta ambas durante rollout) |
 | `passersby` | int | ✓ | Conteo DISTINCT de `group_id` (no de hashes) en la ventana — gente que pasó cerca |
 | `shoppers` | int | ✓ | Subset de `passersby` con RSSI fuerte (entró al local) |
+| `last_seen_ts` | number | opcional | epoch seconds del último visitor REAL detectado dentro de la ventana (MAX `last_seen` del dedup). Info diagnóstica — útil para alarmas "no hay actividad hace N min" sin depender de `received_at`. Null si firmware viejo. |
 
 **Privacy nota**: este es el ÚNICO output del subsystema WiFi/BLE que sale del
 device. Los hashes individuales, RSSI per-detection y seqnums quedan en el
@@ -312,7 +310,11 @@ El POS solo manda `event_ts`. Server-side, Postgres deriva `bucket_15min`,
 sobre un interval —`extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch'))`—
 porque `date_trunc`/`extract` directos sobre `timestamptz` son STABLE (no
 IMMUTABLE) y Postgres los rechaza en una generated column.
-Esto permite el JOIN con `count_events.bucket_15min` (que el device pre-calcula)
+
+**Aplica idéntico** a `count_events.bucket_15min` (desde `event_ts`) y
+`wifi_ble_summary.bucket_15min` (desde `period_start`): todas las columnas
+de bucket son server-derived, el device manda timestamps crudos. JOIN
+`count_events.bucket_15min = wifi_ble_summary.bucket_15min = pos_transactions.bucket_15min`
 sin recomputar nada en queries.
 
 ### Ejemplos de cliente

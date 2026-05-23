@@ -32,12 +32,10 @@ CREATE TABLE IF NOT EXISTS count_events (
     device_id       TEXT         NOT NULL,
     store_id        TEXT         NOT NULL,
     event_ts        TIMESTAMPTZ  NOT NULL,
-    -- Bucket de 15min alineado al epoch — lo manda el device pre-calculado
-    -- vía `floor(ts / 900) * 900` (COUNTING_BUCKET_SECONDS, constante de
-    -- diseño coherente con el nombre de la columna). Columna regular (no
-    -- GENERATED) así rows viejos preservan su bucket original — históricos
-    -- correctos cross-migration.
-    bucket_15min    TIMESTAMPTZ,
+    -- Bucket de 15min alineado al epoch — derivado server-side desde event_ts.
+    -- El device manda event_ts crudo, no calcula el bucket. Cambiar el tamaño
+    -- del bucket (ej. migrar a 5min) = ALTER COLUMN sin tocar device/MQTT/Lambda.
+    bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 900) * 900)) STORED,
     -- Rollups server-side derivados del event_ts. STORED para que sean indexables
     -- y los queries de Grafana hourly/daily no recomputen date_trunc en cada fila.
     bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
@@ -65,7 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_count_events_store_ts
 CREATE INDEX IF NOT EXISTS idx_count_events_device_ts
     ON count_events (device_id, event_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_count_events_bucket15
-    ON count_events (store_id, bucket_15min DESC) WHERE bucket_15min IS NOT NULL;
+    ON count_events (store_id, bucket_15min DESC);
 CREATE INDEX IF NOT EXISTS idx_count_events_day
     ON count_events (store_id, bucket_day DESC);
 
@@ -75,13 +73,20 @@ CREATE TABLE IF NOT EXISTS wifi_ble_summary (
     store_id        TEXT         NOT NULL,
     period_start    TIMESTAMPTZ  NOT NULL,                  -- inicio de la ventana (epoch del device)
     period_end      TIMESTAMPTZ  NOT NULL,                  -- fin de la ventana
-    -- Bucket de 15min device-aligned. Se llama bucket_15min para consistencia
-    -- con count_events / pos_transactions (mismo nombre de columna -> JOINs faciles).
-    bucket_15min    TIMESTAMPTZ  NOT NULL,
+    -- Bucket de 15min — derivado server-side desde period_start (alineado al
+    -- arranque de la ventana del device, NO al last_seen_ts que es no-determinístico).
+    -- Server-derived facilita migrar tamaño de bucket sin tocar device.
+    bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 900) * 900)) STORED,
     bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
     bucket_day      DATE         GENERATED ALWAYS AS ((TIMESTAMP 'epoch' + floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 86400) * INTERVAL '1 day')::date) STORED,
     passersby       INT          NOT NULL,                  -- post L2 dedup
     shoppers        INT          NOT NULL,                  -- en rango cercano (RSSI fuerte)
+    -- Timestamp de la ÚLTIMA detección de un visitor dentro del período.
+    -- Info diagnóstica — útil para alarmas "no se ha visto a nadie hace N min",
+    -- o para diferenciar "no había nadie afuera" vs "el subsistema murió" sin
+    -- depender de `received_at` (que es de cuando llegó el msg, no del último
+    -- visitor real). NULLABLE: devices con firmware viejo no lo mandan.
+    last_seen_ts    TIMESTAMPTZ,
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- Idempotencia ante retries del device: una sola fila por (device, ventana).
     UNIQUE (device_id, period_start, period_end)

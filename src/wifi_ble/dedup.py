@@ -508,7 +508,7 @@ class DedupEngine:
         until_ts: float | None = None,
         rssi_passerby: float = -75.0,
         rssi_shopper: float = -55.0,
-    ) -> dict[str, int]:
+    ) -> dict[str, float | int | None]:
         """Agregados WiFi+BLE post-stitching para una ventana cerrada.
 
         Cuenta DISTINCT group_id donde al menos un miembro del grupo tuvo
@@ -522,7 +522,11 @@ class DedupEngine:
             rssi_shopper:  RSSI minimo para "muy cerca / probable entrada" (-55).
 
         Returns:
-            {"passersby": N, "shoppers": M} — invariante shoppers <= passersby.
+            {"passersby": N, "shoppers": M, "last_seen_ts": epoch_seconds | None}
+            — invariante shoppers <= passersby. ``last_seen_ts`` es el MAX
+            del ``last_seen`` de todas las observaciones dentro de la ventana
+            (info diagnostica: cuando fue la ultima deteccion del periodo).
+            None si la ventana fue vacia.
         """
         if until_ts is None:
             until_ts = time.time()
@@ -551,8 +555,22 @@ class DedupEngine:
 
             passersby = _count(rssi_passerby)
             shoppers = _count(rssi_shopper)
+            # last_seen_ts: maximo last_seen de cualquier observacion cuyo
+            # first_seen cayo en la ventana. Es informativa — no la usa
+            # ningun calculo aguas abajo, solo va al payload para que el
+            # server tenga "cuando fue la ultima actividad" sin recomputar.
+            row = conn.execute(
+                """SELECT MAX(last_seen) FROM hash_groups
+                   WHERE first_seen >= ? AND first_seen < ?""",
+                (since_ts, until_ts),
+            ).fetchone()
+            last_seen_ts = row[0] if row and row[0] is not None else None
 
-        return {"passersby": passersby, "shoppers": shoppers}
+        return {
+            "passersby": passersby,
+            "shoppers": shoppers,
+            "last_seen_ts": last_seen_ts,
+        }
 
     def get_stitching_ratio(self) -> float | None:
         """Ratio de compresion del stitching: groups / hashes.

@@ -52,9 +52,9 @@ def fake_pg(monkeypatch):
 
 
 def test_counting_event_inserts(fake_pg):
-    """Schema actual del INSERT (9 columnas) — ver _insert_counting.
-        0=device_id, 1=store_id, 2=event_ts, 3=bucket_15min, 4=direction,
-        5=track_id, 6=confidence, 7=height_class, 8=height_m.
+    """Schema del INSERT (8 columnas, sin bucket_15min — ahora GENERATED en RDS):
+        0=device_id, 1=store_id, 2=event_ts, 3=direction,
+        4=track_id, 5=confidence, 6=height_class, 7=height_m.
     """
     from src.cloud.persist_event import handler
 
@@ -78,21 +78,24 @@ def test_counting_event_inserts(fake_pg):
     sql = call_args[0][0]
     params = call_args[0][1]
     assert "INSERT INTO count_events" in sql
-    assert "bucket_15min" in sql
+    # bucket_15min ya no aparece en el INSERT — es GENERATED server-side.
+    assert "bucket_15min" not in sql
     assert params[0] == "store-001-cam-01"
     assert params[1] == "store-001"          # store_id inferido
     # params[2] = event_ts (datetime UTC desde event_time o envelope timestamp).
-    assert params[3] is None                 # bucket_15min — None cuando no se manda
-    assert params[4] == "in"                 # direction
-    assert params[5] == 42                   # track_id
-    assert params[6] == 0.87                 # confidence
-    assert params[7] == "adult"              # height_class
-    assert params[8] == 1.75                 # height_m
+    assert params[3] == "in"                 # direction
+    assert params[4] == 42                   # track_id
+    assert params[5] == 0.87                 # confidence
+    assert params[6] == "adult"              # height_class
+    assert params[7] == 1.75                 # height_m
 
 
-def test_counting_event_accepts_legacy_event_bucket_key(fake_pg):
-    """Devices con firmware viejo mandan ``event_bucket`` en vez de ``bucket_15min``.
-    El Lambda debe aceptar ambas keys durante el rollout escalonado."""
+def test_counting_event_legacy_bucket_key_ignored(fake_pg):
+    """Devices con firmware viejo mandan ``bucket_15min`` o ``event_bucket`` en
+    el payload. Como el schema RDS ahora deriva el bucket server-side via
+    GENERATED, esas keys del payload se ignoran silenciosamente (no rompe el
+    INSERT, no contamina el bucket — el server lo recalcula desde event_ts).
+    """
     from src.cloud.persist_event import handler
 
     event = {
@@ -101,14 +104,15 @@ def test_counting_event_accepts_legacy_event_bucket_key(fake_pg):
         "type": "counting",
         "data": {
             "direction": "in",
-            "event_bucket": 1762963200,  # key vieja
+            "event_bucket": 1762963200,  # key legacy del firmware viejo
+            "bucket_15min": 1762963200,  # idem
         },
     }
     result = handler(event, None)
     assert result["statusCode"] == 200
-    params = fake_pg["cursor"].execute.call_args[0][1]
-    # bucket_15min (params[3]) debe estar populado desde event_bucket legacy.
-    assert params[3] is not None
+    sql = fake_pg["cursor"].execute.call_args[0][0]
+    # El INSERT NO incluye la columna bucket_15min — keys legacy ignoradas.
+    assert "bucket_15min" not in sql
 
 
 def test_telemetry_event_inserts(fake_pg):
@@ -134,9 +138,10 @@ def test_telemetry_event_inserts(fake_pg):
 
 
 def test_wifi_ble_event_inserts(fake_pg):
-    """Schema actual del INSERT (7 columnas):
+    """Schema del INSERT (7 columnas, sin bucket_15min — ahora GENERATED en RDS;
+    con last_seen_ts opcional nullable):
         0=device_id, 1=store_id, 2=period_start, 3=period_end,
-        4=bucket_15min, 5=passersby, 6=shoppers.
+        4=passersby, 5=shoppers, 6=last_seen_ts.
     """
     from src.cloud.persist_event import handler
 
@@ -149,6 +154,7 @@ def test_wifi_ble_event_inserts(fake_pg):
             "period_end": 1762963200,
             "passersby": 160,
             "shoppers": 27,
+            "last_seen_ts": 1762963180.0,  # 20s antes del period_end
         },
     }
     result = handler(event, None)
@@ -158,12 +164,37 @@ def test_wifi_ble_event_inserts(fake_pg):
     sql = call_args[0][0]
     params = call_args[0][1]
     assert "INSERT INTO wifi_ble_summary" in sql
-    assert "bucket_15min" in sql
+    assert "bucket_15min" not in sql  # GENERATED server-side
+    assert "last_seen_ts" in sql
     assert params[0] == "store-001-cam-01"
     assert params[1] == "store-001"
-    # params[4] = bucket_15min (default = period_start cuando no viene).
-    assert params[5] == 160  # passersby
-    assert params[6] == 27   # shoppers
+    assert params[4] == 160  # passersby
+    assert params[5] == 27   # shoppers
+    # params[6] = last_seen_ts (datetime UTC). Si no viene en el payload, None.
+    assert params[6] is not None
+
+
+def test_wifi_ble_event_without_last_seen_ts(fake_pg):
+    """Devices con firmware viejo no mandan ``last_seen_ts`` — el INSERT debe
+    funcionar con NULL en esa columna (la col del schema es NULLABLE)."""
+    from src.cloud.persist_event import handler
+
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "wifi_ble",
+        "data": {
+            "period_start": 1762962300,
+            "period_end": 1762963200,
+            "passersby": 50,
+            "shoppers": 8,
+            # last_seen_ts ausente — device viejo
+        },
+    }
+    result = handler(event, None)
+    assert result["statusCode"] == 200
+    params = fake_pg["cursor"].execute.call_args[0][1]
+    assert params[6] is None  # last_seen_ts → NULL
 
 
 def test_unknown_type_returns_400(fake_pg):
