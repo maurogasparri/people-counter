@@ -815,10 +815,21 @@ class Counter:
         # approach (lado inequívoco de donde viene el track) en lugar de
         # la primera detección inside — que con ROI chico + detector miss
         # rate puede caer ya del otro lado de la línea y dejar el cache
-        # corrupto, perdiendo el cruce. Solo se actualiza cuando el track
-        # está outside; se consume y opcionalmente persiste a través del
-        # cycle.
-        if not is_inside:
+        # corrupto, perdiendo el cruce.
+        #
+        # Solo se actualiza con DETECCIONES REALES (is_real=True). Los
+        # frames de pura extrapolación Kalman pueden alucinar posiciones
+        # outside ROI muy lejanas (ej. (888,109) cuando el sitter está a
+        # (470,330)) durante el exit del track — si esa posición
+        # alucinada se guarda y el track muere + es ghost-adopted, el
+        # nuevo ciclo del track hereda un last_outside_pos espurio que
+        # infunde had_outside_pos=True falso, bypaseando el guard de
+        # capa 2 del rescue cascade. Filtrar por is_real=True corta ese
+        # ciclo: las "evidencias de approach" se cuentan solo con
+        # observaciones, no con alucinaciones del modelo de movimiento.
+        # Coherente con cómo visit_x/y_range también se actualiza solo
+        # con detecciones reales (capa 3 del rescue).
+        if not is_inside and is_real:
             meta["last_outside_pos"] = (cx, cy)
 
         # Cache per-line del lado previo (un slot por línea). Se crea

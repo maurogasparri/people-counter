@@ -1159,6 +1159,60 @@ def test_kalman_exit_counts_when_track_has_outside_history():
     assert counter.total_out == 1
 
 
+def test_last_outside_pos_only_updated_with_real_detections():
+    """Reproduce el bug de last_outside_pos envenenado por Kalman
+    extrapolation (observado en piloto 2026-05-23 18:10).
+
+    Escenario: sitter inside ROI cuyo track sale por extrapolación
+    Kalman alucinada hacia el lateral del frame (ej. x=850). Ese frame
+    es is_inside=False AND is_real=False. Si last_outside_pos se
+    actualizara con esa posición Kalman, el próximo ciclo del track
+    (post ghost adoption) heredaría un last_outside_pos espurio
+    (850,...) lejos del centroide real (470,...) → had_outside_pos=True
+    falso → guard de capa 2 NO descarta el count espurio.
+
+    El fix condiciona el update de last_outside_pos a is_real=True. Las
+    posiciones de Kalman extrapolation NO se aceptan como evidencia de
+    approach. Coherente con visit_x/y_range que también se actualiza
+    solo con detecciones reales.
+    """
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Frame 1: track nace inside ROI (snap == pos, had_outside_pos=False).
+    track = _make_track(1, [[460, 350, 3000]])
+    assert counter._process_track(track) is None
+    # Frame 2: Kalman push hacia x=850 (outside ROI por la derecha) —
+    # SIN detección real (disappeared > 0). Esta posición NO debe
+    # quedar guardada como last_outside_pos.
+    track.positions.append(np.array([850, 350, 3000], dtype=float))
+    track.disappeared = 5
+    counter._process_track(track)
+    # Frame 3: track vuelve a aparecer inside ROI con detección real
+    # (disappeared=0 emulando re-detect). Si last_outside_pos se hubiera
+    # contaminado en frame 2, había_outside_pos=True ahora. Pero como
+    # el fix lo filtra, sigue había_outside_pos=False.
+    track.disappeared = 0
+    # Simulamos un "tercer ciclo": track sale del ROI por la izquierda
+    # — must be is_real=False para reproducir el bug original que
+    # disparaba el count espurio.
+    track.positions.append(np.array([460, 350, 3000], dtype=float))  # re-inside
+    counter._process_track(track)
+    # Cruza la línea (real, intra-visit).
+    track.positions.append(np.array([460, 250, 3000], dtype=float))
+    track.disappeared = 0
+    counter._process_track(track)  # cross net=-1, label=egress
+    # Kalman extrapola al lateral derecho (is_real=False).
+    track.positions.append(np.array([560, 250, 3000], dtype=float))
+    track.disappeared = 5
+    events = counter.check_all({1: track})
+
+    # Con el fix: el guard de exit-Kalman descarta porque
+    # had_outside_pos sigue False (el Kalman push del frame 2 no
+    # contaminó last_outside_pos).
+    assert events == []
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
 # ---------------------------------------------------------------------------
 # Death-emit deferred grace: cuando un track desaparece de la dict, el
 # death-emit NO dispara inmediato — se difiere por DEATH_EMIT_GRACE_FRAMES
