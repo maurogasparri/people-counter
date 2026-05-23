@@ -1225,3 +1225,31 @@ def test_reset_daily_clears_death_emit_count():
     counter._death_emit_count = 5
     counter.reset_daily()
     assert counter.death_emit_count == 0
+
+
+def test_min_visit_range_default_from_class_constant():
+    """Sin override, ``min_visit_range_for_death_emit`` usa el default."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    assert counter.min_visit_range_for_death_emit == Counter.DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT
+
+
+def test_min_visit_range_override_relaxes_guard_2():
+    """Bajar el threshold (ej. 20 en vez de 80) deja pasar visits cortas
+    que con el default fueron filtradas. Útil para sites con detector flakey
+    donde la mayoría del visit cae en frames Kalman (no actualizan range)."""
+    counter = Counter(
+        lines=[_line_h()], roi=ROI, min_visit_range_for_death_emit=20.0,
+    )
+    track = _make_track(1, [[300, 150, 3000]])  # outside ROI
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 290, 3000]))
+    counter.check_all({1: track})  # entry justo arriba, had_outside_pos=True
+    track.positions.append(np.array([300, 310, 3000]))
+    counter.check_all({1: track})  # cruce real net=+1, visit_y_range=20
+
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    # visit_y_range=20 ≥ 20 → death-emit FIRES (con el default 80 hubiera
+    # sido rechazado).
+    assert counter.total_in == 1

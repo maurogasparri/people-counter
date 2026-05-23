@@ -379,8 +379,13 @@ class Counter:
     #      visita. Filtra el edge case donde un track salió brevemente del
     #      ROI (had_outside_pos=True) y después jittereó adentro sin
     #      movimiento real. Default 80 px ≈ media zancada de adulto a la
-    #      altura de montaje típica.
-    MIN_VISIT_RANGE_FOR_DEATH_EMIT = 80.0
+    #      altura de montaje típica. **Tuneable per-instancia** via el
+    #      kwarg ``min_visit_range_for_death_emit`` del constructor — bajarlo
+    #      (ej. 50) en sites con detector flakey donde la mayoría del visit
+    #      cae en frames Kalman (no actualizan range). Síntoma diagnóstico
+    #      en telemetría: ``death_emit_count = 0`` mientras
+    #      ``track_stitching_ratio > 1.3`` → relax este guard.
+    DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT = 80.0
 
     def __init__(
         self,
@@ -389,6 +394,7 @@ class Counter:
         *,
         min_crossing_movement_px: float = 0.0,
         death_emit_grace_frames: Optional[int] = None,
+        min_visit_range_for_death_emit: Optional[float] = None,
     ) -> None:
         """
         Args:
@@ -413,6 +419,16 @@ class Counter:
                 el counter SIEMPRE le da chance a la adopción antes de
                 emitir por muerte → evita doble-conteo si el tracker
                 eventualmente adopta.
+            min_visit_range_for_death_emit: Desplazamiento mínimo (px) que
+                el track debe haber recorrido durante la visita al ROI para
+                que death-emit fire. Solo se actualiza con detecciones
+                REALES (no Kalman pushes), así un sitter con cabeza
+                jitterosa cerca de la línea no dispara. ``None`` (default)
+                usa ``DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT = 80``. Bajar
+                a 50 en sites con detector flakey donde la mayoría del
+                visit cae en frames Kalman (síntoma diagnóstico:
+                ``death_emit_count = 0`` con ``track_stitching_ratio > 1.3``
+                sostenido en telemetría).
         """
         if not lines:
             raise ValueError("Counter requires at least one line.")
@@ -424,6 +440,11 @@ class Counter:
             int(death_emit_grace_frames)
             if death_emit_grace_frames is not None
             else self.DEFAULT_DEATH_EMIT_GRACE_FRAMES
+        )
+        self.min_visit_range_for_death_emit: float = (
+            float(min_visit_range_for_death_emit)
+            if min_visit_range_for_death_emit is not None
+            else self.DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT
         )
         self._min_crossing_movement_px: float = max(
             0.0, float(min_crossing_movement_px)
@@ -612,7 +633,7 @@ class Counter:
         # pero después solo jittereó adentro del ROI sin movimiento real.
         x_range = float(snap.get("visit_x_range", 0.0))
         y_range = float(snap.get("visit_y_range", 0.0))
-        if max(x_range, y_range) < self.MIN_VISIT_RANGE_FOR_DEATH_EMIT:
+        if max(x_range, y_range) < self.min_visit_range_for_death_emit:
             logger.info(  # TRACKDBG [REVERT]
                 "TRACKDBG death_emit_skipped tid=%d reason=small_visit_range "
                 "x_range=%.0f y_range=%.0f net=%s",

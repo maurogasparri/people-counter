@@ -134,6 +134,12 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- diferencia 'fragmenta-y-rescata' (count alto) de 'fragmenta-y-pierde'
     -- (count bajo con ratio alto → recall del detector flojo).
     death_emit_count              INT,
+    -- Cantidad de ghost adoptions del tracker desde el boot del proceso
+    -- (capa 1 del rescue). Cierra el árbol diagnóstico: combinado con
+    -- death_emit_count y track_stitching_ratio permite distinguir
+    -- "tracker perfecto" / "fragmentación rescatada por adopción" /
+    -- "fragmentación rescatada por death-emit" / "fragmentación sin rescate".
+    ghost_adoption_count          INT,
     -- Schedule / error state (mando 'error' del payload + detalle largo)
     error                         TEXT,
     schedule_error_detail         TEXT,

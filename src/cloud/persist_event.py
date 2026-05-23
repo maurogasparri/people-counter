@@ -199,6 +199,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                  wifi_probe_ok, ble_scanner_ok,
                  wifi_ble_stitching_ratio,
                  track_stitching_ratio, death_emit_count,
+                 ghost_adoption_count,
                  error, schedule_error_detail)
             VALUES (%s, %s, %s,
                     %s, %s, %s,
@@ -212,6 +213,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                     %s, %s,
                     %s,
                     %s, %s,
+                    %s,
                     %s, %s)
             ON CONFLICT (device_id, event_ts) DO NOTHING
             """,
@@ -241,6 +243,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                 data.get("wifi_ble_stitching_ratio"),
                 data.get("track_stitching_ratio"),
                 data.get("death_emit_count"),
+                data.get("ghost_adoption_count"),
                 data.get("error"),
                 data.get("schedule_error_detail"),
             ),

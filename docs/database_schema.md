@@ -62,7 +62,8 @@ erDiagram
         real        fps
         real        wifi_ble_stitching_ratio "canary del stitching wifi/ble"
         real        track_stitching_ratio    "canary fragmentación del tracker"
-        int         death_emit_count         "counts via fallback del counter"
+        int         ghost_adoption_count     "capa 1 rescue: ID adoptions"
+        int         death_emit_count         "capa 3 rescue: death-emits firing"
         text        error
         timestamptz received_at
     }

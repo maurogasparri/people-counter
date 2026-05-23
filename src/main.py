@@ -1925,6 +1925,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 telem["total_out"] = counter.total_out
                 telem["track_stitching_ratio"] = counter.stitching_ratio
                 telem["death_emit_count"] = counter.death_emit_count
+                telem["ghost_adoption_count"] = tracker.adoption_count
                 mqtt_client.publish_event("telemetry", telem)
                 logger.info(
                     "telemetry_published mqtt=%s wifi=%s ble=%s fps=%.1f "

@@ -266,7 +266,7 @@ dispara):**
 | Knob | Default | Efecto al subirlo |
 |---|---|---|
 | `MIN_KALMAN_CROSS_DISPLACEMENT_PX` | 30 | Capa 2 más estricta — más Kalman crosses descartados. ∞ = no rescue de Kalman crosses. |
-| `MIN_VISIT_RANGE_FOR_DEATH_EMIT` | 80 | Capa 3 más estricta — más death-emits filtrados. |
+| `min_visit_range_for_death_emit` (Counter kwarg) | 80 | Capa 3 más estricta — más death-emits filtrados. Bajarlo (ej. 50) en sites con detector flakey donde el síntoma `death_emit_count = 0 + ratio > 1.3` indica que el guard rechaza crossers reales con poca observación. |
 | `adoption_window_frames` | 30 | ↑ = más chance de adopción ID, ↓ = más fragmentación. 0 = sin ghost pool. |
 | `adoption_iou_min` | 0.3 | ↑ = adopción más conservadora (anti ID-swap). |
 
@@ -274,16 +274,38 @@ Los tres al máximo + adoption en 0 = el modelo "puro observacional" (contar
 SOLO con detecciones reales en exit observado). Defaults actuales = híbrido
 agresivo en sites con detección flakey, conservador frente a sitters/clutter.
 
-**Telemetría para observar el balance en producción:**
+**Telemetría para observar el balance en producción (árbol diagnóstico de 3 métricas):**
 
 - `track_stitching_ratio` (`Counter.stitching_ratio`) = `unique_track_ids /
   total_counts`. Ideal ≈ 1.0 (1 persona = 1 ID = 1 evento). >1.3 indica
-  fragmentación.
-- `death_emit_count` (`Counter.death_emit_count`) = cantidad de death-emits
-  disparados hoy. Diferencia "fragmenta-y-rescata" de "fragmenta-y-pierde":
-  ratio>1.3 con `death_emit_count` ALTO → fragmentación rescatada por
-  capa 3 (cuentas probablemente OK); con `death_emit_count` BAJO →
-  fragmentación NO rescatada (cuentas perdidas, mirar recall del detector).
+  fragmentación de identidad.
+- `ghost_adoption_count` (`EuclideanTracker.adoption_count`) = capa 1 del
+  rescue: cuántas veces un track nuevo adoptó el ID de un ghost.
+  Acumulativo desde el boot del proceso.
+- `death_emit_count` (`Counter.death_emit_count`) = capa 3 del rescue:
+  cantidad de death-emits disparados.
+
+**Cómo leerlo en flota** (lookup table para el operador):
+
+| `stitching_ratio` | `adoption` | `death_emit` | Diagnóstico |
+|---|---|---|---|
+| ≈ 1.0 | 0 | 0 | Tracker perfecto |
+| ≈ 1.0 | > 0 | 0 | Fragmentación silenciosa **rescatada por capa 1** (adopción) |
+| ≈ 1.0 | 0 | > 0 | Crossers **rescatados por capa 3** (death-emit) |
+| > 1.3 | 0 | 0 | 🚨 FRAGMENTACIÓN SIN RESCATE (alarma) |
+| > 1.3 | > 0 | > 0 | Tracker flakey, dependés de ambas capas (todavía OK pero recall del detector flojo) |
+
+**Trade-off conocido del guard `MIN_VISIT_RANGE_FOR_DEATH_EMIT`**: la
+métrica `visit_range` se actualiza solo con detecciones REALES (no Kalman
+pushes). En sites con detector muy flakey, un crosser real puede tener
+`visit_range < 80` porque la mayoría de sus frames adentro del ROI fueron
+extrapolación. En ese caso el guard 2 rechaza death-emit → si capas 1 y 2
+no agarraron, conteo perdido. Síntoma: `death_emit_count = 0` con
+`track_stitching_ratio > 1.3` sostenido. Fix: bajar el threshold del
+guard 2 pasando ``min_visit_range_for_death_emit`` (ej. 50) al constructor
+del `Counter` per-site. No es bug — es trade-off explícito entre filtrar
+sitters/jitter y rescatar crossers con muy poca observación.
+
 - Logs TRACKDBG (cuando habilitados): `ghost_adopted`, `death_emit_skipped`
   con `reason=no_outside_history|small_visit_range`, etc.
 

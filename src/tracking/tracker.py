@@ -317,10 +317,27 @@ class EuclideanTracker:
         # Pool de tracks recién muertos esperando posible adopción.
         # Key: track_id viejo. Value: _GhostInfo.
         self._ghosts: dict[int, "_GhostInfo"] = {}
+        # Contador acumulativo de adopciones ID exitosas (canary de telemetría).
+        # Combinado con ``Counter.death_emit_count`` y ``Counter.stitching_ratio``
+        # completa el árbol diagnóstico de la flota:
+        #   stitching_ratio | adoption | death_emit | diagnóstico
+        #   ≈1.0            | 0        | 0          | tracker perfecto
+        #   ≈1.0            | >0       | 0          | fragmentación silenciosa rescatada por capa 1
+        #   ≈1.0            | 0        | >0         | crossers rescatados por capa 3
+        #   >1.3            | 0        | 0          | FRAGMENTACIÓN SIN RESCATE (alarma)
+        #   >1.3            | >0       | >0         | tracker flakey, dependés de los rescates
+        self._adoption_count: int = 0
 
     @property
     def tracks(self) -> dict[int, Track]:
         return dict(self._tracks)
+
+    @property
+    def adoption_count(self) -> int:
+        """Cuántas adopciones de ghost ID se hicieron desde el boot del
+        proceso. Reset implícito al restart del service. Telemetría 5-min
+        captura snapshot — Grafana muestra la tasa."""
+        return self._adoption_count
 
     def count_by_state(self) -> dict[str, int]:
         """Devuelve un count de los tracks vivos agrupados por estado.
@@ -1012,6 +1029,7 @@ class EuclideanTracker:
             return None
         ghost = self._ghosts.pop(best_tid)
         self._resurrect_ghost(ghost, centroid)
+        self._adoption_count += 1
         logger.info(  # TRACKDBG [REVERT]
             "TRACKDBG ghost_adopted tid=%d dist=%.1f iou=%.3f age=%d",
             best_tid, best_dist, best_iou, ghost.age,

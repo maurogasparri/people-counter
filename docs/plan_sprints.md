@@ -17,14 +17,14 @@
 | S3 | EP-02 | Calibración estéreo | 15 |
 | S4 | EP-03 | Profundidad y región de interés | 6 |
 | S5 | EP-04 | Detección neuronal de personas | 14 |
-| S6 | EP-05 | Seguimiento y conteo | 9 |
+| S6 | EP-05 | Seguimiento y conteo | 10 |
 | S7 | EP-06 | Captura WiFi y BLE | 11 |
 | S8 | EP-07 | Mensajería y telemetría | 7 |
 | S9 | EP-08 | Servicios cloud y APIs | 13 |
 | S10 | EP-09 | Visualización analítica | 9 |
 | S11 | EP-10 | Validación y documentación | 11.5 |
 | S12 | EP-11 | Cierre del prototipo | 8 |
-| | | **Total** | **118.5** |
+| | | **Total** | **119.5** |
 
 ---
 
@@ -90,18 +90,19 @@
 | Integración runtime del detector | 2 | `src/vision/detect.py`, `src/vision/best_frame.py` |
 | Bench del detector en hardware | 1 | `scripts/training/bench_detector.py`, throughput validado |
 
-## S6 — EP-05 Seguimiento y conteo (9h)
+## S6 — EP-05 Seguimiento y conteo (10h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
 | Filtro de Kalman para tracking | 1 | `src/tracking/kalman.py` + tests |
-| Tracker con asociación estilo ByteTrack | 2 | `src/tracking/tracker.py` + tests |
-| Line crossing counter con ROI | 1.5 | `src/tracking/counter.py` + tests |
+| Tracker con asociación 2-stage + ghost pool + decay tunable + Lowe ratio | 2 | `src/tracking/tracker.py` + tests. Incluye state machine CANDIDATE→CONFIRMED→PENDING→LOST, two-stage matching (high+low conf), ghost pool con ID adoption (IoU+dist gates), `pending_velocity_decay`, `last_observed_position` separado del Kalman pushed |
+| Line crossing counter con ROI + net-balance + death-emit con guards | 1.5 | `src/tracking/counter.py` + tests. Net-balance de cruces por visita ROI, gate de cruce solo con detección real, decisive Kalman cross al exit, death-emit-if-crossed con guards (`had_outside_pos` + `MIN_VISIT_RANGE_FOR_DEATH_EMIT`), debounce |
 | ROI picker interactivo (define line y zona) | 1 | `scripts/roi_picker.py` |
 | World coords + clasificación adulto/niño | 0.5 | `src/vision/world_coords.py` |
-| Static suppressor (filtro de FP sobre clutter) | 1 | `src/vision/static_suppressor.py` |
+| Static suppressor + exempt ROI (filtro de FP sobre clutter fuera del ROI) | 1 | `src/vision/static_suppressor.py`. Exime el ROI de conteo (los tracks dentro no se filtran) para no perder lingerers reales |
 | Generador de reportes de eventos | 0.5 | `src/vision/report.py` |
 | Pruebas integrales del pipeline visual | 1.5 | Conteo correcto sobre baseline frames |
+| Live preview HTTP/MJPEG para validación operativa | 1 | `src/web/viewer.py` + `src/web/annotate.py` + tests. Composite L\|R\|disparidad servido vía MJPEG; overlay de tracks (bbox fijo cuadrado, trayectoria 30-frames, id, height), reconexión robusta al restart del pipeline, panel de stats (counts, hourly, exterior). Usado por el operador durante el piloto |
 
 ## S7 — EP-06 Captura WiFi y BLE (11h)
 
@@ -111,7 +112,7 @@
 | Captura WiFi en modo monitor con nexmon | 1.5 | `src/wifi_ble/wifi_probe.py` |
 | Captura BLE pasiva con bleak | 1 | `src/wifi_ble/ble_scan.py` |
 | Anonymizer con hash SHA-256 + sal diaria | 0.5 | `src/wifi_ble/hasher.py` + tests |
-| Stitching con las 3 reglas sobre hash_groups | 2.5 | `src/wifi_ble/dedup.py` + tests |
+| Stitching con las 4 reglas sobre hash_groups | 2.5 | `src/wifi_ble/dedup.py` + `src/wifi_ble/fingerprint.py` + tests. Reglas: (1) seqnum continuity 802.11 (anti MAC-rotation), (2) cross-protocol L2 (WiFi+BLE simultáneo), (3) BLE anchoring (lifetime de RPA ~15min iOS), (4) fingerprint continuity (orden de IEs + manufacturer-data, sobrevive rotación de Apple H1+ que resetea seqnum). MAX-RSSI para clasificación passersby/shoppers. Filtro `randomized_only` (solo dispositivos humanos) |
 | Publisher de resúmenes cada 15 min | 1 | `src/wifi_ble/publisher.py` |
 | Service systemd dedicado | 0.5 | `config/wifi-monitor.service` |
 | Exportador anonimizado para auditoría | 0.5 | `scripts/export_anonymized.py` |
@@ -124,7 +125,7 @@
 | Cliente MQTT con TLS mutuo y reconexión + backoff | 1.5 | `src/mqtt/client.py` + tests |
 | Buffer SQLite local con retención 72h | 1.5 | `src/mqtt/buffer.py` + tests |
 | Device Shadow base con whitelist | 1 | Integración con cliente MQTT |
-| Telemetría operativa cada 5 min | 1 | `src/status/monitor.py` |
+| Telemetría operativa cada 5 min + canaries | 1 | `src/status/monitor.py` + telemetry payload en `src/main.py`. OS health (cpu/hailo temp, disk, mem), pipeline (fps, latencies, dets/tracks), MQTT (connected, disconnect_count, buffer_backlog), WiFi/BLE health + `wifi_ble_stitching_ratio`, **canaries del tracker**: `track_stitching_ratio` (unique IDs / counts emitidos, ideal ≈1.0; >1.3 = fragmentación) y `death_emit_count` (fallback firings; diferencia "fragmenta-y-rescata" de "fragmenta-y-pierde"). Persistido vía Lambda en columnas RDS dedicadas |
 | Integración con pipeline (orquestación en main) | 1 | `main.py` con telemetría |
 | Tests E2E del flujo MQTT con simulación de desconexión | 1 | Reentrega validada |
 
