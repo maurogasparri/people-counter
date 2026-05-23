@@ -1013,6 +1013,8 @@ class Counter:
                 "TRACKDBG exit tid=%d is_real=%s net=%s verdict=%s exit_pos=(%.0f,%.0f)",
                 track.track_id, is_real, net, label, cx, cy,
             )
+            # Snapshot del net antes del reset para logging del skip.
+            net_snapshot = list(net)
             # Resetear estado así el mismo track puede contar otro
             # ciclo completo más tarde. El invariante antiglitch
             # vale: contar de nuevo requiere re-entry desde afuera +
@@ -1023,6 +1025,30 @@ class Counter:
                 sides[i] = 0
             for i in range(len(net)):
                 net[i] = 0
+            # Guard de exit-por-Kalman: tracks que nacieron adentro del
+            # ROI (had_outside_pos=False) no deben emitir counts vía
+            # extrapolación Kalman. Filtra el caso del sitter parado
+            # cerca de la línea: la persona se mueve un poco, cruza la
+            # línea (cross real, net != 0), el detector la pierde, y el
+            # Kalman extrapola la velocidad residual hacia afuera del
+            # ROI — sin este guard, el cruce intra-visita generaría un
+            # count espurio aunque la persona nunca salió de la tienda.
+            # Para exits con detección real (is_real=True) el guard NO
+            # aplica: si el track salió observado, vale el count
+            # aunque haya nacido inside (caso del primer-frame-perdido
+            # por el detector en el borde del ROI). Coherente con el
+            # mismo guard en _emit_on_death (capa 3 del rescue cascade).
+            if (
+                label
+                and not is_real
+                and not bool(meta.get("had_outside_pos", False))
+            ):
+                logger.info(  # TRACKDBG [REVERT]
+                    "TRACKDBG exit_kalman_skipped tid=%d "
+                    "reason=no_outside_history net=%s",
+                    track.track_id, net_snapshot,
+                )
+                label = None
             if label:
                 now = time.time()
                 cross_x = float(crossing_pos[0])

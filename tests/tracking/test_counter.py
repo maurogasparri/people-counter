@@ -923,10 +923,18 @@ def test_inside_was_inside_prediction_does_not_register_cross():
 def test_crossing_real_then_exit_on_prediction_still_counts():
     """Una persona que cruza con detección REAL y después se pierde (el track
     sale del ROI por extrapolación) IGUAL cuenta al salir — no se pierde el
-    conteo (era el bug del freeze)."""
+    conteo (era el bug del freeze).
+
+    Pre-cond del test: arrancar OUTSIDE ROI para que had_outside_pos=True
+    al entrar — sin esto el guard de exit-por-Kalman (defense-in-depth
+    contra el sitter pegado a la línea) descartaría el count.
+    """
     counter = Counter(lines=[_line_h()], roi=ROI)
-    track = _make_track(1, [[300, 250, 3000]])  # entry arriba (real)
+    # Frame 0: outside ROI (y=150 < y_min=200) — establece last_outside_pos
+    # y por tanto had_outside_pos=True en la entry posterior.
+    track = _make_track(1, [[300, 150, 3000]])
     counter._process_track(track)
+    _advance(counter, track, [300, 250, 3000])  # entry inside (real)
     _advance(counter, track, [300, 350, 3000])  # cruza abajo con detección REAL (net+1)
     # El detector la pierde; el track extrapola y sale del ROI (predicción).
     track.disappeared = 5
@@ -1008,14 +1016,24 @@ def test_decisive_kalman_cross_at_exit_counts():
     """Track con última posición real bien debajo de la línea (y=352), Kalman
     extrapola hacia arriba y SALE del ROI por arriba en frame de predicción.
     El desplazamiento desde la última real (dy=-152) es decisivo en la
-    dirección del cruce (hacia arriba = side -1) → cuenta."""
+    dirección del cruce (hacia arriba = side -1) → cuenta.
+
+    Pre-cond: track viene de outside-ROI ABAJO del ROI (y>y_max) — establece
+    had_outside_pos=True con snap del mismo lado que la entry (sides=+1),
+    así el cross original es +1 → -1 al cruzar la línea por extrapolación.
+    """
     counter = Counter(lines=[_line_h()], roi=ROI)
-    # Entry real con sides=+1 (debajo de la línea).
-    track = _make_track(1, [[460, 352, 3000]])
+    # Frame 0: outside ROI por abajo (y=450 > y_max=400, side=+1) —
+    # had_outside_pos=True + snap del mismo lado que la entry inside.
+    track = _make_track(1, [[460, 450, 3000]])
+    counter.check_all({1: track})
+    # Entry real con sides=+1 (debajo de la línea, y=352).
+    track.positions.append(np.array([460, 352, 3000], dtype=float))
     counter.check_all({1: track})  # entry, sets last_track_pos=(460,352)
 
     # Kalman push: track sale del ROI por arriba (y=190 < y_min=200).
-    # is_real=False (track.disappeared > 0).
+    # is_real=False (track.disappeared > 0). new_side=-1 ≠ prev_side=+1
+    # → cross detectado.
     track.positions.append(np.array([460, 190, 3000], dtype=float))
     track.disappeared = 5  # dentro del MAX_KALMAN_CROSS_FRAMES=15
     events = counter.check_all({1: track})
@@ -1073,6 +1091,72 @@ def test_real_detection_cross_at_exit_still_counts():
     events = counter.check_all({1: track})
     assert len(events) == 1
     assert events[0].direction == "ingress"
+
+
+def test_kalman_exit_skipped_when_track_born_inside_roi():
+    """Reproduce el bug del sitter pegado a la línea de cruce.
+
+    Escenario operativo (observado en piloto 2026-05-23 17:45): la persona
+    está sentada justo dentro del ROI, cerca de la línea de cruce. El
+    track nace inside ROI (sin last_outside_pos previo) → had_outside_pos
+    = False. La persona se mueve un toque (se acomoda en la silla):
+    cruza la línea con detección real (net != 0). Después el detector la
+    pierde (oclusión / cambio de pose); el Kalman extrapola la velocidad
+    residual hacia el lateral del ROI y dispara el _decisive_kalman_cross
+    en el exit. Sin el guard, el exit-por-Kalman emite un count espurio
+    — la persona NUNCA salió de la tienda, solo se acomodó.
+
+    El fix: aplicar el guard had_outside_pos también al exit branch
+    cuando is_real=False (extrapolación Kalman). Coherente con el mismo
+    guard en _emit_on_death (capa 3 del rescue cascade).
+    """
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Frame 1: track aparece DIRECTAMENTE inside ROI, lado +1 (y=350 abajo
+    # de la línea y=300). No hay frame outside previo → had_outside_pos
+    # será False en la entry-fresca.
+    track = _make_track(1, [[460, 350, 3000]])
+    assert counter._process_track(track) is None
+    # Frame 2: la persona se mueve un toque cruzando la línea hacia
+    # arriba (y=250, lado -1). Detección REAL — registra cross net=-1.
+    assert _advance(counter, track, [460, 250, 3000]) is None
+    # Frame 3: detector pierde al track. Kalman push: sale del ROI por
+    # el lateral derecho (x=560 > x_max=500). disappeared=5 → dentro del
+    # MAX_KALMAN_CROSS_FRAMES. Sin el guard, decisive_kalman_cross
+    # aceptaría el cruce y emitiría egress.
+    track.positions.append(np.array([560, 250, 3000], dtype=float))
+    track.disappeared = 5
+    events = counter.check_all({1: track})
+
+    # Con el guard: NO count. La persona no salió de la tienda.
+    assert events == []
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_kalman_exit_counts_when_track_has_outside_history():
+    """Regression contra el fix anterior: el guard had_outside_pos NO
+    afecta tracks que entraron al ROI desde afuera legítimamente. Mismo
+    escenario que test_decisive_kalman_cross_at_exit_counts pero con un
+    frame outside-ROI previo para establecer had_outside_pos=True.
+    """
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Frame 1: track outside-ROI por la izquierda, debajo de la línea.
+    # last_outside_pos se setea aquí → had_outside_pos=True en la entry.
+    track = _make_track(1, [[50, 352, 3000]])
+    assert counter._process_track(track) is None
+    # Frame 2: entry inside ROI, sides snapshoteado desde (50, 352) → +1.
+    assert _advance(counter, track, [460, 352, 3000]) is None
+    # Frame 3: Kalman push hacia arriba — sale del ROI por arriba con
+    # cruce decisivo. Equivalente a test_decisive_kalman_cross.
+    track.positions.append(np.array([460, 190, 3000], dtype=float))
+    track.disappeared = 5
+    events = counter.check_all({1: track})
+
+    # Con el guard: SÍ cuenta (had_outside_pos=True bypassea la
+    # restricción).
+    assert len(events) == 1
+    assert events[0].direction == "egress"
+    assert counter.total_out == 1
 
 
 # ---------------------------------------------------------------------------

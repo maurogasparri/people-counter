@@ -245,11 +245,15 @@ dispara):**
    la salida del ROI es un frame de pura extrapolación Kalman (`disappeared
    > 0`), se acepta el cruce SI `disappeared <= MAX_KALMAN_CROSS_FRAMES`
    (15) Y el desplazamiento desde la última posición REAL en la dirección
-   del cruce es `>= MIN_KALMAN_CROSS_DISPLACEMENT_PX` (30 px). El gate del
-   inside-was-inside se mantiene estricto: ningún cross registra en frames
-   de predicción adentro del ROI. La relajación es SOLO en la transición de
-   exit. Cubre "walked-then-lost-mid-line" sin re-introducir el doble-conteo
-   del drift estacionario.
+   del cruce es `>= MIN_KALMAN_CROSS_DISPLACEMENT_PX` (30 px) Y el track
+   tiene `had_outside_pos=True` (estuvo afuera del ROI alguna vez en su
+   vida — mismo guard que capa 3). El gate del inside-was-inside se mantiene
+   estricto: ningún cross registra en frames de predicción adentro del ROI.
+   La relajación es SOLO en la transición de exit. Cubre
+   "walked-then-lost-mid-line" sin re-introducir el doble-conteo del drift
+   estacionario ni el caso del sitter pegado a la línea cuyo Kalman alucina
+   un exit lateral al moverse (bug observado en piloto 2026-05-23 17:45,
+   ver `test_kalman_exit_skipped_when_track_born_inside_roi`).
 3. **Death-emit-if-crossed** (`Counter._emit_on_death`): track muere
    adentro del ROI (`inside=True`) con cruce registrado (`net != 0`) y
    pasa DOS guards anti-FP: (a) `had_outside_pos` — el track DEBE haber sido
