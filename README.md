@@ -75,8 +75,8 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 
 | Área | Estado | Detalles |
 |------|--------|---------|
-| Código fuente | 21 módulos en `src/` | Visión + tracking + wifi/ble + mqtt + cloud + config + status + main + telemetry |
-| Tests | 765 pasando | Visión, tracking, MQTT, WiFi/BLE, config (defaults + per-device merge + back-compat renames + HardwareParams), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
+| Código fuente | 30 módulos en 9 paquetes de `src/` | `vision/` (8: capture, calibration, depth, detect, world_coords, static_suppressor, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (2: persist_event, ingest_pos_transaction) + `config/` (2: loader, hardware) + `web/` (2: viewer, annotate) + `main.py` + `telemetry.py` |
+| Tests | 842 pasando (455 funciones, 42 archivos) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams), cloud, main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
 | Config | Defaults + Per-device + Cloud + Hardware-agnostic | `config/config.example.yaml` (defaults canónicos), `/etc/people-counter/config.yaml` (per-device override), AWS IoT Shadow (business cloud). Parámetros de hardware (sensor, lens, bracket, board ChArUco, AE timings) consolidados en `src/config/hardware.py` (HardwareParams) y leídos por el runtime + todos los setup tools — swap de sensor / bracket / board = solo editar config.yaml, ningún script tiene constantes hardware hardcodeadas |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
@@ -311,16 +311,17 @@ Defense-in-depth runtime (independiente del modelo):
 
 ```
 src/
-├── vision/          # Captura estéreo (picamera2), calibración ChArUco, profundidad SGBM + WLS, detección YOLOv8n (Hailo + OpenCV), world_coords para altura de cabeza, report HTML
-├── tracking/        # Tracker euclidiano 3D + contador por línea virtual / ROI con height_class por track
-├── wifi_ble/        # Captura de probes WiFi (nexmon + radiotap, hopping ponderado 1/6/11), scan BLE (bleak), fingerprint (IEs/manufacturer-data), hashing, dedup a hash groups con stitching de 4 reglas (seqnum + cross-protocol L2 + BLE anchoring + fingerprint)
+├── vision/          # Captura estéreo (picamera2), calibración ChArUco, profundidad SGBM + WLS, detección YOLOv8n (Hailo + OpenCV), world_coords para altura de cabeza, static_suppressor + best_frame, report HTML
+├── tracking/        # Tracker euclidiano 3D (Kalman) + ghost pool / ID adoption + contador por línea virtual / ROI con net-balance + rescue cascade de 3 capas (ghost adoption + decisive Kalman cross at exit + death-emit-if-crossed con guards anti-FP)
+├── wifi_ble/        # Captura de probes WiFi (nexmon + radiotap, hopping ponderado 1/6/11), scan BLE (bleak), fingerprint (IEs/manufacturer-data), hashing, dedup a hash groups con stitching de 4 reglas (seqnum + cross-protocol L2 + BLE anchoring + fingerprint), publisher de summaries 15min
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
-├── cloud/           # Lambda persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC)
+├── cloud/           # Lambdas: persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC) + ingest_pos_transaction (POS API → tabla sales)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
 ├── config/          # Loader (deep-merge defaults + per-device + IoT Shadow) + hardware (HardwareParams dataclass — sensor/lens/bracket/charuco/ae_lock leídos del config, hardware-agnostic)
-├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime
+├── web/             # Live preview HTTP/MJPEG (viewer + annotate); gateado por has_subscribers — counting es sync-deterministic independiente del viewer
+├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime + canaries (track_stitching_ratio, ghost_adoption_count, death_emit_count, wifi_ble_stitching_ratio)
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
-tests/               # 765 tests espejando src/ + tests/scripts/ para el wizard
+tests/               # 842 tests (455 funciones en 42 archivos) espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,
