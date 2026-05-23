@@ -10,10 +10,8 @@ from src.config.loader import (
     apply_shadow_delta,
     get_effective_value,
     get_invalid_schedule_mode,
-    get_scaling_factor,
     has_schedule_error,
     is_counting_enabled,
-    is_wifi_ble_enabled,
     is_within_operating_hours,
     load_config,
     merge_cloud_config,
@@ -61,16 +59,8 @@ class TestMergeCloudConfig:
     def test_no_shadow_returns_local(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {})
-        assert merged["cloud_defaults"]["footfall_scaling_factor"] == 1.0
-
-    def test_shadow_does_not_override_scaling_factor(self, complete_config_yaml):
-        """footfall_scaling_factor fue removido de CLOUD_OVERRIDABLE
-        (técnico, no end-user). Se queda en config.yaml local."""
-        cfg = load_config(complete_config_yaml)
-        shadow = {"footfall_scaling_factor": 1.15}
-        merged = merge_cloud_config(cfg, shadow)
-        # El valor del config.yaml no cambia
-        assert merged["cloud_defaults"]["footfall_scaling_factor"] == 1.0
+        # Sin shadow, los valores del config.yaml local se preservan.
+        assert merged["cloud_defaults"]["counting_enabled"] is True
 
     def test_shadow_overrides_operating_hours(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)
@@ -94,10 +84,12 @@ class TestMergeCloudConfig:
         assert not is_counting_enabled(merged)
 
     def test_original_config_not_mutated(self, complete_config_yaml):
+        """``merge_cloud_config`` devuelve una copia — el cfg original no se
+        muta aunque el shadow contenga keys overridables."""
         cfg = load_config(complete_config_yaml)
-        original_factor = cfg["cloud_defaults"]["footfall_scaling_factor"]
-        merge_cloud_config(cfg, {"footfall_scaling_factor": 2.0})
-        assert cfg["cloud_defaults"]["footfall_scaling_factor"] == original_factor
+        original_hours = dict(cfg["cloud_defaults"]["operating_hours"])
+        merge_cloud_config(cfg, {"operating_hours": {"monday": "00:00-23:59"}})
+        assert cfg["cloud_defaults"]["operating_hours"] == original_hours
 
 
 # --- Operating hours ---
@@ -147,34 +139,12 @@ class TestFeatureToggles:
         cfg = load_config(complete_config_yaml)
         assert is_counting_enabled(cfg)
 
-    def test_wifi_ble_enabled_both_true(self, complete_config_yaml):
+    def test_counting_disabled_by_shadow(self, complete_config_yaml):
+        """`counting_enabled` SÍ es overridable por shadow (única feature
+        toggle whitelisted — operating_hours es el otro)."""
         cfg = load_config(complete_config_yaml)
-        assert is_wifi_ble_enabled(cfg)
-
-    def test_wifi_ble_disabled_locally(self, complete_config_yaml):
-        cfg = load_config(complete_config_yaml)
-        cfg["wifi_ble"]["enabled"] = False
-        assert not is_wifi_ble_enabled(cfg)
-
-    def test_wifi_ble_not_pushable_from_cloud(self, complete_config_yaml):
-        """wifi_ble_enabled fue removido de CLOUD_OVERRIDABLE — toggle de
-        captura WiFi/BLE no se pushea remoto. Si se necesita, SSH + restart."""
-        cfg = load_config(complete_config_yaml)
-        merged = merge_cloud_config(cfg, {"wifi_ble_enabled": False})
-        # El push se ignora; el valor del config.yaml local manda.
-        assert is_wifi_ble_enabled(merged) is True  # default del config
-
-    def test_scaling_factor_default(self, complete_config_yaml):
-        cfg = load_config(complete_config_yaml)
-        assert get_scaling_factor(cfg) == 1.0
-
-    def test_scaling_factor_not_pushable_from_cloud(self, complete_config_yaml):
-        """footfall_scaling_factor no es overridable por shadow — se queda
-        en config.yaml local. Para ajustarlo, SSH + restart."""
-        cfg = load_config(complete_config_yaml)
-        merged = merge_cloud_config(cfg, {"footfall_scaling_factor": 1.1})
-        # El default del config.yaml manda; el push se ignora.
-        assert get_scaling_factor(merged) == pytest.approx(1.0)
+        merged = merge_cloud_config(cfg, {"counting_enabled": False})
+        assert not is_counting_enabled(merged)
 
     def test_get_effective_value_with_fallback(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)

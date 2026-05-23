@@ -529,9 +529,7 @@ cloud_defaults:
   # schedule válido.
   on_invalid_schedule: "fail_open"
 
-  footfall_scaling_factor: 1.0
   counting_enabled: true
-  wifi_ble_enabled: true
 
 
 # =============================================================================

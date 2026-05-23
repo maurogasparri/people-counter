@@ -718,18 +718,6 @@ def is_counting_enabled(config: dict[str, Any]) -> bool:
     return bool(get_effective_value(config, "counting_enabled", True))
 
 
-def is_wifi_ble_enabled(config: dict[str, Any]) -> bool:
-    """Chequea si el probing WiFi/BLE está enabled (toggleable desde el cloud)."""
-    local_enabled = config.get("wifi_ble", {}).get("enabled", False)
-    cloud_enabled = get_effective_value(config, "wifi_ble_enabled", True)
-    return local_enabled and cloud_enabled
-
-
-def get_scaling_factor(config: dict[str, Any]) -> float:
-    """Devuelve el footfall scaling factor (overrideable por cloud)."""
-    return float(get_effective_value(config, "footfall_scaling_factor", 1.0))
-
-
 # ---------------------------------------------------------------------------
 # Shadow delta application
 # ---------------------------------------------------------------------------

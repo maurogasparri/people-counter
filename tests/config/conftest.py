@@ -102,9 +102,7 @@ _COMPLETE_CONFIG: dict = {
             "sunday": "11:00-20:00",
         },
         "on_invalid_schedule": "fail_open",
-        "footfall_scaling_factor": 1.0,
         "counting_enabled": True,
-        "wifi_ble_enabled": True,
     },
 }
 
