@@ -147,6 +147,12 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- "tracker perfecto" / "fragmentación rescatada por adopción" /
     -- "fragmentación rescatada por death-emit" / "fragmentación sin rescate".
     ghost_adoption_count          INT,
+    -- Canary del Device Shadow: timestamp del último delta aplicado vía
+    -- apply_shadow_delta (cloud_defaults.{operating_hours, counting_enabled,
+    -- external_traffic_enabled} pushados desde AWS). NULL hasta que el device
+    -- reciba el primer push real (boot reconcile no cuenta). Útil en Grafana
+    -- para distinguir "shadow nunca usado" vs "última push fue hace mucho".
+    last_shadow_apply_ts          TIMESTAMPTZ,
     -- Schedule / error state (mando 'error' del payload + detalle largo)
     error                         TEXT,
     schedule_error_detail         TEXT,

@@ -201,6 +201,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                  wifi_ble_stitching_ratio,
                  track_stitching_ratio, death_emit_count,
                  ghost_adoption_count,
+                 last_shadow_apply_ts,
                  error, schedule_error_detail)
             VALUES (%s, %s, %s,
                     %s, %s, %s,
@@ -214,6 +215,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                     %s, %s,
                     %s,
                     %s, %s,
+                    %s,
                     %s,
                     %s, %s)
             ON CONFLICT (device_id, event_ts) DO NOTHING
@@ -245,6 +247,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                 data.get("track_stitching_ratio"),
                 data.get("death_emit_count"),
                 data.get("ghost_adoption_count"),
+                _ts(data.get("last_shadow_apply_ts")) if data.get("last_shadow_apply_ts") is not None else None,
                 data.get("error"),
                 data.get("schedule_error_detail"),
             ),

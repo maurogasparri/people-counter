@@ -62,8 +62,18 @@ _HTML = """<!DOCTYPE html>
     @media(max-width:820px){.grid{grid-template-columns:1fr;}}
     .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
       padding:14px 16px;}
-    .card h3{margin:0 0 10px;font-size:11.5px;letter-spacing:.06em;
+    /* Header de cada card: título a la izquierda + status pill a la derecha
+       para que el operator vea de un vistazo "activo / pausado por shadow /
+       fuera de horario" sin tener que mirar el meta header arriba. */
+    .card-head{display:flex;align-items:center;justify-content:space-between;
+      gap:10px;margin:0 0 10px;}
+    .card h3{margin:0;font-size:11.5px;letter-spacing:.06em;
       text-transform:uppercase;color:var(--muted);font-weight:600;}
+    .status-pill{font-size:10px;font-weight:600;padding:2px 8px;border-radius:999px;
+      letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;}
+    .status-pill.on{background:rgba(61,220,132,.16);color:var(--in);}
+    .status-pill.off{background:rgba(255,140,66,.16);color:var(--out);}
+    .status-pill.idle{background:rgba(139,148,163,.14);color:var(--muted);}
     /* KPI boxes — mismo tamaño/padding/tipografía para IN/OUT y
        Passersby/Shoppers. Los colores verde/naranja se aplican SOLO a
        .kpi.in / .kpi.out via .v; los KPI sin clase de color heredan el
@@ -110,12 +120,14 @@ _HTML = """<!DOCTYPE html>
     </header>
     <div class='meta'>
       <span>Horario <b id='hours'>—</b></span>
-      <span>Estado <b id='sched'>—</b></span>
       <span style='margin-left:auto'><b id='clock'>—</b></span>
     </div>
     <div class='grid'>
       <div class='card'>
-        <h3>Conteo (hoy)</h3>
+        <div class='card-head'>
+          <h3>Conteo (hoy)</h3>
+          <span class='status-pill idle' id='counting-status'>—</span>
+        </div>
         <div class='kpis'>
           <div class='kpi in'><div class='k'>IN</div><div class='v' id='in'>0</div></div>
           <div class='kpi out'><div class='k'>OUT</div><div class='v' id='out'>0</div></div>
@@ -126,7 +138,10 @@ _HTML = """<!DOCTYPE html>
         </table>
       </div>
       <div class='card'>
-        <h3>Tráfico exterior · WiFi/BLE</h3>
+        <div class='card-head'>
+          <h3>Tráfico exterior · WiFi/BLE</h3>
+          <span class='status-pill idle' id='external-status'>—</span>
+        </div>
         <div class='kpis'>
           <div class='kpi'><div class='k'>Passersby</div><div class='v' id='passersby'>0</div></div>
           <div class='kpi'><div class='k'>Shoppers</div><div class='v' id='shoppers'>0</div></div>
@@ -153,12 +168,38 @@ _HTML = """<!DOCTYPE html>
     const $=id=>document.getElementById(id);
     const fmtT=e=>e?new Date(e*1000).toLocaleTimeString('es-AR',{hour12:false}):'—';
     const fmtR=r=>(r==null)?'—':Math.round(r)+' dBm';
-    // El <img> MJPEG no se reconecta solo al reiniciarse el server. Estrategia
-    // robusta: flag de "necesita recargar" que se setea ante error/recovery,
-    // + reintento periódico con rate-limit. Si un reload cae justo cuando el
-    // MJPEG endpoint todavía no está listo, el siguiente tick lo intenta de
-    // nuevo (un debounce one-shot dejaba la imagen colgada hasta refresh
-    // manual).
+    // Días en orden L → D. La inicial (1 letra) alcanza para el meta
+    // header compacto; usamos formato hh-hh sin minutos cuando son ":00".
+    const DAY_KEYS=['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+    const DAY_INITIALS={monday:'L',tuesday:'M',wednesday:'X',thursday:'J',friday:'V',saturday:'S',sunday:'D'};
+    function trimHHMM(s){return s.replace(/:00\b/g,'');}
+    // Formatea un operating_hours dict como "L-V 10-22 · S-D 10-21".
+    // Agrupa runs de días consecutivos con mismo schedule. null/missing = "cerrado".
+    function fmtHours(oh){
+      if(!oh||typeof oh!=='object')return '—';
+      // Build array [{day, sched}] preservando orden L→D.
+      const days=DAY_KEYS.map(k=>({day:k,sched:(oh[k]==null?'cerrado':trimHHMM(oh[k]))}));
+      if(days.every(d=>d.sched==='cerrado'))return 'cerrado';
+      // Agrupar runs.
+      const groups=[];
+      for(const d of days){
+        const last=groups[groups.length-1];
+        if(last&&last.sched===d.sched){last.end=d.day;}
+        else{groups.push({start:d.day,end:d.day,sched:d.sched});}
+      }
+      return groups.map(g=>{
+        const a=DAY_INITIALS[g.start],b=DAY_INITIALS[g.end];
+        const range=(a===b)?a:`${a}-${b}`;
+        return g.sched==='cerrado'?`${range} cerrado`:`${range} ${g.sched}`;
+      }).join(' · ');
+    }
+    // El <img> MJPEG no se reconecta solo al reiniciarse el server. Asignar
+    // simplemente `img.src = '/stream?t=N'` NO siempre triggerea un fetch
+    // nuevo: algunos browsers (Chromium notablemente) mantienen la conexión
+    // MJPEG vieja en estado "hung" y el src=newUrl no la cierra. Fix
+    // robusto: limpiar src primero (forzar al browser a soltar la conexión
+    // vieja), esperar al evento de load del src vacío en el próximo tick
+    // del event loop, y entonces asignar la URL nueva con cache-buster.
     let _streamNeedsReload=false;
     let _streamLastReloadAt=0;
     const STREAM_RELOAD_INTERVAL_MS=2000;
@@ -169,7 +210,12 @@ _HTML = """<!DOCTYPE html>
       if(now-_streamLastReloadAt<STREAM_RELOAD_INTERVAL_MS)return;
       _streamLastReloadAt=now;
       _streamNeedsReload=false;  // re-marca si el nuevo intento también falla
-      $('stream').src='/stream?t='+now;
+      const img=$('stream');
+      // 1x1 transparent GIF — fuerza al browser a cerrar la conexión
+      // MJPEG vieja sin generar otro request (data: URLs no van por red).
+      img.src='data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+      // Tick para que el browser procese el reset antes del nuevo GET.
+      setTimeout(()=>{ img.src='/stream?t='+Date.now(); }, 80);
     }
     setInterval(maybeReloadStream,500);
     let _statsOk=true;
@@ -179,11 +225,27 @@ _HTML = """<!DOCTYPE html>
         if(!_statsOk){_statsOk=true;markStreamBroken();}  // server volvió → reconectar video
         $('site').textContent=s.store_name||'—';
         $('device').textContent=s.device_id||'—';
-        $('hours').textContent=s.operating_hours||'—';
-        const sc=s.counting_active;
-        $('sched').textContent=(sc==null)?'—':(sc?'contando':'pausado');
-        $('sched').className=sc?'':'off';
+        $('hours').textContent=fmtHours(s.operating_hours);
         $('clock').textContent=s.device_time||'—';
+        // Status pills por card. Texto unificado: "activo" / "pausado" /
+        // "fuera de horario". El "pausado" agrupa tanto el toggle del
+        // shadow (counting_enabled=false / external_traffic_enabled=false)
+        // como cualquier otra forma futura de pausa — desde la perspectiva
+        // del operator todas son lo mismo: subsystem no está reportando.
+        function setPill(el, cls, txt){
+          el.className='status-pill ' + cls;
+          el.textContent=txt;
+        }
+        const cTog=s.counting_toggle_on;
+        const wh=s.within_hours;
+        if(cTog==null){setPill($('counting-status'),'idle','—');}
+        else if(!cTog){setPill($('counting-status'),'off','pausado');}
+        else if(!wh){setPill($('counting-status'),'off','fuera de horario');}
+        else{setPill($('counting-status'),'on','activo');}
+        const eOn=s.external_traffic_on;
+        if(eOn==null){setPill($('external-status'),'idle','—');}
+        else if(!eOn){setPill($('external-status'),'off','pausado');}
+        else{setPill($('external-status'),'on','activo');}
         $('in').textContent=s.total_in??0;
         $('out').textContent=s.total_out??0;
         $('fps').textContent=(typeof s.fps==='number')?s.fps.toFixed(1):'—';

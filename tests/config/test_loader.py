@@ -9,9 +9,8 @@ import yaml
 from src.config.loader import (
     apply_shadow_delta,
     get_effective_value,
-    get_invalid_schedule_mode,
-    has_schedule_error,
     is_counting_enabled,
+    is_external_traffic_enabled,
     is_within_operating_hours,
     load_config,
     merge_cloud_config,
@@ -140,11 +139,31 @@ class TestFeatureToggles:
         assert is_counting_enabled(cfg)
 
     def test_counting_disabled_by_shadow(self, complete_config_yaml):
-        """`counting_enabled` SÍ es overridable por shadow (única feature
-        toggle whitelisted — operating_hours es el otro)."""
+        """`counting_enabled` SÍ es overridable por shadow (feature
+        toggle whitelisted en CLOUD_OVERRIDABLE)."""
         cfg = load_config(complete_config_yaml)
         merged = merge_cloud_config(cfg, {"counting_enabled": False})
         assert not is_counting_enabled(merged)
+
+    def test_external_traffic_default_true(self, complete_config_yaml):
+        """Default: wifi_ble.enabled local + cloud_defaults.external_traffic_enabled
+        ambos true → habilitado."""
+        cfg = load_config(complete_config_yaml)
+        assert is_external_traffic_enabled(cfg)
+
+    def test_external_traffic_disabled_locally(self, complete_config_yaml):
+        """Cualquiera de los 2 toggles en false → deshabilitado.
+        Local toma efecto sin shadow."""
+        cfg = load_config(complete_config_yaml)
+        cfg["wifi_ble"]["enabled"] = False
+        assert not is_external_traffic_enabled(cfg)
+
+    def test_external_traffic_disabled_by_shadow(self, complete_config_yaml):
+        """external_traffic_enabled SÍ es overridable por shadow (toggle
+        de privacidad por sucursal, agregado al CLOUD_OVERRIDABLE)."""
+        cfg = load_config(complete_config_yaml)
+        merged = merge_cloud_config(cfg, {"external_traffic_enabled": False})
+        assert not is_external_traffic_enabled(merged)
 
     def test_get_effective_value_with_fallback(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)
@@ -204,37 +223,34 @@ class TestValidateOperatingHours:
         assert "ab:cd" in err
 
 
-class TestLoadConfigSoftScheduleValidation:
-    def test_valid_schedule_no_error_flag(self, complete_config_yaml):
-        cfg = load_config(complete_config_yaml)
-        assert not has_schedule_error(cfg)
-        assert "_schedule_error" not in cfg
+class TestLoadConfigScheduleValidation:
+    """operating_hours se valida fail-fast en load_config — sin
+    `_schedule_error` flag / fail_open ya no aplica. Para los deltas del
+    shadow, el equivalente es el rechazo pre-apply (ver
+    TestShadowDeltaValidation)."""
 
-    def test_invalid_schedule_does_not_raise(self, tmp_path, complete_config):
+    def test_valid_schedule_loads(self, complete_config_yaml):
+        cfg = load_config(complete_config_yaml)
+        assert cfg["cloud_defaults"]["operating_hours"]
+
+    def test_invalid_schedule_raises(self, tmp_path, complete_config):
         complete_config["cloud_defaults"]["operating_hours"] = {
             "monday": "25:00-26:00",
         }
-        cfg = load_config(write_config(tmp_path, complete_config))  # must not raise
-        assert has_schedule_error(cfg)
-        assert "25:00" in cfg["_schedule_error"]
+        with pytest.raises(ValueError, match="Invalid operating_hours"):
+            load_config(write_config(tmp_path, complete_config))
 
-    def test_invalid_schedule_logs_warning(self, tmp_path, complete_config, caplog):
+    def test_end_before_start_raises(self, tmp_path, complete_config):
         complete_config["cloud_defaults"]["operating_hours"] = {
             "monday": "22:00-10:00",
         }
-        with caplog.at_level("WARNING", logger="src.config.loader"):
-            cfg = load_config(write_config(tmp_path, complete_config))
-        assert has_schedule_error(cfg)
-        assert any(
-            rec.message == "invalid_operating_hours"
-            and getattr(rec, "reason", None)
-            for rec in caplog.records
-        )
+        with pytest.raises(ValueError, match="Invalid operating_hours"):
+            load_config(write_config(tmp_path, complete_config))
 
-    def test_missing_operating_hours_is_error(self, tmp_path, complete_config):
+    def test_missing_operating_hours_raises(self, tmp_path, complete_config):
         complete_config["cloud_defaults"] = {}
-        cfg = load_config(write_config(tmp_path, complete_config))
-        assert has_schedule_error(cfg)
+        with pytest.raises(ValueError, match="Invalid operating_hours"):
+            load_config(write_config(tmp_path, complete_config))
 
 
 class TestApplyShadowDelta:
@@ -253,6 +269,31 @@ class TestApplyShadowDelta:
         assert new_cfg["cloud_defaults"]["operating_hours"] == new_hours
         # Original config untouched (deep copy returned).
         assert cfg["cloud_defaults"]["operating_hours"] != new_hours
+
+    def test_bare_top_level_key_mapped_to_cloud_defaults(
+        self, complete_config_yaml,
+    ):
+        """AWS IoT publica state.desired al ras del root (sin namespacing
+        operator-friendly): {counting_enabled: false}. apply_shadow_delta
+        debe mapearla a cloud_defaults.counting_enabled antes de validar,
+        coherente con merge_cloud_config (startup) y con el operator
+        guide."""
+        cfg = load_config(complete_config_yaml)
+        # Delta bare como lo manda AWS desde un push estilo
+        # `aws iot-data update-thing-shadow --payload
+        #  '{"state":{"desired":{"counting_enabled":false}}}'`.
+        delta = {"counting_enabled": False}
+        new_cfg, applied = apply_shadow_delta(cfg, delta)
+        assert "cloud_defaults.counting_enabled" in applied
+        assert new_cfg["cloud_defaults"]["counting_enabled"] is False
+
+    def test_bare_external_traffic_mapped(self, complete_config_yaml):
+        """Mismo mapeo bare→cloud_defaults para external_traffic_enabled."""
+        cfg = load_config(complete_config_yaml)
+        delta = {"external_traffic_enabled": False}
+        new_cfg, applied = apply_shadow_delta(cfg, delta)
+        assert "cloud_defaults.external_traffic_enabled" in applied
+        assert new_cfg["cloud_defaults"]["external_traffic_enabled"] is False
 
     def test_unsafe_key_ignored(self, complete_config_yaml, caplog):
         cfg = load_config(complete_config_yaml)
@@ -317,29 +358,32 @@ class TestApplyShadowDelta:
         assert "vision" not in new_cfg or new_cfg["vision"] == cfg.get("vision")
         assert new_cfg["device"]["id"] == cfg["device"]["id"]
 
-    def test_persists_shadow_cache(self, complete_config_yaml, tmp_path):
+    def test_persists_to_config_yaml(self, complete_config_yaml):
+        """Cambio de 2026-05-23: el shadow apply persiste al MISMO
+        config.yaml (no a un sibling .shadow.json). Single source of
+        truth — el operator SSH ve lo que el device tiene corriendo."""
         cfg = load_config(complete_config_yaml)
-        delta = {"cloud_defaults": {"counting_enabled": False}}
+        delta = {"counting_enabled": False}
         new_cfg, applied = apply_shadow_delta(
             cfg, delta, config_path=complete_config_yaml
         )
         assert applied == ["cloud_defaults.counting_enabled"]
 
-        shadow_file = Path(complete_config_yaml).with_suffix(".shadow.json")
-        assert shadow_file.exists()
-        persisted = json.loads(shadow_file.read_text())
-        assert (
-            persisted["state"]["desired"]["cloud_defaults"]["counting_enabled"]
-            is False
-        )
+        # El config.yaml se reescribió con el nuevo valor.
+        reloaded = yaml.safe_load(Path(complete_config_yaml).read_text())
+        assert reloaded["cloud_defaults"]["counting_enabled"] is False
+
+        # NO se creó sibling .shadow.json (legacy eliminado).
+        assert not Path(complete_config_yaml).with_suffix(".shadow.json").exists()
 
     def test_no_persist_when_no_keys_applied(self, complete_config_yaml):
         cfg = load_config(complete_config_yaml)
         delta = {"mqtt": {"endpoint": "blocked"}}
+        # Capturar el contenido original del YAML para detectar mutación.
+        original_yaml = Path(complete_config_yaml).read_text()
         apply_shadow_delta(cfg, delta, config_path=complete_config_yaml)
-
-        shadow_file = Path(complete_config_yaml).with_suffix(".shadow.json")
-        assert not shadow_file.exists()
+        # Sin keys aplicadas, el config.yaml no se reescribe.
+        assert Path(complete_config_yaml).read_text() == original_yaml
 
     def test_operational_prefix_no_longer_pushable(self, complete_config_yaml):
         """operational.* dejó de ser pusheable — runtime tuning queda en
@@ -350,29 +394,26 @@ class TestApplyShadowDelta:
         assert applied == []
 
 
-class TestInvalidScheduleMode:
-    def test_default_is_fail_open(self, complete_config_yaml):
-        cfg = load_config(complete_config_yaml)
-        assert get_invalid_schedule_mode(cfg) == "fail_open"
+class TestShadowDeltaValidation:
+    """Los deltas que fallan validación se rechazan ANTES de aplicar +
+    persistir al config.yaml (no se silencian con fail_open/fail_closed)."""
 
-    def test_fail_closed_from_cloud_defaults(self, complete_config_yaml):
+    def test_invalid_operating_hours_rejected(
+        self, complete_config_yaml, caplog,
+    ):
         cfg = load_config(complete_config_yaml)
-        cfg["cloud_defaults"]["on_invalid_schedule"] = "fail_closed"
-        assert get_invalid_schedule_mode(cfg) == "fail_closed"
-
-    def test_unknown_value_falls_back_to_fail_open(self, complete_config_yaml):
-        cfg = load_config(complete_config_yaml)
-        cfg["cloud_defaults"]["on_invalid_schedule"] = "nonsense"
-        assert get_invalid_schedule_mode(cfg) == "fail_open"
-
-    def test_shadow_does_not_override_mode(self, complete_config_yaml):
-        """on_invalid_schedule fue removido de CLOUD_OVERRIDABLE — decisión
-        de fail mode es one-time per deployment, no end-user via shadow."""
-        cfg = load_config(complete_config_yaml)
-        cfg["cloud_defaults"]["on_invalid_schedule"] = "fail_open"
-        merged = merge_cloud_config(cfg, {"on_invalid_schedule": "fail_closed"})
-        # El push del shadow se ignora; queda el valor del config local.
-        assert get_invalid_schedule_mode(merged) == "fail_open"
+        original = cfg["cloud_defaults"]["operating_hours"].copy()
+        # Schedule con end <= start es inválido.
+        delta = {"operating_hours": {"monday": "22:00-10:00"}}
+        with caplog.at_level("WARNING", logger="src.config.loader"):
+            new_cfg, applied = apply_shadow_delta(cfg, delta)
+        # No se aplica.
+        assert applied == []
+        assert new_cfg["cloud_defaults"]["operating_hours"] == original
+        # Log del rechazo.
+        assert any(
+            r.message == "shadow_delta_rejected_invalid" for r in caplog.records
+        )
 
 
 class TestBuildReportedState:
@@ -396,7 +437,6 @@ class TestBuildReportedState:
             },
             "cloud_defaults": {
                 "operating_hours": {"monday": "09:00-22:00"},
-                "on_invalid_schedule": "fail_open",
             },
             "telemetry": {"interval_seconds": 300},
             "counter": {
@@ -429,7 +469,7 @@ class TestBuildReportedState:
         assert "vision" not in reported
         assert "telemetry" not in reported
         assert "operational" not in reported
-        assert reported.get("cloud_defaults", {}).get("on_invalid_schedule") is None
+        assert reported.get("cloud_defaults", {}).get("on_invalid_cloud_config") is None
 
         # Secrets / endpoints nunca filtran al reported.
         assert "mqtt" not in reported

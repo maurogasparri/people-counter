@@ -448,7 +448,7 @@ mqtt:
   key_path: "/etc/people-counter/certs/device.pem.key"
   ca_path: "/etc/people-counter/certs/AmazonRootCA1.pem"
   port: 8883                        # Puerto TLS de AWS IoT Core.
-  shadow_enabled: false             # Device Shadow (config cloud→device:
+  shadow_enabled: true              # Device Shadow (config cloud→device:
                                     # operating_hours, counting_enabled vía
                                     # CLOUD_OVERRIDABLE). FUERA DE SCOPE por
                                     # ahora → false: el device no suscribe al
@@ -523,13 +523,15 @@ cloud_defaults:
     saturday: "10:00-22:00"
     sunday: "10:00-21:00"
 
-  # fail_open: loguea WARNING, sigue contando (default — sin pérdida de datos
-  # ante un typo).
-  # fail_closed: loguea CRITICAL, pausa el conteo hasta que se pushee un
-  # schedule válido.
-  on_invalid_schedule: "fail_open"
-
-  counting_enabled: true
+  # Feature toggles overridables remotamente via shadow. Los deltas con
+  # valores inválidos se RECHAZAN antes de aplicar (en apply_shadow_delta);
+  # no hay modo fail_open/fail_closed porque desde que el shadow persiste
+  # al mismo config.yaml no hay separación local-válido vs cloud-inválido.
+  counting_enabled: true            # toggle del conteo de personas (vision).
+  external_traffic_enabled: true    # toggle de la captura WiFi/BLE
+                                    # (passersby + shoppers). Apagable por
+                                    # sucursal ante consulta legal o pausa
+                                    # de privacidad sin SSH.
 
 
 # =============================================================================

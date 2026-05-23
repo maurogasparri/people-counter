@@ -50,25 +50,23 @@ BEST_FRAME_DEFAULTS: dict[str, Any] = {
 
 # Keys que pueden ser overrideadas por el cloud shadow bajo ``cloud_defaults``.
 #
-# Scope deliberadamente acotado a las 2 keys con valor real para un end user
-# que no tiene acceso SSH:
+# Scope acotado a feature toggles end-user (no técnicos):
 #   - operating_hours: el horario de la tienda cambia (feriados, eventos
-#     especiales, extended hours) y el end user lo debe poder ajustar sin
-#     tocar el device.
-#   - counting_enabled: toggle on/off para mantenimiento, limpieza, evento
-#     privado, etc.
+#     especiales, extended hours) y el end user lo ajusta sin tocar device.
+#   - counting_enabled: toggle on/off del conteo de personas (vision) para
+#     mantenimiento, limpieza, evento privado, etc.
+#   - external_traffic_enabled: toggle on/off del subsistema WiFi/BLE
+#     (passersby / shoppers). Útil para apagar privacidad por sucursal
+#     ante consulta legal / cliente que pide pausarlo, sin SSH.
 #
 # El resto de los knobs (thresholds, ROI, tracker tuning, vision params)
 # requieren visualización o análisis técnico — se siguen modificando vía
-# SSH a /etc/people-counter/config.yaml + restart. Para una flota futura
-# con muchos devices este whitelist se puede expandir, pero para 1 device
-# PoC es ceremonia innecesaria.
+# SSH a /etc/people-counter/config.yaml + restart.
 CLOUD_OVERRIDABLE = {
     "operating_hours",
     "counting_enabled",
+    "external_traffic_enabled",
 }
-
-VALID_INVALID_SCHEDULE_MODES = {"fail_open", "fail_closed"}
 
 # Whitelist dotted-path de keys del config que pueden aplicarse en runtime
 # desde un delta del IoT Shadow sin restartear el servicio. Cualquier cosa
@@ -78,6 +76,7 @@ RUNTIME_SAFE_KEYS = frozenset(
     {
         "cloud_defaults.operating_hours",
         "cloud_defaults.counting_enabled",
+        "cloud_defaults.external_traffic_enabled",
     }
 )
 
@@ -85,9 +84,6 @@ RUNTIME_SAFE_KEYS = frozenset(
 # Vacío: todos los knobs técnicos requieren restart (SSH + edit + systemctl
 # restart). Documentado en infra/README.md.
 RUNTIME_SAFE_PREFIXES: tuple[str, ...] = ()
-
-SHADOW_CACHE_SUFFIX = ".shadow.json"
-
 
 DEFAULT_DEVICE_CONFIG_PATH = "/etc/people-counter/config.yaml"
 
@@ -138,10 +134,11 @@ def load_config(path: str) -> dict[str, Any]:
         path: Path al archivo YAML de config per-device.
 
     Returns:
-        Dict de config validado con ``cloud_defaults`` como el cloud config
-        efectivo. Si operating_hours falla la validación soft, el dict
-        contiene una key ``_schedule_error`` describiendo el problema así el
-        runtime puede honorar ``on_invalid_schedule``.
+        Dict de config validado. ``operating_hours`` se valida fail-fast
+        (raise ValueError si está malformado) — desde que el shadow
+        persiste al mismo ``config.yaml``, no hay separación local-válido
+        vs cloud-inválido; los deltas inválidos se rechazan ANTES de
+        persistir (en ``apply_shadow_delta``).
     """
     config_path = Path(path)
     if not config_path.exists():
@@ -154,17 +151,18 @@ def load_config(path: str) -> dict[str, Any]:
     _validate(config)
     _normalise_best_frame(config)
 
-    # Soft-valida el schedule: los errores se surfacean vía _schedule_error
-    # en vez de raisear, así el runtime puede honorar on_invalid_schedule.
+    # Validar operating_hours fail-fast. Si el operator SSH-editó un
+    # schedule malformado, el startup falla con error claro (antes esto se
+    # silenciaba con _schedule_error + fail_open). Para los deltas del
+    # shadow, la validación equivalente se hace en `apply_shadow_delta`
+    # (rechazo del delta sin escribir el config.yaml).
     schedule_error = validate_operating_hours(
         get_effective_value(config, "operating_hours", None)
     )
     if schedule_error is not None:
-        logger.warning(
-            "invalid_operating_hours",
-            extra={"reason": schedule_error},
+        raise ValueError(
+            f"Invalid operating_hours en {config_path}: {schedule_error}"
         )
-        config["_schedule_error"] = schedule_error
 
     return config
 
@@ -667,26 +665,6 @@ def _parse_hhmm(value: str) -> tuple[int, int] | None:
     return hour, minute
 
 
-def get_invalid_schedule_mode(config: dict[str, Any]) -> str:
-    """Devuelve el modo on_invalid_schedule configurado.
-
-    Cae a 'fail_open' para valores desconocidos o faltantes (back-compat).
-    """
-    mode = get_effective_value(config, "on_invalid_schedule", "fail_open")
-    if mode not in VALID_INVALID_SCHEDULE_MODES:
-        logger.warning(
-            "unknown_on_invalid_schedule_mode",
-            extra={"mode": mode, "default": "fail_open"},
-        )
-        return "fail_open"
-    return mode
-
-
-def has_schedule_error(config: dict[str, Any]) -> bool:
-    """Devuelve True si el config cargado flageó un schedule inválido."""
-    return bool(config.get("_schedule_error"))
-
-
 def is_within_operating_hours(config: dict[str, Any], day_name: str, hour: int, minute: int) -> bool:
     """Chequea si la hora actual cae dentro de las operating hours del día dado."""
     hours = get_effective_value(config, "operating_hours", {})
@@ -714,8 +692,21 @@ def is_within_operating_hours(config: dict[str, Any], day_name: str, hour: int, 
 
 
 def is_counting_enabled(config: dict[str, Any]) -> bool:
-    """Chequea si counting está enabled (toggleable desde el cloud)."""
+    """Chequea si counting (visión) está enabled (toggleable desde el cloud)."""
     return bool(get_effective_value(config, "counting_enabled", True))
+
+
+def is_external_traffic_enabled(config: dict[str, Any]) -> bool:
+    """Chequea si la captura WiFi/BLE (tráfico exterior) está enabled.
+
+    Combina dos toggles: el local (``wifi_ble.enabled`` del config del
+    device, requiere SSH+restart) y el cloud (``cloud_defaults.
+    external_traffic_enabled``, overridable desde el shadow sin restart).
+    Ambos deben ser true para que el subsystema arranque/siga.
+    """
+    local_enabled = config.get("wifi_ble", {}).get("enabled", False)
+    cloud_enabled = bool(get_effective_value(config, "external_traffic_enabled", True))
+    return local_enabled and cloud_enabled
 
 
 # ---------------------------------------------------------------------------
@@ -727,10 +718,22 @@ def _flatten_delta(
     delta: dict[str, Any],
     prefix: str = "",
 ) -> list[tuple[str, Any]]:
-    """Aplana un delta anidado a ``[(dotted_path, value), ...]``."""
+    """Aplana un delta anidado a ``[(dotted_path, value), ...]``.
+
+    Las keys top-level que están en CLOUD_OVERRIDABLE se tratan
+    ATÓMICAMENTE — no se recursa adentro. Esto preserva ``operating_hours``
+    como dict entero (el shadow lo pushea como bloque, no día por día) y
+    permite validar/asignar el dict completo. Sin este short-circuit,
+    ``{operating_hours: {monday: ...}}`` se aplanaba a
+    ``operating_hours.monday`` que no matchea RUNTIME_SAFE_KEYS y se
+    descartaba como requires_restart.
+    """
     items: list[tuple[str, Any]] = []
     for key, value in delta.items():
         path = f"{prefix}{key}"
+        if prefix == "" and key in CLOUD_OVERRIDABLE:
+            items.append((path, value))
+            continue
         if isinstance(value, dict) and not _is_runtime_safe(path):
             items.extend(_flatten_delta(value, prefix=f"{path}."))
         else:
@@ -778,17 +781,43 @@ def apply_shadow_delta(
     new_config = copy.deepcopy(current_config)
     applied: list[str] = []
     ignored: list[str] = []
+    rejected: list[tuple[str, str]] = []
 
     if not delta:
         logger.debug("apply_shadow_delta called with empty delta")
         return new_config, applied
 
+    # Validators por path. Si la validación falla, el delta se RECHAZA
+    # (no se aplica al config en memoria + no se persiste al config.yaml).
+    # El último valor válido sigue activo. Sin esto, un delta malformado
+    # del shadow se escribiría al config.yaml y rompería el próximo boot.
+    validators: dict[str, Any] = {
+        "cloud_defaults.operating_hours": validate_operating_hours,
+    }
+
     for path, value in _flatten_delta(delta):
-        if _is_runtime_safe(path):
-            _set_dotted(new_config, path, value)
-            applied.append(path)
-        else:
+        # AWS IoT publica el state.desired al ras del root (ej.
+        # ``{counting_enabled: false}``). ``merge_cloud_config`` (startup)
+        # asume esa convención y monta bajo ``cloud_defaults.<key>``. Para
+        # que ``apply_shadow_delta`` (runtime) sea coherente, mapeamos las
+        # keys bare del top-level que están en CLOUD_OVERRIDABLE a
+        # ``cloud_defaults.<key>`` antes de validar contra RUNTIME_SAFE_KEYS
+        # y de hacer el set. Sin este mapeo, el delta llegaba pero se
+        # rechazaba como requires_restart porque el path no matcheaba la
+        # whitelist (operator-friendly publishing vs internal namespace).
+        if "." not in path and path in CLOUD_OVERRIDABLE:
+            path = f"cloud_defaults.{path}"
+        if not _is_runtime_safe(path):
             ignored.append(path)
+            continue
+        validator = validators.get(path)
+        if validator is not None:
+            err = validator(value)
+            if err is not None:
+                rejected.append((path, err))
+                continue
+        _set_dotted(new_config, path, value)
+        applied.append(path)
 
     if applied:
         logger.info(
@@ -800,23 +829,44 @@ def apply_shadow_delta(
             "shadow_delta_requires_restart",
             extra={"keys": sorted(ignored), "count": len(ignored)},
         )
+    if rejected:
+        logger.warning(
+            "shadow_delta_rejected_invalid",
+            extra={"rejections": [{"key": p, "reason": r} for p, r in rejected]},
+        )
 
     if applied and config_path is not None:
+        # Persistir el config mergeado al MISMO ``config.yaml`` (no a un
+        # sibling .shadow.json). Single source of truth: el operator que
+        # SSH a /etc/people-counter/config.yaml ve lo que el device tiene
+        # corriendo. Trade-off: yaml.safe_dump pierde los comentarios del
+        # YAML original — la doc canónica con comentarios vive en
+        # config/config.example.yaml del repo, el del device es runtime
+        # state (lo dice la cabecera del archivo después del primer
+        # apply). Si se necesita preservar comentarios en el futuro,
+        # usar ``ruamel.yaml`` que mantiene round-trip fidelity.
         try:
-            cache_path = _shadow_cache_path(config_path)
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(
-                json.dumps(
-                    {"state": {"desired": delta}},
-                    indent=2,
-                    sort_keys=True,
-                )
+            cp = Path(config_path)
+            # Limpiamos las keys internas que el loader inyecta in-memory
+            # (no son parte del YAML del operator) antes de serializar.
+            serializable = {k: v for k, v in new_config.items() if not k.startswith("_")}
+            cp.write_text(
+                "# Auto-managed: este archivo fue actualizado por el último\n"
+                "# Device Shadow apply. La doc canónica con comentarios vive\n"
+                "# en `config/config.example.yaml` del repo. Para auditar\n"
+                "# qué keys son shadow-overridables ver CLOUD_OVERRIDABLE\n"
+                "# en src/config/loader.py.\n"
+                + yaml.safe_dump(
+                    serializable, default_flow_style=False, sort_keys=False
+                ),
+                encoding="utf-8",
             )
-            logger.debug(
-                "shadow_cache_persisted", extra={"path": str(cache_path)}
+            logger.info(
+                "shadow_applied_to_yaml",
+                extra={"path": str(cp), "applied": sorted(applied)},
             )
         except OSError:
-            logger.exception("Falló persistir el shadow cache")
+            logger.exception("Falló persistir el shadow al config.yaml")
 
     return new_config, applied
 

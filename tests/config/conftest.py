@@ -101,7 +101,6 @@ _COMPLETE_CONFIG: dict = {
             "saturday": None,
             "sunday": "11:00-20:00",
         },
-        "on_invalid_schedule": "fail_open",
         "counting_enabled": True,
     },
 }

@@ -492,82 +492,15 @@ def test_run_pipeline_publishes_counting_events(mock_build_cap, mock_load_model,
     assert mock_backend.infer.call_count == 2
 
 
-@patch("src.mqtt.client.mqtt.Client")
-@patch("src.main.load_model")
-@patch("src.main.build_capture")
-def test_run_pipeline_invalid_schedule_fail_open_continues(
-    mock_build_cap, mock_load_model, mock_mqtt_cls
-):
-    """Invalid schedule + fail_open: pipeline still counts (calls infer)."""
-    mock_mqtt_cls.return_value = MagicMock()
-
-    mock_backend = MagicMock()
-    mock_backend.infer.return_value = np.zeros((1, 84, 0), dtype=np.float32)
-    mock_load_model.return_value = {"backend": mock_backend, "type": "opencv"}
-
-    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-    mock_build_cap.return_value = _make_mock_capture([(dummy, dummy)])
-
-    tmpdir = tempfile.mkdtemp()
-    config = _make_pipeline_config(tmpdir)
-    config["vision"]["calibration_file"] = None
-    config["_schedule_error"] = "monday: invalid start time '25:00'"
-    config["cloud_defaults"]["on_invalid_schedule"] = "fail_open"
-    args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
-
-    caplog_ctx = _CaplogCtx()
-    with caplog_ctx:
-        run_pipeline(config, args)
-
-    assert mock_backend.infer.call_count == 1
-    assert any(
-        "fail_open" in msg and "Invalid operating_hours" in msg
-        for msg in caplog_ctx.messages
-    )
-
-
-@patch("src.mqtt.client.mqtt.Client")
-@patch("src.main.load_model")
-@patch("src.main.build_capture")
-def test_run_pipeline_invalid_schedule_fail_closed_pauses(
-    mock_build_cap, mock_load_model, mock_mqtt_cls
-):
-    """Invalid schedule + fail_closed: pipeline does NOT call infer."""
-    mock_mqtt_cls.return_value = MagicMock()
-
-    mock_backend = MagicMock()
-    mock_load_model.return_value = {"backend": mock_backend, "type": "opencv"}
-
-    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-    mock_build_cap.return_value = _make_mock_capture([(dummy, dummy)] * 10)
-
-    tmpdir = tempfile.mkdtemp()
-    config = _make_pipeline_config(tmpdir)
-    config["_schedule_error"] = "monday: end '10:00' must be after start '22:00'"
-    config["cloud_defaults"]["on_invalid_schedule"] = "fail_closed"
-    args = argparse.Namespace(replay_dir="/fake", detection_backend="opencv")
-
-    sleep_count = [0]
-
-    def _fake_sleep(seconds):
-        sleep_count[0] += 1
-        if sleep_count[0] >= 2:
-            raise KeyboardInterrupt()
-
-    caplog_ctx = _CaplogCtx(level=logging.CRITICAL)
-    with caplog_ctx:
-        with patch("src.main.time.sleep", side_effect=_fake_sleep):
-            with patch("src.main.signal.signal"):
-                try:
-                    run_pipeline(config, args)
-                except KeyboardInterrupt:
-                    pass
-
-    mock_backend.infer.assert_not_called()
-    assert any(
-        "fail_closed" in msg and "paused" in msg
-        for msg in caplog_ctx.messages
-    )
+# NOTA: tests `invalid_schedule_fail_open` y `invalid_schedule_fail_closed`
+# removidos junto con el knob `on_invalid_cloud_config` (2026-05-23).
+# Después de que el shadow persiste al mismo config.yaml (single source of
+# truth), los deltas inválidos se rechazan en `apply_shadow_delta` ANTES
+# de persistir (ver `TestShadowDeltaValidation::
+# test_invalid_operating_hours_rejected` en tests/config/test_loader.py).
+# Y `load_config` raise-ea fail-fast si el config.yaml local tiene
+# operating_hours malformado — no hay más "schedule_invalid en runtime"
+# como categoría.
 
 
 class _CaplogCtx:

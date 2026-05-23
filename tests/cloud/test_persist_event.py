@@ -127,6 +127,7 @@ def test_telemetry_event_inserts(fake_pg):
             "hailo_temp_c": 48.2,
             "wifi_probe_ok": True,
             "ble_scanner_ok": False,
+            "last_shadow_apply_ts": 1762962800.0,
         },
     }
     result = handler(event, None)
@@ -135,6 +136,25 @@ def test_telemetry_event_inserts(fake_pg):
     call_args = fake_pg["cursor"].execute.call_args
     sql = call_args[0][0]
     assert "INSERT INTO telemetry" in sql
+    # Canary del Device Shadow llega como columna explícita.
+    assert "last_shadow_apply_ts" in sql
+
+
+def test_telemetry_event_without_shadow_apply_ts(fake_pg):
+    """Backward compat: devices con firmware viejo o sin pushes de shadow
+    no mandan ``last_shadow_apply_ts``. La columna debe quedar NULL."""
+    from src.cloud.persist_event import handler
+
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "telemetry",
+        "data": {"cpu_temp_c": 50.0},
+        # sin last_shadow_apply_ts
+    }
+    result = handler(event, None)
+    assert result["statusCode"] == 200
+    # Sanity: no rompió por el campo ausente.
 
 
 def test_wifi_ble_event_inserts(fake_pg):

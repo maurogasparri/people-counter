@@ -30,12 +30,10 @@ from src.config.loader import (
     DEFAULT_DEVICE_CONFIG_PATH,
     apply_shadow_delta,
     build_reported_state,
-    get_invalid_schedule_mode,
-    has_schedule_error,
     is_counting_enabled,
+    is_external_traffic_enabled,
     is_within_operating_hours,
     load_config,
-    merge_cloud_config,
 )
 from src.mqtt.buffer import MessageBuffer
 from src.mqtt.client import MQTTClient
@@ -303,12 +301,17 @@ def build_wifi_ble(
     Returns:
         Tupla (dedup, publisher, wifi_capture, ble_scanner). Las dos últimas
         pueden ser ``None`` si su sub-toggle está apagado. Devuelve ``None``
-        cuando ``wifi_ble.enabled`` es false (deshabilitado fleet-wide).
+        cuando ``wifi_ble.enabled`` (local) o ``cloud_defaults.
+        external_traffic_enabled`` (cloud, overridable via shadow) es false.
     """
-    wifi_cfg = config.get("wifi_ble", {})
-    if not bool(wifi_cfg.get("enabled", False)):
-        logger.info("wifi_ble disabled — saltando bridge a MQTT")
+    if not is_external_traffic_enabled(config):
+        logger.info(
+            "external traffic capture disabled — saltando bridge a MQTT "
+            "(wifi_ble.enabled local Y external_traffic_enabled cloud "
+            "deben ser true para que arranque)"
+        )
         return None
+    wifi_cfg = config.get("wifi_ble", {})
 
     dedup_db = wifi_cfg.get("dedup_db_path") or os.path.join(
         os.path.dirname(config["buffer"]["db_path"]),
@@ -937,8 +940,22 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # en el main thread (sin llamadas de red en el thread de paho).
     shadow_queue: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=32)
     _RECONCILE_SENTINEL = {"__reconcile__": True}
+    # Short-circuit anti-loop: AWS puede re-publicar el mismo delta varias
+    # veces durante el período transient entre que el device publica el
+    # reported actualizado y AWS lo procesa. Deduplicamos: si el delta
+    # entrante es idéntico al último aplicado, no encolamos otro apply
+    # (el reported ya está siendo publicado o ya fue). Compartido entre
+    # paho thread (handler) y main thread (loop) con lock. Lista de 1
+    # elemento como holder mutable para que la closure pueda mutarlo sin
+    # nonlocal (idiomático Python para shared state cross-closure).
+    _last_delta_lock = threading.Lock()
+    _last_applied_delta: list[dict[str, Any]] = [{}]
 
     def _shadow_delta_handler(state: dict[str, Any]) -> None:
+        with _last_delta_lock:
+            if state == _last_applied_delta[0]:
+                logger.debug("shadow_delta_duplicate_skipped")
+                return
         try:
             shadow_queue.put_nowait(state)
         except queue.Full:
@@ -955,6 +972,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     def _on_mqtt_connected() -> None:
         # Corre en el thread de paho — encolar, no bloquear.
         if shadow_enabled:
+            # (Re)suscribir al delta topic acá garantiza que el subscribe
+            # ocurra DESPUÉS del handshake MQTT (evita rc=4 NO_CONN) y se
+            # re-aplique en cada reconnect (paho a veces pierde la
+            # subscripción cross-reconnect). Si lo hiciéramos solo una
+            # vez al startup, una reconexión silenciosa dejaría el device
+            # sordo al delta.
+            try:
+                mqtt_client.subscribe_shadow_delta(device_id, _shadow_delta_handler)
+            except Exception:
+                logger.exception("Falló la subscripción a shadow delta en on_connected")
             try:
                 shadow_queue.put_nowait(_RECONCILE_SENTINEL)
             except queue.Full:
@@ -972,12 +999,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     startup_jitter = float(config.get("mqtt", {}).get("startup_jitter_seconds", 10.0))
     mqtt_client.connect(startup_jitter_seconds=startup_jitter)
 
-    if shadow_enabled:
-        try:
-            mqtt_client.subscribe_shadow_delta(device_id, _shadow_delta_handler)
-        except Exception:
-            logger.exception("Falló la subscripción a shadow delta")
-    else:
+    if not shadow_enabled:
         logger.info("Device Shadow deshabilitado (mqtt.shadow_enabled=false)")
 
     config_path_arg = getattr(args, "config", None)
@@ -1065,6 +1087,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     last_vacuum = time.time()
     last_ble_watchdog = time.time()
     last_watchdog = 0.0
+    # Canary del Device Shadow: timestamp del último delta aplicado vía
+    # apply_shadow_delta (no del reconcile inicial). None mientras no
+    # haya habido pushes — útil en Grafana para distinguir "shadow nunca
+    # usado" vs "última push fue hace mucho".
+    last_shadow_apply_ts: float | None = None
     within_hours = True  # asumimos abierto hasta el primer check
     profile_enabled = bool(getattr(args, "profile", False))
     profile_every_n = max(1, int(getattr(args, "profile_every_n", 30)))
@@ -1077,24 +1104,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     frame_latencies_ms: deque[float] = deque(maxlen=TELEMETRY_WINDOW_SIZE)
     detection_counts: deque[int] = deque(maxlen=TELEMETRY_WINDOW_SIZE)
     detection_window_start_ts = time.time()
-
-    # Modo de falla de operating-hours — solo loggea el warning de startup una vez.
-    schedule_invalid = has_schedule_error(config)
-    invalid_mode = get_invalid_schedule_mode(config)
-    if schedule_invalid:
-        err = config.get("_schedule_error", "unknown")
-        if invalid_mode == "fail_closed":
-            logger.critical(
-                "Invalid operating_hours (%s) and on_invalid_schedule=fail_closed "
-                "— counting paused until a valid schedule is pushed",
-                err,
-            )
-        else:
-            logger.warning(
-                "Invalid operating_hours (%s) and on_invalid_schedule=fail_open "
-                "— continuing to count (may produce false positives)",
-                err,
-            )
 
     # Señaliza a systemd que el startup terminó. Pareado con WatchdogSec en
     # el archivo de unit — pingueamos WATCHDOG=1 dentro del loop de abajo.
@@ -1152,10 +1161,23 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 if not applied_keys:
                     continue
                 config = new_config
-                # Re-evalúa el flag de schedule luego de un update del shadow.
-                schedule_invalid = has_schedule_error(config)
-                invalid_mode = get_invalid_schedule_mode(config)
                 last_hours_check = 0.0  # forzar recheck en la próxima iteración
+                # Capturar el timestamp del apply para el canary de telemetry.
+                last_shadow_apply_ts = time.time()
+                # Marcar este delta como "ya aplicado" para que el handler
+                # (paho thread) deduplique re-publishes idénticos de AWS
+                # durante el transient hasta que el reported sync.
+                with _last_delta_lock:
+                    _last_applied_delta[0] = delta_state
+                # Encolar reconcile para publicar el reported actualizado
+                # (cierra el ciclo del shadow — sin esto AWS sigue viendo
+                # desired != reported y re-publica el delta en loop).
+                try:
+                    shadow_queue.put_nowait(_RECONCILE_SENTINEL)
+                except queue.Full:
+                    logger.warning(
+                        "Shadow queue llena — descartando reconcile post-apply"
+                    )
 
                 # Re-init selectivo basado en qué keys cambiaron.
                 # counter.tracker.* y counter.height_classifier.* se leen en
@@ -1203,12 +1225,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "interval_seconds", telem_interval
                     )
 
-                try:
-                    mqtt_client.publish_shadow_reported(
-                        device_id, {k: True for k in applied_keys}
-                    )
-                except Exception:
-                    logger.exception("Falló publicar shadow reported")
+                # El reported actualizado lo publica el _RECONCILE_SENTINEL
+                # que encolamos arriba — usa build_reported_state que
+                # construye el dict NESTED correcto. Antes acá había un
+                # publish puntual con {k: True for k in applied_keys} que
+                # generaba keys flat con dots literales en el shadow
+                # ("cloud_defaults.counting_enabled": true) — bug removido.
 
             # --- Chequear operating hours cada 60 segundos ---
             # --ignore-schedule bypasea el gate enteramente — útil para runs
@@ -1220,9 +1242,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 prev_within = within_hours
                 if ignore_schedule:
                     within_hours = True
-                elif schedule_invalid:
-                    # fail_closed: tratar como fuera de horario; fail_open: contar.
-                    within_hours = invalid_mode != "fail_closed"
                 else:
                     dt = datetime.now()
                     day_name = dt.strftime("%A").lower()
@@ -1231,14 +1250,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     )
                 # Log de transiciones — visibles en INFO así un operador ve
                 # claramente cuándo el counting se pausa/resume. Solo aplica
-                # cuando el gate de schedule está activo (no si --ignore-schedule
-                # o si el schedule es inválido — esos casos tienen otros logs
-                # dedicados al startup).
-                if (
-                    not ignore_schedule
-                    and not schedule_invalid
-                    and prev_within != within_hours
-                ):
+                # cuando el gate de schedule está activo (no si --ignore-schedule).
+                if not ignore_schedule and prev_within != within_hours:
                     dt = datetime.now()
                     if not within_hours:
                         logger.info(
@@ -1259,44 +1272,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             dt.minute,
                         )
                 last_hours_check = now
-
-            # --- Gate hard: schedule inválido + fail_closed ---
-            # Solo este caso pausa el pipeline entero. Razón: sin un schedule
-            # válido no podemos distinguir "fuera de horas" de "config rota",
-            # así que en fail_closed paramos todo y forzamos a ops a empujar un
-            # config válido por shadow antes de seguir.
-            if schedule_invalid and invalid_mode == "fail_closed":
-                # Mantener telemetría + watchdog vivos así ops puede re-pushear config.
-                telem_now = time.time()
-                telem_due = (
-                    telem_now - last_telem >= telem_interval
-                    or _first_telem_event.is_set()
-                )
-                if telem_due:
-                    _first_telem_event.clear()
-                    telem = collect_telemetry(
-                        _build_telemetry_state(
-                            frame_latencies_ms,
-                            detection_counts,
-                            detection_window_start_ts,
-                            config.get("vision", {}).get("fps"),
-                            tracker,
-                            mqtt_client,
-                            buffer,
-                            wifi_capture=wifi_capture,
-                            ble_scanner=ble_scanner,
-                            dedup=dedup,
-                        )
-                    )
-                    telem["error"] = "invalid_schedule"
-                    telem["schedule_error_detail"] = config.get("_schedule_error", "")
-                    mqtt_client.publish_event("telemetry", telem)
-                    last_telem = telem_now
-                if telem_now - last_watchdog >= 60.0:
-                    sd_notify("WATCHDOG=1")
-                    last_watchdog = telem_now
-                time.sleep(1.0)
-                continue
 
             # --- Gate soft: counting events ---
             # Cuando counting_enabled=false (toggle del shadow) o estamos fuera
@@ -1850,11 +1825,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         )
                     _last_ext_ts = now_mono
                 _now = datetime.now()
-                _oh = (
-                    config.get("cloud_defaults", {})
-                    .get("operating_hours", {})
-                    .get(_now.strftime("%A").lower(), "—")
-                )
+                # Mandamos el dict ENTERO de operating_hours; el JS del
+                # viewer lo formatea condensado ("L-V 10-22 · S-D 10-21")
+                # agrupando días con mismo schedule. Antes se mandaba solo
+                # el del día actual — el operator no veía la semana.
+                _oh = config.get("cloud_defaults", {}).get("operating_hours", {}) or {}
                 _dev = config.get("device", {})
                 viewer.update_stats(
                     {
@@ -1866,7 +1841,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         "store_name": _dev.get("store_name", ""),
                         "device_id": _dev.get("id", ""),
                         "operating_hours": _oh,
+                        # Estados separados: el toggle del shadow + el gate
+                        # de horario son independientes. La UI los muestra
+                        # distinto así el operator ve "pausado por shadow"
+                        # vs "fuera de horario".
                         "counting_active": bool(counting_active),
+                        "counting_toggle_on": bool(is_counting_enabled(config)),
+                        "external_traffic_on": bool(
+                            is_external_traffic_enabled(config)
+                        ),
+                        "within_hours": bool(within_hours),
                         "device_time": _now.strftime("%d/%m/%Y %H:%M:%S"),
                         "hourly": counter.hourly_in_out(),
                         "exterior": _ext_cache,
@@ -1940,6 +1924,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 telem["track_stitching_ratio"] = counter.stitching_ratio
                 telem["death_emit_count"] = counter.death_emit_count
                 telem["ghost_adoption_count"] = tracker.adoption_count
+                # Canary del Device Shadow — None si nunca llegó un delta
+                # post-boot. La Lambda persist_event lo mapea a la columna
+                # last_shadow_apply_ts (TIMESTAMPTZ, NULLABLE) en RDS.
+                if last_shadow_apply_ts is not None:
+                    telem["last_shadow_apply_ts"] = last_shadow_apply_ts
                 mqtt_client.publish_event("telemetry", telem)
                 logger.info(
                     "telemetry_published mqtt=%s wifi=%s ble=%s fps=%.1f "
@@ -2166,28 +2155,9 @@ def main() -> None:
 
     setup_logging(config)
 
-    # --- Intenta mergear el cloud config desde el Shadow de IoT ---
-    # En producción esto haría fetch de AWS IoT vía MQTT $aws/things/{id}/shadow/get.
-    # Para el MVP, leemos un archivo local de shadow cache si existe (actualizado
-    # por un proceso background o en el boot anterior). Si no hay, aplican los
-    # defaults locales.
-    from pathlib import Path
-    import json
-
-    config_path = Path(args.config)
-    shadow_file = Path(str(config_path.with_suffix("")) + ".shadow.json")
-    shadow_path = str(shadow_file)
-    try:
-        if shadow_file.exists():
-            shadow_data = json.loads(shadow_file.read_text())
-            desired = shadow_data.get("state", {}).get("desired", {})
-            config = merge_cloud_config(config, desired)
-            logger.info("Cloud shadow mergeado desde %s", shadow_path)
-        else:
-            logger.info("Sin shadow cache en %s — usando defaults locales", shadow_path)
-    except Exception as e:
-        logger.warning("Falló cargar shadow cache: %s — usando defaults locales", e)
-
+    # Single source of truth: config.yaml. Los deltas del shadow se
+    # persisten al mismo config.yaml en `apply_shadow_delta` (no a un
+    # sibling cache). load_config() ya leyó lo que corresponde.
     logger.info(
         "Arrancando people-counter",
         extra={"device_id": config["device"]["id"]},
