@@ -515,7 +515,13 @@ class Counter:
         hora DESCENDENTE (la más reciente arriba), solo las horas con actividad.
         ``in`` = label ``ingress``, ``out`` = ``egress``. Tracking en memoria
         con reset diario; el borde NO persiste el histórico (eso vive en RDS,
-        ``count_events``)."""
+        ``count_events``).
+
+        Cap a las 10 horas más recientes para mantener el preview compacto
+        y match al tamaño de la tabla de tráfico exterior (que también
+        muestra recent ~10 rows). El histórico completo del día queda
+        disponible en RDS / Grafana.
+        """
         rows = []
         for hour in sorted(self._hourly, reverse=True):
             n_in = self._hourly[hour].get("ingress", 0)
@@ -523,6 +529,8 @@ class Counter:
             # Saltear horas sin actividad — no ensuciar la tabla con filas 0/0.
             if n_in or n_out:
                 rows.append({"hour": hour, "in": n_in, "out": n_out})
+            if len(rows) >= 10:
+                break
         return rows
 
     def check_all(self, tracks: dict[int, Track]) -> list[CountEvent]:

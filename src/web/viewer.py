@@ -64,20 +64,21 @@ _HTML = """<!DOCTYPE html>
       padding:14px 16px;}
     .card h3{margin:0 0 10px;font-size:11.5px;letter-spacing:.06em;
       text-transform:uppercase;color:var(--muted);font-weight:600;}
-    .counts{display:flex;gap:12px;}
-    .count{flex:1;text-align:center;border-radius:10px;padding:12px 8px;
+    /* KPI boxes — mismo tamaño/padding/tipografía para IN/OUT y
+       Passersby/Shoppers. Los colores verde/naranja se aplican SOLO a
+       .kpi.in / .kpi.out via .v; los KPI sin clase de color heredan el
+       blanco default del card. */
+    .kpis{display:flex;gap:12px;margin-bottom:12px;}
+    .kpi{flex:1;text-align:center;border-radius:10px;padding:12px 8px;
       background:var(--panel2);border:1px solid var(--line);}
-    .count .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);}
-    .count .v{font-size:46px;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums;}
-    .count.in .v{color:var(--in);} .count.out .v{color:var(--out);}
-    .subtats{margin-top:12px;display:flex;gap:18px;color:var(--muted);
+    .kpi .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);}
+    .kpi .v{font-size:46px;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums;}
+    .kpi.in .v{color:var(--in);} .kpi.out .v{color:var(--out);}
+    /* Stats compactas (FPS/Tracks/Dets) — viven debajo del stream junto
+       con el caption "L | R | disparidad", no en la card de Conteo. */
+    .substats{display:flex;gap:18px;color:var(--muted);
       font-size:12.5px;font-family:ui-monospace,monospace;}
-    .subtats b{color:var(--txt);}
-    .ext-top{display:flex;gap:12px;margin-bottom:12px;}
-    .ext-top .box{flex:1;background:var(--panel2);border:1px solid var(--line);
-      border-radius:10px;padding:9px 12px;}
-    .ext-top .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}
-    .ext-top .v{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;}
+    .substats b{color:var(--txt);}
     table{width:100%;border-collapse:collapse;font-size:12px;
       font-family:ui-monospace,monospace;}
     th{text-align:left;color:var(--muted);font-weight:600;padding:5px 6px;
@@ -93,7 +94,8 @@ _HTML = """<!DOCTYPE html>
       border-radius:12px;overflow:hidden;}
     .stream img{display:block;width:100%;}
     .stream .cap{padding:6px 12px;color:var(--muted);font-size:11px;
-      font-family:ui-monospace,monospace;border-top:1px solid var(--line);}
+      font-family:ui-monospace,monospace;border-top:1px solid var(--line);
+      display:flex;align-items:center;justify-content:space-between;gap:18px;}
     .off{color:var(--out);}
   </style>
 </head>
@@ -114,25 +116,20 @@ _HTML = """<!DOCTYPE html>
     <div class='grid'>
       <div class='card'>
         <h3>Conteo (hoy)</h3>
-        <div class='counts'>
-          <div class='count in'><div class='k'>IN</div><div class='v' id='in'>0</div></div>
-          <div class='count out'><div class='k'>OUT</div><div class='v' id='out'>0</div></div>
+        <div class='kpis'>
+          <div class='kpi in'><div class='k'>IN</div><div class='v' id='in'>0</div></div>
+          <div class='kpi out'><div class='k'>OUT</div><div class='v' id='out'>0</div></div>
         </div>
-        <div class='subtats'>
-          <span>FPS <b id='fps'>—</b></span>
-          <span>Tracks <b id='tracks'>0</b></span>
-          <span>Dets <b id='dets'>0</b></span>
-        </div>
-        <table style='margin-top:14px'>
+        <table>
           <thead><tr><th>Hora</th><th>IN</th><th>OUT</th></tr></thead>
           <tbody id='hourly'><tr><td class='empty' colspan='3'>Sin actividad hoy</td></tr></tbody>
         </table>
       </div>
       <div class='card'>
         <h3>Tráfico exterior · WiFi/BLE</h3>
-        <div class='ext-top'>
-          <div class='box'><div class='k'>Passersby</div><div class='v' id='passersby'>0</div></div>
-          <div class='box'><div class='k'>Shoppers</div><div class='v' id='shoppers'>0</div></div>
+        <div class='kpis'>
+          <div class='kpi'><div class='k'>Passersby</div><div class='v' id='passersby'>0</div></div>
+          <div class='kpi'><div class='k'>Shoppers</div><div class='v' id='shoppers'>0</div></div>
         </div>
         <table>
           <thead><tr><th>Hash</th><th>Hora</th><th>RSSI</th><th>Tipo</th></tr></thead>
@@ -142,7 +139,14 @@ _HTML = """<!DOCTYPE html>
     </div>
     <div class='stream'>
       <img id='stream' src='/stream' alt='live stream' onerror='markStreamBroken()'/>
-      <div class='cap'>L | R | disparidad</div>
+      <div class='cap'>
+        <span>L | R | disparidad</span>
+        <span class='substats'>
+          <span>FPS <b id='fps'>—</b></span>
+          <span>Tracks <b id='tracks'>0</b></span>
+          <span>Dets <b id='dets'>0</b></span>
+        </span>
+      </div>
     </div>
   </div>
   <script>
