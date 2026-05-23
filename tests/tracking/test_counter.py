@@ -822,6 +822,80 @@ def test_entry_side_fallback_when_track_born_inside_roi():
     assert counter.total_in == 1
 
 
+def test_lateral_entry_crosses_line_lateral_exit_counts():
+    """Entry y exit por aristas LATERALES del ROI (no por arriba/abajo),
+    con un cruce horizontal en el medio.
+
+    Geometría: persona caminando paralelo al frente del local. Pre-ROI
+    viene del costado-arriba (x<x_min, y<y_line) → entra al ROI por la
+    arista izquierda → cruza la línea horizontal de arriba hacia abajo
+    → sale del ROI por la arista derecha. Debe contar como ingress (la
+    dirección del cruce respecto a la línea, NO respecto al ROI, es lo
+    que define IN/OUT).
+
+    Cubre el caso que ``test_entry_side_uses_last_outside_pos_under_
+    detection_gap`` no toca: ese test prueba approach VERTICAL (arriba
+    de la línea, baja a través de la arista superior del ROI). Este
+    prueba approach HORIZONTAL (al costado de la línea, entra por la
+    arista lateral del ROI).
+    """
+    counter = Counter(lines=[_line_h(line_y=300)], roi=ROI)
+
+    # Frame 1: outside ROI por la izquierda, ARRIBA de la línea
+    # (y=250 < line_y=300). Esto setea last_outside_pos para el
+    # snapshot de sides[].
+    track = _make_track(1, [[50, 250, 3000]])
+    assert counter._process_track(track) is None
+
+    # Frame 2: entry-fresca por la arista izquierda, todavía arriba de
+    # la línea. sides[0] se snapshotea desde last_outside_pos=(50,250):
+    # side_of(50, 250) = -1 (above). No emite todavía.
+    assert _advance(counter, track, [150, 270, 3000]) is None
+
+    # Frame 3: cruza la línea horizontal hacia abajo (y > 300). La
+    # transición -1 → +1 con label "top_to_bottom" registra +1 en
+    # crossing_net[0]. No emite aún (sigue inside).
+    assert _advance(counter, track, [300, 340, 3000]) is None
+
+    # Frame 4: sale del ROI por la arista DERECHA (x > x_max=500). El
+    # exit-transition consume crossing_net=[+1] y emite ingress.
+    ev = _advance(counter, track, [550, 340, 3000])
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+    assert counter.total_out == 0
+
+
+def test_lateral_entry_crosses_line_downside_egress():
+    """Variante del test lateral: approach desde el costado pero ABAJO
+    de la línea (y > y_line). El cruce hacia arriba debe contar como
+    egress. Confirma que la dirección del cruce se determina por el
+    side de last_outside_pos vs y_line, independientemente de por dónde
+    entró al ROI (arista lateral).
+    """
+    counter = Counter(lines=[_line_h(line_y=300)], roi=ROI)
+
+    # Frame 1: outside ROI por la izquierda, ABAJO de la línea (y=350).
+    track = _make_track(1, [[50, 350, 3000]])
+    assert counter._process_track(track) is None
+
+    # Frame 2: entry lateral por la izquierda. sides[0] = side_of(50,
+    # 350) = +1 (below). Todavía abajo de la línea inside ROI.
+    assert _advance(counter, track, [150, 340, 3000]) is None
+
+    # Frame 3: cruza hacia arriba (y < 300). Transición +1 → -1 con
+    # label "bottom_to_top" → egress, registra -1 en crossing_net[0].
+    assert _advance(counter, track, [300, 260, 3000]) is None
+
+    # Frame 4: sale por la arista DERECHA. crossing_net=[-1] → emite
+    # egress.
+    ev = _advance(counter, track, [550, 260, 3000])
+    assert ev is not None
+    assert ev.direction == "egress"
+    assert counter.total_in == 0
+    assert counter.total_out == 1
+
+
 # ---------------------------------------------------------------------------
 # Gate de detección real: los cruces solo cuentan con detección real, no con
 # predicción Kalman (anti doble-conteo del drift + no perder el conteo del
