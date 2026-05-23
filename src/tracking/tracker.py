@@ -116,6 +116,11 @@ class Track:
     # Bookkeeping de la capa counter (lo setea el counter, no el tracker).
     # Guardado en el track así el estado sobrevive la re-identificación PENDING.
     meta: dict[str, Any] = field(default_factory=dict)
+    # Última posición OBSERVADA (con detección real, no Kalman push). Se
+    # actualiza solo en _record_hit. Usado por ghost-pool/clutter/diagnostics
+    # que necesitan "dónde se vió por última vez al sujeto" — distinto de
+    # ``positions[-1]`` que durante PENDING es la PREDICCIÓN del Kalman.
+    last_observed_position: Optional[np.ndarray] = None
 
     @property
     def last_position(self) -> np.ndarray:
@@ -149,6 +154,45 @@ class Track:
         return np.array([xy[0], xy[1], z], dtype=float)
 
 
+@dataclass
+class _GhostInfo:
+    """Snapshot de un track recién muerto para la adoption window. Si una
+    detección nueva aparece cerca dentro de la ventana, el track nuevo adopta
+    este ID y meta — preserva la continuidad de identidad a través de un gap
+    del detector que el re-id Kalman no pudo cerrar."""
+
+    track_id: int
+    last_observed_position: np.ndarray
+    last_bbox: Optional[tuple[float, float, float, float]]
+    meta_snapshot: dict
+    age: int = 0
+
+
+def _bbox_iou(
+    a: Optional[tuple[float, float, float, float]],
+    b: Optional[tuple[float, float, float, float]],
+) -> float:
+    """Intersection-over-Union de dos bboxes (x1, y1, x2, y2). 0 si alguno es
+    None o si no hay intersección."""
+    if a is None or b is None:
+        return 0.0
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 class EuclideanTracker:
     """Matching Hungarian 2D en pixels + depth gating, con state machine corta.
 
@@ -176,6 +220,9 @@ class EuclideanTracker:
         max_track_id: int = 65536,
         keepalive_roi: tuple[float, float, float, float] | None = None,
         keepalive_max_frames: int = 600,
+        adoption_window_frames: int = 30,
+        adoption_iou_min: float = 0.3,
+        adoption_max_dist_px: float = 100.0,
     ) -> None:
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
@@ -251,8 +298,25 @@ class EuclideanTracker:
         # cap; solo los huérfanos reales lo alcanzan y se garbage-collectean.
         # 600 frames ≈ 24s a 25fps — generoso para cualquier lingering real.
         self.keepalive_max_frames = max(1, int(keepalive_max_frames))
+        # Ghost pool / ID adoption: cuando un track muere (LOST), su identidad
+        # queda "disponible para adopción" durante ``adoption_window_frames``.
+        # Si una detección nueva aparece dentro de ese tiempo con IoU >=
+        # ``adoption_iou_min`` Y distancia <= ``adoption_max_dist_px`` respecto
+        # del último bbox/pos del ghost, el track NUEVO adopta el ID y meta
+        # del ghost → continuidad de identidad cross-gap-de-detección. Cubre
+        # el caso "detector pierde N frames, persona reaparece, sin esto se
+        # spawnea un track nuevo y se perdía la continuidad del cruce".
+        # Defaults conservadores: IoU 0.3 (no booleano como FFC para evitar
+        # ID-swap entre personas adyacentes), dist 100px (no teleports), 30
+        # frames de ventana (~1.5s @ 20fps).
+        self.adoption_window_frames = max(0, int(adoption_window_frames))
+        self.adoption_iou_min = max(0.0, float(adoption_iou_min))
+        self.adoption_max_dist_px = max(0.0, float(adoption_max_dist_px))
         self._next_id = 0
         self._tracks: OrderedDict[int, Track] = OrderedDict()
+        # Pool de tracks recién muertos esperando posible adopción.
+        # Key: track_id viejo. Value: _GhostInfo.
+        self._ghosts: dict[int, "_GhostInfo"] = {}
 
     @property
     def tracks(self) -> dict[int, Track]:
@@ -291,6 +355,12 @@ class EuclideanTracker:
                 ``DETECTION_HISTORY_MAX`` samples). Consumers downstream
                 leen esa historia para labels agregados per-track
                 (ej. clasificación adult/child).
+                **Requerido para ghost adoption**: la key ``"bbox"``
+                (lista/tupla ``[x1, y1, x2, y2]``) habilita la adopción
+                desde el ghost pool al spawnear tracks nuevos. Sin
+                ``bbox`` en la metadata, ghost adoption NO opera aunque
+                el pool esté poblado (cae a spawn de track nuevo
+                silenciosamente). Pasar siempre ``bbox`` en producción.
             candidate_positions: lista opcional de detecciones
                 *low-confidence*. Solo se usa para re-asociar tracks
                 existentes que no matchearon una detección
@@ -376,11 +446,30 @@ class EuclideanTracker:
 
         if len(self._tracks) == 0:
             # Sin tracks vivos: las detecciones low-conf no pueden
-            # re-asociar contra nada (y nunca spawnean). Solo
-            # high-conf spawnean.
-            for i, det in enumerate(det_arr):
-                tid = self._register(det)
-                self._append_detection_meta(self._tracks[tid], _meta_for(i))
+            # re-asociar contra nada (y nunca spawnean). High-conf primero
+            # intentan adoptar un ghost del pool; si no, spawnean track nuevo.
+            if self._ghosts:
+                still_unmatched: list[int] = []
+                for i, det in enumerate(det_arr):
+                    det_meta = _meta_for(i)
+                    det_bbox: Optional[tuple[float, float, float, float]] = None
+                    if isinstance(det_meta, dict):
+                        bbox_val = det_meta.get("bbox")
+                        if isinstance(bbox_val, (list, tuple)) and len(bbox_val) == 4:
+                            det_bbox = tuple(float(v) for v in bbox_val)  # type: ignore[assignment]
+                    adopted_id = self._try_adopt_ghost(det, det_bbox)
+                    if adopted_id is not None:
+                        self._append_detection_meta(self._tracks[adopted_id], det_meta)
+                    else:
+                        still_unmatched.append(i)
+                for i in still_unmatched:
+                    tid = self._register(det_arr[i])
+                    self._append_detection_meta(self._tracks[tid], _meta_for(i))
+            else:
+                for i, det in enumerate(det_arr):
+                    tid = self._register(det)
+                    self._append_detection_meta(self._tracks[tid], _meta_for(i))
+            self._age_ghost_pool()
             return self.tracks
 
         track_ids = list(self._tracks.keys())
@@ -443,6 +532,27 @@ class EuclideanTracker:
             tid = track_ids[t_idx]
             self._record_miss(self._tracks[tid])
 
+        # Adopción del ghost pool ANTES de spawnear tracks nuevos: para cada
+        # detección HIGH-conf unmatched, intentar adoptar un ghost reciente
+        # (IoU + dist gates). Si se adopta, se preserva el ID + counter meta
+        # del track muerto → continuidad cross-gap-de-detección sin perder el
+        # cruce ya registrado.
+        if self._ghosts and unmatched_d:
+            still_unmatched_d: list[int] = []
+            for d_idx in unmatched_d:
+                det_meta = _meta_for(d_idx)
+                det_bbox: Optional[tuple[float, float, float, float]] = None
+                if isinstance(det_meta, dict):
+                    bbox_val = det_meta.get("bbox")
+                    if isinstance(bbox_val, (list, tuple)) and len(bbox_val) == 4:
+                        det_bbox = tuple(float(v) for v in bbox_val)  # type: ignore[assignment]
+                adopted_id = self._try_adopt_ghost(det_arr[d_idx], det_bbox)
+                if adopted_id is not None:
+                    self._append_detection_meta(self._tracks[adopted_id], det_meta)
+                else:
+                    still_unmatched_d.append(d_idx)
+            unmatched_d = still_unmatched_d
+
         # Registrar tracks nuevos solo para detecciones HIGH-confidence
         # unmatched. Las detecciones low-confidence (candidatas) se
         # dropean intencionalmente.
@@ -455,7 +565,21 @@ class EuclideanTracker:
         for tid in to_remove:
             del self._tracks[tid]
 
+        self._age_ghost_pool()
         return self.tracks
+
+    def _age_ghost_pool(self) -> None:
+        """Envejece todos los ghosts del pool en 1 frame; descarta los que
+        excedieron la adoption window (ya no tiene sentido esperar)."""
+        if not self._ghosts:
+            return
+        expired = []
+        for tid, ghost in self._ghosts.items():
+            ghost.age += 1
+            if ghost.age > self.adoption_window_frames:
+                expired.append(tid)
+        for tid in expired:
+            del self._ghosts[tid]
 
     DETECTION_HISTORY_MAX = 60  # ~4s a 15 FPS — alcanza para mayoría estable
 
@@ -719,7 +843,7 @@ class EuclideanTracker:
         # corre 0 veces (los tracks viejos hace rato murieron antes
         # de que el contador cicle 65536 veces); solo entra si el
         # max_track_id está bajado artificialmente (tests).
-        while tid in self._tracks:
+        while tid in self._tracks or tid in self._ghosts:
             tid = (tid + 1) % self.max_track_id
         centroid = np.asarray(centroid, dtype=float)
         self._tracks[tid] = Track(
@@ -728,6 +852,7 @@ class EuclideanTracker:
             state=CANDIDATE,
             hits=1,
             kalman=self._make_kalman(centroid),
+            last_observed_position=centroid.copy(),
         )
         self._next_id = (tid + 1) % self.max_track_id
         return tid
@@ -735,6 +860,7 @@ class EuclideanTracker:
     def _record_hit(self, track: Track, centroid: np.ndarray) -> None:
         centroid = np.asarray(centroid, dtype=float)
         track.positions.append(centroid.copy())
+        track.last_observed_position = centroid.copy()
         _trim_positions(track)
         track.disappeared = 0
         track.hits += 1
@@ -810,6 +936,7 @@ class EuclideanTracker:
         last = track.positions[-1] if track.positions else (0.0, 0.0, 0.0)
         if track.state == PENDING and track.disappeared > self.pending_max_frames:
             track.state = LOST
+            self._enghost(track)
             logger.info(  # TRACKDBG [REVERT]
                 "TRACKDBG death tid=%d reason=pending_max_frames disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
                 track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
@@ -819,10 +946,93 @@ class EuclideanTracker:
         # Aplicar también el cap legacy max_disappeared como upper bound.
         if track.disappeared > self.max_disappeared:
             track.state = LOST
+            self._enghost(track)
             logger.info(  # TRACKDBG [REVERT]
                 "TRACKDBG death tid=%d reason=max_disappeared disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
                 track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
             )
+
+    def _enghost(self, track: Track) -> None:
+        """Snapshotea un track recién muerto al ghost pool para que pueda ser
+        adoptado por un track nuevo dentro de ``adoption_window_frames``. Solo
+        registra ghosts que tuvieron al menos una detección REAL (sin
+        ``last_observed_position`` no podemos validar la adopción)."""
+        if self.adoption_window_frames <= 0:
+            return
+        if track.last_observed_position is None:
+            return
+        # Buscar el último bbox real en el historial de detecciones.
+        last_bbox: Optional[tuple[float, float, float, float]] = None
+        history = track.meta.get("detection_history") if isinstance(track.meta, dict) else None
+        if history:
+            for rec in reversed(history):
+                bbox = rec.get("bbox") if isinstance(rec, dict) else None
+                if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                    last_bbox = tuple(float(v) for v in bbox)  # type: ignore[assignment]
+                    break
+        self._ghosts[track.track_id] = _GhostInfo(
+            track_id=track.track_id,
+            last_observed_position=track.last_observed_position.copy(),
+            last_bbox=last_bbox,
+            meta_snapshot=dict(track.meta) if isinstance(track.meta, dict) else {},
+            age=0,
+        )
+
+    def _try_adopt_ghost(
+        self,
+        centroid: np.ndarray,
+        bbox: Optional[tuple[float, float, float, float]],
+    ) -> Optional[int]:
+        """Intenta adoptar un ghost del pool. Aplica DOS gates geométricos
+        (IoU + distancia) y elige el ghost VÁLIDO más cercano. Si adoptado,
+        lo remueve del pool y resucita el Track con su ID + meta restaurado.
+        Devuelve el track_id adoptado o ``None``."""
+        if not self._ghosts or bbox is None:
+            return None
+        best_tid: Optional[int] = None
+        best_dist: float = float("inf")
+        best_iou: float = 0.0
+        for tid, ghost in self._ghosts.items():
+            if ghost.last_bbox is None:
+                continue
+            iou = _bbox_iou(bbox, ghost.last_bbox)
+            if iou < self.adoption_iou_min:
+                continue
+            gpos = ghost.last_observed_position
+            dx = float(centroid[0]) - float(gpos[0])
+            dy = float(centroid[1]) - float(gpos[1])
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist > self.adoption_max_dist_px:
+                continue
+            if dist < best_dist:
+                best_dist = dist
+                best_iou = iou
+                best_tid = tid
+        if best_tid is None:
+            return None
+        ghost = self._ghosts.pop(best_tid)
+        self._resurrect_ghost(ghost, centroid)
+        logger.info(  # TRACKDBG [REVERT]
+            "TRACKDBG ghost_adopted tid=%d dist=%.1f iou=%.3f age=%d",
+            best_tid, best_dist, best_iou, ghost.age,
+        )
+        return best_tid
+
+    def _resurrect_ghost(self, ghost: _GhostInfo, centroid: np.ndarray) -> None:
+        """Recrea el Track con el track_id + meta del ghost, anclado en la
+        nueva detección. El Kalman se re-inicia desde la posición actual (el
+        estado anterior es stale tras el gap). El track entra como CONFIRMED
+        (no CANDIDATE) porque la adopción es evidencia de continuidad."""
+        centroid = np.asarray(centroid, dtype=float)
+        self._tracks[ghost.track_id] = Track(
+            track_id=ghost.track_id,
+            positions=[centroid.copy()],
+            state=CONFIRMED,
+            hits=max(2, self.confirm_frames),  # entra ya confirmado
+            kalman=self._make_kalman(centroid),
+            meta=ghost.meta_snapshot,
+            last_observed_position=centroid.copy(),
+        )
 
     def _inside_keepalive_roi(self, track: Track) -> bool:
         """True si la última posición del track cae dentro del ROI de

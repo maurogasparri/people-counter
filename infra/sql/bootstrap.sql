@@ -125,6 +125,15 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- Stitching ratio del dedup: groups / hashes en el dia (1.0 = sin stitch
     -- efectivo, baja a medida que MAC rotations se mergean en el mismo group).
     wifi_ble_stitching_ratio      REAL,
+    -- Stitching ratio del tracker de visión: unique_track_ids vistos cruzar
+    -- el ROI / total counts emitidos. Ideal ≈ 1.0 (1 persona = 1 ID = 1
+    -- evento); >1.3 indica fragmentación de identidad.
+    track_stitching_ratio         REAL,
+    -- Cantidad de death-emits disparados hoy (el fallback que cuenta tracks
+    -- que cruzaron pero murieron dentro del ROI). Combinado con el ratio
+    -- diferencia 'fragmenta-y-rescata' (count alto) de 'fragmenta-y-pierde'
+    -- (count bajo con ratio alto → recall del detector flojo).
+    death_emit_count              INT,
     -- Schedule / error state (mando 'error' del payload + detalle largo)
     error                         TEXT,
     schedule_error_detail         TEXT,

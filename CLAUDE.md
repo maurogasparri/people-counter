@@ -150,7 +150,7 @@ people-counter/
 │                          de los frames subidos a Roboflow.
 ├── calibration/        <- board ChArUco A3 PDF (calib.io)
 ├── infra/cloudformation/ <- people-counter.yaml (stack completo)
-├── docs/               <- setup-guide, lab-calibration-guide, pilot-operator-guide
+├── docs/               <- setup_guide, lab_calibration_guide, pilot_operator_guide
 └── config/             <- config.example.yaml + people-counter.service (systemd)
 ```
 
@@ -158,16 +158,18 @@ people-counter/
 
 | Sprint | Foco | Estado |
 |--------|------|--------|
-| S3 | PoC visión | **DONE** — capture (picamera2), detect (Hailo) |
-| S4 | Calibración | **DONE** — fisheye K-B, board en `calibration/`, diagnose_depth |
-| S5 | Detección | **DONE** — YOLOv8n single-class cenital, HEF compilado, deployable. Modelo activo: `people-counter-detector` (multi-site, ~945 imgs, labeling con Smart Polygon click-por-imagen + hard negatives explícitos) |
-| S6 | Tracking + counting | **DONE** — tracker Kalman + counter ROI/línea (E2E validado) |
-| S7 | WiFi/BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos (randomized), hashing + dedup 4 reglas (incl. fingerprint) |
-| S8 | MQTT | **DONE** — IoT Core + buffer SQLite + replay |
-| S9 | Cloud | **DONE** — CloudFormation + Lambda persist_event + EC2 Postgres/Grafana |
-| S10 | Integración | **DONE** — pipeline E2E en RPi5 |
-| S11 | Piloto | PENDIENTE — deploy 3 locales |
-| S12 | Estabilización | PENDIENTE — post-piloto |
+| S1 | Análisis y diseño inicial | **DONE** — repo, dependencias, arquitectura base |
+| S2 | Captura estéreo y servicios | **DONE** — picamera2, dual cam, servicios systemd |
+| S3 | Calibración estéreo | **DONE** — fisheye K-B (ChArUco A3), `diagnose_depth`, wizard browser-driven |
+| S4 | Profundidad y región de interés | **DONE** — SGBM + WLS, ROI rect, num_disparities auto desde mounting_height |
+| S5 | Detección neuronal de personas | **DONE** — YOLOv8n cenital fine-tuneado, HEF Hailo-8L, modelo `people-counter-detector` (~945 imgs, hard negatives) |
+| S6 | Seguimiento y conteo | **DONE** — tracker Kalman + state machine + ghost pool/ID adoption + counter ROI/línea con net-balance + death-emit con guards (rescue-with-guardrails philosophy) |
+| S7 | Captura WiFi y BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos (randomized), hashing + dedup 4 reglas (incl. fingerprint), MAX-RSSI para shoppers |
+| S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `wifi_ble_stitching_ratio`) |
+| S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambda `persist_event` + RDS Postgres 16 + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con custom domain HTTPS |
+| S10 | Visualización analítica | EN CURSO — Grafana 13 deployado, datasource conectada; faltan dashboards (footfall, turn-in rate, geomap, tiles de canaries) |
+| S11 | Validación y documentación | EN CURSO — diagnóstico TRACKDBG en piloto, audit + actualización de docs (CLAUDE.md, schema, api, sprints) |
+| S12 | Cierre del prototipo | PENDIENTE — hardening final + entregables + cleanup TRACKDBG temporal |
 
 ## Reglas duras
 
@@ -205,9 +207,85 @@ people-counter/
 - `tracking.state_machine.pending_grace_frames: 3` — frames iniciales de PENDING en los que el predict del Kalman se mantiene full velocity antes de aplicar `pending_velocity_decay`. Cubre gaps cortos del detector (1-3 frames) preservando la trayectoria; después de la gracia el decay arranca para evitar drift del predictor.
 - `tracking.ambiguous_match_ratio: 0.8` — ratio test estilo Lowe post-Hungarian. Si el segundo mejor candidato de una asignación está dentro del 80% del mejor, la match se rechaza por ambigua. Filtra el caso "dos detecciones cerca, dos tracks cerca, Hungarian arma un cruce arbitrario".
 - **Tracking point del counter = centroide del bbox.** El montaje es cenital sobre el umbral de la puerta a medir, así que el cruce ocurre cerca del nadir donde el paralaje es ~cero (cabeza y pies proyectan al mismo pixel) — el centroide es el foot-point efectivo. La corrección de paralaje image-space que existía (`counter.foot_projection_enabled` + `world_coords.project_to_floor`) se retiró: comprimía la trayectoria hacia el principal point y rompía los INs en puerta central, sin aportar en la zona del cruce. La altura 3D de SGBM se sigue usando, pero solo para clasificar adult/child (`vision/depth.py`), no para la posición del cruce. Una corrección de paralaje en world-space (counter en mm sobre el plano del piso) queda como opción futura — bajo ROI para geometría de puerta central.
-- **Conteo = entrar al ROI → cruzar la línea → SALIR del ROI** (semántica de gate, en `Counter._process_track`). No hay "salida sintética" por muerte del track dentro del ROI: una persona que cruza pero se queda parada/sentada/dudando en el ROI NO cuenta (evita el FP de lingering en el umbral). No hay U-turn cancellation: un round-trip real (entrar+cruzar+salir, luego re-entrar+cruzar+salir por el otro lado) cuenta 1 IN + 1 OUT — la cancelación previa se removió porque cancelaba tráfico legítimo, no solo dudas en la puerta. Una "duda" sin segundo cruce completo produce un único evento al salir, así que igual no se sobre-cuenta.
+- **Conteo = entrar al ROI → cruzar la línea → SALIR del ROI** (semántica de gate, en `Counter._process_track`). Ruta principal: emit en el frame de salida del ROI con verdict del balance neto de cruces de la visita. Fallback ("death-emit-if-crossed", ver design philosophy abajo): track que cruzó y muere ADENTRO del ROI sin alcanzar el borde igual emite, sujeto a dos guards anti-FP (`had_outside_pos` + `MIN_VISIT_RANGE_FOR_DEATH_EMIT`). No hay U-turn cancellation: un round-trip real (entrar+cruzar+salir, luego re-entrar+cruzar+salir por el otro lado) cuenta 1 IN + 1 OUT — la cancelación previa se removió porque cancelaba tráfico legítimo, no solo dudas en la puerta. Una "duda" sin segundo cruce completo produce un único evento al salir, así que igual no se sobre-cuenta.
 - **Cancelación neta dentro del ROI**: durante una visita al ROI el counter acumula un balance NETO de cruces por línea (cada cruce in-segment con label hacia un lado suma, hacia el opuesto resta). Al salir emite según el SIGNO del neto: ±1 = sentido contado, 0 = la persona "fue y vino" (cruzó y re-cruzó dentro del ROI) y NO cuenta. Reemplaza el viejo "gana el último cruce". Gate one-way = sticky (el cruce de vuelta sin label no resta).
 - **Keep-alive del tracker dentro del ROI**: `EuclideanTracker.keepalive_roi` (lo setea `main` desde `counter.roi`) — un track PENDING cuya última posición predicha cae dentro del ROI NO muere por timeout (`pending_max_frames`/`max_disappeared`); se mantiene vivo (extrapolando con el Kalman, NO congelado) hasta re-matchear o hasta que su predicción salga del ROI. Cubre "cruzó la línea y el detector lo pierde adentro": el track sigue a la persona y SALE del ROI por extrapolación → emite el cruce (sin keep-alive moría adentro y se perdía el conteo). Complementa la exención del `static_suppressor` (que ya no suprime detecciones dentro del ROI vía `exempt_roi`). Salvaguardas: (1) **anti-doble-conteo en el counter, no en el tracker** — `Counter._process_track` registra un cruce de línea SOLO con detección real (`track.disappeared == 0`), nunca en un frame de pura predicción Kalman; así el drift de un track perdido que extrapola "cruzando" la línea no cuenta, pero el cruce real ya registrado SÍ se emite cuando el track sale del ROI (aunque la salida sea por extrapolación). (Esto reemplazó un "freeze" del track que tenía el efecto colateral de clavar a los crossers reales perdidos mid-ROI y perder su conteo.) (2) **cap `keepalive_max_frames`** (default 600 ≈ 24s) — misses consecutivos máximos; garbage-collectea huérfanos (re-id falló, persona ya no está). Como `disappeared` se resetea con cualquier hit, el lingering real nunca llega al cap. (3) el preview esconde los fantasmas de larga ausencia (PENDING con `disappeared > pending_max_frames`) además del clutter estático. El historial `positions` se capa a 512.
+
+## Design philosophy del counter: rescue con guardrails
+
+El counter pierde counts en dos modos. Filosóficamente hay un spectrum de
+respuestas a cada uno; nuestra elección está hacia el lado "rescue agresivo
+con guardrails", no hacia "solo contar lo observado directamente". El
+trade-off es explícito y tuneable per-site.
+
+**Modos de falla del conteo "ingenuo" (contar solo crosses observados con
+detección real seguidos de exit observado del ROI):**
+
+1. **Crosser perdido en la zona de la línea** — el detector dropea a la
+   persona justo cuando está atravesando la línea. Sin rescue, la trayectoria
+   nunca registra el cross con detección real → conteo perdido.
+2. **Crosser parqueado adentro del ROI** — la persona cruza con detección
+   real, después se pierde, el Kalman extrapola pero el `pending_velocity_decay`
+   la frena dentro del ROI antes de alcanzar el borde → la salida del ROI
+   nunca dispara → conteo perdido.
+
+**Nuestras tres capas de rescue, en cascada (de la primera a la última que
+dispara):**
+
+1. **Ghost pool / ID adoption** (`EuclideanTracker._try_adopt_ghost`): cuando
+   un track muere LOST, su `track_id` + `meta` quedan en `_ghosts` por
+   `adoption_window_frames` (default 30 ≈ 1.5s @ 20fps). Si en esa ventana un
+   track nuevo spawnea con `IoU(bbox) >= adoption_iou_min` (0.3) Y
+   `distance(pos) <= adoption_max_dist_px` (100), adopta el ID + meta → el
+   counter ve continuidad de identidad y emite naturalmente en el exit
+   observado. Cubre "persona pierde detección y reaparece poco después en
+   posición similar". Más estricto geométricamente que un overlap booleano
+   (filtra ID-swaps entre personas adyacentes).
+2. **Decisive Kalman cross at exit** (`Counter._decisive_kalman_cross`): si
+   la salida del ROI es un frame de pura extrapolación Kalman (`disappeared
+   > 0`), se acepta el cruce SI `disappeared <= MAX_KALMAN_CROSS_FRAMES`
+   (15) Y el desplazamiento desde la última posición REAL en la dirección
+   del cruce es `>= MIN_KALMAN_CROSS_DISPLACEMENT_PX` (30 px). El gate del
+   inside-was-inside se mantiene estricto: ningún cross registra en frames
+   de predicción adentro del ROI. La relajación es SOLO en la transición de
+   exit. Cubre "walked-then-lost-mid-line" sin re-introducir el doble-conteo
+   del drift estacionario.
+3. **Death-emit-if-crossed** (`Counter._emit_on_death`): track muere
+   adentro del ROI (`inside=True`) con cruce registrado (`net != 0`) y
+   pasa DOS guards anti-FP: (a) `had_outside_pos` — el track DEBE haber sido
+   visto fuera del ROI alguna vez en su vida (filtra sitters / clutter / re-id
+   failures que spawnean directo adentro del ROI); (b) `visit_range >=
+   MIN_VISIT_RANGE_FOR_DEATH_EMIT` (80 px, max de x_range y y_range durante
+   la visita; filtra el edge case de track con outside_pos válido pero que
+   después solo jittereó). Diferido por `death_emit_grace_frames` (sincronizado
+   con `adoption_window_frames + 2`) — si la ghost adoption resucita el track
+   dentro del grace, el death-emit se cancela (no double-count).
+
+**Knobs para mover el balance "agresivo → conservador" per-site:**
+
+| Knob | Default | Efecto al subirlo |
+|---|---|---|
+| `MIN_KALMAN_CROSS_DISPLACEMENT_PX` | 30 | Capa 2 más estricta — más Kalman crosses descartados. ∞ = no rescue de Kalman crosses. |
+| `MIN_VISIT_RANGE_FOR_DEATH_EMIT` | 80 | Capa 3 más estricta — más death-emits filtrados. |
+| `adoption_window_frames` | 30 | ↑ = más chance de adopción ID, ↓ = más fragmentación. 0 = sin ghost pool. |
+| `adoption_iou_min` | 0.3 | ↑ = adopción más conservadora (anti ID-swap). |
+
+Los tres al máximo + adoption en 0 = el modelo "puro observacional" (contar
+SOLO con detecciones reales en exit observado). Defaults actuales = híbrido
+agresivo en sites con detección flakey, conservador frente a sitters/clutter.
+
+**Telemetría para observar el balance en producción:**
+
+- `track_stitching_ratio` (`Counter.stitching_ratio`) = `unique_track_ids /
+  total_counts`. Ideal ≈ 1.0 (1 persona = 1 ID = 1 evento). >1.3 indica
+  fragmentación.
+- `death_emit_count` (`Counter.death_emit_count`) = cantidad de death-emits
+  disparados hoy. Diferencia "fragmenta-y-rescata" de "fragmenta-y-pierde":
+  ratio>1.3 con `death_emit_count` ALTO → fragmentación rescatada por
+  capa 3 (cuentas probablemente OK); con `death_emit_count` BAJO →
+  fragmentación NO rescatada (cuentas perdidas, mirar recall del detector).
+- Logs TRACKDBG (cuando habilitados): `ghost_adopted`, `death_emit_skipped`
+  con `reason=no_outside_history|small_visit_range`, etc.
 
 ## Pipeline del detector
 
@@ -237,6 +315,6 @@ YOLOv8n fine-tuneado para detección cenital de cabezas. Pipeline ONNX → HEF c
 - **Dual-pass ChArUco**: `detect_charuco_dual_pass` (en `src/vision/calibration.py`) intenta primero el frame original; si quedó <8 corners reintenta con sharpen y se queda con el mejor. Aplicado en los live loops de calibrate, focus_assist y diagnose_bracket. El fit downstream (`_detect_all_pairs` → `calibrate_stereo`) sigue single-pass para no introducir sub-pixel noise en el solve.
 - **CLI args homogéneos**: `--board-cols/--board-rows/--square-mm/--marker-mm` son los nombres canónicos en todos los scripts. `calibrate.py` también acepta `--columns/--rows/--square-length/--marker-length` como alias para back-compat con docs viejas.
 - **Wizard guardrails**: pre-calibration sanity gate (re-detección de pares capturados), coverage critical block (banda/grupo faltante), L/R asymmetric alert, `--resume` valida resolución, `reset --yes` para restart limpio.
-- **Lens locking**: holder M12 sin set screw → fijado con esmalte de uñas transparente aplicado al seam barrel↔holder después del foco (touch-dry 15min, cura full 30-60min). Llave dedicada al barrel durante el foco, se retira antes de pintar. Suficiente para PoC; para producción/flota evaluar Trabasil AM3 + activador anaeróbico. Ver `docs/lab-calibration-guide.md`.
+- **Lens locking**: holder M12 sin set screw → fijado con esmalte de uñas transparente aplicado al seam barrel↔holder después del foco (touch-dry 15min, cura full 30-60min). Llave dedicada al barrel durante el foco, se retira antes de pintar. Suficiente para PoC; para producción/flota evaluar Trabasil AM3 + activador anaeróbico. Ver `docs/lab_calibration_guide.md`.
 - **Interpretación reporte calibración**: RMS estéreo <0.5px es necesario pero no suficiente. **El verdict depende del ground-truth en centro** (cinta/láser). Baseline estimada debe caer ±1-2mm del diseño 140mm con 20 poses diversas; ratio borde/centro es informativo, no gate.
 - `debug/` está gitignoreado — para reportes, screenshots, logs de tests.

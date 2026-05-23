@@ -12,23 +12,23 @@
 
 | Sprint | Épica | Foco | Horas |
 |:---:|:---:|---|---:|
-| S1 | EP-00 | Análisis, diseño y setup del repositorio | 7 |
-| S2 | EP-01 | Hardware setup, captura estéreo y servicios | 8 |
-| S3 | EP-02 | Calibración estéreo asistida | 15 |
-| S4 | EP-03 | Profundidad estéreo y región de interés | 6 |
+| S1 | EP-00 | Análisis y diseño inicial | 7 |
+| S2 | EP-01 | Captura estéreo y servicios | 8 |
+| S3 | EP-02 | Calibración estéreo | 15 |
+| S4 | EP-03 | Profundidad y región de interés | 6 |
 | S5 | EP-04 | Detección neuronal de personas | 14 |
-| S6 | EP-05 | Tracking, conteo y filtros del pipeline visual | 9 |
-| S7 | EP-06 | Captura WiFi/BLE y stitching de identidad | 11 |
-| S8 | EP-07 | Mensajería resiliente y telemetría | 7 |
-| S9 | EP-08 | Infraestructura cloud y APIs | 13 |
-| S10 | EP-09 | Visualización Grafana y dashboards | 9 |
-| S11 | EP-10 | PoC, validación y consolidación de docs | 11.5 |
-| S12 | EP-11 | Cierre del prototipo, hardening y entregables | 8 |
+| S6 | EP-05 | Seguimiento y conteo | 9 |
+| S7 | EP-06 | Captura WiFi y BLE | 11 |
+| S8 | EP-07 | Mensajería y telemetría | 7 |
+| S9 | EP-08 | Servicios cloud y APIs | 13 |
+| S10 | EP-09 | Visualización analítica | 9 |
+| S11 | EP-10 | Validación y documentación | 11.5 |
+| S12 | EP-11 | Cierre del prototipo | 8 |
 | | | **Total** | **118.5** |
 
 ---
 
-## S1 — EP-00 Análisis, diseño inicial y setup del repositorio (7h)
+## S1 — EP-00 Análisis y diseño inicial (7h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -38,7 +38,7 @@
 | Setup del repositorio con CI básica | 1 | `pyproject.toml`, configuración ruff/pytest, `.gitignore`, README inicial |
 | Estructura inicial del proyecto | 1 | `src/`, `tests/`, `docs/`, `scripts/`, `infra/`, `config/` con `__init__.py` |
 
-## S2 — EP-01 Hardware setup, captura estéreo y servicios (8h)
+## S2 — EP-01 Captura estéreo y servicios (8h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -51,7 +51,7 @@
 | Setup script del dispositivo | 0.5 | `scripts/setup_device.sh` |
 | Validación end-to-end de la captura sobre HW | 1 | Frames raw guardados correctamente |
 
-## S3 — EP-02 Calibración estéreo asistida (15h)
+## S3 — EP-02 Calibración estéreo (15h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -65,7 +65,7 @@
 | Viewer navegable con gating | 1 | `src/web/viewer.py` |
 | Iteración con tablero físico hasta convergencia | 3 | Calibración válida con reproj < 1 px |
 
-## S4 — EP-03 Profundidad estéreo y región de interés (6h)
+## S4 — EP-03 Profundidad y región de interés (6h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -90,7 +90,7 @@
 | Integración runtime del detector | 2 | `src/vision/detect.py`, `src/vision/best_frame.py` |
 | Bench del detector en hardware | 1 | `scripts/training/bench_detector.py`, throughput validado |
 
-## S6 — EP-05 Tracking, conteo y filtros del pipeline visual (9h)
+## S6 — EP-05 Seguimiento y conteo (9h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -103,7 +103,7 @@
 | Generador de reportes de eventos | 0.5 | `src/vision/report.py` |
 | Pruebas integrales del pipeline visual | 1.5 | Conteo correcto sobre baseline frames |
 
-## S7 — EP-06 Captura WiFi/BLE y stitching de identidad (11h)
+## S7 — EP-06 Captura WiFi y BLE (11h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -117,7 +117,7 @@
 | Exportador anonimizado para auditoría | 0.5 | `scripts/export_anonymized.py` |
 | Validación en hardware con tráfico real | 1.5 | Stitching ratio dentro de rango esperado |
 
-## S8 — EP-07 Mensajería resiliente y telemetría operativa (7h)
+## S8 — EP-07 Mensajería y telemetría (7h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -128,7 +128,7 @@
 | Integración con pipeline (orquestación en main) | 1 | `main.py` con telemetría |
 | Tests E2E del flujo MQTT con simulación de desconexión | 1 | Reentrega validada |
 
-## S9 — EP-08 Infraestructura cloud y APIs (13h)
+## S9 — EP-08 Servicios cloud y APIs (13h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -144,7 +144,7 @@
 | Deploy scripts (sh + ps1) | 0.5 | `scripts/deploy_lambda.sh`, `.ps1`, `infra/deploy.ps1` |
 | Política documentada de backups y DR | 0.5 | Sección en `docs/` |
 
-## S10 — EP-09 Visualización Grafana y dashboards (9h)
+## S10 — EP-09 Visualización analítica (9h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -158,7 +158,7 @@
 | CloudWatch monitoring + dashboards básicos | 0.5 | Métricas y alarmas |
 | Integration tests de Lambda + bucket de eventos | 1 | `tests/cloud/test_persist_event.py` ampliado |
 
-## S11 — EP-10 PoC, validación y consolidación de documentación (11.5h)
+## S11 — EP-10 Validación y documentación (11.5h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -169,14 +169,14 @@
 | Preflight checks | 1 | `scripts/preflight.py` |
 | Verificación de hardware | 0.5 | `scripts/verify_hardware.py` |
 | Replay mode del pipeline (testing offline) | 0.5 | `main.py --replay-dir` |
-| Guía de setup del dispositivo | 0.75 | `docs/setup-guide.md` |
-| Guía de calibración en laboratorio | 0.75 | `docs/lab-calibration-guide.md` |
-| Guía operativa para piloto | 1 | `docs/pilot-operator-guide.md` |
+| Guía de setup del dispositivo | 0.75 | `docs/setup_guide.md` |
+| Guía de calibración en laboratorio | 0.75 | `docs/lab_calibration_guide.md` |
+| Guía operativa para piloto | 1 | `docs/pilot_operator_guide.md` |
 | Declaración de privacidad | 0.5 | `docs/privacy.md` |
-| Project gantt interno | 0.5 | `docs/project-gantt.md` |
+| Project gantt interno | 0.5 | `docs/project_gantt.md` |
 | **Documentación del procedimiento de migración de datos históricos** | **0.5** | **`docs/historical-data-migration.md`, `scripts/templates/migrate_historical.py`** |
 
-## S12 — EP-11 Cierre del prototipo, hardening y entregables (8h)
+## S12 — EP-11 Cierre del prototipo (8h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|

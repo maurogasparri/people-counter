@@ -15,7 +15,7 @@ Uso:
     FINALIZAR cuando ambas cámaras pasen. Protocolo universal de lab:
     foco a 1.5m maximiza el DoF sobre el rango de profundidad operativa
     de la flota (cabezas + piso para mount 2.0–3.5m), con margen a ambos
-    extremos. Ver docs/lab-calibration-guide.md para el protocolo completo.
+    extremos. Ver docs/lab_calibration_guide.md para el protocolo completo.
 """
 
 import argparse
@@ -78,7 +78,7 @@ TARGET_DISTANCE_MAX_MM = 1700.0   # Target universal para toda la flota —
                                    # operativo cabezas+piso 1.0–3.5m
                                    # (mount 2.0–3.5m), con margen
                                    # simétrico en ambos extremos. Ver
-                                   # docs/lab-calibration-guide.md.
+                                   # docs/lab_calibration_guide.md.
 DEFAULT_MOUNT_HEIGHT_M = 3.0      # Moda de nuestra distribución de altura de puerta
 HEAD_HEIGHT_MAX_M = 1.85          # adulto alto
 HEAD_HEIGHT_MIN_M = 1.20          # niño bajo

@@ -91,7 +91,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 5 fases) | VPC + RDS Postgres 16.6 (db.t4g.micro, IAM auth + force_ssl + auto minor upgrades) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + ECS Fargate Grafana 13 detrás de ALB con ACM cert custom (`grafana.tfg.gasparri.com.ar`) + SNS alarms. ~$35/mo PoC. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
 | Deployment | Listo | provision.py (create/deploy/harvest/reprovision), servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
 | Disaster recovery | Listo | `harvest` baja `calibration.npz` al workstation; `reprovision` revoca cert viejo en IoT Core y emite uno nuevo. Certs nunca se respaldan — rotan en cada restore |
-| Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup-guide.md). Guía para operadores en campo (docs/pilot-operator-guide.md) |
+| Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup_guide.md). Guía para operadores en campo (docs/pilot_operator_guide.md) |
 
 ## Quick start
 
@@ -112,7 +112,7 @@ pytest
 | hailo_platform | `apt` (hailort + hailort-pcie-driver + python3-hailort) | Solo RPi, requiere Hailo-8L + PCIe |
 | aircrack-ng, nexmon | `apt` + paquetes `.deb` | Solo RPi, WiFi monitor mode |
 
-En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suficiente para correr tests. Los paquetes del sistema RPi solo se necesitan en el dispositivo target — ver [docs/setup-guide.md](docs/setup-guide.md) para la instalación completa.
+En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suficiente para correr tests. Los paquetes del sistema RPi solo se necesitan en el dispositivo target — ver [docs/setup_guide.md](docs/setup_guide.md) para la instalación completa.
 
 ## Configuración
 
@@ -372,9 +372,9 @@ infra/
 ├── deploy.ps1                             # Orquestador 5 fases (RDS + IoT + Lambda + ECR + cert ACM + ECS Fargate + ALB Grafana + CNAME). -StartFromPhase para resumir
 └── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_summary / telemetry / sales + 6 views + lambda_writer con rds_iam)
 docs/
-├── setup-guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
-├── lab-calibration-guide.md      # Protocolo de foco + calibración en lab (universal para la flota)
-└── pilot-operator-guide.md       # Guía para el operador en sitio (foco → calibración → verificación)
+├── setup_guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
+├── lab_calibration_guide.md      # Protocolo de foco + calibración en lab (universal para la flota)
+└── pilot_operator_guide.md       # Guía para el operador en sitio (foco → calibración → verificación)
 training_data/                    # Workspace gitignoreado de training (sites.yaml inline + captures rectificadas)
 debug/                            # Drop-zone gitignoreado para reportes, capturas y logs de test
 ```
@@ -382,5 +382,5 @@ debug/                            # Drop-zone gitignoreado para reportes, captur
 ## Referencias clave
 
 - [CLAUDE.md](CLAUDE.md) — Documentación completa de arquitectura para Claude Code
-- [docs/setup-guide.md](docs/setup-guide.md) — Guía de ensamblaje de hardware + setup RPi
+- [docs/setup_guide.md](docs/setup_guide.md) — Guía de ensamblaje de hardware + setup RPi
 - [config/config.example.yaml](config/config.example.yaml) — Configuración anotada con estrategia

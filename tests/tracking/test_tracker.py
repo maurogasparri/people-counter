@@ -436,3 +436,107 @@ def test_pass2_does_not_misroute_when_pass1_was_clean():
     assert sorted(tracks.keys()) == tids_before
     for t in tracks.values():
         assert t.state == CONFIRMED
+
+
+# ---------------------------------------------------------------------------
+# Ghost pool / ID adoption: cuando un track muere, su ID queda disponible
+# para adopción durante adoption_window_frames. Una detección nueva con bbox
+# overlapeando + dentro del gate de distancia adopta ese ID (preserva la
+# continuidad de identidad cross-gap-de-detección).
+# ---------------------------------------------------------------------------
+
+
+def test_ghost_adoption_preserves_id_after_lost():
+    """Track muere → enghost. Detección nueva aparece con bbox que overlap
+    el último del ghost + dentro del gate → adopta el ID. El track resucitado
+    arranca CONFIRMED con la meta restaurada."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=2,
+        max_disappeared=3,
+        reid_gate_px=60,
+        adoption_window_frames=10,
+        adoption_iou_min=0.3,
+        adoption_max_dist_px=80.0,
+    )
+    # Bootstrapping: track con bbox conocido.
+    det = np.array([100.0, 100.0, 3000.0])
+    tracker.update([det], detection_metas=[{"bbox": [90, 90, 110, 110]}])
+    tracker.update([det], detection_metas=[{"bbox": [90, 90, 110, 110]}])
+    tid = list(tracker.tracks.keys())[0]
+    # Anotar meta arbitraria (simula estado del counter).
+    tracker.tracks[tid].meta["custom"] = "hello"
+
+    # Detector la pierde varios frames → track muere y va a ghost pool.
+    for _ in range(6):
+        tracker.update([])
+    assert tid not in tracker.tracks  # ya murió (purgado)
+    assert tid in tracker._ghosts  # quedó en el pool
+
+    # Detección nueva con bbox que overlap el último del ghost + posición
+    # cercana → adoptar.
+    new_det = np.array([105.0, 102.0, 3000.0])
+    tracker.update([new_det], detection_metas=[{"bbox": [95, 92, 115, 112]}])
+
+    assert tid in tracker.tracks, "El track debe haber sido resucitado con su ID"
+    assert tracker.tracks[tid].state == CONFIRMED  # arranca confirmado, no candidate
+    assert tracker.tracks[tid].meta.get("custom") == "hello"  # meta restaurada
+    assert tid not in tracker._ghosts  # se removió del pool tras adopción
+
+
+def test_ghost_pool_rejects_low_iou_match():
+    """Si el bbox de la nueva detección NO overlap suficiente con el bbox
+    del ghost (IoU < adoption_iou_min), NO se adopta — spawnea track nuevo."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=2,
+        max_disappeared=3,
+        reid_gate_px=60,
+        adoption_window_frames=10,
+        adoption_iou_min=0.5,
+        adoption_max_dist_px=200.0,
+    )
+    det = np.array([100.0, 100.0, 3000.0])
+    tracker.update([det], detection_metas=[{"bbox": [90, 90, 110, 110]}])
+    tracker.update([det], detection_metas=[{"bbox": [90, 90, 110, 110]}])
+    tid = list(tracker.tracks.keys())[0]
+    for _ in range(6):
+        tracker.update([])
+    assert tid in tracker._ghosts
+
+    # Nueva detección con bbox lejos → IoU=0 con el del ghost.
+    new_det = np.array([100.0, 100.0, 3000.0])
+    tracker.update([new_det], detection_metas=[{"bbox": [200, 200, 220, 220]}])
+    # Como IoU=0 < 0.5 → NO adoptado. Spawnea track nuevo con ID distinto.
+    new_tids = list(tracker.tracks.keys())
+    assert tid not in new_tids
+    assert len(new_tids) == 1
+    assert new_tids[0] != tid
+
+
+def test_ghost_pool_expires_after_window():
+    """Después de adoption_window_frames sin adopción, el ghost se descarta
+    del pool. Una detección que llegue después spawnea track con ID nuevo."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=2,
+        max_disappeared=3,
+        reid_gate_px=60,
+        adoption_window_frames=3,
+    )
+    det = np.array([100.0, 100.0, 3000.0])
+    tracker.update([det], detection_metas=[{"bbox": [90, 90, 110, 110]}])
+    tracker.update([det], detection_metas=[{"bbox": [90, 90, 110, 110]}])
+    tid = list(tracker.tracks.keys())[0]
+    # Muere y va al pool.
+    for _ in range(5):
+        tracker.update([])
+    assert tid in tracker._ghosts
+
+    # Frames adicionales sin detección → el ghost envejece y expira.
+    for _ in range(5):
+        tracker.update([])
+    assert tid not in tracker._ghosts

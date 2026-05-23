@@ -304,7 +304,7 @@ a futuro, presupuestar ~20% del total.**
 | Sub-tarea | T-code | Horas | Inicio | Fin |
 |-----------|--------|-------|--------|-----|
 | Config system (loader, deep-merge, HardwareParams, back-compat renames) | T08 | 5.0 | 04-08 | 05-12 |
-| Docs (setup-guide, lab-calibration-guide, pilot-operator-guide, privacy, project-gantt) | T17 | 3.6 | 04-07 | 05-12 |
+| Docs (setup_guide, lab_calibration_guide, pilot_operator_guide, privacy, project_gantt) | T17 | 3.6 | 04-07 | 05-12 |
 | Higiene del repo (consolidación hardware-agnostic, unificación de training_data/, ruff sweeps) | T19 | 4.5 | 05-02 | 05-12 |
 
 ---
@@ -980,7 +980,7 @@ queda entregable con M5+M6+M7); son inputs para el planning del piloto.
 - **Runbook operativo day-2**: qué hacer si el LED queda en rojo, cómo
   re-provisionar un cert vencido, cómo restart-ear un device remoto
   vía AWS IoT Device Shadow, cómo bajar `pg_dump` del RDS para análisis
-  offline. `docs/pilot-operator-guide.md` cubre el setup inicial pero
+  offline. `docs/pilot_operator_guide.md` cubre el setup inicial pero
   no la operación continua.
 - **Wiring humano del alarming**: SNS topic configurado en el CFN; falta
   definir quién recibe los emails, si hay escalation y SLA de respuesta.

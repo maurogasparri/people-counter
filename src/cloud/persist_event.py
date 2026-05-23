@@ -41,10 +41,8 @@ re-raisean para reintento via IoT (max 1 retry para topic rules sin DLQ).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -200,6 +198,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                  seconds_since_last_reconnect, buffer_backlog_messages,
                  wifi_probe_ok, ble_scanner_ok,
                  wifi_ble_stitching_ratio,
+                 track_stitching_ratio, death_emit_count,
                  error, schedule_error_detail)
             VALUES (%s, %s, %s,
                     %s, %s, %s,
@@ -212,6 +211,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                     %s, %s,
                     %s, %s,
                     %s,
+                    %s, %s,
                     %s, %s)
             ON CONFLICT (device_id, event_ts) DO NOTHING
             """,
@@ -239,6 +239,8 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                 data.get("wifi_probe_ok"),
                 data.get("ble_scanner_ok"),
                 data.get("wifi_ble_stitching_ratio"),
+                data.get("track_stitching_ratio"),
+                data.get("death_emit_count"),
                 data.get("error"),
                 data.get("schedule_error_detail"),
             ),

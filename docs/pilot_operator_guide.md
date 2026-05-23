@@ -3,7 +3,7 @@
 Guía operativa para instalar un dispositivo **ya provisionado por ingeniería** en
 un local de piloto. Cubre la visita: preparación, instalación física, activación
 y verificación. No cubre setup del sistema ni compilación del modelo — eso está
-en [`setup-guide.md`](setup-guide.md).
+en [`setup_guide.md`](setup_guide.md).
 
 **Supuestos de partida (confirmados con ingeniería antes de salir):**
 
@@ -677,7 +677,7 @@ ip link show wlan0mon
 ## Apéndice B: Referencias cruzadas
 
 - Setup inicial del dispositivo (flasheo, instalación de paquetes,
-  calibración): [`setup-guide.md`](setup-guide.md).
+  calibración): [`setup_guide.md`](setup_guide.md).
 - Esquema de `config.yaml`: [`../config/config.example.yaml`](../config/config.example.yaml).
 - Código del preflight: [`../scripts/preflight.py`](../scripts/preflight.py).
 - Proyecto y convenciones: [`../CLAUDE.md`](../CLAUDE.md).

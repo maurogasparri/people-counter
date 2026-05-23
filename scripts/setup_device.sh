@@ -1,7 +1,7 @@
 #!/bin/bash
 # setup_device.sh — Automated setup for People Counter edge devices.
 #
-# Runs steps 4-9 of setup-guide.md after the first boot and apt upgrade.
+# Runs steps 4-9 of setup_guide.md after the first boot and apt upgrade.
 # Prerequisites: RPi5 running Trixie, already updated (apt full-upgrade + reboot).
 #
 # Usage:

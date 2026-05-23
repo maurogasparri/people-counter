@@ -6,7 +6,7 @@ Documenta las dos superficies de ingreso de datos al cloud:
 2. **REST (POS externo → cloud)** — `POST /pos/transactions` via API Gateway
 
 Ambos terminan persistiendo en Postgres (RDS) vía Lambdas distintas. Ver
-[`docs/database-schema.md`](database-schema.md) para el destino tabla por
+[`docs/database_schema.md`](database_schema.md) para el destino tabla por
 tabla.
 
 ---
@@ -111,6 +111,8 @@ del firmware, devices viejos siguen ingestiando OK.
     "wifi_probe_ok": true,
     "ble_scanner_ok": true,
     "wifi_ble_stitching_ratio": 0.34,
+    "track_stitching_ratio": 1.05,
+    "death_emit_count": 2,
     "error": null,
     "schedule_error_detail": null
 }
@@ -123,6 +125,7 @@ del firmware, devices viejos siguen ingestiando OK.
 | **Counts** | `total_in`, `total_out` — running totals device-side desde el último boot. Sirve como sanity check vs `COUNT(*)` server-side |
 | **MQTT** | `mqtt_connected`, `mqtt_disconnect_count`, `seconds_since_last_reconnect`, `buffer_backlog_messages` |
 | **WiFi/BLE** | `wifi_probe_ok`, `ble_scanner_ok`, `wifi_ble_stitching_ratio` (canary: groups / hashes, baja a medida que el stitching mergea MAC rotations) |
+| **Tracker (visión)** | `track_stitching_ratio` (canary: unique_track_ids cruzando ROI / counts emitidos, ideal ≈ 1.0, >1.3 = fragmentación), `death_emit_count` (cantidad de death-emits del fallback, combinado con el ratio diferencia "fragmenta-y-rescata" de "fragmenta-y-pierde") |
 | **Errors** | `error` (corto), `schedule_error_detail` (detalle largo). `null` cuando todo OK |
 
 Todos los campos son `nullable` salvo `event_ts`. La Lambda inserta cualquier

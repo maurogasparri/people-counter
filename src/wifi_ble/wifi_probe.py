@@ -12,7 +12,7 @@ Prerrequisitos:
 
 Setup (una sola vez):
     sudo apt install -y aircrack-ng
-    # paquetes nexmon — ver docs/setup-guide.md
+    # paquetes nexmon — ver docs/setup_guide.md
 """
 
 import logging

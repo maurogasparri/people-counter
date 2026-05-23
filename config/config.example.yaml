@@ -347,20 +347,21 @@ detection:
 # top_to_bottom / bottom_to_top; las verticales usan left_to_right /
 # right_to_left.
 counter:
-  # ROI centrado en frame 1152×648 (canonical). 440×240 px cubre el ancho
-  # típico de una puerta de retail mounted a 2.5-3m; el alto generoso (240,
-  # centrado en y=324 con la línea de cruce en el medio) da margen para que
-  # el track sobreviva un lingering dentro del ROI (persona que cruza y se
-  # para a mirar antes de salir). El operador después ajusta per-site con
-  # scripts/roi_picker.py una vez instalado el equipo.
+  # ROI centrado en frame 1152×648 (canonical). 660×240 px cubre con margen
+  # el ancho de una puerta de retail mounted a 2.5-3m + un lead-in lateral
+  # para que el tracker capture al sujeto antes del cruce (entra al ROI ya
+  # CONFIRMED y no fragmenta IDs justo en la zona de la línea). Alto generoso
+  # (240, centrado en y=324 con la línea de cruce en el medio) da margen
+  # para lingering dentro del ROI (persona que cruza y se para). El operador
+  # después ajusta per-site con scripts/roi_picker.py una vez instalado.
   roi:
-    x_min: 356
-    x_max: 796
+    x_min: 246
+    x_max: 906
     y_min: 204
     y_max: 444
   lines:
-    - from: [356, 324]
-      to:   [796, 324]
+    - from: [246, 324]
+      to:   [906, 324]
       labels:
         top_to_bottom: ingress
         bottom_to_top: egress
@@ -745,7 +746,7 @@ tracking:
                                     # a 0.6-0.7 en sites con cruces muy
                                     # cerrados donde aceptamos miss extra
                                     # a cambio de cero swaps.
-    pending_grace_frames: 3         # Frames iniciales de PENDING en los
+    pending_grace_frames: 5         # Frames iniciales de PENDING en los
                                     # que se PRESERVA velocidad completa
                                     # antes de empezar el decay. Modela
                                     # oclusiones cortas (carrito que pasa
@@ -764,27 +765,23 @@ tracking:
                                     # frame 1 (back-compat / sites sin
                                     # oclusiones donde no necesitamos
                                     # extrapolar agresivo).
-    pending_velocity_decay: 0.85    # Factor multiplicativo aplicado a (vx, vy)
+    pending_velocity_decay: 0.95    # Factor multiplicativo aplicado a (vx, vy)
                                     # del Kalman cada frame en estado PENDING.
-                                    # 0.85 → velocidad colapsa a ~10% en 15
-                                    # frames (~1.2s a 12 fps), decay gradual
-                                    # en vez de freeze inmediato. Tradeoff
-                                    # crítico: valores agresivos (0.3-0.5)
-                                    # congelan la posición predicha demasiado
-                                    # rápido y rompen el reid cuando una
-                                    # persona se ocluye 1s detrás de un
-                                    # carrito o cartel (predict queda atrás,
-                                    # detección reaparece adelante fuera del
-                                    # reid_gate_px → spawn de track fantasma,
-                                    # mismo síntoma del PENDING-atrapado-en-
-                                    # ROI). 0.85 mantiene velocidad útil para
-                                    # cubrir oclusiones cortas de caminata
-                                    # normal sin extrapolar indefinidamente.
-                                    # 0.7-0.9 es el rango razonable para
-                                    # retail con flujo en movimiento;
-                                    # bajar a 0.3-0.5 solo en sites donde
-                                    # la gente se queda parada largamente
-                                    # (probadores, mostradores con cola).
+                                    # 0.95 → velocidad sigue al ~49% después
+                                    # de 15 frames (vs 9% con 0.85), así una
+                                    # persona caminando que el detector dropea
+                                    # ~0.75s tiene predict razonable y el
+                                    # reid_gate_px=200 alcanza para
+                                    # re-asociarla cuando reaparece. El drift
+                                    # estacionario (residual velocity con
+                                    # decay) lo filtra el gate decisivo del
+                                    # counter (cross solo cuenta con
+                                    # detección real o desplazamiento >30px
+                                    # en la dirección del cruce) y la
+                                    # adopción de ghosts. Bajar a 0.85 si en
+                                    # algún site el drift estacionario
+                                    # genera doble-conteo (probadores,
+                                    # mostradores con cola muy larga).
     kalman:                         # Filtro Kalman de velocidad constante
                                     # sobre el estado [cx, cy, vx, vy] de
                                     # cada track. Tolera gaps del detector de

@@ -1325,6 +1325,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 # nunca se cuenta (no hay salida sintética). El static
                 # suppressor ya exenta este mismo ROI a nivel detección.
                 tracker.keepalive_roi = counter.roi
+                # Sincronizar el grace del death-emit con la adoption window
+                # del tracker (+ 2 frames de buffer). Garantiza que el counter
+                # SIEMPRE le da chance al tracker a adoptar el ghost antes de
+                # emitir por muerte — sin esto, una desincronización (default
+                # del counter < adoption del tracker) produciría doble-conteo.
+                counter.death_emit_grace_frames = (
+                    tracker.adoption_window_frames + 2
+                )
                 logger.info(
                     "Counter inicializado: %s (keepalive_roi=%s)",
                     type(counter).__name__,
@@ -1915,6 +1923,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 telem["fps"] = telem_frame_count / max(telem_elapsed, 1)
                 telem["total_in"] = counter.total_in
                 telem["total_out"] = counter.total_out
+                telem["track_stitching_ratio"] = counter.stitching_ratio
+                telem["death_emit_count"] = counter.death_emit_count
                 mqtt_client.publish_event("telemetry", telem)
                 logger.info(
                     "telemetry_published mqtt=%s wifi=%s ble=%s fps=%.1f "

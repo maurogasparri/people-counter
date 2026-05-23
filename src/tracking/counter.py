@@ -350,12 +350,45 @@ class Counter:
     MAX_KALMAN_CROSS_FRAMES = 15
     MIN_KALMAN_CROSS_DISPLACEMENT_PX = 30.0
 
+    # Grace DEFAULT antes de disparar el death-emit. Cuando un track desaparece
+    # de la dict (LOST), lo metemos en una cola pendiente: si dentro de esta
+    # ventana el tracker lo RESUCITA via ghost pool (el mismo ID reaparece
+    # adoptado por un track nuevo), CANCELAMOS el death-emit y dejamos que el
+    # conteo emita naturalmente en el exit observado. Sin este grace,
+    # death-emit y la eventual salida del track resucitado contarían DOS
+    # veces. DEBE matchear (o superar levemente) ``adoption_window_frames``
+    # del tracker — si la adopción es más larga que el grace, el counter
+    # death-emit dispara antes de que el tracker pueda adoptar → doble cuenta.
+    # El default 30 matchea el default del tracker; ``main.py`` lo sincroniza
+    # explicitamente con ``tracker.adoption_window_frames + 2`` (buffer)
+    # cuando construye el counter, así no quedan desfasados ante un tuneo.
+    DEFAULT_DEATH_EMIT_GRACE_FRAMES = 30
+
+    # Guards anti-falso-positivo en death-emit. Cubren el caso reportado en
+    # producción: persona SENTADA dentro del ROI cuya cabeza jitterea
+    # atravesando la línea (centroide cruza por ~3-10px sin que haya entrada
+    # o salida real del edificio). Sin estos guards, el death-emit dispara
+    # porque tecnicamente se registró un cross. Dos checks complementarios:
+    #   1. ``had_outside_pos``: el track DEBE haber sido visto fuera del ROI
+    #      en algún momento de su vida. Si spawneó adentro del ROI y nunca
+    #      salió, no hay evidencia de que realmente entró/salió del edificio.
+    #      Esto filtra sitters + clutter + re-id failures que spawnean tracks
+    #      nuevos adentro del ROI.
+    #   2. ``visit_range >= MIN``: el track debe haber recorrido al menos
+    #      este desplazamiento (en px, max de x_range y y_range) durante la
+    #      visita. Filtra el edge case donde un track salió brevemente del
+    #      ROI (had_outside_pos=True) y después jittereó adentro sin
+    #      movimiento real. Default 80 px ≈ media zancada de adulto a la
+    #      altura de montaje típica.
+    MIN_VISIT_RANGE_FOR_DEATH_EMIT = 80.0
+
     def __init__(
         self,
         lines: list[Line],
         roi: Optional[dict[str, float]] = None,
         *,
         min_crossing_movement_px: float = 0.0,
+        death_emit_grace_frames: Optional[int] = None,
     ) -> None:
         """
         Args:
@@ -371,12 +404,26 @@ class Counter:
                 idéntico al pre-feature. Valores típicos para 30fps a
                 1m/s ≈ 10px/frame: ``2.0–3.0`` filtra jitter sin
                 rechazar movimiento normal.
+            death_emit_grace_frames: Frames a esperar antes de disparar
+                el death-emit cuando un track desaparece de la dict —
+                ventana de chance para que el tracker lo resucite via
+                ghost adoption. ``None`` (default) usa
+                ``DEFAULT_DEATH_EMIT_GRACE_FRAMES``. Production setup:
+                pasar ``tracker.adoption_window_frames + 2`` (buffer) así
+                el counter SIEMPRE le da chance a la adopción antes de
+                emitir por muerte → evita doble-conteo si el tracker
+                eventualmente adopta.
         """
         if not lines:
             raise ValueError("Counter requires at least one line.")
         self._lines: list[Line] = list(lines)
         self._roi: Optional[tuple[float, float, float, float]] = (
             _validate_roi(roi) if roi else None
+        )
+        self.death_emit_grace_frames: int = (
+            int(death_emit_grace_frames)
+            if death_emit_grace_frames is not None
+            else self.DEFAULT_DEATH_EMIT_GRACE_FRAMES
         )
         self._min_crossing_movement_px: float = max(
             0.0, float(min_crossing_movement_px)
@@ -394,6 +441,24 @@ class Counter:
         # cuando un track desaparece de la dict (= muerte): si tenía un cruce
         # registrado y nunca salió del ROI, emitimos acá. Ver _emit_on_death.
         self._tracking_state: dict[int, dict] = {}
+        # Cola de muertes pendientes con su edad. Cuando un track desaparece
+        # de la dict, en vez de death-emit inmediato, lo movemos acá con
+        # age=0 y damos ``death_emit_grace_frames`` de margen para que el
+        # tracker lo resucite via ghost pool. Si reaparece dentro de la
+        # ventana, el death-emit se cancela y el conteo emite naturalmente
+        # en el exit. Si no reaparece, al expirar fire death-emit (fallback).
+        self._potential_deaths: dict[int, dict] = {}
+        # Métrica de stitching para la telemetría: cuántos track_ids distintos
+        # vimos cruzar el ROI hoy. ``stitching_ratio`` = unique_ids / conteos
+        # emitidos; >1 indica fragmentación del tracker (un mismo sujeto se
+        # spawnea con varios IDs). Reset diario.
+        self._seen_track_ids: set[int] = set()
+        # Contador de death-emits disparados hoy. Sirve de canary diferenciador:
+        # ratio_stitching > 1 con ``death_emit_count`` alto = el detector se
+        # fragmenta pero el fallback rescata (count probably OK). Mismo ratio
+        # con death_emit_count bajo = fragmentación que NO se rescató (pérdida
+        # real de cuentas). Reset diario.
+        self._death_emit_count: int = 0
 
     # ----------------------------------------------------------------- API
     @property
@@ -451,9 +516,16 @@ class Counter:
         # así una persona que duda en la entrada y vuelve no genera un falso
         # positivo.
         events: list[CountEvent] = []
-        alive_ids: set[int] = set()
+        alive_ids: set[int] = set(tracks.keys())
+
+        # Resurrección: si un track que estaba en potential_deaths reapareció
+        # (el tracker lo adoptó del ghost pool), cancelamos el death-emit. El
+        # snapshot se descarta porque el track vivo es el portador autoritativo
+        # del estado a partir de ahora.
+        for tid in alive_ids & set(self._potential_deaths.keys()):
+            del self._potential_deaths[tid]
+
         for track in tracks.values():
-            alive_ids.add(track.track_id)
             ev = self._process_track(track)
             if ev is not None:
                 events.append(ev)
@@ -462,14 +534,27 @@ class Counter:
             # muerte (en el próximo frame) el Track ya no existe.
             self._snapshot_track(track)
 
-        # Detectar tracks que desaparecieron de la dict desde el último frame.
-        # Cada uno es un candidato a death-emit.
-        dead_ids = set(self._tracking_state.keys()) - alive_ids
-        for tid in dead_ids:
+        # Detectar tracks que desaparecieron desde el último frame y meterlos
+        # en la cola de muertes pendientes con grace window.
+        new_dead = set(self._tracking_state.keys()) - alive_ids
+        for tid in new_dead:
             snap = self._tracking_state.pop(tid)
-            ev = self._emit_on_death(snap)
+            self._potential_deaths[tid] = {"snap": snap, "age": 0}
+
+        # Aging + emit en expiry: solo después de ``death_emit_grace_frames``
+        # sin que el tracker resucite el track, fire el death-emit como
+        # fallback.
+        expired_dead: list[int] = []
+        for tid, info in self._potential_deaths.items():
+            info["age"] += 1
+            if info["age"] > self.death_emit_grace_frames:
+                expired_dead.append(tid)
+        for tid in expired_dead:
+            info = self._potential_deaths.pop(tid)
+            ev = self._emit_on_death(info["snap"])
             if ev is not None:
                 events.append(ev)
+
         return events
 
     def _snapshot_track(self, track: Track) -> None:
@@ -477,12 +562,20 @@ class Counter:
         cx, cy = (
             self._tracking_point(track) if track.positions else (0.0, 0.0)
         )
+        # Visit-range para los guards anti-falso-positivo del death-emit.
+        vx_min = float(meta.get("visit_x_min", cx))
+        vx_max = float(meta.get("visit_x_max", cx))
+        vy_min = float(meta.get("visit_y_min", cy))
+        vy_max = float(meta.get("visit_y_max", cy))
         self._tracking_state[track.track_id] = {
             "track_id": track.track_id,
             "inside": bool(meta.get("inside", False)),
             "net": list(meta.get("crossing_net") or []),
             "last_crossing_pos": meta.get("last_crossing_pos"),
             "last_pos": (cx, cy),
+            "had_outside_pos": bool(meta.get("had_outside_pos", False)),
+            "visit_x_range": vx_max - vx_min,
+            "visit_y_range": vy_max - vy_min,
             "height_class": _aggregate_height_class_from_track(track),
             "height_m": _aggregate_height_m_from_track(track),
             "head_depth_m": _aggregate_head_depth_m_from_track(track),
@@ -499,6 +592,33 @@ class Counter:
         net = snap.get("net") or []
         if not any(n != 0 for n in net):
             return None  # entró pero NUNCA cruzó — no contar
+
+        # Guard 1: had_outside_pos. El track debe haber sido visto FUERA del
+        # ROI en algún momento de su vida. Filtra sitters + clutter + re-id
+        # failures que spawnean adentro del ROI: si la cabeza de un sentado
+        # jitterea atravesando la línea, el cross se registra pero el track
+        # nunca tuvo evidencia de "entrar desde afuera" — no es una pasada
+        # real, no emitir.
+        if not snap.get("had_outside_pos"):
+            logger.info(  # TRACKDBG [REVERT]
+                "TRACKDBG death_emit_skipped tid=%d reason=no_outside_history net=%s",
+                snap.get("track_id"), net,
+            )
+            return None
+
+        # Guard 2: visit_range mínimo. El track debe haber recorrido al menos
+        # MIN_VISIT_RANGE_FOR_DEATH_EMIT px durante la visita (max de x_range
+        # y y_range). Filtra el edge case donde un track tuvo outside_pos
+        # pero después solo jittereó adentro del ROI sin movimiento real.
+        x_range = float(snap.get("visit_x_range", 0.0))
+        y_range = float(snap.get("visit_y_range", 0.0))
+        if max(x_range, y_range) < self.MIN_VISIT_RANGE_FOR_DEATH_EMIT:
+            logger.info(  # TRACKDBG [REVERT]
+                "TRACKDBG death_emit_skipped tid=%d reason=small_visit_range "
+                "x_range=%.0f y_range=%.0f net=%s",
+                snap.get("track_id"), x_range, y_range, net,
+            )
+            return None
 
         # Mismo veredicto que la rama de exit: signo del neto por línea, la
         # última con verdict no-nulo gana.
@@ -524,6 +644,7 @@ class Counter:
         self._totals[label] = self._totals.get(label, 0) + 1
         _hb = self._hourly.setdefault(time.localtime(now).tm_hour, {})
         _hb[label] = _hb.get(label, 0) + 1
+        self._death_emit_count += 1
         logger.info(
             "count_event_on_death tid=%d label=%s net=%s",
             snap["track_id"], label, net,
@@ -556,6 +677,33 @@ class Counter:
             self._totals[k] = 0
         self._hourly.clear()
         self._tracking_state.clear()
+        self._potential_deaths.clear()
+        self._seen_track_ids.clear()
+        self._death_emit_count = 0
+
+    @property
+    def stitching_ratio(self) -> float:
+        """Canary de fragmentación del tracker: track_ids únicos vistos cruzar
+        el ROI hoy / conteos emitidos. Ideal ≈ 1.0 (cada persona = 1 ID = 1
+        evento). >1.5 sugiere fragmentación (el detector pierde personas y el
+        tracker spawnea IDs nuevos en vez de adoptar). 0 si no hubo conteo
+        emitido todavía. Análogo a ``wifi_ble_stitching_ratio``.
+
+        Combinar con ``death_emit_count`` para diagnosticar el sub-modo:
+        ratio>1.3 + death_emit alto = fragmentación rescatada por el fallback
+        (cuentas OK), ratio>1.3 + death_emit bajo = fragmentación sin rescue
+        (cuentas perdidas, mirar recall del detector)."""
+        total = sum(self._totals.values())
+        if total <= 0:
+            return 0.0
+        return len(self._seen_track_ids) / float(total)
+
+    @property
+    def death_emit_count(self) -> int:
+        """Cantidad de death-emits disparados hoy. Telemetría para
+        diferenciar "fragmenta-y-rescata" de "fragmenta-y-pierde". Reset
+        diario."""
+        return self._death_emit_count
 
     # ------------------------------------------------------------- internal
     def _decisive_kalman_cross(
@@ -687,13 +835,27 @@ class Counter:
             meta["inside"] = True
             meta["last_crossing_pos"] = None
             meta["last_track_pos"] = (cx, cy)
+            # Tracking de rango de movimiento durante la visita (para los
+            # guards del death-emit). Se inicializa en la posición de entrada
+            # y se actualiza con cada detección REAL dentro del ROI.
+            meta["visit_x_min"] = cx
+            meta["visit_x_max"] = cx
+            meta["visit_y_min"] = cy
+            meta["visit_y_max"] = cy
             # Resetear el balance neto de cruces para la nueva visita.
             for i in range(len(net)):
                 net[i] = 0
             outside_pos = meta.get("last_outside_pos")
+            # Flag: ¿este track tuvo posición OUTSIDE ROI en algún momento?
+            # Es evidencia de que entró desde afuera (legitimate walk-through)
+            # vs spawneó adentro (sitter/clutter/re-id failure).
+            meta["had_outside_pos"] = outside_pos is not None
             snap_x, snap_y = outside_pos if outside_pos is not None else (cx, cy)
             for i, line in enumerate(self._lines):
                 sides[i] = line.side_of(snap_x, snap_y)
+            # Registrar el track_id para la métrica de stitching. Set: cada
+            # ID que entró al ROI hoy se registra una sola vez (idempotent).
+            self._seen_track_ids.add(track.track_id)
             logger.info(  # TRACKDBG [REVERT]
                 "TRACKDBG entry tid=%d pos=(%.0f,%.0f) snap=(%.0f,%.0f) sides=%s is_real=%s",
                 track.track_id, cx, cy, snap_x, snap_y, sides, is_real,
@@ -707,6 +869,18 @@ class Counter:
             # last_track_pos como están (anclados a la última detección real).
             if not is_real:
                 return None
+
+            # Actualizar el rango de movimiento de la visita (solo con
+            # detecciones REALES). Lo consulta el guard del death-emit
+            # para distinguir walk-throughs de sitters con jitter.
+            if cx < meta["visit_x_min"]:
+                meta["visit_x_min"] = cx
+            elif cx > meta["visit_x_max"]:
+                meta["visit_x_max"] = cx
+            if cy < meta["visit_y_min"]:
+                meta["visit_y_min"] = cy
+            elif cy > meta["visit_y_max"]:
+                meta["visit_y_max"] = cy
 
             # Debounce: si el track se movió menos que el threshold
             # configurado desde el último frame "real", skipear la

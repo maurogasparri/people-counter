@@ -36,6 +36,7 @@ _HTML = """<!DOCTYPE html>
 <head>
   <meta charset='utf-8'>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <link rel='icon' href='data:,'>
   <title>People Counter — Live</title>
   <style>
     :root{--bg:#0b0d10;--panel:#15181e;--panel2:#1c2128;--line:#2a2f38;
@@ -140,7 +141,7 @@ _HTML = """<!DOCTYPE html>
       </div>
     </div>
     <div class='stream'>
-      <img id='stream' src='/stream' alt='live stream' onerror='reloadStream()'/>
+      <img id='stream' src='/stream' alt='live stream' onerror='markStreamBroken()'/>
       <div class='cap'>L | R | disparidad</div>
     </div>
   </div>
@@ -148,22 +149,30 @@ _HTML = """<!DOCTYPE html>
     const $=id=>document.getElementById(id);
     const fmtT=e=>e?new Date(e*1000).toLocaleTimeString('es-AR',{hour12:false}):'—';
     const fmtR=r=>(r==null)?'—':Math.round(r)+' dBm';
-    // El <img> MJPEG no se reconecta solo cuando el server se reinicia (a
-    // diferencia del polling de /stats). reloadStream fuerza una nueva
-    // conexión con cache-buster; lo dispara onerror y la recuperación de
-    // /stats (detecta que el server volvió tras una falla).
-    let _streamReloadAt=0;
-    function reloadStream(){
+    // El <img> MJPEG no se reconecta solo al reiniciarse el server. Estrategia
+    // robusta: flag de "necesita recargar" que se setea ante error/recovery,
+    // + reintento periódico con rate-limit. Si un reload cae justo cuando el
+    // MJPEG endpoint todavía no está listo, el siguiente tick lo intenta de
+    // nuevo (un debounce one-shot dejaba la imagen colgada hasta refresh
+    // manual).
+    let _streamNeedsReload=false;
+    let _streamLastReloadAt=0;
+    const STREAM_RELOAD_INTERVAL_MS=2000;
+    function markStreamBroken(){_streamNeedsReload=true;}
+    function maybeReloadStream(){
+      if(!_streamNeedsReload)return;
       const now=Date.now();
-      if(now-_streamReloadAt<1500)return;  // debounce
-      _streamReloadAt=now;
-      setTimeout(()=>{$('stream').src='/stream?t='+now;},800);
+      if(now-_streamLastReloadAt<STREAM_RELOAD_INTERVAL_MS)return;
+      _streamLastReloadAt=now;
+      _streamNeedsReload=false;  // re-marca si el nuevo intento también falla
+      $('stream').src='/stream?t='+now;
     }
+    setInterval(maybeReloadStream,500);
     let _statsOk=true;
     async function tick(){
       try{
         const s=await (await fetch('/stats',{cache:'no-store'})).json();
-        if(!_statsOk){_statsOk=true;reloadStream();}  // server volvió → reconectar video
+        if(!_statsOk){_statsOk=true;markStreamBroken();}  // server volvió → reconectar video
         $('site').textContent=s.store_name||'—';
         $('device').textContent=s.device_id||'—';
         $('hours').textContent=s.operating_hours||'—';

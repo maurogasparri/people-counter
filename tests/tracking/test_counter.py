@@ -339,11 +339,14 @@ def test_count_on_track_death_inside_roi_after_crossing():
     counter.check_all({1: track})
 
     # Frame 4: track desaparece del tracker SIN haber salido del ROI.
+    # El death-emit ahora está DIFERIDO por DEATH_EMIT_GRACE_FRAMES (espera
+    # ghost adoption); el primer check_all post-muerte NO emite.
     events = counter.check_all({})
+    assert events == []
 
-    # Cruzó (real) y se perdió antes de salir → death-emit cuenta.
-    assert len(events) == 1
-    assert events[0].direction == "ingress"
+    # Tras avanzar la grace window sin re-aparición → fire del death-emit.
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        events = counter.check_all({})
     assert counter.total_in == 1
 
 
@@ -868,20 +871,23 @@ def test_crossing_real_then_exit_on_prediction_still_counts():
 
 def test_death_inside_roi_after_crossing_emits_count():
     """Track cruza la línea (detección real) y después desaparece de la dict
-    sin haber salido del ROI → emite el conteo en la muerte."""
+    sin haber salido del ROI → emite el conteo en la muerte (post grace).
+    Pre-cond: arranca FUERA del ROI (had_outside_pos=True) y recorre >80px
+    para pasar los guards anti-falso-positivo del death-emit."""
     counter = Counter(lines=[_line_h()], roi=ROI)
-    track = _make_track(1, [[300, 250, 3000]])
-    # Entry + cruce real (net=+1, label ingress).
+    # Frame 0: outside ROI (y=150 < y_min=200) — fija last_outside_pos.
+    track = _make_track(1, [[300, 150, 3000]])
     counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000], dtype=float))
+    counter.check_all({1: track})  # entry inside ROI, had_outside_pos=True
     track.positions.append(np.array([300, 350, 3000], dtype=float))
-    events = counter.check_all({1: track})
-    assert events == []  # todavía no salió del ROI
+    events = counter.check_all({1: track})  # cross net=+1, visit_y_range=100
+    assert events == []
 
-    # El track desaparece (muere por keepalive cap). Death-emit fires.
-    events = counter.check_all({})
-    assert len(events) == 1
-    assert events[0].direction == "ingress"
-    assert events[0].track_id == 1
+    # El track desaparece. Death-emit DIFERIDO por grace.
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
     assert counter.total_in == 1
 
 
@@ -993,3 +999,229 @@ def test_real_detection_cross_at_exit_still_counts():
     events = counter.check_all({1: track})
     assert len(events) == 1
     assert events[0].direction == "ingress"
+
+
+# ---------------------------------------------------------------------------
+# Death-emit deferred grace: cuando un track desaparece de la dict, el
+# death-emit NO dispara inmediato — se difiere por DEATH_EMIT_GRACE_FRAMES
+# para que el tracker tenga chance de resucitarlo (ghost adoption). Si el
+# track REAPARECE dentro de la ventana, el death-emit se cancela y el
+# conteo emite naturalmente en el exit posterior.
+# ---------------------------------------------------------------------------
+
+
+def test_death_emit_deferred_then_resurrected_no_double_count():
+    """Track cruza → desaparece → grace window arranca. Antes de expirar,
+    REAPARECE (ghost adoption resucitó). El death-emit se cancela y el
+    conteo emite cuando el track sale naturalmente — 1 sólo evento, no 2."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Frame 0: outside ROI — fija last_outside_pos (necesario para death-emit
+    # guards).
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000], dtype=float))
+    counter.check_all({1: track})  # entry, had_outside_pos=True
+    track.positions.append(np.array([300, 350, 3000], dtype=float))
+    counter.check_all({1: track})  # cross net=+1, visit_y_range=100
+
+    # Desaparece de la dict (track murió). Death-emit NO dispara aún.
+    events = counter.check_all({})
+    assert events == [], "death-emit debe estar diferido por el grace"
+    assert counter.total_in == 0
+
+    # Algunos frames sin re-aparecer (todavía dentro del grace).
+    for _ in range(5):
+        events = counter.check_all({})
+        assert events == []
+
+    # Track resucitado (ghost adoption): mismo track_id, meta restaurada.
+    # Su posición es post-cross (y=350), todavía dentro del ROI.
+    resurrected = _make_track(1, [[300, 350, 3000]])
+    # Restaurar manualmente la meta del counter como haría el ghost pool.
+    resurrected.meta[Counter.META_KEY] = {
+        "inside": True,
+        "line_sides": [1],  # debajo de la línea
+        "crossing_net": [1],
+        "last_crossing_pos": (300.0, 300.0),
+        "last_track_pos": (300.0, 350.0),
+        "had_outside_pos": True,
+        "visit_x_min": 300.0, "visit_x_max": 300.0,
+        "visit_y_min": 250.0, "visit_y_max": 350.0,
+    }
+    events = counter.check_all({1: resurrected})
+    # No emit todavía (sigue inside).
+    assert events == []
+
+    # Track sale del ROI → emit natural.
+    resurrected.positions.append(np.array([300, 520, 3000], dtype=float))
+    events = counter.check_all({1: resurrected})
+    assert len(events) == 1
+    assert events[0].direction == "ingress"
+    assert counter.total_in == 1  # UN solo evento, no dos
+
+
+def test_death_emit_fires_after_grace_expires():
+    """Si el track NO reaparece dentro del grace, el death-emit dispara como
+    fallback al expirar la ventana. Pre-cond: track legítimo (vino desde
+    fuera del ROI, recorre >80 px) — pasa los guards anti-falso-positivo."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 150, 3000]])  # outside ROI
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 250, 3000], dtype=float))
+    counter.check_all({1: track})  # entry, had_outside_pos=True
+    track.positions.append(np.array([300, 350, 3000], dtype=float))
+    counter.check_all({1: track})  # cross net=+1, visit_y_range=100
+
+    # Desaparece — death-emit diferido.
+    counter.check_all({})
+
+    # Esperar GRACE+1 frames sin re-aparición → fire.
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+
+    # En el último, debería disparar el death-emit.
+    assert counter.total_in == 1
+
+
+# ---------------------------------------------------------------------------
+# Stitching ratio: telemetría de fragmentación del tracker.
+# ---------------------------------------------------------------------------
+
+
+def test_stitching_ratio_1_when_each_track_emits_once():
+    """1 track por persona, 1 evento por track → ratio = 1.0 (ideal)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 250, 3000]])
+    counter.check_all({1: track})  # entry
+    track.positions.append(np.array([300, 350, 3000], dtype=float))
+    counter.check_all({1: track})  # cross
+    track.positions.append(np.array([300, 520, 3000], dtype=float))
+    counter.check_all({1: track})  # exit, emit
+
+    assert counter.total_in == 1
+    assert counter.stitching_ratio == 1.0
+
+
+def test_stitching_ratio_detects_fragmentation():
+    """2 tracks distintos crossean → si solo emiten 1 conteo (uno cruzó,
+    el otro se fragmentó), el ratio sube > 1."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Track 1: cruza y emite.
+    t1 = _make_track(1, [[300, 250, 3000]])
+    counter.check_all({1: t1})
+    t1.positions.append(np.array([300, 350, 3000], dtype=float))
+    counter.check_all({1: t1})
+    t1.positions.append(np.array([300, 520, 3000], dtype=float))
+    counter.check_all({1: t1})  # emit ingress
+
+    # Track 2: ENTRA al ROI pero no cruza (fragmentación: se perdió antes
+    # de cruzar, otro track tomó el relevo).
+    t2 = _make_track(2, [[300, 250, 3000]])
+    counter.check_all({2: t2})  # entry registrado → _seen_track_ids += 2
+
+    # 2 tracks vistos, 1 conteo emitido → ratio = 2.0
+    assert counter.stitching_ratio == 2.0
+
+
+def test_stitching_ratio_zero_when_no_counts():
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    assert counter.stitching_ratio == 0.0
+
+
+def test_reset_daily_clears_stitching_state():
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 250, 3000]])
+    counter.check_all({1: track})
+    assert len(counter._seen_track_ids) == 1
+    counter.reset_daily()
+    assert counter._seen_track_ids == set()
+    assert counter._potential_deaths == {}
+
+
+def test_death_emit_grace_default_from_class_constant():
+    """Sin override, ``death_emit_grace_frames`` usa el default de clase."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    assert counter.death_emit_grace_frames == Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES
+
+
+def test_death_emit_grace_override_via_constructor():
+    """Pasar el param explícito sobreescribe el default — usado por main.py
+    para sincronizar con ``tracker.adoption_window_frames + 2``."""
+    counter = Counter(
+        lines=[_line_h()], roi=ROI, death_emit_grace_frames=50,
+    )
+    assert counter.death_emit_grace_frames == 50
+
+
+def test_death_emit_skipped_when_track_spawned_inside_roi():
+    """Guard 1: track que spawneó DENTRO del ROI (sin posición outside
+    previa) cruza la línea por jitter y muere — NO debe emitir. Caso real:
+    persona sentada cuya cabeza jitterea atravesando la línea."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Track aparece DIRECTAMENTE dentro del ROI (sin frame outside previo).
+    track = _make_track(1, [[300, 250, 3000]])
+    counter.check_all({1: track})  # entry, had_outside_pos=False
+    track.positions.append(np.array([300, 350, 3000], dtype=float))
+    counter.check_all({1: track})  # cross net=+1 (jitter de cabeza)
+
+    # Desaparece. Sin guards, death-emit contaría 1 ingress. Con guard 1
+    # (no_outside_history), NO emite.
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_death_emit_skipped_when_visit_range_too_small():
+    """Guard 2: track con outside_pos válido pero que solo se movió un
+    poquito dentro del ROI (menos de MIN_VISIT_RANGE_FOR_DEATH_EMIT) — NO
+    debe emitir. Filtra al lurker que entró, hizo un mini-cross por jitter
+    cerca de la línea, y se quedó parado."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 150, 3000]])  # outside ROI
+    counter.check_all({1: track})  # last_outside_pos=(300,150)
+    track.positions.append(np.array([300, 295, 3000], dtype=float))
+    counter.check_all({1: track})  # entry justo arriba de la línea
+    track.positions.append(np.array([300, 305, 3000], dtype=float))
+    counter.check_all({1: track})  # cross net=+1, visit_y_range=10 (chico!)
+
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    # visit_y_range=10 < MIN=80 → skip.
+    assert counter.total_in == 0
+
+
+def test_death_emit_count_incremented_only_on_actual_emit():
+    """Cada vez que _emit_on_death realmente emite (post-guards), incrementa
+    el contador. Skipped emits NO suman."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Caso 1: track legítimo (outside_pos + range >= 80) → emit + count +=1.
+    t1 = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: t1})
+    t1.positions.append(np.array([300, 250, 3000]))
+    counter.check_all({1: t1})
+    t1.positions.append(np.array([300, 350, 3000]))
+    counter.check_all({1: t1})
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    assert counter.death_emit_count == 1
+
+    # Caso 2: track sin outside_pos (sitter) → guard 1 skip → count NO sube.
+    t2 = _make_track(2, [[300, 250, 3000]])
+    counter.check_all({2: t2})
+    t2.positions.append(np.array([300, 350, 3000]))
+    counter.check_all({2: t2})
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    assert counter.death_emit_count == 1  # no se incrementó
+
+
+def test_reset_daily_clears_death_emit_count():
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    counter._death_emit_count = 5
+    counter.reset_daily()
+    assert counter.death_emit_count == 0

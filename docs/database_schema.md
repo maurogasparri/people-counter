@@ -60,7 +60,9 @@ erDiagram
         real        cpu_temp_c
         real        hailo_temp_c
         real        fps
-        real        wifi_ble_stitching_ratio "canary del stitching"
+        real        wifi_ble_stitching_ratio "canary del stitching wifi/ble"
+        real        track_stitching_ratio    "canary fragmentación del tracker"
+        int         death_emit_count         "counts via fallback del counter"
         text        error
         timestamptz received_at
     }
@@ -257,7 +259,7 @@ próximo reconnect.
 |---|---|---|
 | `id` | INTEGER PK AUTOINCREMENT | Orden cronológico implícito |
 | `topic` | TEXT | `counting`, `telemetry`, o `wifi_ble` |
-| `payload` | TEXT | `json.dumps(envelope)` — ver [api-contracts.md](api-contracts.md) para el shape |
+| `payload` | TEXT | `json.dumps(envelope)` — ver [api_contracts.md](api_contracts.md) para el shape |
 | `created_at` | REAL | epoch seconds, para purge >72h |
 | `sent` | INTEGER | 0 = pendiente, 1 = acked |
 
