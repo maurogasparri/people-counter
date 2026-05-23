@@ -187,38 +187,20 @@ if ($StartFromPhase -le 2) {
 
     Write-Host "  Imagen pushed" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  Corriendo bootstrap.sql contra RDS via docker..." -ForegroundColor Cyan
+    Write-Host "  Aplicando bootstrap.sql contra RDS via psycopg (sin docker)..." -ForegroundColor Cyan
 
-    $RDS_HOST   = Get-StackOutput "RdsEndpoint"
-    $RDS_PORT   = Get-StackOutput "RdsPort"
-    $SECRET_ARN = Get-StackOutput "RdsMasterSecretArn"
-
-    $secretJson = aws secretsmanager get-secret-value --secret-id $SECRET_ARN --query SecretString --output text
-    $secret     = $secretJson | ConvertFrom-Json
-
-    # Docker mount: convertir Windows path a forward slashes
-    $sqlDir = (Join-Path $SCRIPT_DIR "sql").Replace('\', '/')
-
+    # Reemplaza el bloque ``docker run postgres:16 psql -f bootstrap.sql`` por un
+    # runner Python que usa el mismo helper psycopg+boto3 que provision.py y la
+    # Lambda. Beneficio: una sola dependencia local (boto3 + psycopg[binary],
+    # cross-platform) en vez de requerir docker en el workstation que provisiona.
+    # El script maneja además la creación condicional de la DB ``grafana`` (que
+    # antes vivía en un ``\gexec`` de psql).
+    $applyScript = Join-Path $SCRIPT_DIR "sql\apply_bootstrap.py"
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        # Array form para evitar problemas de quoting con chars especiales en pwd
-        $dockerArgs = @(
-            "run", "--rm",
-            "-e", "PGPASSWORD=$($secret.password)",
-            "-e", "PGSSLMODE=require",
-            "-v", "${sqlDir}:/sql:ro",
-            "postgres:16",
-            "psql",
-            "-h", $RDS_HOST,
-            "-p", $RDS_PORT,
-            "-U", $secret.username,
-            "-d", "people_counter",
-            "-v", "ON_ERROR_STOP=1",
-            "-f", "/sql/bootstrap.sql"
-        )
-        docker @dockerArgs
-        if ($LASTEXITCODE -ne 0) { throw "Bootstrap SQL fallo" }
+        py $applyScript $StackName $REGION
+        if ($LASTEXITCODE -ne 0) { throw "apply_bootstrap.py fallo" }
     } finally {
         $ErrorActionPreference = $prevEAP
     }
@@ -262,35 +244,52 @@ if ($StartFromPhase -le 4) {
     if ($LASTEXITCODE -ne 0) { throw "Phase 4 deploy fallo" }
     Write-Host "[4/6] OK" -ForegroundColor Green
 
-    # --- Codigo real de la Lambda persist_event ---
-    # El template crea la Lambda con un stub inline (ImportModuleError al
+    # --- Codigo real de las Lambdas (persist_event + ingest_pos_transaction) ---
+    # El template crea cada Lambda con un stub inline (ImportModuleError al
     # invocarla). El deploy del codigo real va ACA, al final de Phase 4, porque
     # CADA stack deploy (Phase 1 y 4) resetea la Lambda al stub inline -> hay
     # que re-deployar el codigo justo despues del ultimo stack deploy. Antes era
     # un paso manual (scripts/deploy_lambda.sh) que se olvidaba en cada redeploy.
-    Write-Host "  Deployando codigo real de la Lambda persist_event..." -ForegroundColor Cyan
-    $lambdaFn  = "people-counter-persist-event-$Environment"
-    $lambdaSrc = Join-Path $SCRIPT_DIR "..\src\cloud\persist_event.py"
-    $buildDir  = Join-Path $env:TEMP "pc-lambda-build"
-    $zipPath   = Join-Path $env:TEMP "pc-lambda.zip"
-    Remove-Item -Recurse -Force $buildDir, $zipPath -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force $buildDir | Out-Null
-    # psycopg (binary wheel) target el runtime de Lambda: manylinux2014 x86_64,
-    # py3.13. Usamos `py -m pip` porque `pip` suelto no siempre esta en PATH
-    # (git-bash/Windows). stderr de pip (notices) va a consola, sin redirigir.
-    py -m pip install --platform manylinux2014_x86_64 --target $buildDir `
-        --implementation cp --python-version 3.13 --only-binary=:all: --upgrade `
-        "psycopg[binary]==3.2.*" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "pip install de psycopg para la Lambda fallo" }
-    Copy-Item $lambdaSrc (Join-Path $buildDir "persist_event.py") -Force
-    # Zip via zipfile de Python: garantiza arcnames con '/' (Compress-Archive de
-    # PS 5.1 usa '\' y Lambda no encuentra el modulo -> ImportModuleError).
-    py -c "import zipfile,os,sys; b=sys.argv[1]; z=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED); [z.write(os.path.join(r,f), os.path.relpath(os.path.join(r,f),b).replace(os.sep,'/')) for r,_,fs in os.walk(b) for f in fs]; z.close()" $buildDir $zipPath
-    if ($LASTEXITCODE -ne 0) { throw "Empaquetado (zip) de la Lambda fallo" }
-    $sz = aws lambda update-function-code --function-name $lambdaFn `
-        --zip-file "fileb://$zipPath" --query 'CodeSize' --output text
-    if ($LASTEXITCODE -ne 0) { throw "update-function-code de la Lambda fallo" }
-    Write-Host "  Lambda persist_event deployada (CodeSize: $sz bytes)" -ForegroundColor Green
+    # Ambas Lambdas comparten el mismo runtime (py3.13) + dep (psycopg[binary]).
+
+    function Deploy-LambdaCode {
+        param(
+            [string]$FunctionName,
+            [string]$SourcePath,
+            [string]$ModuleName  # filename como debe aparecer dentro del zip
+        )
+        Write-Host "  Deployando codigo real de Lambda $FunctionName..." -ForegroundColor Cyan
+        $buildDir = Join-Path $env:TEMP "pc-lambda-build-$ModuleName"
+        $zipPath  = Join-Path $env:TEMP "pc-lambda-$ModuleName.zip"
+        Remove-Item -Recurse -Force $buildDir, $zipPath -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $buildDir | Out-Null
+        # psycopg (binary wheel) target el runtime de Lambda: manylinux2014 x86_64,
+        # py3.13. Usamos `py -m pip` porque `pip` suelto no siempre esta en PATH
+        # (git-bash/Windows). stderr de pip (notices) va a consola, sin redirigir.
+        py -m pip install --platform manylinux2014_x86_64 --target $buildDir `
+            --implementation cp --python-version 3.13 --only-binary=:all: --upgrade `
+            "psycopg[binary]==3.2.*" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "pip install de psycopg para $FunctionName fallo" }
+        Copy-Item $SourcePath (Join-Path $buildDir $ModuleName) -Force
+        # Zip via zipfile de Python: garantiza arcnames con '/' (Compress-Archive de
+        # PS 5.1 usa '\' y Lambda no encuentra el modulo -> ImportModuleError).
+        py -c "import zipfile,os,sys; b=sys.argv[1]; z=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED); [z.write(os.path.join(r,f), os.path.relpath(os.path.join(r,f),b).replace(os.sep,'/')) for r,_,fs in os.walk(b) for f in fs]; z.close()" $buildDir $zipPath
+        if ($LASTEXITCODE -ne 0) { throw "Empaquetado (zip) de $FunctionName fallo" }
+        $sz = aws lambda update-function-code --function-name $FunctionName `
+            --zip-file "fileb://$zipPath" --query 'CodeSize' --output text
+        if ($LASTEXITCODE -ne 0) { throw "update-function-code de $FunctionName fallo" }
+        Write-Host "  $FunctionName deployada (CodeSize: $sz bytes)" -ForegroundColor Green
+    }
+
+    Deploy-LambdaCode `
+        -FunctionName "people-counter-persist-event-$Environment" `
+        -SourcePath (Join-Path $SCRIPT_DIR "..\src\cloud\persist_event.py") `
+        -ModuleName "persist_event.py"
+
+    Deploy-LambdaCode `
+        -FunctionName "people-counter-ingest-pos-$Environment" `
+        -SourcePath (Join-Path $SCRIPT_DIR "..\src\cloud\ingest_pos_transaction.py") `
+        -ModuleName "ingest_pos_transaction.py"
 }
 
 # === [5/6] CNAMEs finales (grafana -> ALB, api -> API GW domain) ===

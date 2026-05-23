@@ -461,6 +461,45 @@ GRANT USAGE ON SCHEMA public TO lambda_pos_writer;
 GRANT INSERT, SELECT ON pos_transactions TO lambda_pos_writer;
 
 -- =============================================================================
+-- User read-only para acceso programático externo (US-08)
+-- =============================================================================
+-- ``readonly_external`` permite a partners / analistas externos consultar los
+-- agregados via SQL directo (DBeaver, psql, Python con psycopg) sin riesgo de
+-- modificar data. Acceso vía PASSWORD (no IAM auth — el cliente externo no
+-- necesita ser un principal AWS) leído de Secrets Manager (recurso
+-- ``RdsReadonlyExternalSecret`` del CFN). Permisos minimos:
+--   - USAGE en schema public.
+--   - SELECT solo sobre las VIEWS de agregados (no sobre tablas crudas con
+--     device_id / timestamps fine-grained). Si el partner necesita raw,
+--     expandir granularly per vista.
+-- La connectividad externa requiere ``RdsAllowExternalReadOnly=true`` en el
+-- CFN (default false) — abre un SG ingress al puerto 5432 desde los CIDRs en
+-- ``RdsExternalReadOnlyCidrs``. Ver docs/api_access.md.
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'readonly_external') THEN
+        REVOKE ALL ON ALL TABLES IN SCHEMA public FROM readonly_external;
+        REVOKE ALL ON SCHEMA public FROM readonly_external;
+        DROP USER readonly_external;
+    END IF;
+END $$;
+
+-- Password gestionado fuera: el ``RdsReadonlyExternalSecret`` del CFN tiene
+-- credentials autogeneradas; el script de provisioning sincroniza el password
+-- desde el secret a este rol (idempotente, ver scripts/provision.py / o el
+-- propio apply_bootstrap.py).
+CREATE USER readonly_external WITH PASSWORD 'CHANGE_ME_FROM_SECRETS_MANAGER';
+GRANT USAGE ON SCHEMA public TO readonly_external;
+GRANT SELECT ON
+    counting_hourly, counting_daily, counting_by_bucket,
+    turn_in_rate_by_bucket,
+    conversion_rate_hourly, conversion_rate_daily, conversion_rate_by_store,
+    wifi_ble_store_traffic,
+    sites, devices
+TO readonly_external;
+
+-- =============================================================================
 -- Database "grafana" — separada para el state interno de Grafana
 -- =============================================================================
 -- Grafana guarda su config (users, dashboards, sessions, datasources) en
@@ -472,12 +511,15 @@ GRANT INSERT, SELECT ON pos_transactions TO lambda_pos_writer;
 -- usando el password del Secrets Manager. Como datasource para queriar
 -- events, Grafana conecta de vuelta a "people_counter" como master.
 --
--- Idempotente: usa \gexec (psql meta-command) que solo ejecuta CREATE DATABASE
--- si el SELECT devuelve rows (= si la DB no existe). Funciona en psql; en
--- DBeaver no, pero el deploy script corre esto via docker postgres:16/psql.
-
-SELECT 'CREATE DATABASE grafana OWNER people_counter'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'grafana')\gexec
+-- La creación de la DB ``grafana`` está fuera de este script porque
+-- ``CREATE DATABASE`` no puede correr en una transacción + el bootstrap se
+-- aplica vía psycopg (sin docker). El runner ``infra/sql/apply_bootstrap.py``
+-- lo crea idempotentemente con autocommit antes/después de este script.
+-- Para correr el script MANUALMENTE en DBeaver/psql contra la DB
+-- ``people_counter``, ejecutar aparte:
+--     SELECT 1 FROM pg_database WHERE datname = 'grafana';
+--     -- si no existe:
+--     CREATE DATABASE grafana OWNER people_counter;
 
 -- =============================================================================
 -- Verificación
