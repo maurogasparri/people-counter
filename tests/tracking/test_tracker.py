@@ -265,19 +265,18 @@ def test_keepalive_roi_recovers_to_confirmed_after_long_gap():
     assert tracker.tracks[tid].state == CONFIRMED
 
 
-def test_keepalive_roi_freezes_standing_track_no_drift_out():
-    """Un track que va a PENDING DENTRO del ROI con velocidad residual
-    (persona que venía caminando y frenó) se CONGELA pasada la grace window
-    — no sigue extrapolando hacia abajo hasta cruzar la línea y salir del
-    ROI solo. Sin freeze, ese drift dispararía un conteo espurio (y la
-    persona después cruzaría de verdad con un track fresco = doble conteo)."""
+def test_keepalive_roi_extrapolates_does_not_freeze():
+    """Un track PENDING dentro del ROI SIGUE extrapolando con el Kalman (no se
+    congela) — así puede seguir a la persona y salir del ROI para que el
+    counter emita el cruce. El doble-conteo del drift lo evita el counter
+    (cuenta cruces solo con detección real), no congelando el track acá."""
     tracker = EuclideanTracker(
         max_distance=50,
         confirm_frames=2,
         pending_max_frames=5,
         max_disappeared=10,
         pending_grace_frames=3,
-        pending_velocity_decay=1.0,  # peor caso: sin decay
+        pending_velocity_decay=1.0,  # sin decay → extrapola a velocidad plena
         keepalive_roi=(50.0, 200.0, 150.0, 300.0),
     )
     # Caminando hacia abajo: velocidad ~ +10 px/frame en y, dentro del ROI.
@@ -286,14 +285,15 @@ def test_keepalive_roi_freezes_standing_track_no_drift_out():
     tid = list(tracker.tracks.keys())[0]
     assert tracker.tracks[tid].state == CONFIRMED
 
-    # Muchos misses: durante la grace (3) extrapola, después congela.
-    for _ in range(30):
+    y_start = float(tracker.tracks[tid].positions[-1][1])
+    for _ in range(10):
         tracker.update([])
-    assert tid in tracker.tracks  # kept-alive
-    y_final = float(tracker.tracks[tid].positions[-1][1])
-    # Congelado dentro del ROI (y < 300), no drifteó hasta salir. La grace
-    # de 3 frames a +10/frame lo deja ~240; el freeze lo clava ahí.
-    assert y_final < 270, f"el track drifteó a y={y_final} (deberia congelarse ~240)"
+    # La posición avanzó (extrapoló), no quedó clavada en y_start.
+    y_after = float(tracker.tracks[tid].positions[-1][1])
+    assert y_after > y_start + 20, (
+        f"el track debe extrapolar (seguir a la persona), no congelarse "
+        f"(y_start={y_start}, y_after={y_after})"
+    )
 
 
 def test_keepalive_roi_capped_orphan_dies():

@@ -314,14 +314,16 @@ def test_lost_inside_without_crossing_does_not_count():
     assert counter.total_out == 0
 
 
-def test_no_count_on_track_death_inside_roi_after_crossing():
-    """Track entra al ROI, cruza la línea, y muere SIN salir del ROI —
-    NO se cuenta. Es el caso de una persona que duda/se para/se sienta en
-    el ROI (o que el detector pierde por pose fuera de distribución, o que
-    mueve la cabeza cruzando la línea sin trasladarse). La semántica
-    canónica exige entrar -> cruzar -> SALIR del ROI; no hay "salida
-    sintética" por muerte del track adentro. Evita el falso positivo de
-    gente lingering en la puerta."""
+def test_count_on_track_death_inside_roi_after_crossing():
+    """Track entra al ROI, cruza la línea con detección real, y muere SIN
+    salir del ROI — IGUAL se cuenta (death-emit-if-crossed).
+
+    El caso real: el detector pierde a la persona después del cruce y el
+    Kalman parka adentro del ROI antes de alcanzar el borde → el exit nunca
+    dispara y, sin el death-emit, el conteo se perdía. El gate sigue siendo
+    selectivo: si entró pero NO cruzó (el caso del que duda/lingera en la
+    entrada), `test_death_inside_roi_without_crossing_no_count` cubre que
+    NO se cuente."""
     counter = Counter(lines=[_line_h()], roi=ROI)
 
     # Frame 1: outside ROI, arriba de la línea.
@@ -339,10 +341,10 @@ def test_no_count_on_track_death_inside_roi_after_crossing():
     # Frame 4: track desaparece del tracker SIN haber salido del ROI.
     events = counter.check_all({})
 
-    # Sin salida sintética: el cruce sin salida del ROI NO cuenta.
-    assert events == []
-    assert counter.total_in == 0
-    assert counter.total_out == 0
+    # Cruzó (real) y se perdió antes de salir → death-emit cuenta.
+    assert len(events) == 1
+    assert events[0].direction == "ingress"
+    assert counter.total_in == 1
 
 
 def test_in_followed_by_out_both_count():
@@ -815,3 +817,179 @@ def test_entry_side_fallback_when_track_born_inside_roi():
     assert ev is not None
     assert ev.direction == "ingress"
     assert counter.total_in == 1
+
+
+# ---------------------------------------------------------------------------
+# Gate de detección real: los cruces solo cuentan con detección real, no con
+# predicción Kalman (anti doble-conteo del drift + no perder el conteo del
+# que cruzó y se perdió).
+# ---------------------------------------------------------------------------
+
+
+def test_inside_was_inside_prediction_does_not_register_cross():
+    """En la rama inside-was-inside, los frames de PURA PREDICCIÓN (track
+    PENDING) NO actualizan sides/net (gate estricto). Se preserva el lado
+    desde la última detección real así un drift Kalman cruzando-recruzando la
+    línea adentro del ROI no acumula cruces espurios."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 295, 3000]])  # entry justo arriba (real)
+    counter._process_track(track)  # entry, last_track_pos=(300,295), sides=-1
+    # Frame de predicción: el track "cruza" hacia abajo por extrapolación.
+    # Inside-was-inside con is_real=False → early return → sides PRESERVADO
+    # en -1 (no se registra cruce per-frame). Sin esto, un drift que
+    # oscila atravesando la línea contaría múltiples crosses espurios.
+    track.disappeared = 5
+    ev = _advance(counter, track, [300, 305, 3000])  # cruzaría a +1, pero predicción
+    assert ev is None  # sin emit en inside-was-inside
+
+
+def test_crossing_real_then_exit_on_prediction_still_counts():
+    """Una persona que cruza con detección REAL y después se pierde (el track
+    sale del ROI por extrapolación) IGUAL cuenta al salir — no se pierde el
+    conteo (era el bug del freeze)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 250, 3000]])  # entry arriba (real)
+    counter._process_track(track)
+    _advance(counter, track, [300, 350, 3000])  # cruza abajo con detección REAL (net+1)
+    # El detector la pierde; el track extrapola y sale del ROI (predicción).
+    track.disappeared = 5
+    ev = _advance(counter, track, [300, 520, 3000])  # exit por extrapolación
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+
+
+# ---------------------------------------------------------------------------
+# Death-emit-if-crossed: si un track desaparece habiendo cruzado pero sin
+# haber salido del ROI (el detector lo pierde y el Kalman parka adentro),
+# igual se emite el conteo. Cubre el lost-count residual.
+# ---------------------------------------------------------------------------
+
+
+def test_death_inside_roi_after_crossing_emits_count():
+    """Track cruza la línea (detección real) y después desaparece de la dict
+    sin haber salido del ROI → emite el conteo en la muerte."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 250, 3000]])
+    # Entry + cruce real (net=+1, label ingress).
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 350, 3000], dtype=float))
+    events = counter.check_all({1: track})
+    assert events == []  # todavía no salió del ROI
+
+    # El track desaparece (muere por keepalive cap). Death-emit fires.
+    events = counter.check_all({})
+    assert len(events) == 1
+    assert events[0].direction == "ingress"
+    assert events[0].track_id == 1
+    assert counter.total_in == 1
+
+
+def test_death_inside_roi_without_crossing_no_count():
+    """Track entra al ROI pero NUNCA cruza y después desaparece — no debe
+    contar (entró pero no cruzó: persona dudó en la entrada)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 250, 3000]])  # entry arriba (no cruzó)
+    counter.check_all({1: track})
+    # Desaparece sin haber cruzado.
+    events = counter.check_all({})
+    assert events == []
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_clean_exit_then_death_does_not_double_count():
+    """Track cruza, sale del ROI (emite 1) y después desaparece de la dict —
+    NO debe doble-contar (el snapshot post-exit tiene inside=False)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[300, 250, 3000]])
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 350, 3000], dtype=float))
+    counter.check_all({1: track})
+    track.positions.append(np.array([300, 520, 3000], dtype=float))  # sale
+    events = counter.check_all({1: track})
+    assert len(events) == 1  # emit normal de exit
+
+    # Después se muere — sin doble-conteo.
+    events = counter.check_all({})
+    assert events == []
+    assert counter.total_in == 1
+
+
+# ---------------------------------------------------------------------------
+# Gate relajado en exit: cruces extrapolados por Kalman cuentan SI el
+# movimiento desde la última detección real es decisivo en la dirección del
+# cruce (caso "walked → lost en zona crítica de la línea"). El drift
+# estacionario (residual velocity, sin movimiento real) sigue descartado.
+# ---------------------------------------------------------------------------
+
+
+def test_decisive_kalman_cross_at_exit_counts():
+    """Track con última posición real bien debajo de la línea (y=352), Kalman
+    extrapola hacia arriba y SALE del ROI por arriba en frame de predicción.
+    El desplazamiento desde la última real (dy=-152) es decisivo en la
+    dirección del cruce (hacia arriba = side -1) → cuenta."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Entry real con sides=+1 (debajo de la línea).
+    track = _make_track(1, [[460, 352, 3000]])
+    counter.check_all({1: track})  # entry, sets last_track_pos=(460,352)
+
+    # Kalman push: track sale del ROI por arriba (y=190 < y_min=200).
+    # is_real=False (track.disappeared > 0).
+    track.positions.append(np.array([460, 190, 3000], dtype=float))
+    track.disappeared = 5  # dentro del MAX_KALMAN_CROSS_FRAMES=15
+    events = counter.check_all({1: track})
+
+    assert len(events) == 1
+    assert events[0].direction == "egress"  # cruzó hacia arriba: side -1
+    assert counter.total_out == 1
+
+
+def test_kalman_cross_too_old_does_not_count():
+    """Misma situación que el test anterior pero con disappeared > MAX. El
+    track estuvo perdido demasiado tiempo → no confiable, no cuenta."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[460, 352, 3000]])
+    counter.check_all({1: track})
+
+    track.positions.append(np.array([460, 190, 3000], dtype=float))
+    track.disappeared = 30  # > MAX_KALMAN_CROSS_FRAMES=15
+    events = counter.check_all({1: track})
+
+    assert events == []
+    assert counter.total_out == 0
+
+
+def test_kalman_drift_at_exit_does_not_count():
+    """Drift estacionario: última posición real APENAS arriba de la línea
+    (y=295). El track ""drifta"" mínimamente y sale del ROI por el lateral —
+    el desplazamiento en y desde la última real (10px) es marginal y NO
+    pasa el umbral decisivo de 30px → no cuenta (anti doble-conteo del
+    parado-cruzar)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Entry justo arriba de la línea (real, sides=-1).
+    track = _make_track(1, [[460, 295, 3000]])
+    counter.check_all({1: track})  # last_track_pos=(460,295)
+    # Drift en predicción: sale del ROI por x>x_max=500. dy desde última real
+    # = 10 (no decisivo). En exit: prev_side=-1, new_side=+1 (y=305>300), pero
+    # decisive_disp = dy*new_side = 10 < 30 → rechaza.
+    track.disappeared = 5
+    track.positions.append(np.array([510, 305, 3000], dtype=float))
+    events = counter.check_all({1: track})
+
+    assert events == []
+    assert counter.total_in == 0
+
+
+def test_real_detection_cross_at_exit_still_counts():
+    """Regression: la rama de exit con detección REAL sigue funcionando igual
+    (el gate relajado no rompe el camino normal)."""
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    track = _make_track(1, [[460, 250, 3000]])
+    counter.check_all({1: track})
+    # Salta directamente abajo del ROI cruzando la línea — exit con detección
+    # real (disappeared=0).
+    track.positions.append(np.array([460, 520, 3000], dtype=float))
+    events = counter.check_all({1: track})
+    assert len(events) == 1
+    assert events[0].direction == "ingress"

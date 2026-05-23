@@ -8,6 +8,7 @@ import numpy as np
 from src.tracking.counter import Counter, Line
 from src.tracking.tracker import CONFIRMED, PENDING, CANDIDATE
 from src.web.annotate import (
+    _BBOX_DISPLAY_SIZE_PX,
     annotate_left,
     compose_3panel,
     depth_to_colormap,
@@ -248,6 +249,23 @@ def test_annotate_left_sustained_pending_flips_to_orange():
     assert has_orange, "PENDING sostenido (disappeared >= 5) debe mostrarse naranja"
 
 
+def test_annotate_left_draws_trajectory_polyline():
+    """La trayectoria del track se dibuja como polilínea por sus posiciones —
+    un pixel en el medio de un segmento debe quedar coloreado."""
+    frame = np.zeros((400, 400, 3), dtype=np.uint8)
+    # Trayectoria diagonal: (100,100) -> (200,200). El midpoint (150,150)
+    # cae sobre el segmento del trail.
+    track = _FakeTrack(
+        track_id=1,
+        state=CONFIRMED,
+        positions=[np.array([100.0, 100.0, 0.0]), np.array([200.0, 200.0, 0.0])],
+        meta={},
+    )
+    out = annotate_left(frame, {1: track}, None)
+    # Pixel en el midpoint del segmento (con tolerancia por antialias).
+    assert out[148:153, 148:153, :].any(), "El trail debe dibujar la polilínea"
+
+
 def test_annotate_left_draws_track_bbox_from_history():
     """El bbox del track se dibuja desde meta.detection_history para
     persistir visualmente durante PENDING (frames sin detección fresca)."""
@@ -267,16 +285,20 @@ def test_annotate_left_draws_track_bbox_from_history():
     )
     # Sin detections raw — solo el track. El bbox debe aparecer igual.
     out = annotate_left(frame, {1: track}, counter)
-    # Verificar que los bordes del rectángulo (~y=130 y y=180, ~x=150 y x=200)
-    # tienen pixels coloreados.
-    assert out[130, 150:200, :].any(), "Top edge del bbox debe estar dibujado"
-    assert out[180, 150:200, :].any(), "Bottom edge del bbox debe estar dibujado"
+    # Caja de tamaño FIJO centrada en el centro de la última detección
+    # (centro de [150,130,200,180] = (175,155)). half = SIZE_PX/2.
+    half = _BBOX_DISPLAY_SIZE_PX // 2
+    cx, cy = 175, 155
+    top, bottom = cy - half, cy + half
+    left, right = cx - half, cx + half
+    assert out[top, left:right, :].any(), "Top edge del bbox fijo debe dibujarse"
+    assert out[bottom, left:right, :].any(), "Bottom edge del bbox fijo debe dibujarse"
 
 
-def test_annotate_left_bbox_width_height_uses_median_smoothing():
-    """El size (width/height) del bbox displayed es la mediana sobre
-    los últimos N samples — filtra el "respira" del detector frame a
-    frame sin afectar la posición del centro."""
+def test_annotate_left_bbox_is_fixed_size_regardless_of_detection():
+    """La caja del preview tiene tamaño FIJO (cuadrada, _BBOX_DISPLAY_SIZE_PX),
+    sin importar el tamaño que reportó el detector. No "respira" ni difiere
+    entre tracks — solo la posición sigue al sujeto."""
     frame = np.zeros((600, 800, 3), dtype=np.uint8)
     counter = Counter(
         lines=[Line(
@@ -284,21 +306,13 @@ def test_annotate_left_bbox_width_height_uses_median_smoothing():
             labels={"top_to_bottom": "ingress"},
         )],
     )
-
-    # Historia: bboxes con CENTRO estable (400, 300) pero tamaño
-    # oscilante. Smoothing debe darnos un tamaño estable cercano a
-    # la mediana (100×200).
-    history = []
-    for w, h in [(95, 195), (100, 200), (105, 205), (98, 198),
-                 (102, 202), (100, 200), (97, 199), (103, 201),
-                 (99, 200), (180, 280)]:  # último = outlier
-        history.append({
-            "bbox": [400 - w // 2, 300 - h // 2,
-                     400 + w // 2, 300 + h // 2],
-            "head_height_mm": 1700.0,
-            "height_class": "adult",
-        })
-
+    # Última detección con un bbox GRANDE (180×280, centro 400,300). La caja
+    # dibujada debe ser igual de chica que la fija, no reflejar ese tamaño.
+    history = [{
+        "bbox": [400 - 90, 300 - 140, 400 + 90, 300 + 140],
+        "head_height_mm": 1700.0,
+        "height_class": "adult",
+    }]
     track = _FakeTrack(
         track_id=1,
         state=CONFIRMED,
@@ -307,24 +321,20 @@ def test_annotate_left_bbox_width_height_uses_median_smoothing():
     )
     out = annotate_left(frame, {1: track}, counter)
 
-    # El outlier (180×280) NO debería dominar — la mediana absorbe.
-    # Verificamos buscando los pixels coloreados del rectángulo: deben
-    # estar cerca de la mediana w=100/h=200, no del outlier.
-    # Tomamos un slice horizontal en y=300 y contamos px coloreados.
-    # Con bbox mediano la línea del top está cerca de y=200 y el bottom
-    # cerca de y=400.
-    row_top_median = out[200, :, :]
-    row_top_outlier = out[160, :, :]  # donde estaría si fuera el outlier
-    assert row_top_median.any(), "El bbox mediano debe tener borde top ~y=200"
-    assert not row_top_outlier.any(), (
-        "El outlier (h=280) NO debe dominar — bbox debería estar acotado"
+    half = _BBOX_DISPLAY_SIZE_PX // 2  # caja fija centrada en (400,300)
+    # Borde top de la caja fija (~y=300-half) dibujado.
+    assert out[300 - half, 400 - half:400 + half, :].any(), (
+        "La caja fija debe tener borde top en y=300-half"
+    )
+    # Donde estaría el borde del bbox grande del detector (y=160) NO hay caja.
+    assert not out[160, :, :].any(), (
+        "El tamaño del detector (h=280) NO debe reflejarse — la caja es fija"
     )
 
 
 def test_annotate_left_bbox_center_follows_latest_position():
-    """El centro del bbox displayed se ancla al sample más reciente —
-    cuando el sujeto se mueve, la caja lo sigue sin lag perceptible
-    (la mediana solo aplica al width/height)."""
+    """El centro de la caja (fija) se ancla al sample más reciente — cuando el
+    sujeto se mueve, la caja lo sigue sin lag perceptible."""
     frame = np.zeros((600, 800, 3), dtype=np.uint8)
     counter = Counter(
         lines=[Line(
@@ -332,20 +342,13 @@ def test_annotate_left_bbox_center_follows_latest_position():
             labels={"top_to_bottom": "ingress"},
         )],
     )
-
-    # 5 frames del sujeto caminando de izquierda a derecha (cada uno
-    # +50px en x). Tamaño constante 100×200. El bbox displayed debe
-    # quedar en el centro del último sample (cx=600), no en la mediana
-    # de centros (cx=400).
+    # 5 frames caminando de izquierda a derecha; el último centro es cx=600.
     centers_x = [400, 450, 500, 550, 600]
-    history = []
-    for cx in centers_x:
-        history.append({
-            "bbox": [cx - 50, 200, cx + 50, 400],
-            "head_height_mm": 1700.0,
-            "height_class": "adult",
-        })
-
+    history = [
+        {"bbox": [cx - 50, 200, cx + 50, 400], "head_height_mm": 1700.0,
+         "height_class": "adult"}
+        for cx in centers_x
+    ]
     track = _FakeTrack(
         track_id=1,
         state=CONFIRMED,
@@ -354,22 +357,17 @@ def test_annotate_left_bbox_center_follows_latest_position():
     )
     out = annotate_left(frame, {1: track}, counter)
 
-    # El bbox debe estar centrado en x=600 → bordes en x=550 y x=650.
-    # Verificamos buscando pixels coloreados en x=550 (left edge).
-    col_at_latest_left = out[200:400, 550, :]
-    col_at_median_left = out[200:400, 350, :]  # bbox-mediana left=350
-    assert col_at_latest_left.any(), (
-        "Bbox debe tener left edge en x=550 (centro del último sample)"
-    )
-    # El centroide mediano NO debería tener bbox dibujado allí.
-    # Permitir algún pixel del overlay del counter/línea, pero no
-    # un borde de bbox completo.
-    bbox_pixels_at_median = int((col_at_median_left.any(axis=-1)).sum())
-    bbox_pixels_at_latest = int((col_at_latest_left.any(axis=-1)).sum())
-    assert bbox_pixels_at_latest > bbox_pixels_at_median * 2, (
-        "El bbox debe seguir al último sample, no a la mediana de "
-        f"posiciones (latest={bbox_pixels_at_latest}px, "
-        f"median={bbox_pixels_at_median}px)"
+    half = _BBOX_DISPLAY_SIZE_PX // 2
+    # Caja fija centrada en x=600 → left edge en x=600-half.
+    col_at_latest = out[300 - half:300 + half, 600 - half, :]
+    # Donde estaría si siguiera la mediana de centros (cx=400).
+    col_at_median = out[300 - half:300 + half, 400 - half, :]
+    assert col_at_latest.any(), "La caja debe tener left edge en x=600-half (último centro)"
+    px_latest = int(col_at_latest.any(axis=-1).sum())
+    px_median = int(col_at_median.any(axis=-1).sum())
+    assert px_latest > px_median * 2, (
+        f"La caja sigue al último sample, no a la mediana (latest={px_latest}, "
+        f"median={px_median})"
     )
 
 

@@ -759,32 +759,20 @@ class EuclideanTracker:
         if track.state == CONFIRMED:
             track.state = PENDING
 
-        # FREEZE de tracks parados dentro del ROI: una persona quieta no se
-        # mueve, así que extrapolar su posición con la velocidad residual que
-        # traía al frenar la haría cruzar la línea y SALIR del ROI sola —
-        # disparando un conteo espurio. Cuando después cruza de verdad con un
-        # track fresco (el re-id falló porque el fantasma drifteó lejos), se
-        # cuenta una SEGUNDA vez = doble conteo. Por eso, pasada la grace
-        # window, un track dentro del keep-alive ROI se congela (no se empuja
-        # la predicción): positions[-1] queda clavado donde lo vimos por
-        # última vez. La grace window (`pending_grace_frames`) preserva la
-        # extrapolación para crossers RÁPIDOS dropeados 1-3 frames (que sí se
-        # están moviendo y necesitan que el predict complete el cruce).
-        in_keepalive_pre = self._inside_keepalive_roi(track)
-        freeze = in_keepalive_pre and track.disappeared > self.pending_grace_frames
-
-        # Empujar la predicción Kalman a `positions` durante PENDING
-        # así consumers downstream (counter line-cross, viewer) ven al
-        # track moverse en lugar de quedar clavado en su última
-        # observación. Sin este push, una persona que cruza la línea +
-        # sale del FOV antes del próximo match nunca dispara el exit
-        # branch del counter: la posición congelada queda IN-ROI, el
-        # track muere por max_disappeared / pending_max_frames, y el
-        # balance neto de cruces se pierde sin emitir CountEvent. La magnitud del
-        # paso se capea a `max_distance` para evitar teleportaciones
-        # cuando Kalman extrapola con velocidad residual alta. `z`
-        # carry-forwardea — Kalman 2D no modela depth.
-        if track.kalman is not None and track.positions and not freeze:
+        # Empujar la predicción Kalman a `positions` durante PENDING así
+        # consumers downstream (counter line-cross, viewer) ven al track
+        # moverse — SIGUE a la persona durante el gap del detector, así puede
+        # SALIR del ROI y emitir el conteo (el conteo dispara en el exit). Sin
+        # este push, una persona que cruza + se pierde mid-ROI quedaría clavada
+        # adentro y su cruce nunca se contaría. La magnitud del paso se capea a
+        # `max_distance` (anti-teleport con velocidad residual alta); el decay
+        # (`pending_velocity_decay`) la va frenando. `z` carry-forwardea.
+        #
+        # El doble-conteo del drift (un track que extrapola CRUZANDO la línea
+        # sin detección real) NO se previene acá: lo maneja el counter, que solo
+        # registra un cruce cuando lo respalda una detección real
+        # (``disappeared == 0``), no un frame de pura predicción.
+        if track.kalman is not None and track.positions:
             last = track.positions[-1]
             xy_pred = track.kalman.position
             dx = float(xy_pred[0]) - float(last[0])
@@ -818,13 +806,23 @@ class EuclideanTracker:
         ):
             return
 
+        inside_ka = self._inside_keepalive_roi(track)
+        last = track.positions[-1] if track.positions else (0.0, 0.0, 0.0)
         if track.state == PENDING and track.disappeared > self.pending_max_frames:
             track.state = LOST
+            logger.info(  # TRACKDBG [REVERT]
+                "TRACKDBG death tid=%d reason=pending_max_frames disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
+                track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
+            )
             return
 
         # Aplicar también el cap legacy max_disappeared como upper bound.
         if track.disappeared > self.max_disappeared:
             track.state = LOST
+            logger.info(  # TRACKDBG [REVERT]
+                "TRACKDBG death tid=%d reason=max_disappeared disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
+                track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
+            )
 
     def _inside_keepalive_roi(self, track: Track) -> bool:
         """True si la última posición del track cae dentro del ROI de

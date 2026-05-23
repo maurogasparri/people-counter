@@ -337,6 +337,19 @@ class Counter:
     # clasificación adult/child se vuelve conservadora.
     HEIGHT_CONFIDENCE_GATE = 0.5
 
+    # Gate del cruce extrapolado por Kalman (track PENDING, sin match real este
+    # frame). Sin esta relajación, un track con el detector dropeado en la
+    # zona crítica de la línea no registra el cruce → conteo perdido. Con
+    # ambos guardrails se distingue "walking → lost → Kalman cruza" del
+    # "drift estacionario" (residual velocity, sin movimiento real):
+    #   - MAX_KALMAN_CROSS_FRAMES: ≤ ~0.75s @ 20fps sin detección — matchea
+    #     ByteTrackMaxTimeLost del incumbent (FFC).
+    #   - MIN_KALMAN_CROSS_DISPLACEMENT_PX: desplazamiento decisivo (px) en la
+    #     dirección del cruce desde la última posición REAL. El drift residual
+    #     con velocity_decay alto no alcanza este umbral.
+    MAX_KALMAN_CROSS_FRAMES = 15
+    MIN_KALMAN_CROSS_DISPLACEMENT_PX = 30.0
+
     def __init__(
         self,
         lines: list[Line],
@@ -376,6 +389,11 @@ class Counter:
         # live preview. Reset diario (reset_daily). El histórico persistente
         # vive en RDS (count_events.bucket_15min), no en el borde.
         self._hourly: dict[int, dict[str, int]] = {}
+        # Snapshot per-track del estado relevante para el death-emit. Lo
+        # populamos en check_all (después de _process_track) y lo consultamos
+        # cuando un track desaparece de la dict (= muerte): si tenía un cruce
+        # registrado y nunca salió del ROI, emitimos acá. Ver _emit_on_death.
+        self._tracking_state: dict[int, dict] = {}
 
     # ----------------------------------------------------------------- API
     @property
@@ -408,11 +426,12 @@ class Counter:
 
     def hourly_in_out(self) -> list[dict]:
         """Breakdown horario de HOY: lista de ``{hour, in, out}`` ordenada por
-        hora, solo las horas con actividad. ``in`` = label ``ingress``,
-        ``out`` = ``egress``. Tracking en memoria con reset diario; el borde
-        NO persiste el histórico (eso vive en RDS, ``count_events``)."""
+        hora DESCENDENTE (la más reciente arriba), solo las horas con actividad.
+        ``in`` = label ``ingress``, ``out`` = ``egress``. Tracking en memoria
+        con reset diario; el borde NO persiste el histórico (eso vive en RDS,
+        ``count_events``)."""
         rows = []
-        for hour in sorted(self._hourly):
+        for hour in sorted(self._hourly, reverse=True):
             n_in = self._hourly[hour].get("ingress", 0)
             n_out = self._hourly[hour].get("egress", 0)
             # Saltear horas sin actividad — no ensuciar la tabla con filas 0/0.
@@ -421,28 +440,165 @@ class Counter:
         return rows
 
     def check_all(self, tracks: dict[int, Track]) -> list[CountEvent]:
-        # Un track se cuenta SOLO cuando su centroide cruza la linea y luego
-        # SALE del ROI (ver _process_track). NO hay "salida sintetica" por
-        # muerte del track dentro del ROI: una persona parada/sentada/dudando
-        # en el ROI (que el detector pierde por pose fuera de distribucion, o
-        # que mueve la cabeza cruzando la linea sin trasladarse) NO debe
-        # contar. Requerir la salida del ROI es la semantica canonica del gate
-        # (entrar -> cruzar -> salir) y elimina ese falso positivo. Trade-off
-        # aceptado: una pasada limpia ocluida JUSTO dentro del ROI antes de
-        # salir no se cuenta (raro en montaje cenital sobre puerta).
+        # Camino normal: entrar al ROI → cruzar la línea (con detección real) →
+        # salir del ROI → emite. Procesa también las MUERTES de tracks: si un
+        # track desaparece de la dict habiendo CRUZADO (net != 0) y sin haber
+        # SALIDO del ROI (inside aún True), emitimos el conteo igual en
+        # ``_emit_on_death``. Cubre el caso que el detector pierde a la persona
+        # después del cruce y el Kalman parka adentro del ROI sin alcanzar el
+        # borde → sin death-emit ese conteo se perdía. El gate es selectivo:
+        # un track que entró pero NUNCA cruzó (net=0) NO se cuenta en muerte —
+        # así una persona que duda en la entrada y vuelve no genera un falso
+        # positivo.
         events: list[CountEvent] = []
+        alive_ids: set[int] = set()
         for track in tracks.values():
+            alive_ids.add(track.track_id)
             ev = self._process_track(track)
             if ev is not None:
                 events.append(ev)
+            # Snapshot del estado relevante post-procesamiento. Guardamos los
+            # agregados de altura/confidence ahora porque cuando detectemos la
+            # muerte (en el próximo frame) el Track ya no existe.
+            self._snapshot_track(track)
+
+        # Detectar tracks que desaparecieron de la dict desde el último frame.
+        # Cada uno es un candidato a death-emit.
+        dead_ids = set(self._tracking_state.keys()) - alive_ids
+        for tid in dead_ids:
+            snap = self._tracking_state.pop(tid)
+            ev = self._emit_on_death(snap)
+            if ev is not None:
+                events.append(ev)
         return events
+
+    def _snapshot_track(self, track: Track) -> None:
+        meta = track.meta.get(self.META_KEY) or {}
+        cx, cy = (
+            self._tracking_point(track) if track.positions else (0.0, 0.0)
+        )
+        self._tracking_state[track.track_id] = {
+            "track_id": track.track_id,
+            "inside": bool(meta.get("inside", False)),
+            "net": list(meta.get("crossing_net") or []),
+            "last_crossing_pos": meta.get("last_crossing_pos"),
+            "last_pos": (cx, cy),
+            "height_class": _aggregate_height_class_from_track(track),
+            "height_m": _aggregate_height_m_from_track(track),
+            "head_depth_m": _aggregate_head_depth_m_from_track(track),
+            "confidence": _aggregate_confidence_from_track(track),
+        }
+
+    def _emit_on_death(self, snap: dict) -> Optional[CountEvent]:
+        """Emite un CountEvent para un track que murió SIN haber salido del
+        ROI, si tenía un cruce de línea registrado. Caso típico: el detector
+        pierde a la persona después de cruzar y el Kalman parka adentro del
+        ROI antes de alcanzar el borde — sin esto, el conteo se perdía."""
+        if not snap.get("inside"):
+            return None  # ya había salido (o nunca entró)
+        net = snap.get("net") or []
+        if not any(n != 0 for n in net):
+            return None  # entró pero NUNCA cruzó — no contar
+
+        # Mismo veredicto que la rama de exit: signo del neto por línea, la
+        # última con verdict no-nulo gana.
+        label: Optional[str] = None
+        for i, line in enumerate(self._lines):
+            if i >= len(net):
+                continue
+            if net[i] > 0:
+                verdict = line.crossing_label(-1, 1)
+            elif net[i] < 0:
+                verdict = line.crossing_label(1, -1)
+            else:
+                verdict = None
+            if verdict is not None:
+                label = verdict
+        if label is None:
+            return None
+
+        cross_pos = snap.get("last_crossing_pos") or snap.get("last_pos") or (0.0, 0.0)
+        cross_x = float(cross_pos[0])
+        cross_y = float(cross_pos[1])
+        now = time.time()
+        self._totals[label] = self._totals.get(label, 0) + 1
+        _hb = self._hourly.setdefault(time.localtime(now).tm_hour, {})
+        _hb[label] = _hb.get(label, 0) + 1
+        logger.info(
+            "count_event_on_death tid=%d label=%s net=%s",
+            snap["track_id"], label, net,
+        )
+        # Aplicar el mismo confidence gate que la rama de exit (altura no
+        # confiable si el bbox fue marginal a lo largo del track).
+        conf = snap.get("confidence")
+        if conf is not None and conf < self.HEIGHT_CONFIDENCE_GATE:
+            height_class = "unknown"
+            height_m = None
+            head_depth_m = None
+        else:
+            height_class = snap.get("height_class") or "unknown"
+            height_m = snap.get("height_m")
+            head_depth_m = snap.get("head_depth_m")
+        return CountEvent(
+            track_id=snap["track_id"],
+            direction=label,
+            timestamp=now,
+            position_x=cross_x,
+            position_y=cross_y,
+            height_class=height_class,
+            height_m=height_m,
+            head_depth_m=head_depth_m,
+            confidence=conf,
+        )
 
     def reset_daily(self) -> None:
         for k in self._totals:
             self._totals[k] = 0
         self._hourly.clear()
+        self._tracking_state.clear()
 
     # ------------------------------------------------------------- internal
+    def _decisive_kalman_cross(
+        self,
+        track: Track,
+        meta: dict,
+        cx: float,
+        cy: float,
+        line: Line,
+        new_side: int,
+    ) -> bool:
+        """¿Es decisivo un cruce extrapolado por Kalman (track PENDING) para
+        contarlo como real?
+
+        Rescata el caso "track caminando, detector la pierde en la zona crítica
+        de la línea, Kalman extrapola atravesándola". Filtra el "drift
+        estacionario" (track sin velocidad real que se desplaza poco por la
+        inercia residual del Kalman).
+
+        Decisivo si:
+        1. ``disappeared <= MAX_KALMAN_CROSS_FRAMES`` (track con detección
+           reciente — no es un track viejo que estuvo perdido mucho tiempo).
+        2. Desplazamiento desde la última posición REAL es ``>=
+           MIN_KALMAN_CROSS_DISPLACEMENT_PX`` en la dirección del cruce.
+        """
+        if int(getattr(track, "disappeared", 0) or 0) > self.MAX_KALMAN_CROSS_FRAMES:
+            return False
+        last_real = meta.get("last_track_pos")
+        if last_real is None:
+            return False
+        dx = cx - float(last_real[0])
+        dy = cy - float(last_real[1])
+        # Línea horizontal (from.y == to.y) → componente vertical del
+        # desplazamiento; vertical → componente horizontal. ``new_side``
+        # multiplica el delta así un cruce hacia +1 requiere delta>0 (debajo
+        # de horizontal, derecha de vertical), hacia -1 requiere delta<0.
+        is_horizontal = abs(line.from_xy[1] - line.to_xy[1]) < 0.5
+        if is_horizontal:
+            decisive = dy * new_side
+        else:
+            decisive = dx * new_side
+        return decisive >= self.MIN_KALMAN_CROSS_DISPLACEMENT_PX
+
     def _inside_roi(self, cx: float, cy: float) -> bool:
         if self._roi is None:
             return True
@@ -473,6 +629,17 @@ class Counter:
         meta = track.meta.setdefault(self.META_KEY, {})
         was_inside = bool(meta.get("inside", False))
         is_inside = self._inside_roi(cx, cy)
+
+        # ¿Esta posición viene de una detección REAL este frame, o es una
+        # predicción del Kalman (track PENDING sin match)? Solo registramos
+        # cruces de línea con detección real: un track perdido que el Kalman
+        # extrapola puede "cruzar" la línea por inercia y doble-contar. La
+        # extrapolación SÍ se usa para las transiciones entry/exit del ROI —
+        # así un track que cruzó (con detección real) y después se perdió
+        # igual SALE del ROI y emite el cruce ya registrado (no se pierde el
+        # conteo). El doble-conteo del drift se evita acá, no congelando el
+        # track en el tracker.
+        is_real = int(getattr(track, "disappeared", 0) or 0) == 0
 
         # Memoria de la última posición outside-ROI. La entry-fresca
         # abajo la usa para snapshotear sides[] desde la trayectoria de
@@ -527,9 +694,20 @@ class Counter:
             snap_x, snap_y = outside_pos if outside_pos is not None else (cx, cy)
             for i, line in enumerate(self._lines):
                 sides[i] = line.side_of(snap_x, snap_y)
+            logger.info(  # TRACKDBG [REVERT]
+                "TRACKDBG entry tid=%d pos=(%.0f,%.0f) snap=(%.0f,%.0f) sides=%s is_real=%s",
+                track.track_id, cx, cy, snap_x, snap_y, sides, is_real,
+            )
             return None
 
         if is_inside and was_inside:
+            # Frame de pura predicción (track PENDING, sin detección): NO
+            # evaluar cruces — registrar uno acá sería especulativo y
+            # doble-contaría el drift del Kalman. Preservamos sides/net/
+            # last_track_pos como están (anclados a la última detección real).
+            if not is_real:
+                return None
+
             # Debounce: si el track se movió menos que el threshold
             # configurado desde el último frame "real", skipear la
             # detección de cruce. Evita falsos cruces por jitter
@@ -570,6 +748,10 @@ class Counter:
                         # CountEvent (no la posición de salida, que está
                         # fuera del ROI por definición).
                         meta["last_crossing_pos"] = (cx, cy)
+                        logger.info(  # TRACKDBG [REVERT]
+                            "TRACKDBG cross tid=%d line=%d new_side=%+d net=%+d pos=(%.0f,%.0f) label=%s",
+                            track.track_id, i, new_side, net[i], cx, cy, label,
+                        )
                 sides[i] = new_side
             meta["last_track_pos"] = (cx, cy)
             return None
@@ -584,6 +766,13 @@ class Counter:
             # midpoint del segmento de exit — la posición real del
             # cruce cae entre los dos frames; el midpoint es la mejor
             # aproximación y suele caer dentro del ROI.
+            # Registrar el cruce de la transición de exit si:
+            #   - es una detección REAL, o
+            #   - es una extrapolación Kalman DECISIVA (track caminando que el
+            #     detector perdió en la zona crítica de la línea; ver
+            #     _decisive_kalman_cross). El drift estacionario (residual
+            #     velocity con decay) no pasa los guardrails y se descarta —
+            #     anti doble-conteo del parado-cruzar.
             last_inside = meta.get("last_track_pos")
             for i, line in enumerate(self._lines):
                 prev_side = sides[i]
@@ -594,6 +783,10 @@ class Counter:
                     and prev_side != new_side
                     and line.within_segment(cx, cy)
                 ):
+                    if not is_real and not self._decisive_kalman_cross(
+                        track, meta, cx, cy, line, new_side
+                    ):
+                        continue
                     cross_label = line.crossing_label(prev_side, new_side)
                     if cross_label is not None:
                         net[i] += 1 if new_side == 1 else -1
@@ -621,6 +814,10 @@ class Counter:
                 if verdict is not None:
                     label = verdict
             crossing_pos = meta.get("last_crossing_pos") or (cx, cy)
+            logger.info(  # TRACKDBG [REVERT]
+                "TRACKDBG exit tid=%d is_real=%s net=%s verdict=%s exit_pos=(%.0f,%.0f)",
+                track.track_id, is_real, net, label, cx, cy,
+            )
             # Resetear estado así el mismo track puede contar otro
             # ciclo completo más tarde. El invariante antiglitch
             # vale: contar de nuevo requiere re-entry desde afuera +

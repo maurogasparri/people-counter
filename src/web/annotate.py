@@ -54,15 +54,19 @@ _PENDING_DISPLAY_HYSTERESIS_FRAMES = 5
 # (persona sentándose, agachándose) sin transmitir el ruido per-frame.
 _HEIGHT_DISPLAY_MEDIAN_WINDOW = 10
 
-# Ventana de la mediana de width/height del bbox que se muestra. El
-# detector emite tamaños ligeramente distintos cada frame (ruido del
-# modelo + cabezas parcialmente visibles que cambian su área); sin
-# smoothing el rectángulo se ve "respirando" incluso con el sujeto
-# quieto. Mediana componente-a-componente sobre los últimos N samples
-# da un width/height estable. La POSICIÓN del centro se mantiene en el
-# sample más reciente para que el bbox siga snappy al sujeto cuando
-# camina (sin lag perceptible).
-_BBOX_DISPLAY_MEDIAN_WINDOW = 10
+# Tamaño FIJO (lado en px) de la caja que se dibuja en el preview, IGUAL para
+# todos los tracks. El detector emite tamaños distintos por frame y por sujeto
+# (el bbox "respira" y varía entre personas); para el preview eso distrae. Una
+# caja cuadrada constante centrada en el sujeto da una pantalla limpia y
+# uniforme — solo la POSICIÓN varía (sigue a cada track), no el tamaño. 80px en
+# el frame canónico 1152×648 es un marcador legible sin tapar la escena.
+_BBOX_DISPLAY_SIZE_PX = 80
+
+# Largo de la trayectoria (track trail): cantidad de posiciones recientes del
+# track que se dibujan como polilínea. ~30 puntos ≈ 1-2s de recorrido a
+# 15-25 fps — suficiente para ver de dónde viene la persona sin ensuciar el
+# frame.
+_TRAIL_LENGTH = 30
 
 
 def annotate_left(
@@ -132,46 +136,47 @@ def annotate_left(
         else:
             display_colour = base_colour
 
-        # Si el track tiene un bbox cacheado en la historia, lo
-        # dibujamos. Esto persiste el rectángulo visualmente durante
-        # PENDING (el detector pudo no haber emitido bbox este frame,
-        # pero el último bbox conocido sigue siendo razonable como
-        # visual hint) y a través de gaps cortos del detector.
-        #
-        # Smoothing: width/height del bbox como mediana de los últimos
-        # N samples (filtra el "respira" del detector), pero el centro
-        # del bbox se ancla en el sample más reciente para que la caja
-        # siga al sujeto sin lag perceptible cuando camina. Median sobre
-        # width/height da estabilidad de tamaño; latest sobre el centro
-        # da responsiveness a movimiento.
+        # Trayectoria del track: polilínea por las últimas N posiciones (el
+        # recorrido reciente de la persona). Se dibuja primero para que la
+        # caja/círculo/label queden por encima.
+        trail_pts = positions[-_TRAIL_LENGTH:]
+        if len(trail_pts) >= 2:
+            trail = np.array(
+                [[int(p[0]), int(p[1])] for p in trail_pts], dtype=np.int32
+            )
+            cv2.polylines(
+                out, [trail], isClosed=False, color=display_colour,
+                thickness=1, lineType=cv2.LINE_AA,
+            )
+
+        # Caja de tamaño FIJO centrada en la última detección. El detector
+        # emite tamaños ligeramente distintos cada frame (el bbox "respira")
+        # incluso con el sujeto quieto; para el preview eso distrae. La
+        # POSICIÓN sigue al sujeto (centro de la última detección, sin lag),
+        # pero el TAMAÑO es constante (_BBOX_DISPLAY_SIZE_PX) → rectángulo
+        # estable. Persiste durante PENDING usando el último bbox conocido.
         meta = getattr(track, "meta", None)
         history = meta.get("detection_history") if isinstance(meta, dict) else None
         bbox = None
         if history:
-            recent = history[-_BBOX_DISPLAY_MEDIAN_WINDOW:]
-            bbox_samples = [
-                rec.get("bbox") for rec in recent
-                if isinstance(rec.get("bbox"), (list, tuple))
-                and len(rec["bbox"]) == 4
-            ]
-            if bbox_samples:
-                widths = sorted(
-                    float(b[2]) - float(b[0]) for b in bbox_samples
-                )
-                heights = sorted(
-                    float(b[3]) - float(b[1]) for b in bbox_samples
-                )
-                n = len(bbox_samples)
-                median_w = widths[n // 2]
-                median_h = heights[n // 2]
-                latest = bbox_samples[-1]
+            latest = next(
+                (
+                    rec.get("bbox")
+                    for rec in reversed(history)
+                    if isinstance(rec.get("bbox"), (list, tuple))
+                    and len(rec["bbox"]) == 4
+                ),
+                None,
+            )
+            if latest is not None:
                 cx_bbox = (float(latest[0]) + float(latest[2])) / 2.0
                 cy_bbox = (float(latest[1]) + float(latest[3])) / 2.0
+                half = _BBOX_DISPLAY_SIZE_PX / 2.0
                 bbox = (
-                    cx_bbox - median_w / 2.0,
-                    cy_bbox - median_h / 2.0,
-                    cx_bbox + median_w / 2.0,
-                    cy_bbox + median_h / 2.0,
+                    cx_bbox - half,
+                    cy_bbox - half,
+                    cx_bbox + half,
+                    cy_bbox + half,
                 )
         # Determinar la posición de display del círculo (#NN label
         # + height label). Si hay un bbox cacheado, anclamos el

@@ -1792,11 +1792,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     if _scf_enabled
                     else set()
                 )
-                # Fantasmas congelados del keep-alive: PENDING que solo siguen
-                # vivos porque están dentro del ROI y excedieron el
+                # Fantasmas de larga ausencia del keep-alive: PENDING que solo
+                # siguen vivos porque están dentro del ROI y excedieron el
                 # pending_max_frames normal (re-id falló, son huérfanos). Se
-                # esconden del preview + del contador — no afectan el conteo
-                # (un track congelado no cruza ni sale del ROI solo).
+                # esconden del preview + del contador de "Tracks" — no afectan
+                # el conteo (un cruce solo se registra con detección real).
                 _pend_cap = tracker.pending_max_frames
                 phantom_ids = {
                     tid
@@ -1861,8 +1861,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         elif last_depth_panel is None:
                             last_depth_panel = depth_to_colormap(None)
                         # Esconder del preview el clutter estático (fuera del
-                        # ROI, sin moverse) y los fantasmas congelados del
-                        # keep-alive (PENDING huérfanos dentro del ROI).
+                        # ROI, sin moverse) y los fantasmas de larga ausencia
+                        # del keep-alive (PENDING huérfanos dentro del ROI).
                         viewer_tracks = (
                             {
                                 tid: t
