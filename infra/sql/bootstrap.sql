@@ -33,8 +33,10 @@ CREATE TABLE IF NOT EXISTS count_events (
     store_id        TEXT         NOT NULL,
     event_ts        TIMESTAMPTZ  NOT NULL,
     -- Bucket de 15min alineado al epoch — lo manda el device pre-calculado
-    -- desde analytics.bucket_seconds (default 900s). Mantener device-controlled
-    -- permite cambiar el bucket via shadow sin recomputar nada server-side.
+    -- vía `floor(ts / 900) * 900` (COUNTING_BUCKET_SECONDS, constante de
+    -- diseño coherente con el nombre de la columna). Columna regular (no
+    -- GENERATED) así rows viejos preservan su bucket original — históricos
+    -- correctos cross-migration.
     bucket_15min    TIMESTAMPTZ,
     -- Rollups server-side derivados del event_ts. STORED para que sean indexables
     -- y los queries de Grafana hourly/daily no recomputen date_trunc en cada fila.
@@ -259,9 +261,10 @@ GROUP BY bucket_15min, store_id;
 -- =============================================================================
 -- Counting agregado por bucket (15min device-aligned)
 -- =============================================================================
--- bucket_15min es device-controlled (alineado al multiplo del epoch segun
--- analytics.bucket_seconds). Cambiar el bucket via shadow no recomputa nada
--- server-side; rows viejos preservan su bucket original.
+-- bucket_15min es device-pre-calculado vía `floor(ts / 900) * 900`
+-- (COUNTING_BUCKET_SECONDS, constante de diseño coherente con el nombre de
+-- la columna — NO configurable). La columna RDS es regular (no GENERATED)
+-- así rows viejos preservan su bucket original.
 
 CREATE OR REPLACE VIEW counting_by_bucket AS
 SELECT

@@ -314,7 +314,7 @@ def _validate(config: dict[str, Any]) -> None:
         "counter": (),
         "wifi_ble": (
             "wifi_interface",
-            "probe_interval_seconds",
+            "summary_interval_seconds",
             "cross_protocol_window_seconds",
             "cross_protocol_rssi_delta",
         ),

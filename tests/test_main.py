@@ -320,7 +320,7 @@ def _make_pipeline_config(tmpdir: str) -> dict:
         "wifi_ble": {
             "enabled": False,
             "wifi_interface": "wlan0",
-            "probe_interval_seconds": 900,
+            "summary_interval_seconds": 900,
             "cross_protocol_window_seconds": 2,
             "cross_protocol_rssi_delta": 5,
         },

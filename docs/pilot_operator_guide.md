@@ -427,8 +427,8 @@ o hay obstrucción de ventilación.
 
 ### 4.4. WiFi/BLE probes
 
-El resumen se publica cada 15 min (`probe_interval_seconds: 900`). No vas a
-tener datos confirmables hasta los 15–30 min de la visita.
+El resumen se publica cada 15 min (`wifi_ble.summary_interval_seconds: 900`).
+No vas a tener datos confirmables hasta los 15–30 min de la visita.
 
 Mientras tanto, confirmar que la captura está activa:
 

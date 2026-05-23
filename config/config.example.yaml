@@ -51,28 +51,6 @@ device:
 
 
 # =============================================================================
-# ANALYTICS — unidad mínima de medición operativa
-# =============================================================================
-# bucket_seconds define cada cuánto se agrega counting + wifi/ble para reportes
-# (turn-in rate, conversion rate, hourly aggregates). El device pre-calcula
-# event_bucket / period_bucket alineados al epoch (floor(ts / bucket_seconds) *
-# bucket_seconds) y los manda en el payload MQTT. Postgres los guarda como
-# columnas regulares — no GENERATED — así cambiar el bucket via shadow no
-# requiere migration en el schema; los rows viejos preservan su bucket
-# original (históricamente correcto).
-#
-# El publisher wifi/ble usa este mismo valor como ventana de agregación
-# (override via wifi_ble.probe_interval_seconds si hace falta).
-#
-# Defaults razonables: 300 (5min), 900 (15min), 1800 (30min), 3600 (1h).
-# 900 es el sweet spot operativo para retail footfall — granularidad útil
-# para detectar tendencias intra-hora sin volumen excesivo de filas (~96
-# samples/día por device).
-analytics:
-  bucket_seconds: 900
-
-
-# =============================================================================
 # VISION — captura, rectificación, profundidad
 # =============================================================================
 vision:
@@ -415,9 +393,16 @@ wifi_ble:
   # No cambiar sin coordinar a lo largo de la flota (dividiría los buckets
   # de dedup).
   wifi_interface: wlan0             # CYW43455 onboard, modo monitor.
-  probe_interval_seconds: 900       # Ventana de agregación. Default 900s (15min);
-                                    # si no se setea, el publisher cae a
-                                    # analytics.bucket_seconds.
+  summary_interval_seconds: 900     # Cada cuánto el publisher emite el summary
+                                    # MQTT (passersby + shoppers post-stitching).
+                                    # Acotado a [30, 900]:
+                                    #  - mínimo 30s evita flood de MQTT msgs y
+                                    #    garantiza agregación estadística mínima.
+                                    #  - máximo 900s alineado con el bucket fijo
+                                    #    `bucket_15min` del schema RDS. Valores
+                                    #    >900 abrirían huecos en wifi_ble_summary.
+                                    # Valores fuera del rango se clampean con
+                                    # WARNING al startup.
   cross_protocol_window_seconds: 2  # Ventana de dedup WiFi+BLE same-device.
   cross_protocol_rssi_delta: 5      # |Delta RSSI| max para match cross-protocol.
 

@@ -1,8 +1,9 @@
 """Bridge entre DedupEngine y MQTT.
 
-Cada ``probe_interval_seconds`` (default 900s = 15 min) el publisher consulta
-los agregados de la ventana cerrada y publica un único payload reducido al
-topic ``wifi_ble``. Los hashes nunca salen del device — solo counts.
+Cada ``wifi_ble.summary_interval_seconds`` (default 900s = 15 min, acotado a
+[30, 900]) el publisher consulta los agregados de la ventana cerrada y publica
+un único payload reducido al topic ``wifi_ble``. Los hashes nunca salen del
+device — solo counts.
 
 Payload publicado:
 
@@ -162,7 +163,9 @@ class WifiBlePublisher:
             # múltiplo de _period (commit 8c797de), period_bucket == period_start.
             # Lo mandamos explícito así Postgres lo guarda directo en la columna
             # period_bucket (regular, no GENERATED) — facilita queries multi-bucket
-            # cuando los devices de la flota corren con bucket_seconds distintos.
+            # cuando los devices de la flota corren con summary_interval_seconds
+            # distintos (cada device contribuye N summaries dentro del mismo
+            # bucket_15min de RDS).
             self._mqtt.publish_event(
                 "wifi_ble",
                 {

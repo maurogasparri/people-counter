@@ -65,7 +65,7 @@ _COMPLETE_CONFIG: dict = {
     "wifi_ble": {
         "enabled": True,
         "wifi_interface": "wlan0",
-        "probe_interval_seconds": 900,
+        "summary_interval_seconds": 900,
         "cross_protocol_window_seconds": 2,
         "cross_protocol_rssi_delta": 5,
         "rssi_passerby_threshold": -75,

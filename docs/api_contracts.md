@@ -72,7 +72,7 @@ Todos los topics comparten el mismo envelope (construido por
 | `direction` | string | ✓ | `"in"` o `"out"` — qué dirección cruzó la línea |
 | `track_id` | int | recomendado | ID interno del tracker. Junto con `(device_id, event_ts, direction)` forma el UNIQUE constraint para idempotencia |
 | `event_time` | number | ✓ | epoch seconds del cruce real (no del publish). Si falta, fallback al `timestamp` del envelope |
-| `bucket_15min` | number | recomendado | epoch seconds alineado al múltiplo de `analytics.bucket_seconds` (default 900). El device pre-calcula para que el server no recompute |
+| `bucket_15min` | number | recomendado | epoch seconds alineado a múltiplos de 900 (15 min — constante de diseño del schema, no configurable). El device pre-calcula vía `floor(ts / 900) * 900` para que el server no recompute |
 | `height_class` | string | nullable | `"adult"` \| `"child"` \| `"unknown"` (clasificación server-side desde `height_m`). Power US-05 breakdown |
 | `height_m` | number | nullable | Altura cruda del sujeto. Usado para debug de drift del `mounting_height_m` del config |
 | `confidence` | number | nullable | Score del detector \[0, 1\]. Debug-only |

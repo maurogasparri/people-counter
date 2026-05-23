@@ -129,7 +129,7 @@ no necesiten `date_trunc`:
 
 | Columna | Tipo | Origen |
 |---|---|---|
-| `bucket_15min` | TIMESTAMPTZ | Device-aligned en count_events/wifi_ble (lo manda el device pre-calculado desde `analytics.bucket_seconds`). Server-derived GENERATED en pos_transactions (el POS no conoce el shadow). |
+| `bucket_15min` | TIMESTAMPTZ | Device-aligned en count_events/wifi_ble (lo manda el device pre-calculado vía `floor(ts / 900) * 900` — constante de diseño `COUNTING_BUCKET_SECONDS`, NO configurable, alineada con el nombre de la columna). Server-derived GENERATED en pos_transactions (el POS no conoce el bucket). |
 | `bucket_hour` | TIMESTAMPTZ | GENERATED ALWAYS AS STORED — `date_trunc('hour', event_ts)` en todas las tablas. |
 | `bucket_day` | DATE | GENERATED ALWAYS AS STORED — `date_trunc('day', event_ts)::date` en todas las tablas excepto telemetry (no aplica naturalmente a samples de 5min). |
 

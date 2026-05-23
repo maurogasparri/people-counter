@@ -50,7 +50,7 @@ Lambda; el `type` dentro del envelope discrimina la tabla destino.
 |---|---|---|
 | `store/{store_id}/counting`  | Tiempo real (por cruce de linea)        | `count_events`     |
 | `store/{store_id}/telemetry` | `telemetry.interval_seconds` (300s def) | `telemetry`        |
-| `store/{store_id}/wifi_ble`  | `wifi_ble.probe_interval_seconds` (15min def) | `wifi_ble_summary` |
+| `store/{store_id}/wifi_ble`  | `wifi_ble.summary_interval_seconds` (15min def, rango [30, 900]) | `wifi_ble_summary` |
 
 Shape del envelope (de `src.mqtt.client.MQTTClient.publish_event`):
 
@@ -133,7 +133,7 @@ defeatean el stitching (Apple H1+ con seqnum reset, BLE off, etc). Query:
 Views (todas en `bootstrap.sql`):
 
 - **`wifi_ble_store_traffic`** — agrega `wifi_ble_summary` por `(store_id, period_bucket)` con `MAX(passersby)` y `MAX(shoppers)`. Multi-cam dedup read-time: cuando un store tiene 2+ cams, las ventanas de WiFi/BLE solapan (~30-50m vs ~3-5m de vision), tomar el MAX usa la cam que mejor lo vio como estimador. Con 1 cam/store, MAX == el row de esa cam.
-- **`counting_by_bucket`** — `ins / outs / net` por `(store_id, event_bucket)`. `event_bucket` es la columna que el device alinea al multiplo de `analytics.bucket_seconds` (15min def) — cambiar el bucket via shadow no requiere recomputar nada.
+- **`counting_by_bucket`** — `ins / outs / net` por `(store_id, event_bucket)`. `event_bucket` es la columna que el device alinea a múltiplos de 900s (15min) — constante de diseño `COUNTING_BUCKET_SECONDS`, NO configurable. La columna RDS es regular (no GENERATED) así rows viejos preservan su bucket original.
 - **`turn_in_rate_by_bucket`** — `counting_by_bucket` ⨝ `wifi_ble_store_traffic` por bucket, calcula `turn_in_rate = ins / passersby` y `conversion_rate = ins / shoppers`. FULL OUTER JOIN preserva buckets donde solo una fuente reporto.
 - **`counting_hourly`** / **`turn_in_rate_hourly`** — rollups por hora encima de las dos anteriores. Para reportes diarios donde 15min es demasiado fino.
 - **`store_hourly_summary`** — counting + sales por hora por store. Conversion rate = ventas / personas. Util cuando `sales` empiece a tener datos via API Gateway.

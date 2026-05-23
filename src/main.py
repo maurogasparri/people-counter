@@ -77,6 +77,15 @@ TELEMETRY_WINDOW_SIZE = 100
 # CheckViolation y el counting no llega a RDS.
 _WIRE_DIRECTION = {"ingress": "in", "egress": "out"}
 
+# Bucket de agregación temporal de counting fijo por diseño del schema RDS:
+# la columna `bucket_15min` (count_events / wifi_ble_summary) en Postgres está
+# nombrada con la granularidad explícita — cambiar este valor rompería el
+# contrato con el schema, los dashboards de Grafana y las views analíticas
+# (`counting_by_bucket`, `turn_in_rate_by_bucket`, hourly rollups). El device
+# pre-calcula `bucket_15min = floor(ts / 900) * 900` en el payload y Postgres
+# lo guarda como columna regular — históricos preservados, NO recomputable.
+COUNTING_BUCKET_SECONDS = 900
+
 logger = logging.getLogger(__name__)
 
 
@@ -379,12 +388,23 @@ def build_wifi_ble(
             )
             ble_scanner = None
 
-    # Period del summary: probe_interval_seconds (per-device override) o
-    # analytics.bucket_seconds (fleet-wide default). Así la ventana del
-    # summary matchea por default con el bucket analítico usado en Postgres.
-    analytics_cfg = config.get("analytics", {}) or {}
-    default_bucket = float(analytics_cfg.get("bucket_seconds", 900))
-    period_seconds = float(wifi_cfg.get("probe_interval_seconds", default_bucket))
+    # Período del summary del WifiBlePublisher. Acotado a [30, 900]:
+    # - mínimo 30s evita MQTT flood (la dedup vía hash groups + el filtro
+    #   randomized_only ya garantizan que el publish carga datos
+    #   estadísticamente significativos en ~30s).
+    # - máximo 900s alineado con COUNTING_BUCKET_SECONDS = el bucket
+    #   analítico de la tabla. Cualquier valor mayor abriría "huecos" en
+    #   `wifi_ble_summary.bucket_15min` (faltarían summaries dentro de un
+    #   bucket de 15 min).
+    # Si el valor cae fuera de [30, 900], se loggea WARNING y se clampea.
+    raw_interval = float(wifi_cfg.get("summary_interval_seconds", 900))
+    period_seconds = max(30.0, min(raw_interval, float(COUNTING_BUCKET_SECONDS)))
+    if period_seconds != raw_interval:
+        logger.warning(
+            "wifi_ble_summary_interval_clamped",
+            extra={"raw": raw_interval, "clamped": period_seconds,
+                   "valid_range": [30, COUNTING_BUCKET_SECONDS]},
+        )
 
     publisher = WifiBlePublisher(
         mqtt_client=mqtt_client,
@@ -1716,15 +1736,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # --- Publicar eventos de conteo ---
             for event in events:
                 # bucket_15min: alineamos event_time al múltiplo de
-                # analytics.bucket_seconds (epoch). Lo calculamos en el
-                # device y lo mandamos en el payload así Postgres lo guarda
-                # como columna regular — cambiar bucket_seconds via shadow
-                # no requiere migration, y rows viejos preservan su bucket
+                # COUNTING_BUCKET_SECONDS (900s = 15min, fijo por diseño
+                # del schema). El device pre-calcula y manda la columna en
+                # el payload — Postgres la guarda como columna regular,
+                # NO GENERATED, así rows viejos preservan su bucket
                 # original (históricamente correcto).
-                bucket_secs = float(
-                    config.get("analytics", {}).get("bucket_seconds", 900)
+                bucket_15min = (
+                    int(event.timestamp / COUNTING_BUCKET_SECONDS)
+                    * COUNTING_BUCKET_SECONDS
                 )
-                bucket_15min = int(event.timestamp / bucket_secs) * bucket_secs
 
                 payload = {
                     # Label interno ('ingress'/'egress') -> direccion canonica
