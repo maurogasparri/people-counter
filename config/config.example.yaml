@@ -363,6 +363,41 @@ counter:
   # doble-conteo por jitter en el piloto.
   min_crossing_movement_px: 0.0
 
+  # Filtro anti-FP no-humanos por altura. Si la MEDIANA de head_height_mm
+  # del track durante la visita es < este threshold (m), el counter NO
+  # emite el conteo Y el preview no muestra el bbox (el pipeline va a
+  # rechazarlo). Tracks sin medición SGBM (mediana=None) NUNCA se filtran
+  # — preferimos preservar recall en casos donde la altura falla por
+  # motion blur / oclusiones. 0.0 = filtro desactivado (back-compat).
+  # 1.0 filtra perros + objetos < 1m sin perder niños de 4+ años;
+  # 0.7 más conservador. Caso real piloto 2026-05-24: perro caminando
+  # cruzaba la línea y disparaba IN; campera en silla con SGBM noise
+  # también. Ver docs/tracker_tuning.md patrón 5.
+  min_count_height_m: 0.0
+
+  # Mínimo de frames con detección REAL inside la counting zone antes de
+  # que el counter pueda emitir. Filtra tracks "fantasma" donde el detector
+  # dispara un solo frame al borde y el Kalman extrapola toda la "visita"
+  # hasta outside. Un humano real caminando a velocidad normal genera 3-5+
+  # frames inside; 1 solo frame es señal de flickering sobre clutter
+  # (campera, sombra, objeto fijo). 0 = filtro desactivado (back-compat).
+  # 2 filtra single-frame entries sin perder caminantes normales; 3 más
+  # estricto pero podría perder caminantes muy rápidos al borde del FOV.
+  # Caso piloto 2026-05-24 15:23 tid=67: 1 frame al borde y_min + 247 px
+  # de extrapolación Kalman → ingress espurio. Ver docs/tracker_tuning.md.
+  min_real_inside_frames: 0
+
+  # Umbral de median(confidence YOLO) del track para reportar demografía
+  # (height_class, height_m, head_depth_m) en el CountEvent. Tracks con
+  # confidence mediana < este threshold reportan height_class="unknown" y
+  # demás campos None — el bbox fue marginal y la altura derivada de SGBM
+  # no es confiable. **NO afecta el conteo** (dirección, cruce); solo la
+  # calidad del reporte demográfico. Default 0.5 separa pasadas normales
+  # (median 0.6-0.8) de degradadas por motion blur (0.3-0.45). Subir a 0.7
+  # en sites donde aparecen demografías espurias; bajar a 0.3 si el
+  # detector está bien calibrado y querés demografía de pasadas rápidas.
+  height_confidence_gate: 0.5
+
   # Death-emit-if-crossed — capa 3 del rescue cascade. Cuando un track
   # muere DENTRO de la counting zone con un cruce de línea registrado, el
   # counter emite un count diferido en vez de perderlo. Dos guards anti-FP:
@@ -657,6 +692,47 @@ height:
 
 # --- Tracker + state machine (tuning de algo, fleet-uniform tras piloto) ----
 tracking:
+  # Tracking zone: filtro pre-tracker por polígono ("modo estricto").
+  # Descarta detecciones cuyo centroide cae FUERA del polígono ANTES de
+  # cualquier procesamiento downstream (static_suppressor, tracker,
+  # counter). Reduce FPs estructurales en sites con clutter intenso
+  # (percheros en tiendas de ropa, mostradores, vidrieras con tráfico
+  # exterior visible) sin tocar la counting_zone semántica del counter.
+  # Análogo a la TrackingZone del incumbent FFC.
+  #
+  # IMPORTANTE: la tracking_zone debe ser MÁS AMPLIA que counter.counting_zone
+  # para preservar el lead-in del approach (capture de detecciones reales
+  # afuera de la counting_zone pero adentro de la tracking_zone, necesario
+  # para snap-ear last_outside_pos en la entry-fresca del rescue cascade).
+  #
+  # Default: enabled=false (back-compat, sites limpios). Activar en sites
+  # con clutter estructural visible en el frame.
+  #
+  # Tres formas mutuamente exclusivas (precedencia: polygon >
+  # frame_margin_px > auto_margin_px):
+  #   1. polygon: lista de [x, y] (N >= 3 vértices). Control fino, para
+  #      sites con geometría compleja (entrada diagonal, exclusión de una
+  #      vidriera específica). Tiene la máxima precedencia.
+  #   2. frame_margin_px: int, excluye N px desde cada borde del frame.
+  #      Predecible y simétrico (independiente del tamaño del counting_zone).
+  #      Recomendado para "modo conservador por precaución" — filtra
+  #      cualquier clutter periférico. Si el margen chocaría con el
+  #      counting_zone, se reduce automáticamente preservando un buffer
+  #      de lead-in de 30 px.
+  #   3. auto_margin_px: int, expande counting_zone por N px en cada lado.
+  #      Puede chocar con bordes del frame si counting_zone es grande
+  #      (resultado: polígono = frame entero, sin efecto). Útil en sites
+  #      con counting_zone chico y centrado.
+  tracking_zone:
+    enabled: false
+    frame_margin_px: 100
+    # auto_margin_px: 250    # alternativa #3
+    # polygon:               # alternativa #1
+    #   - [100, 80]
+    #   - [1100, 80]
+    #   - [1100, 580]
+    #   - [100, 580]
+
   # Filtro de clutter estático: tracks fantasma de FPs del detector sobre
   # estructura fija (sombra/borde/piso). Un track FUERA de la counting zone que no se
   # movió en toda su vida = clutter (la gente se mueve; el clutter no). Se

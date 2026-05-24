@@ -215,6 +215,15 @@ def test_pending_timeout_becomes_lost_and_new_id_issued():
     assert len(new_ids) == 1
 
 
+def _mark_counter_entry_completed(track):
+    """Simula el counter habiendo disparado una entry-fresca real. El
+    tracker chequea ``meta.counter.inside`` antes de aplicar keepalive
+    (gate del 2026-05-24): tracks que solo entraron via Kalman no
+    califican. Precondición de todos los tests de keepalive que no
+    pasan por el counter real."""
+    track.meta["counter"] = {"inside": True}
+
+
 def test_keepalive_counting_zone_keeps_pending_alive_inside():
     """Un track PENDING cuya posición cae dentro del keepalive_counting_zone NO muere
     por timeout, ni siquiera pasados pending_max_frames y max_disappeared.
@@ -232,6 +241,7 @@ def test_keepalive_counting_zone_keeps_pending_alive_inside():
     tracker.update([np.array([100, 200, 3000])])
     tid = list(tracker.tracks.keys())[0]
     assert tracker.tracks[tid].state == CONFIRMED
+    _mark_counter_entry_completed(tracker.tracks[tid])
 
     # Muchísimos misses, mucho más que ambos caps de timeout.
     for _ in range(50):
@@ -257,6 +267,7 @@ def test_keepalive_counting_zone_recovers_to_confirmed_after_long_gap():
     tracker.update([np.array([100, 200, 3000])])
     tracker.update([np.array([100, 200, 3000])])
     tid = list(tracker.tracks.keys())[0]
+    _mark_counter_entry_completed(tracker.tracks[tid])
     for _ in range(30):
         tracker.update([])
     assert tracker.tracks[tid].state == PENDING
@@ -285,6 +296,7 @@ def test_keepalive_counting_zone_extrapolates_does_not_freeze():
     tracker.update([np.array([100, 210, 3000])])
     tid = list(tracker.tracks.keys())[0]
     assert tracker.tracks[tid].state == CONFIRMED
+    _mark_counter_entry_completed(tracker.tracks[tid])
 
     y_start = float(tracker.tracks[tid].positions[-1][1])
     for _ in range(10):
@@ -312,9 +324,43 @@ def test_keepalive_counting_zone_capped_orphan_dies():
     tracker.update([np.array([100, 200, 3000])])
     tracker.update([np.array([100, 200, 3000])])
     tid = list(tracker.tracks.keys())[0]
+    _mark_counter_entry_completed(tracker.tracks[tid])
     # Misses por encima del cap del keep-alive.
     for _ in range(8):  # > keepalive_max_frames=5
         tracker.update([])
+    assert tid not in tracker.tracks
+
+
+def test_keepalive_counting_zone_does_not_protect_kalman_only_entry():
+    """Opción E (2026-05-24): un track que ENTRA al counting_zone solo via
+    extrapolación Kalman (nunca completa una entry-fresca real) NO califica
+    para keepalive. Muere normal por timeout pese a estar dentro.
+
+    Modela el caso del piloto donde la campera flickeando generaba detecciones
+    intermitentes que el counter rechazaba con ``entry_kalman_skipped``;
+    sin este gate, el track persistía indefinidamente por keepalive + ghost
+    adoption, generando ruido visual constante.
+    """
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=3,
+        max_disappeared=5,
+        keepalive_counting_zone=(50.0, 200.0, 150.0, 300.0),
+    )
+    tracker.update([np.array([100, 200, 3000])])
+    tracker.update([np.array([100, 200, 3000])])
+    tid = list(tracker.tracks.keys())[0]
+    assert tracker.tracks[tid].state == CONFIRMED
+    # NO seteamos meta.counter.inside — simula track que el counter aún no
+    # confirmó (solo entry_kalman_skipped repetidos, sin entry-fresca real).
+
+    # Misses suficientes para timeout normal.
+    for _ in range(10):
+        tracker.update([])
+
+    # El track debe haber muerto pese a estar dentro del keepalive zone —
+    # nunca calificó porque meta.counter.inside es False/ausente.
     assert tid not in tracker.tracks
 
 

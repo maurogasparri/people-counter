@@ -40,7 +40,11 @@ from src.mqtt.client import MQTTClient
 from src.status.led import StatusLED
 from src.status.monitor import HealthMonitor, HealthSignals
 from src.telemetry import collect_telemetry
-from src.tracking.counter import Counter, build_counter
+from src.tracking.counter import (
+    Counter,
+    _aggregate_height_m_from_track,
+    build_counter,
+)
 from src.tracking.tracker import EuclideanTracker, stationary_track_ids
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
@@ -836,6 +840,51 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     else:
         static_suppressor = None
 
+    # Tracking zone: filtro pre-tracker por polígono ("modo estricto").
+    # Descarta detecciones cuyo centroide cae fuera del polígono ANTES del
+    # tracker. Reduce FPs estructurales en sites con clutter intenso
+    # (percheros, mostradores, vidrieras con tráfico exterior) sin tocar
+    # la counting_zone del counter. Opt-in per-site (default desactivado
+    # para back-compat). Análogo a la TrackingZone del incumbent FFC.
+    # Ver src/vision/pre_filter.py + docs/tracker_tuning.md patrón 6.
+    #
+    # Tres modos de definición del polígono, mutuamente exclusivos
+    # (precedencia: polygon > frame_margin_px > auto_margin_px):
+    #   1. polygon: lista [[x,y], ...] manual (control fino).
+    #   2. frame_margin_px: int, excluye N px desde cada borde del frame
+    #      (predecible, simétrico).
+    #   3. auto_margin_px: int, expande counting_zone por N px.
+    tracking_zone_cfg = (config.get("tracking", {}) or {}).get(
+        "tracking_zone", {}
+    ) or {}
+    tracking_zone_enabled = bool(tracking_zone_cfg.get("enabled", False))
+    tracking_zone_polygon_cfg = tracking_zone_cfg.get("polygon")
+    tracking_zone_frame_margin = tracking_zone_cfg.get("frame_margin_px")
+    tracking_zone_auto_margin = tracking_zone_cfg.get("auto_margin_px")
+    # ``tracking_zone_polygon`` se resuelve en runtime: polygon explícito
+    # se construye en startup; frame_margin_px y auto_margin_px se
+    # derivan lazy junto con el counter (dependen de frame_size y/o
+    # counting_zone).
+    tracking_zone_polygon: list[tuple[float, float]] | None = None
+    if tracking_zone_enabled and tracking_zone_polygon_cfg is not None:
+        try:
+            tracking_zone_polygon = [
+                (float(p[0]), float(p[1])) for p in tracking_zone_polygon_cfg
+            ]
+            if len(tracking_zone_polygon) < 3:
+                logger.warning(
+                    "tracking_zone.polygon needs >= 3 vertices, got %d — disabling",
+                    len(tracking_zone_polygon),
+                )
+                tracking_zone_polygon = None
+                tracking_zone_enabled = False
+        except (TypeError, ValueError, IndexError) as exc:
+            logger.warning(
+                "tracking_zone.polygon malformed: %s — disabling", exc
+            )
+            tracking_zone_polygon = None
+            tracking_zone_enabled = False
+
     # Counter construido lazy una vez que se conoce la altura del frame
     # del primer par capturado.
     counter: Counter | None = None
@@ -1367,6 +1416,45 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     type(counter).__name__,
                     counter.counting_zone,
                 )
+                # Derivar el polígono de la tracking_zone desde frame_margin_px
+                # o auto_margin_px, ahora que el frame_size + counter están
+                # disponibles. Solo si no había polygon explícito construido
+                # en startup. frame_margin_px tiene precedencia sobre
+                # auto_margin_px si ambos están seteados.
+                if (
+                    tracking_zone_enabled
+                    and tracking_zone_polygon is None
+                    and counter.counting_zone is not None
+                ):
+                    frame_h, frame_w = rect_l.shape[:2]
+                    if tracking_zone_frame_margin is not None:
+                        from src.vision.pre_filter import (
+                            derive_polygon_from_frame_margin,
+                        )
+                        tracking_zone_polygon = derive_polygon_from_frame_margin(
+                            frame_size=(frame_w, frame_h),
+                            frame_margin_px=float(tracking_zone_frame_margin),
+                            counting_zone=counter.counting_zone,
+                        )
+                        logger.info(
+                            "tracking_zone_polygon_from_frame_margin margin=%dpx vertices=%s",
+                            int(tracking_zone_frame_margin),
+                            tracking_zone_polygon,
+                        )
+                    elif tracking_zone_auto_margin is not None:
+                        from src.vision.pre_filter import (
+                            derive_polygon_from_counting_zone,
+                        )
+                        tracking_zone_polygon = derive_polygon_from_counting_zone(
+                            counter.counting_zone,
+                            float(tracking_zone_auto_margin),
+                            frame_size=(frame_w, frame_h),
+                        )
+                        logger.info(
+                            "tracking_zone_polygon_from_auto_margin margin=%dpx vertices=%s",
+                            int(tracking_zone_auto_margin),
+                            tracking_zone_polygon,
+                        )
 
             # --- Setear focal length + baseline desde la calibración ---
             if focal_length_px is None and calibration is not None:
@@ -1448,6 +1536,20 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 health_signals.detect_ok = False
                 time.sleep(0.1)
                 continue
+
+            # Tracking zone (filtro pre-tracker, "modo estricto"). Descarta
+            # detecciones fuera del polígono ANTES de cualquier procesamiento
+            # downstream. Default off; en sites con clutter estructural
+            # intenso (percheros en tiendas de ropa, mostradores, vidrieras
+            # con tráfico exterior visible) reduce significativamente FPs
+            # sin afectar el rescue cascade del counter (la tracking_zone
+            # es más amplia que la counting_zone — el lead-in del approach
+            # se preserva por construcción).
+            if tracking_zone_enabled and tracking_zone_polygon is not None:
+                from src.vision.pre_filter import filter_detections_by_polygon
+                all_detections = filter_detections_by_polygon(
+                    all_detections, tracking_zone_polygon
+                )
 
             # Static FP suppressor: cualquier celda hot acumulada en los
             # últimos ~3s se descarta acá, antes del split en buckets.
@@ -1834,7 +1936,22 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     if getattr(t, "state", None) == "pending"
                     and int(getattr(t, "disappeared", 0) or 0) > _pend_cap
                 }
-                hidden_ids = clutter_ids | phantom_ids
+                # Tracks no-humanos por altura: el counter rechaza el emit
+                # de estos (`min_count_height_m` guard) — el preview debe
+                # reflejar lo que el pipeline va a procesar. Ocultar tracks
+                # cuya MEDIANA de head_height_mm está debajo del threshold.
+                # None = altura desconocida → no ocultar (recall sobre precisión,
+                # mismo criterio que el guard del counter).
+                _min_count_h = (
+                    counter.min_count_height_m if counter is not None else 0.0
+                )
+                short_height_ids: set[int] = set()
+                if _min_count_h > 0:
+                    for tid, t in tracks.items():
+                        h_m = _aggregate_height_m_from_track(t)
+                        if h_m is not None and h_m < _min_count_h:
+                            short_height_ids.add(tid)
+                hidden_ids = clutter_ids | phantom_ids | short_height_ids
                 confirmed_or_pending = sum(
                     1
                     for tid, t in tracks.items()
@@ -1911,7 +2028,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             if hidden_ids
                             else tracks
                         )
-                        left_annot = annotate_left(rect_l, viewer_tracks, counter)
+                        left_annot = annotate_left(
+                            rect_l, viewer_tracks, counter,
+                            tracking_zone_polygon=(
+                                tracking_zone_polygon
+                                if tracking_zone_enabled
+                                else None
+                            ),
+                        )
                         composite = compose_3panel(
                             left_annot,
                             rect_r,

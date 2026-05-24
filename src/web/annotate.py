@@ -73,6 +73,7 @@ def annotate_left(
     frame: np.ndarray,
     tracks: dict,
     counter: Optional[Any],
+    tracking_zone_polygon: Optional[list[tuple[float, float]]] = None,
 ) -> np.ndarray:
     """Dibuja la counting zone, línea y tracks sobre una copia de ``frame``.
 
@@ -93,8 +94,18 @@ def annotate_left(
             filtrado de clutter por el caller).
         counter: instancia del Counter (se lee para el overlay de geometría
             counting zone + línea). Puede ser None.
+        tracking_zone_polygon: si se provee, la zona FUERA de este polígono
+            se rendere blureada. Da feedback visual al operador de qué
+            área del frame está siendo procesada por el pipeline (el resto
+            es ignorado por el ``tracking_zone`` del tracker). None = sin
+            blur (back-compat, sites sin tracking_zone activo).
     """
     out = frame.copy()
+
+    # Blur de la zona fuera del tracking_zone polygon ANTES de la geometría +
+    # los tracks, así el overlay y los bboxes quedan crisp encima.
+    if tracking_zone_polygon is not None and len(tracking_zone_polygon) >= 3:
+        out = _blur_outside_polygon(out, tracking_zone_polygon)
 
     # Geometría primero así los tracks quedan arriba.
     _draw_counter_geometry(out, counter)
@@ -301,6 +312,44 @@ def compose_3panel(
             _panel(depth, target_height),
         ]
     )
+
+
+# Kernel del blur del tracking_zone overlay. 31×31 con sigma auto da un blur
+# fuerte pero no opaco (todavía se distingue la silueta de objetos para
+# que el operador pueda ubicar visualmente qué quedó afuera del polígono).
+# Costo ~5-10ms en 1152×648 — solo se aplica cuando hay subscribers del
+# preview, no impacta el hot path del counter.
+_TRACKING_ZONE_BLUR_KERNEL = (31, 31)
+# Oscurecimiento adicional de la zona blureada — multiplicador BGR. 0.55
+# ≈ 45% más oscuro, refuerza visualmente que es "zona ignorada" sin
+# llegar a negro absoluto (que tapa toda referencia de contexto).
+_TRACKING_ZONE_DARKEN_FACTOR = 0.55
+
+
+def _blur_outside_polygon(
+    frame: np.ndarray,
+    polygon: list[tuple[float, float]],
+) -> np.ndarray:
+    """Devuelve ``frame`` con la zona FUERA del polígono blureada y
+    oscurecida. La zona adentro queda intacta. Sirve para feedback visual
+    del ``tracking_zone`` — el operador ve exactamente qué área del frame
+    está siendo procesada por el pipeline.
+
+    Implementación: máscara binaria del polígono → blur+darken al frame
+    entero → composición ``np.where(mask, original, blurred)``.
+    """
+    h, w = frame.shape[:2]
+    contour = np.array(polygon, dtype=np.int32).reshape(-1, 1, 2)
+    # Máscara: 255 dentro del polígono, 0 afuera.
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [contour], 255)
+    # Blur + darken aplicado al frame entero (la composición selecciona
+    # qué pixels son los blureados).
+    blurred = cv2.GaussianBlur(frame, _TRACKING_ZONE_BLUR_KERNEL, 0)
+    blurred = cv2.convertScaleAbs(blurred, alpha=_TRACKING_ZONE_DARKEN_FACTOR, beta=0)
+    # Composición: donde mask=255 va el original, donde mask=0 va el blureado.
+    mask_3 = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    return np.where(mask_3 == 255, frame, blurred)
 
 
 # ----------------------------------------------------------------- internals

@@ -176,6 +176,129 @@ tracking:
     keepalive_max_frames: 300              # de 600 (~24 s) → ~12 s
 ```
 
+### 5. FP no-humano cuenta (perro, carrito, objeto sobre silla)
+
+**Lectura**: el detector YOLO está disparando sobre algo que no es persona —
+perro caminando, carrito alto, mochila/campera sobre una silla. Si el objeto
+cruza la línea (perro caminando), el counter dispara un IN/OUT espurio.
+
+**Síntoma diagnóstico**: counts en horarios sin clientes, o counts
+inconsistentes con la observación humana del operador. Buscar en logs:
+
+```bash
+# Eventos de conteo con height_class=child o altura muy baja
+sudo journalctl -u people-counter --since "1 hour ago" \
+    | grep "count_event" | grep -E '"height_class": "child"'
+```
+
+Si la mayoría de los counts del día son "child" con altura < 1 m → casi
+seguro son FPs no-humanos.
+
+**Fix**:
+
+```yaml
+counter:
+  min_count_height_m: 1.0   # de 0 → activa el filtro
+```
+
+Con 1.0, el counter rechaza emit cuando la mediana de altura del track es
+< 1 m AND la medición existe. Tracks con altura desconocida (SGBM falló por
+motion blur / oclusión) PASAN — preferimos recall sobre precisión en
+ambigüedad. El preview también oculta tracks debajo del threshold (refleja
+lo que el pipeline procesa).
+
+**Trade-off**: niños muy chicos (< 4 años, altura ~0.95 m) no se cuentan.
+En retail típico estos vienen con padre (que sí se cuenta), así que el
+trade-off es aceptable.
+
+**Knobs alternativos**:
+- `0.7` más conservador (filtra solo perros < 70 cm).
+- `1.2` filtra hasta niños de ~6 años (riesgo de perder counts legítimos).
+
+Confirmar en logs que el filtro está agarrando lo esperado:
+
+```bash
+sudo journalctl -u people-counter --since "10 min ago" \
+    | grep -E "short_height_skipped"
+```
+
+### 6. Clutter estructural intenso (tiendas de ropa, sites con perchero/mostrador)
+
+**Lectura**: el frame tiene zonas con detecciones espurias persistentes —
+percheros con ropa que la gente mueve, mostradores con maniquíes, vidrieras
+con tráfico exterior visible. Los guards anti-FP downstream (height,
+real_inside_frames) atrapan algo pero el preview sigue ruidoso y el costo
+Hungarian del tracker se infla con tracks que no van a contar nunca.
+
+**Fix arquitectural**: activar el filtro pre-tracker por polígono. Descarta
+detecciones fuera de la "tracking_zone" (más amplia que el counting_zone,
+con margen de approach) ANTES de que entren al tracker.
+
+**Tres modos de definición** (mutuamente exclusivos, evaluados en este
+orden de precedencia: `polygon > frame_margin_px > auto_margin_px`):
+
+**Modo recomendado: `frame_margin_px`** (predecible, simétrico):
+
+```yaml
+tracking:
+  tracking_zone:
+    enabled: true
+    frame_margin_px: 100   # excluye 100 px desde cada borde del frame
+```
+
+Funciona independientemente del tamaño del counting_zone. Si el margen
+chocaría con el counting_zone, se reduce automáticamente preservando un
+buffer de lead-in de 30 px. Recomendado para "modo conservador por
+precaución" — filtra cualquier clutter periférico (perchero, mostrador
+lateral, banner publicitario arriba, vidriera) en un solo knob.
+
+**Modo `auto_margin_px`** (expand desde counting_zone):
+
+```yaml
+tracking:
+  tracking_zone:
+    enabled: true
+    auto_margin_px: 250    # ~1 m de lead-in del approach
+```
+
+Útil cuando el counting_zone es chico y centrado. **Caveat**: si el
+counting_zone es grande relativo al frame, el margen choca con los bordes
+y el polígono resultante es el frame entero (sin efecto). En ese caso
+usar `frame_margin_px`.
+
+**Modo `polygon` manual** (geometría arbitraria, control fino):
+
+```yaml
+tracking:
+  tracking_zone:
+    enabled: true
+    polygon:
+      - [200, 80]    # esquina superior izquierda
+      - [1050, 80]
+      - [1050, 580]
+      - [200, 580]   # esquina inferior izquierda
+```
+
+Para sites con geometría compleja (entrada diagonal, exclusión específica
+de una vidriera). Tiene la máxima precedencia.
+
+**Verificar en logs que se aplicó:**
+
+```bash
+sudo journalctl -u people-counter --since "1 min ago" \
+    | grep -E "tracking_zone_polygon"
+```
+
+Buscás uno de estos:
+- `tracking_zone_polygon_from_frame_margin margin=Xpx ...`
+- `tracking_zone_polygon_from_auto_margin margin=Xpx ...`
+- (polygon manual no loguea — verificar config)
+
+**Trade-off**: si el polígono resultante apenas alcanza el counting_zone,
+una persona caminando rápido que aparezca directamente en el counting_zone
+sin frame previo en la tracking_zone podría no tener `last_outside_pos`
+válido. Subir el margen (más amplio = más lead-in).
+
 ### 4. ID swaps en cruces densos
 
 **Lectura**: dos personas adyacentes con tracks que se intercambian IDs
@@ -225,6 +348,12 @@ tracking:
 | `adoption_max_dist_px` | 100 | `tracking.state_machine` | low FPS site | nunca |
 | `ghost_outside_invalidate_px` | 150 | `tracking.state_machine` | rara vez | rara vez |
 | `min_visit_range_for_death_emit` | 80 | `counter` | counts fantasma | crossers perdidos |
+| `min_count_height_m` | 0.0 (off) | `counter` | FPs no-humanos cuentan | filtra niños chicos legítimos |
+| `min_real_inside_frames` | 0 (off) | `counter` | FPs single-frame al borde del counting zone | caminantes muy rápidos (<150 ms inside) se pierden |
+| `tracking_zone.enabled` | false (off) | `tracking` | clutter estructural genera tracks ruidosos | counting_zone + margen pequeños podrían perder approach |
+| `tracking_zone.frame_margin_px` | 100 | `tracking` | filtrar más clutter periférico (subir) | menor margen es más permisivo (bajar si pierde approach) |
+| `tracking_zone.auto_margin_px` | 250 | `tracking` | filtrar más agresivo (mayor margen pierde más) | menor margen pierde más approach lead-in |
+| `height_confidence_gate` | 0.5 | `counter` | demografía espuria en eventos | demografía de pasadas rápidas se reporta unknown |
 | `keepalive_max_frames` | 600 | `tracking.state_machine` | rara vez | counts fantasma |
 | `ambiguous_match_ratio` | 0.8 | `tracking.state_machine` | rara vez | ID swaps |
 

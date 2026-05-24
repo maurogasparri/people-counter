@@ -1100,10 +1100,31 @@ class EuclideanTracker:
         )
 
     def _inside_keepalive_counting_zone(self, track: Track) -> bool:
-        """True si la última posición del track cae dentro de la counting zone de
-        keep-alive. Sin counting zone configurado, siempre False (sin keep-alive)."""
+        """True si el track califica para keep-alive dentro de la counting zone.
+
+        Dos condiciones combinadas:
+
+        1. **Posición**: la última posición del track cae dentro del rectángulo
+           ``keepalive_counting_zone``. Sin counting zone configurada, False.
+
+        2. **Visita real completada**: el counter ya disparó una entry-fresca
+           con detección real (``meta.counter.inside`` es True). Sin esto,
+           tracks que SOLO entraron via Kalman (``entry_kalman_skipped`` log)
+           NO califican — el detector flickea sobre clutter estructural
+           generando inputs ruidosos, no merecen el rescue de keepalive.
+           Caso piloto 2026-05-24: campera flickeando en silla, tid=9
+           reaparecía cada 2-30s con detecciones reales aisladas pero nunca
+           completaba una visita real. Sin este gate, el track persistía
+           indefinidamente vía keepalive + ghost adoption.
+
+        El acoplamiento con el counter es por convención de key del meta
+        (``counter`` + ``inside``), no por import — evita dependencia circular.
+        """
         zone = self.keepalive_counting_zone
         if zone is None or not track.positions:
+            return False
+        counter_meta = track.meta.get("counter") or {}
+        if not bool(counter_meta.get("inside", False)):
             return False
         x_min, x_max, y_min, y_max = zone
         last = track.positions[-1]

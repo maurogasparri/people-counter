@@ -218,6 +218,34 @@ _HTML = """<!DOCTYPE html>
       setTimeout(()=>{ img.src='/stream?t='+Date.now(); }, 80);
     }
     setInterval(maybeReloadStream,500);
+
+    // Health probe dedicado para detectar caídas del server rápido (ej.
+    // restart del systemd unit). Sin esto, el cliente quedaba esperando
+    // al tick(1s) de /stats que podía tardar más en disparar el catch
+    // (un fetch que se "cuelga" mid-restart). Poll cada 3s con timeout
+    // de 2s vía AbortController garantiza detección y reconnect en <5s.
+    let _healthFails=0;
+    const HEALTH_TIMEOUT_MS=2000;
+    async function healthPoll(){
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),HEALTH_TIMEOUT_MS);
+      try{
+        const r=await fetch('/health?t='+Date.now(),
+          {cache:'no-store',signal:ctrl.signal});
+        if(!r.ok)throw new Error('non-200');
+        if(_healthFails>0){
+          // Server volvió después de fallar — recargar stream MJPEG.
+          markStreamBroken();
+        }
+        _healthFails=0;
+      }catch(e){_healthFails++;}
+      finally{clearTimeout(tid);}
+    }
+    setInterval(healthPoll,3000);
+    // Backup: si el browser detecta el error del <img> (algunos sí lo
+    // disparan en stream caído), forzar reload sin esperar al poll.
+    $('stream').addEventListener('error',markStreamBroken);
+
     let _statsOk=true;
     async function tick(){
       try{
@@ -526,6 +554,23 @@ def _build_handler(viewer: WebViewer):
                 return
             if path == "/stream":
                 self._stream_mjpeg()
+                return
+            if path == "/health":
+                # Health probe ultra-liviano. El JS del viewer lo poll-ea
+                # cada N segundos para detectar caídas del server (restart
+                # del service, network blip) y reconectar el stream MJPEG
+                # automáticamente. Sin esto el browser queda con un frame
+                # congelado hasta que el operador refresque manualmente.
+                body = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
                 return
             self.send_error(404)
 

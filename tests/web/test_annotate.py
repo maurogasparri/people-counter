@@ -114,6 +114,44 @@ def test_annotate_left_draws_counting_zone_and_tracks():
     assert out.any()
 
 
+def test_annotate_left_blurs_outside_tracking_zone_polygon():
+    """Cuando se pasa tracking_zone_polygon, los pixels FUERA del polígono
+    quedan blureados+oscurecidos; los de ADENTRO conservan el valor original.
+    Feedback visual del 'modo estricto' al operador."""
+    # Frame con valores distintos dentro y fuera del polígono para
+    # detectar la composición.
+    frame = np.full((300, 400, 3), 200, dtype=np.uint8)
+    frame[100:200, 100:300] = 50  # rectángulo interior con valor distinto
+    # Polígono que cubre exactamente el rectángulo interior.
+    polygon = [(100.0, 100.0), (300.0, 100.0), (300.0, 200.0), (100.0, 200.0)]
+    out = annotate_left(frame, {}, None, tracking_zone_polygon=polygon)
+    # Pixel ADENTRO del polígono: conserva el valor original (50).
+    assert int(out[150, 200, 0]) == 50
+    # Pixel FUERA: blureado+oscurecido (< 200 original; el darken al
+    # 55% lleva 200 → ~110, el blur lo deja cerca pero no exacto).
+    outside_val = int(out[50, 50, 0])
+    assert outside_val < 200, "pixel fuera del polígono debe estar oscurecido"
+    assert outside_val < 150, "darken factor 0.55 debe dejarlo bien debajo del original"
+
+
+def test_annotate_left_no_blur_when_polygon_is_none():
+    """Default sin tracking_zone_polygon = no blur (back-compat)."""
+    frame = np.full((300, 400, 3), 200, dtype=np.uint8)
+    out = annotate_left(frame, {}, None)  # tracking_zone_polygon default None
+    # Sin blur, todos los pixels conservan el valor original.
+    assert int(out[50, 50, 0]) == 200
+    assert int(out[150, 200, 0]) == 200
+
+
+def test_annotate_left_skips_blur_with_malformed_polygon():
+    """Polígono con menos de 3 vértices = no-op safety (no rompe el preview)."""
+    frame = np.full((300, 400, 3), 200, dtype=np.uint8)
+    # 2 vértices: malformado.
+    out = annotate_left(frame, {}, None, tracking_zone_polygon=[(0, 0), (100, 0)])
+    # Sin blur aplicado, valor original preservado.
+    assert int(out[50, 50, 0]) == 200
+
+
 def test_annotate_left_with_no_counting_zone_counter():
     """Counter without counting zone should still draw the line + arrow."""
     frame = np.zeros((300, 400, 3), dtype=np.uint8)

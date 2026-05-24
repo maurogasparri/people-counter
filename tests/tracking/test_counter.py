@@ -1658,6 +1658,323 @@ def test_multi_line_each_line_tracks_independent_net():
     assert counter.total_out == 0
 
 
+def _set_track_height_history(track, head_height_mm_values):
+    """Setea el detection_history del track con head_height_mm que el
+    classifier downstream usa para la mediana. Helper para tests del
+    guard ``min_count_height_m``."""
+    track.meta["detection_history"] = [
+        {"head_height_mm": v, "height_class": "unknown"}
+        for v in head_height_mm_values
+    ]
+
+
+def test_min_count_height_blocks_emit_for_short_track():
+    """Track con mediana de head_height_mm bajo el threshold no debe emitir
+    al exit observado. Caso real: perro caminando cruza la línea — altura
+    medida ~0.5m con detector disparando — counter rechaza emit."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_count_height_m=1.0,
+    )
+    track = _make_track(1, [[300, 150, 3000]])  # outside arriba
+    counter.check_all({1: track})
+    _set_track_height_history(track, [500.0, 520.0, 510.0, 490.0])  # ~0.5m
+    _advance(counter, track, [300, 250, 3000])   # entry inside
+    _advance(counter, track, [300, 350, 3000])   # cross net=+1
+    ev = _advance(counter, track, [300, 450, 3000])  # real exit
+    assert ev is None, "track con altura <1m no debe contar"
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_min_count_height_passes_when_height_unknown():
+    """Track sin medición de altura (head_height_mm = None en todas las
+    detecciones) PASA el guard — preservamos recall en casos donde SGBM
+    falla (motion blur, oclusiones)."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_count_height_m=1.0,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    # detection_history vacío o sin head_height_mm → mediana = None.
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is not None, "altura None no debe filtrar (recall sobre precisión)"
+    assert counter.total_in == 1
+
+
+def test_min_count_height_passes_when_track_is_tall_enough():
+    """Track con altura >= threshold (humano normal) no se filtra."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_count_height_m=1.0,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    _set_track_height_history(track, [1650.0, 1680.0, 1700.0, 1690.0])  # ~1.68m
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+
+
+def test_min_count_height_blocks_death_emit_for_short_track():
+    """Death-emit también respeta el guard de altura. Track muere dentro
+    de la counting zone con cruce registrado + altura baja → no emite."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_count_height_m=1.0,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    _set_track_height_history(track, [550.0, 580.0, 530.0, 560.0])  # ~0.55m
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])  # cross, no exit
+    counter.check_all({})  # track desaparece
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_min_count_height_default_is_off():
+    """Default (0.0) = filtro desactivado, back-compat."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    assert counter.min_count_height_m == 0.0
+
+
+def test_height_confidence_gate_default_from_class_constant():
+    """Sin override, el counter usa DEFAULT_HEIGHT_CONFIDENCE_GATE."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    assert counter.height_confidence_gate == Counter.DEFAULT_HEIGHT_CONFIDENCE_GATE
+    assert counter.height_confidence_gate == 0.5
+
+
+def test_height_confidence_gate_override_via_constructor():
+    """``height_confidence_gate`` kwarg overrides el default."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        height_confidence_gate=0.7,
+    )
+    assert counter.height_confidence_gate == 0.7
+
+
+def test_height_confidence_gate_below_threshold_marks_unknown():
+    """Median conf < gate → demografía en CountEvent se reporta como unknown
+    aunque el track tenga altura medida."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        height_confidence_gate=0.7,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    # detection_history con conf bajo el gate (0.4 < 0.7) + altura medida.
+    track.meta["detection_history"] = [
+        {"head_height_mm": 1700.0, "height_class": "adult", "confidence": 0.4},
+        {"head_height_mm": 1720.0, "height_class": "adult", "confidence": 0.4},
+        {"head_height_mm": 1680.0, "height_class": "adult", "confidence": 0.4},
+    ]
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is not None
+    assert ev.direction == "ingress"  # SÍ cuenta — gate no afecta conteo
+    assert ev.height_class == "unknown"  # demografía blanqueada
+    assert ev.height_m is None
+    assert ev.head_depth_m is None
+
+
+def test_height_confidence_gate_above_threshold_reports_demographics():
+    """Median conf >= gate → demografía se reporta normalmente."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        height_confidence_gate=0.5,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    track.meta["detection_history"] = [
+        {"head_height_mm": 1700.0, "height_class": "adult", "confidence": 0.8},
+        {"head_height_mm": 1720.0, "height_class": "adult", "confidence": 0.75},
+        {"head_height_mm": 1680.0, "height_class": "adult", "confidence": 0.82},
+    ]
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is not None
+    assert ev.height_class == "adult"
+    assert ev.height_m == pytest.approx(1.7, abs=0.05)
+
+
+def test_build_counter_reads_height_confidence_gate_from_config():
+    """``counter.height_confidence_gate`` del YAML propaga al Counter."""
+    cfg = {
+        "counter": {
+            "counting_zone": COUNTING_ZONE,
+            "height_confidence_gate": 0.65,
+            "lines": [{
+                "from": [100, 300], "to": [500, 300],
+                "labels": {"top_to_bottom": "ingress"},
+            }],
+        },
+    }
+    c = build_counter(cfg)
+    assert c.height_confidence_gate == 0.65
+
+
+def test_build_counter_reads_min_count_height_m_from_config():
+    """``counter.min_count_height_m`` del YAML se propaga al Counter."""
+    cfg = {
+        "counter": {
+            "counting_zone": COUNTING_ZONE,
+            "min_count_height_m": 1.0,
+            "lines": [{
+                "from": [100, 300], "to": [500, 300],
+                "labels": {"top_to_bottom": "ingress"},
+            }],
+        },
+    }
+    c = build_counter(cfg)
+    assert c.min_count_height_m == 1.0
+
+
+def test_min_real_inside_frames_blocks_single_frame_entry():
+    """Regresión piloto 2026-05-24 15:23:47 (tid=67): track de campera
+    flickeando con 1 solo frame real al borde y_min, después Kalman
+    extrapola 247 px a outside abajo, dispara IN espurio.
+
+    Con guard min_real_inside_frames=2, la entry-fresca (1 frame) +
+    exit Kalman no acumula suficientes frames reales → rechaza emit.
+    """
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_real_inside_frames=2,
+    )
+    track = _make_track(1, [[300, 150, 3000]])  # outside arriba
+    counter.check_all({1: track})
+    # Único frame real inside (borde y_min=200).
+    _advance(counter, track, [300, 202, 3000])  # entry, real_inside_frames=1
+    # Kalman extrapola directamente a outside abajo.
+    track.disappeared = 5
+    ev = _advance(counter, track, [300, 460, 3000])  # exit Kalman + cross
+    assert ev is None, "1 frame real inside no debe contar"
+    assert counter.total_in == 0
+
+
+def test_min_real_inside_frames_passes_walker_with_enough_frames():
+    """Caminante real con 3+ frames inside cruza limpio el guard."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_real_inside_frames=2,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    # Trayectoria evita y=300 exacto (line) para no corromper sides cache.
+    _advance(counter, track, [300, 220, 3000])   # entry (real_inside=1)
+    _advance(counter, track, [300, 270, 3000])   # inside above (real_inside=2)
+    _advance(counter, track, [300, 360, 3000])   # cross below (real_inside=3)
+    ev = _advance(counter, track, [300, 460, 3000])
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+
+
+def test_min_real_inside_frames_default_is_off():
+    """Default 0 = filtro desactivado (back-compat)."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    assert counter.min_real_inside_frames == 0
+
+
+def test_build_counter_reads_min_real_inside_frames_from_config():
+    cfg = {
+        "counter": {
+            "counting_zone": COUNTING_ZONE,
+            "min_real_inside_frames": 2,
+            "lines": [{
+                "from": [100, 300], "to": [500, 300],
+                "labels": {"top_to_bottom": "ingress"},
+            }],
+        },
+    }
+    c = build_counter(cfg)
+    assert c.min_real_inside_frames == 2
+
+
+def test_min_real_inside_frames_blocks_death_emit_thin_evidence():
+    """Death-emit también respeta el guard de evidencia mínima."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_real_inside_frames=2,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    _advance(counter, track, [300, 202, 3000])  # 1 frame inside
+    _advance(counter, track, [300, 350, 3000])  # cross intra-visit (frame 2)
+    # Track muere antes de salir. real_inside_frames=2 alcanza umbral pero
+    # subimos threshold a 3 para que falle.
+    counter.min_real_inside_frames = 3
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    assert counter.total_in == 0
+
+
+def test_stale_outside_pos_after_kalman_exit_does_not_double_count():
+    """Regresión del caso piloto 2026-05-24 14:57:55 (tid=316): doble
+    INGRESS en 161 ms.
+
+    Flow del bug:
+    1. Track entra desde ARRIBA del counting zone con detección real.
+       Entry-fresca snap-ea sides[] desde ``last_outside_pos=(X, y_above)``
+       (lado -1 = arriba de la línea).
+    2. Cruza la línea hacia abajo con detección real (net=+1).
+    3. El detector lo pierde. Kalman extrapola y el track sale del
+       counting zone por debajo. EMIT 1 (rescue cascade capa 2).
+    4. ~80 ms después el detector lo recupera ya cerca del borde inferior.
+       Entry-fresca dispara DE NUEVO. **Bug**: usa el
+       ``last_outside_pos=(X, y_above)`` viejo (no se actualizó en
+       el exit Kalman porque la regla solo refresca con is_real=True
+       outside). Snap sides[] = -1 (arriba), pero el track está abajo
+       del counting zone real.
+    5. Próximo frame el track sale del counting zone por abajo (y >> y_max).
+       Side flip de -1 → +1 dispara cross fantasma. EMIT 2.
+
+    Fix: el exit branch refresca ``last_outside_pos`` a la posición de
+    salida independientemente de is_real. Garantiza que la próxima
+    entry-fresca snap-ee desde un outside_pos coherente con la geometría
+    actual del track.
+    """
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    track = _make_track(1, [[300, 150, 3000]])  # outside arriba
+    counter.check_all({1: track})  # last_outside_pos = (300, 150)
+    # 1. Entry desde arriba (real).
+    _advance(counter, track, [300, 250, 3000])
+    # 2. Cruza línea hacia abajo (net=+1).
+    _advance(counter, track, [300, 350, 3000])
+    # 3. Kalman exit por abajo (la persona/objeto sale).
+    track.disappeared = 5  # extrapolación Kalman
+    ev1 = _advance(counter, track, [300, 460, 3000])  # outside abajo
+    assert ev1 is not None
+    assert ev1.direction == "ingress"
+    assert counter.total_in == 1
+
+    # 4. Re-entry desde abajo (real). Sin el fix, la entry-fresca
+    #    usaría last_outside_pos=(300, 150) y snap sides=-1.
+    track.disappeared = 0
+    _advance(counter, track, [300, 440, 3000])  # inside, cerca borde abajo
+    # 5. Exit por abajo de nuevo. Con el fix, last_outside_pos se
+    #    refrescó al pos del exit anterior (300, 460), snap sides=+1,
+    #    no hay flip al salir por abajo → NO emit espurio.
+    ev2 = _advance(counter, track, [300, 480, 3000])
+    assert ev2 is None, "no debe emitir un segundo ingress dentro de 200 ms"
+    assert counter.total_in == 1, (
+        f"sin el fix, total_in == 2 (doble conteo); con el fix, == 1"
+    )
+
+
 def test_ghost_adoption_preserves_counter_meta_so_resurrected_track_emits():
     """K2 end-to-end: validar el contrato counter↔tracker que justifica la
     capa 1 del rescue cascade.
