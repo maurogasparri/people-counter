@@ -125,7 +125,7 @@ del firmware, devices viejos siguen ingestiando OK.
 | **Counts** | `total_in`, `total_out` — running totals device-side desde el último boot. Sirve como sanity check vs `COUNT(*)` server-side |
 | **MQTT** | `mqtt_connected`, `mqtt_disconnect_count`, `seconds_since_last_reconnect`, `buffer_backlog_messages` |
 | **WiFi/BLE** | `wifi_probe_ok`, `ble_scanner_ok`, `wifi_ble_stitching_ratio` (canary: groups / hashes, baja a medida que el stitching mergea MAC rotations) |
-| **Tracker (visión)** | `track_stitching_ratio` (unique_track_ids cruzando ROI / counts emitidos, ideal ≈ 1.0, >1.3 = fragmentación), `ghost_adoption_count` (capa 1: rescates por ID adoption), `death_emit_count` (capa 3: rescates por death-emit). Las tres combinadas cierran el árbol diagnóstico (tracker perfecto / fragmentación rescatada / fragmentación sin rescate) |
+| **Tracker (visión)** | `track_stitching_ratio` (unique_track_ids cruzando counting zone / counts emitidos, ideal ≈ 1.0, >1.3 = fragmentación), `ghost_adoption_count` (capa 1: rescates por ID adoption), `death_emit_count` (capa 3: rescates por death-emit). Las tres combinadas cierran el árbol diagnóstico (tracker perfecto / fragmentación rescatada / fragmentación sin rescate) |
 | **Device Shadow** | `last_shadow_apply_ts` (canary: epoch del último delta del Device Shadow aplicado vía `apply_shadow_delta`. NULL hasta el primer push real post-boot — distinguir "shadow nunca usado" vs "última push hace mucho" en Grafana) |
 | **Errors** | `error` (corto), `schedule_error_detail` (detalle largo). `null` cuando todo OK |
 

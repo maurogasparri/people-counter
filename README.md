@@ -119,7 +119,7 @@ En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suf
 El sistema usa **defaults canónicos + override per-device + cloud channel**:
 
 - **Defaults** ([`config/config.example.yaml`](config/config.example.yaml)): el config canónico de la flota — bracket geometry, sensor mode, vision pipeline (SGBM, rectify), detection, tracking, counter, MQTT topics, buffer paths, status LED, etc. Todos los devices heredan estos valores.
-- **Per-device** (`/etc/people-counter/config.yaml`): override mínimo con lo que cambia por unidad — `device.id`, `mounting_height_m`, ROI/lines, MQTT endpoint + certs. Cualquier key ausente cae al default. El loader hace deep-merge al boot.
+- **Per-device** (`/etc/people-counter/config.yaml`): override mínimo con lo que cambia por unidad — `device.id`, `mounting_height_m`, counting zone/lines, MQTT endpoint + certs. Cualquier key ausente cae al default. El loader hace deep-merge al boot.
 - **Cloud** (AWS IoT Device Shadow): settings de negocio — horarios operativos, factor de escala, toggles de habilitación. Se aplican vía `RUNTIME_SAFE_KEYS` sin reinicio.
 
 `mounting_height_m` (per-device) alimenta el SGBM auto-tune (`num_disparities: auto` deriva el rango de disparidad por sitio) y el head-height gating del clasificador adulto/niño. La calibración estéreo es mount-independent (un único `.npz` factory sirve para mount 2.0–3.5m).
@@ -312,7 +312,7 @@ Defense-in-depth runtime (independiente del modelo):
 ```
 src/
 ├── vision/          # Captura estéreo (picamera2), calibración ChArUco, profundidad SGBM + WLS, detección YOLOv8n (Hailo + OpenCV), world_coords para altura de cabeza, static_suppressor + best_frame, report HTML
-├── tracking/        # Tracker euclidiano 3D (Kalman) + ghost pool / ID adoption + contador por línea virtual / ROI con net-balance + rescue cascade de 3 capas (ghost adoption + decisive Kalman cross at exit + death-emit-if-crossed con guards anti-FP)
+├── tracking/        # Tracker euclidiano 3D (Kalman) + ghost pool / ID adoption + contador por línea virtual / counting zone con net-balance + rescue cascade de 3 capas (ghost adoption + decisive Kalman cross at exit + death-emit-if-crossed con guards anti-FP)
 ├── wifi_ble/        # Captura de probes WiFi (nexmon + radiotap, hopping ponderado 1/6/11), scan BLE (bleak), fingerprint (IEs/manufacturer-data), hashing, dedup a hash groups con stitching de 4 reglas (seqnum + cross-protocol L2 + BLE anchoring + fingerprint), publisher de summaries 15min
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
 ├── cloud/           # Lambdas: persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC) + ingest_pos_transaction (POS API → tabla sales)
@@ -343,7 +343,7 @@ scripts/
 │                          # roll/offset L↔R), browser-driven, no necesita .npz previo.
 │                          # Thresholds factory: ±0.5°/1.0°/0.5°/2mm/2mm.
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
-├── roi_picker.py          # Seleccionador de ROI + línea virtual
+├── counting_zone_picker.py          # Seleccionador de counting zone + línea virtual
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
 ├── deploy_lambda.ps1      # Packaging del Lambda persist_event (psycopg binary + handler). Versión .sh tambien disponible.
 ├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock

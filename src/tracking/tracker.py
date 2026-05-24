@@ -7,11 +7,11 @@ Implementa asociación Hungarian-based con una state machine de corto plazo:
     PENDING    -> CONFIRMED  (re-match dentro del re-id gate)
     PENDING    -> LOST       (luego de pending_max_frames misses consecutivos)
 
-Keep-alive dentro del ROI: si se configura ``keepalive_roi`` (lo setea main
-desde ``counter.roi``), un track PENDING cuya última posición predicha cae
-dentro del ROI NO transiciona a LOST — se mantiene vivo indefinidamente
-hasta que vuelve a matchear (PENDING->CONFIRMED) o su predicción sale del
-ROI (ahí aplica el timeout normal). Cubre "cruzó y se quedó adentro mirando
+Keep-alive dentro de la counting zone: si se configura ``keepalive_counting_zone`` (lo setea main
+desde ``counter.counting_zone``), un track PENDING cuya última posición predicha cae
+dentro de la counting zone NO transiciona a LOST — se mantiene vivo indefinidamente
+hasta que vuelve a matchear (PENDING->CONFIRMED) o su predicción sale de
+la counting zone (ahí aplica el timeout normal). Cubre "cruzó y se quedó adentro mirando
 algo" sin perder el cruce por muerte del track. Ver ``_record_miss``.
 
 El tracker expone todos los tracks en cualquier estado; la capa counter
@@ -77,7 +77,7 @@ DEFAULT_MEASUREMENT_NOISE = 5.0
 DEFAULT_INITIAL_VELOCITY_UNCERTAINTY = 100.0
 
 # Cap del historial ``positions`` de un track. Normalmente los tracks son
-# cortos (segundos) y nunca lo alcanzan, pero con keep-alive dentro del ROI
+# cortos (segundos) y nunca lo alcanzan, pero con keep-alive dentro de la counting zone
 # un track puede vivir indefinidamente (persona parada mucho rato) — sin cap
 # su lista de posiciones crecería sin límite a lo largo de un turno de 12h.
 # 512 a ~20fps son ~25s de historia, de sobra para diagnósticos y para el
@@ -218,7 +218,7 @@ class EuclideanTracker:
         pending_grace_frames: int = 0,
         ambiguous_match_ratio: float = 1.0,
         max_track_id: int = 65536,
-        keepalive_roi: tuple[float, float, float, float] | None = None,
+        keepalive_counting_zone: tuple[float, float, float, float] | None = None,
         keepalive_max_frames: int = 600,
         adoption_window_frames: int = 30,
         adoption_iou_min: float = 0.3,
@@ -275,19 +275,19 @@ class EuclideanTracker:
         # ID como uint16/32. ``_register`` salta IDs en uso si chocara
         # en el rollover (defense in depth).
         self.max_track_id = max(1, int(max_track_id))
-        # ROI de keep-alive: ``(x_min, x_max, y_min, y_max)`` o None. Un
+        # Counting zone de keep-alive: ``(x_min, x_max, y_min, y_max)`` o None. Un
         # track cuya última posición cae dentro de este rectángulo NO muere
         # por timeout (ni ``pending_max_frames`` ni ``max_disappeared``):
         # se mantiene PENDING indefinidamente mientras la predicción Kalman
-        # quede dentro del ROI. Cubre el caso "persona cruzó la línea y se
+        # quede dentro de la counting zone. Cubre el caso "persona cruzó la línea y se
         # quedó adentro mirando algo, el detector la pierde un rato, después
         # sale" — sin keep-alive el track moriría adentro y el cruce nunca
         # se contaría (no hay salida sintética). El static suppressor ya
-        # exenta este mismo ROI a nivel detección, así que la persona quieta
+        # exenta esta misma counting zone a nivel detección, así que la persona quieta
         # sigue detectándose; el keep-alive es la red para los dropouts del
         # detector. Settable post-construcción (main lo setea desde
-        # ``counter.roi``). None = sin keep-alive (back-compat).
-        self.keepalive_roi = keepalive_roi
+        # ``counter.counting_zone``). None = sin keep-alive (back-compat).
+        self.keepalive_counting_zone = keepalive_counting_zone
         # Cap del keep-alive en misses CONSECUTIVOS. "Eterno" haría que los
         # huérfanos (persona que se fue y el detector nunca vuelve a verla,
         # tras un re-id fallido que spawneó un track nuevo) se acumulen para
@@ -905,8 +905,8 @@ class EuclideanTracker:
         # Empujar la predicción Kalman a `positions` durante PENDING así
         # consumers downstream (counter line-cross, viewer) ven al track
         # moverse — SIGUE a la persona durante el gap del detector, así puede
-        # SALIR del ROI y emitir el conteo (el conteo dispara en el exit). Sin
-        # este push, una persona que cruza + se pierde mid-ROI quedaría clavada
+        # SALIR de la counting zone y emitir el conteo (el conteo dispara en el exit). Sin
+        # este push, una persona que cruza + se pierde mid-counting-zone quedaría clavada
         # adentro y su cruce nunca se contaría. La magnitud del paso se capea a
         # `max_distance` (anti-teleport con velocidad residual alta); el decay
         # (`pending_velocity_decay`) la va frenando. `z` carry-forwardea.
@@ -934,22 +934,22 @@ class EuclideanTracker:
             )
             _trim_positions(track)
 
-        # Keep-alive dentro del ROI: si la última posición (predicha) del
-        # track cae dentro del ROI de conteo, NO lo matamos por timeout —
+        # Keep-alive dentro de la counting zone: si la última posición (predicha) del
+        # track cae dentro de la counting zone de conteo, NO lo matamos por timeout —
         # se mantiene PENDING. Modela la persona que cruzó y se quedó adentro
         # (el detector la pierde un rato). Cuando vuelve a moverse, o re-id
-        # binde y vuelve a CONFIRMED, o la predicción Kalman la saca del ROI
+        # binde y vuelve a CONFIRMED, o la predicción Kalman la saca de la counting zone
         # y entonces sí aplica el timeout normal. Acotado a
         # ``keepalive_max_frames`` misses consecutivos para garbage-collectear
         # huérfanos (re-id falló, persona ya no está); como ``disappeared`` se
         # resetea con cualquier hit, el lingering real nunca llega al cap.
         if (
-            self._inside_keepalive_roi(track)
+            self._inside_keepalive_counting_zone(track)
             and track.disappeared <= self.keepalive_max_frames
         ):
             return
 
-        inside_ka = self._inside_keepalive_roi(track)
+        inside_ka = self._inside_keepalive_counting_zone(track)
         last = track.positions[-1] if track.positions else (0.0, 0.0, 0.0)
         if track.state == PENDING and track.disappeared > self.pending_max_frames:
             track.state = LOST
@@ -1048,7 +1048,7 @@ class EuclideanTracker:
     # observado en piloto 2026-05-24 09:15-09:18 (tid=20 FP de 1 ingress).
     # Threshold más laxo que adoption_max_dist_px=100 porque la outside_pos
     # puede estar legítimamente lejos del último centroide del ghost (el
-    # ghost se "iba" del ROI cuando murió, last_outside_pos es del exit
+    # ghost se "iba" de la counting zone cuando murió, last_outside_pos es del exit
     # observado), pero no debería estar a >150 px del nuevo centroide.
     GHOST_OUTSIDE_INVALIDATE_PX = 150.0
 
@@ -1091,36 +1091,36 @@ class EuclideanTracker:
             last_observed_position=centroid.copy(),
         )
 
-    def _inside_keepalive_roi(self, track: Track) -> bool:
-        """True si la última posición del track cae dentro del ROI de
-        keep-alive. Sin ROI configurado, siempre False (sin keep-alive)."""
-        roi = self.keepalive_roi
-        if roi is None or not track.positions:
+    def _inside_keepalive_counting_zone(self, track: Track) -> bool:
+        """True si la última posición del track cae dentro de la counting zone de
+        keep-alive. Sin counting zone configurado, siempre False (sin keep-alive)."""
+        zone = self.keepalive_counting_zone
+        if zone is None or not track.positions:
             return False
-        x_min, x_max, y_min, y_max = roi
+        x_min, x_max, y_min, y_max = zone
         last = track.positions[-1]
         return x_min <= float(last[0]) <= x_max and y_min <= float(last[1]) <= y_max
 
 
 def stationary_track_ids(
     tracks: dict[int, Track],
-    roi: tuple[float, float, float, float] | None,
+    counting_zone: tuple[float, float, float, float] | None,
     min_frames: int = 20,
     max_movement_px: float = 50.0,
 ) -> set[int]:
     """IDs de tracks que son **clutter estático**: vivos hace >= ``min_frames``,
     que se movieron < ``max_movement_px`` en toda su historia, y cuyo centroide
-    actual está FUERA del ROI.
+    actual está FUERA de la counting zone.
 
     Son FPs del detector sobre estructura fija (sombra/borde/piso) que spawnean
-    tracks fantasma — la gente real se mueve, el clutter no. Sin ROI devuelve
+    tracks fantasma — la gente real se mueve, el clutter no. Sin counting zone devuelve
     set vacío (no filtramos sin zona de conteo). Pensado SOLO para display/stats
     (esconder el bbox fantasma + no inflar el contador de tracks): estos tracks
-    están fuera del ROI y nunca cuentan, así que el conteo/tracking no se tocan.
+    están fuera de la counting zone y nunca cuentan, así que el conteo/tracking no se tocan.
     """
-    if roi is None:
+    if counting_zone is None:
         return set()
-    x_min, x_max, y_min, y_max = roi
+    x_min, x_max, y_min, y_max = counting_zone
     out: set[int] = set()
     for tid, t in tracks.items():
         positions = getattr(t, "positions", None)
@@ -1128,7 +1128,7 @@ def stationary_track_ids(
             continue
         cx, cy = float(positions[-1][0]), float(positions[-1][1])
         if x_min <= cx <= x_max and y_min <= cy <= y_max:
-            continue  # dentro del ROI: nunca lo tratamos como clutter
+            continue  # dentro de la counting zone: nunca lo tratamos como clutter
         xs = [float(p[0]) for p in positions]
         ys = [float(p[1]) for p in positions]
         movement = max(max(xs) - min(xs), max(ys) - min(ys))

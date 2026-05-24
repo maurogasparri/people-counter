@@ -114,37 +114,37 @@ class TestHotCellSuppression:
 
 
 class TestExemptRoi:
-    """Detecciones dentro de ``exempt_roi`` no se suprimen aunque su celda
-    esté hot — exenta el ROI de conteo (gente parada en la puerta no debe
+    """Detecciones dentro de ``exempt_counting_zone`` no se suprimen aunque su celda
+    esté hot — exenta la counting zone de conteo (gente parada en la puerta no debe
     morir y disparar counts fantasma)."""
 
     def _warm_hot_cell(self, sup, clock, det) -> None:
         for _ in range(11):
             _tick_and_update(sup, clock, [det])
 
-    def test_hot_cell_inside_exempt_roi_is_kept(self) -> None:
+    def test_hot_cell_inside_exempt_counting_zone_is_kept(self) -> None:
         sup, clock = _suppressor()
         det = _FakeDet(100, 100)
         self._warm_hot_cell(sup, clock, det)
         clock.tick(0.1)
-        out = sup.update_and_filter([det], exempt_roi=(50, 200, 50, 200))
-        assert out == [det], "celda hot dentro del ROI exento se conserva"
+        out = sup.update_and_filter([det], exempt_counting_zone=(50, 200, 50, 200))
+        assert out == [det], "celda hot dentro de la counting zone exento se conserva"
 
-    def test_hot_cell_outside_exempt_roi_still_suppressed(self) -> None:
+    def test_hot_cell_outside_exempt_counting_zone_still_suppressed(self) -> None:
         sup, clock = _suppressor()
         det = _FakeDet(100, 100)
         self._warm_hot_cell(sup, clock, det)
         clock.tick(0.1)
-        out = sup.update_and_filter([det], exempt_roi=(400, 600, 400, 600))
-        assert out == [], "celda hot fuera del ROI exento se suprime igual"
+        out = sup.update_and_filter([det], exempt_counting_zone=(400, 600, 400, 600))
+        assert out == [], "celda hot fuera de la counting zone exento se suprime igual"
 
-    def test_exempt_roi_none_is_prior_behavior(self) -> None:
+    def test_exempt_counting_zone_none_is_prior_behavior(self) -> None:
         sup, clock = _suppressor()
         det = _FakeDet(100, 100)
         self._warm_hot_cell(sup, clock, det)
         clock.tick(0.1)
-        out = sup.update_and_filter([det])  # default exempt_roi=None
-        assert out == [], "sin exempt_roi, la celda hot se suprime (comportamiento previo)"
+        out = sup.update_and_filter([det])  # default exempt_counting_zone=None
+        assert out == [], "sin exempt_counting_zone, la celda hot se suprime (comportamiento previo)"
 
 
 class TestNonHotCellsPassFreely:

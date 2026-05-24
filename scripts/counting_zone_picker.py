@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Picker interactivo de ROI + counting-line para los devices del People Counter.
+"""Picker interactivo de counting zone + counting-line para los devices del People Counter.
 
 Captura un frame (en vivo desde las cámaras CSI o desde una imagen estática) y
-sirve una UI HTTP chica. El operador hace click-drag para definir el ROI
-rectangular y después hace click adentro para poner la línea virtual de
+sirve una UI HTTP chica. El operador hace click-drag para definir la counting
+zone rectangular y después hace click adentro para poner la línea virtual de
 conteo (snapeada a la orientación configurada). Al save, el server escribe un
 snippet YAML que entra directo bajo ``counter:`` en el config del dispositivo.
 
 Uso típico en el dispositivo:
-    PYTHONPATH=. python3 scripts/roi_picker.py
+    PYTHONPATH=. python3 scripts/counting_zone_picker.py
     # Abrir http://people-counter.local:8080
 
 Dev/test en laptop (sin picamera2):
-    python scripts/roi_picker.py --image sample.jpg --output ./out.yaml
+    python scripts/counting_zone_picker.py --image sample.jpg --output ./out.yaml
 
-El snippet YAML producido matchea ``counter.roi`` / ``counter.line`` en
+El snippet YAML producido matchea ``counter.counting_zone`` / ``counter.line`` en
 ``config/config.example.yaml``.
 """
 
@@ -38,7 +38,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
-logger = logging.getLogger("roi_picker")
+logger = logging.getLogger("counting_zone_picker")
 
 
 # Shared state populated before the server starts. The handler reads these
@@ -46,7 +46,7 @@ logger = logging.getLogger("roi_picker")
 _frame_jpeg: bytes = b""
 _frame_width: int = 0
 _frame_height: int = 0
-_output_path: Path = Path("./roi_config.yaml")
+_output_path: Path = Path("./counting_zone_config.yaml")
 
 _save_event = threading.Event()
 _save_result: dict = {}
@@ -61,8 +61,8 @@ def _capture_from_cameras(
     Args:
         camera: "left", "right" o "both" (vista side-by-side, dibuja sobre L).
         resolution: (W, H) matcheando la del runtime — fundamental para que
-            la ROI / línea dibujadas tengan el mismo sistema de coordenadas
-            que el pipeline.
+            la counting zone / línea dibujadas tengan el mismo sistema de
+            coordenadas que el pipeline.
 
     Returns:
         Un frame BGR único.
@@ -111,8 +111,8 @@ def _capture_from_cameras(
                 continue
             # raw mode desde el config del device (sensor.default_res).
             # Anclar el mode evita que picamera2 caiga al Mode 0 cropeado
-            # del IMX708 — el ROI tiene que dibujarse sobre el mismo FOV
-            # que vé el runtime.
+            # del IMX708 — la counting zone tiene que dibujarse sobre el
+            # mismo FOV que vé el runtime.
             cfg = cam.create_still_configuration(
                 main={"size": resolution, "format": "BGR888"},
                 raw={"size": hw.default_res},
@@ -171,10 +171,10 @@ def _local_ip() -> str:
 
 def _format_yaml(x_min: int, x_max: int, y_min: int, y_max: int,
                  orientation: str, position: int) -> str:
-    """Renderiza el snippet counter.roi / counter.line."""
+    """Renderiza el snippet counter.counting_zone / counter.line."""
     return (
         "counter:\n"
-        "  roi:\n"
+        "  counting_zone:\n"
         f"    x_min: {x_min}\n"
         f"    x_max: {x_max}\n"
         f"    y_min: {y_min}\n"
@@ -190,7 +190,7 @@ def _validate_payload(data: dict, img_w: int, img_h: int) -> tuple[Optional[dict
 
     Devuelve ``(cleaned_dict, None)`` en éxito, ``(None, error_message)``
     en falla. Las coordenadas quedan clampeadas a los bounds de la imagen
-    y la línea tiene que caer estrictamente dentro de la ROI.
+    y la línea tiene que caer estrictamente dentro de la counting zone.
     """
     try:
         x_min = int(round(float(data["x_min"])))
@@ -218,19 +218,19 @@ def _validate_payload(data: dict, img_w: int, img_h: int) -> tuple[Optional[dict
     y_max = max(0, min(img_h - 1, y_max))
 
     if (x_max - x_min) < 10 or (y_max - y_min) < 10:
-        return None, "ROI too small (min 10px each side)"
+        return None, "Counting zone too small (min 10px each side)"
 
     if orientation == "horizontal":
         if not (y_min < position < y_max):
             return None, (
                 f"Horizontal line y={position} must lie strictly inside "
-                f"ROI y=[{y_min},{y_max}]"
+                f"counting zone y=[{y_min},{y_max}]"
             )
     else:
         if not (x_min < position < x_max):
             return None, (
                 f"Vertical line x={position} must lie strictly inside "
-                f"ROI x=[{x_min},{x_max}]"
+                f"counting zone x=[{x_min},{x_max}]"
             )
 
     return (
@@ -247,7 +247,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ROI Picker</title>
+<title>Counting Zone Picker</title>
 <style>
   body { margin: 0; background: #111; color: #eee; font-family: monospace; }
   header { padding: 8px 12px; background: #1e1e1e; display: flex;
@@ -269,7 +269,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>ROI Picker</h1>
+  <h1>Counting Zone Picker</h1>
   <label>Line orientation:
     <select id="orient">
       <option value="horizontal" selected>horizontal</option>
@@ -278,7 +278,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </label>
   <button id="reset">Reset</button>
   <button id="save" class="primary" disabled>Save</button>
-  <span class="step" id="step">Step 1: click-drag to draw ROI</span>
+  <span class="step" id="step">Step 1: click-drag to draw counting zone</span>
 </header>
 <div id="banner"></div>
 <div id="info"></div>
@@ -318,8 +318,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   img.src = '/frame.jpg?ts=' + Date.now();
 
   // State. All coords stored in IMAGE pixel space.
-  let phase = 'roi';  // 'roi' | 'roi-dragging' | 'line'
-  let roi = null;     // {x_min,x_max,y_min,y_max}
+  let phase = 'zone';  // 'zone' | 'zone-dragging' | 'line'
+  let zone = null;     // {x_min,x_max,y_min,y_max}
   let dragStart = null;
   let dragEnd = null;
   let line = null;    // number (y for horizontal, x for vertical)
@@ -339,8 +339,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
     // Draw pending drag rectangle.
-    let rect = roi;
-    if (phase === 'roi-dragging' && dragStart && dragEnd) {
+    let rect = zone;
+    if (phase === 'zone-dragging' && dragStart && dragEnd) {
       rect = {
         x_min: Math.min(dragStart.x, dragEnd.x),
         x_max: Math.max(dragStart.x, dragEnd.x),
@@ -360,40 +360,40 @@ INDEX_HTML = r"""<!DOCTYPE html>
       ctx.strokeRect(x, y, w, h);
     }
 
-    // Draw line (clipped to ROI for visual clarity).
-    if (roi && line != null) {
+    // Draw line (clipped to the counting zone for visual clarity).
+    if (zone && line != null) {
       ctx.strokeStyle = '#f60';
       ctx.lineWidth = 3;
       ctx.beginPath();
       if (orient.value === 'horizontal') {
-        ctx.moveTo(roi.x_min * scale, line * scale);
-        ctx.lineTo(roi.x_max * scale, line * scale);
+        ctx.moveTo(zone.x_min * scale, line * scale);
+        ctx.lineTo(zone.x_max * scale, line * scale);
       } else {
-        ctx.moveTo(line * scale, roi.y_min * scale);
-        ctx.lineTo(line * scale, roi.y_max * scale);
+        ctx.moveTo(line * scale, zone.y_min * scale);
+        ctx.lineTo(line * scale, zone.y_max * scale);
       }
       ctx.stroke();
     }
 
     // Info line.
     const parts = [];
-    if (roi) parts.push(`ROI: x=[${roi.x_min},${roi.x_max}] y=[${roi.y_min},${roi.y_max}]`);
-    if (roi && line != null) parts.push(`line ${orient.value} @ ${line}`);
+    if (zone) parts.push(`zone: x=[${zone.x_min},${zone.x_max}] y=[${zone.y_min},${zone.y_max}]`);
+    if (zone && line != null) parts.push(`line ${orient.value} @ ${line}`);
     parts.push(`image ${imgW}x${imgH}`);
     info.textContent = parts.join('  |  ');
   }
 
   canvas.addEventListener('mousedown', (e) => {
     const p = evToImg(e);
-    if (phase === 'roi' || phase === 'roi-dragging' || !roi) {
-      phase = 'roi-dragging';
+    if (phase === 'zone' || phase === 'zone-dragging' || !zone) {
+      phase = 'zone-dragging';
       dragStart = p;
       dragEnd = p;
       redraw();
     } else {
       // Placing the line.
-      if (!withinRoi(p)) {
-        showBanner('Click inside the ROI to place the line.', false);
+      if (!withinZone(p)) {
+        showBanner('Click inside the counting zone to place the line.', false);
         return;
       }
       line = (orient.value === 'horizontal') ? p.y : p.x;
@@ -404,33 +404,33 @@ INDEX_HTML = r"""<!DOCTYPE html>
   });
 
   canvas.addEventListener('mousemove', (e) => {
-    if (phase !== 'roi-dragging') return;
+    if (phase !== 'zone-dragging') return;
     dragEnd = evToImg(e);
     redraw();
   });
 
   canvas.addEventListener('mouseup', (e) => {
-    if (phase !== 'roi-dragging') return;
+    if (phase !== 'zone-dragging') return;
     dragEnd = evToImg(e);
     const w = Math.abs(dragEnd.x - dragStart.x);
     const h = Math.abs(dragEnd.y - dragStart.y);
     if (w < 10 || h < 10) {
-      phase = 'roi';
+      phase = 'zone';
       dragStart = dragEnd = null;
-      showBanner('ROI too small, try again.', false);
+      showBanner('Counting zone too small, try again.', false);
       redraw();
       return;
     }
-    roi = {
+    zone = {
       x_min: Math.min(dragStart.x, dragEnd.x),
       x_max: Math.max(dragStart.x, dragEnd.x),
       y_min: Math.min(dragStart.y, dragEnd.y),
       y_max: Math.max(dragStart.y, dragEnd.y),
     };
-    // Reset line if it is no longer inside the new ROI.
-    if (line != null && !lineInsideRoi()) line = null;
+    // Reset line if it is no longer inside the new counting zone.
+    if (line != null && !lineInsideZone()) line = null;
     phase = 'line';
-    step.textContent = 'Step 2: click inside the ROI to place the line';
+    step.textContent = 'Step 2: click inside the counting zone to place the line';
     clearBanner();
     dragStart = dragEnd = null;
     redraw();
@@ -446,23 +446,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
   });
 
   resetBtn.addEventListener('click', () => {
-    roi = null; line = null; phase = 'roi';
-    step.textContent = 'Step 1: click-drag to draw ROI';
+    zone = null; line = null; phase = 'zone';
+    step.textContent = 'Step 1: click-drag to draw counting zone';
     clearBanner();
     redraw();
     updateSaveState();
   });
 
   saveBtn.addEventListener('click', async () => {
-    if (!roi || line == null) return;
+    if (!zone || line == null) return;
     saveBtn.disabled = true;
     try {
       const resp = await fetch('/save', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-          x_min: roi.x_min, x_max: roi.x_max,
-          y_min: roi.y_min, y_max: roi.y_max,
+          x_min: zone.x_min, x_max: zone.x_max,
+          y_min: zone.y_min, y_max: zone.y_max,
           orientation: orient.value, position: line,
         }),
       });
@@ -480,19 +480,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   });
 
-  function withinRoi(p) {
-    return roi && p.x >= roi.x_min && p.x <= roi.x_max &&
-                  p.y >= roi.y_min && p.y <= roi.y_max;
+  function withinZone(p) {
+    return zone && p.x >= zone.x_min && p.x <= zone.x_max &&
+                   p.y >= zone.y_min && p.y <= zone.y_max;
   }
 
-  function lineInsideRoi() {
-    if (!roi || line == null) return false;
-    if (orient.value === 'horizontal') return line > roi.y_min && line < roi.y_max;
-    return line > roi.x_min && line < roi.x_max;
+  function lineInsideZone() {
+    if (!zone || line == null) return false;
+    if (orient.value === 'horizontal') return line > zone.y_min && line < zone.y_max;
+    return line > zone.x_min && line < zone.x_max;
   }
 
   function updateSaveState() {
-    saveBtn.disabled = !(roi && line != null && lineInsideRoi());
+    saveBtn.disabled = !(zone && line != null && lineInsideZone());
   }
 
   function showBanner(msg, ok) {
@@ -600,7 +600,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     global _frame_jpeg, _frame_width, _frame_height, _output_path
 
     parser = argparse.ArgumentParser(
-        description="Interactive ROI + virtual line picker."
+        description="Interactive counting zone + virtual line picker."
     )
     parser.add_argument(
         "--image", type=Path, default=None,
@@ -612,14 +612,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
-        "--output", type=Path, default=Path("./roi_config.yaml"),
+        "--output", type=Path, default=Path("./counting_zone_config.yaml"),
         help="Where to write the YAML snippet on save.",
     )
     parser.add_argument(
         "--resolution", type=int, nargs=2, default=None,
         help="Capture resolution (W H) when --image is not set. Default: "
              "reads vision.resolution from /etc/people-counter/config.yaml "
-             "so the ROI/line use the same coordinate system as the runtime.",
+             "so the counting zone / line use the same coordinate system "
+             "as the runtime.",
     )
     args = parser.parse_args(argv)
 
@@ -686,9 +687,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ip = _local_ip()
     print()
-    print(f"ROI picker ready — open http://{ip}:{args.port}  (or http://localhost:{args.port})")
-    print("  1. Click-drag to draw the counting ROI rectangle.")
-    print("  2. Choose orientation, then click inside the ROI to place the line.")
+    print(
+        f"Counting zone picker ready — open http://{ip}:{args.port}  "
+        f"(or http://localhost:{args.port})"
+    )
+    print("  1. Click-drag to draw the counting zone rectangle.")
+    print("  2. Choose orientation, then click inside the counting zone to place the line.")
     print("  3. Press Save. YAML snippet is written to:")
     print(f"     {_output_path.resolve()}")
     print("Press Ctrl-C to abort without saving.")
@@ -699,7 +703,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         while not _save_event.wait(timeout=0.5):
             pass
     except KeyboardInterrupt:
-        logger.info("Interrupted — no ROI saved.")
+        logger.info("Interrupted — no counting zone saved.")
         exit_code = 130
     finally:
         # Give the last HTTP response time to flush before we tear down.
@@ -712,7 +716,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             snippet = _save_result.get("snippet", "")
             path = _save_result.get("path", str(_output_path))
         print()
-        print(f"Saved ROI + line to {path}")
+        print(f"Saved counting zone + line to {path}")
         print("-" * 60)
         print(snippet, end="")
         print("-" * 60)

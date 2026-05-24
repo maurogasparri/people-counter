@@ -254,20 +254,20 @@ Campos a revisar:
 
 **`device.store_id`** — verificar que coincida con el local.
 
-**`counter.roi`** — rectángulo en píxeles de la imagen que define la zona de
+**`counter.counting_zone`** — rectángulo en píxeles de la imagen que define la zona de
 conteo. La puerta del local debe estar dentro de este rectángulo en el
 frame. Formato:
 
 ```yaml
 counter:
-  roi:
+  counting_zone:
     x_min: 100
     x_max: 540
     y_min: 180
     y_max: 300
 ```
 
-**`counter.line`** — línea virtual de cruce dentro del ROI. Cuando un track
+**`counter.line`** — línea virtual de cruce dentro de la counting zone. Cuando un track
 cruza la línea, dispara un evento con `direction='in'` (entrando) o `'out'`
 (saliendo).
 
@@ -278,21 +278,21 @@ counter:
     position: 240             # y-coord si horizontal, x-coord si vertical
 ```
 
-Para ajustar ROI y línea **necesitás ver un frame de las cámaras**. Usar
-`roi_picker.py` — tool dedicado que dibuja la ROI + línea sobre el frame
+Para ajustar counting zone y línea **necesitás ver un frame de las cámaras**. Usar
+`counting_zone_picker.py` — tool dedicado que dibuja la counting zone + línea sobre el frame
 y vuelca el snippet YAML listo para copiar al config:
 
 ```bash
 cd /usr/src/people-counter
-sudo PYTHONPATH=. python3 scripts/roi_picker.py
+sudo PYTHONPATH=. python3 scripts/counting_zone_picker.py
 ```
 
 Abrir `http://people-counter.local:8080` en el navegador. Arrastrar para
-definir el rectángulo de ROI y la línea virtual; el tool guarda el YAML
-en `./roi_config.yaml` listo para copiar al config per-device. Ctrl+C
+definir el rectángulo de counting zone y la línea virtual; el tool guarda el YAML
+en `./counting_zone_config.yaml` listo para copiar al config per-device. Ctrl+C
 para salir.
 
-Alternativa para solo ver el frame (sin ROI picker): `preview.py` con
+Alternativa para solo ver el frame (sin counting zone picker): `preview.py` con
 grid de tercios + crosshair central:
 
 ```bash
@@ -403,7 +403,7 @@ Criterio de éxito del piloto día 1:
 - Dirección correcta en ≥8/10 pasadas.
 - Latencia <3s entre cruce físico y log.
 
-Si sale <80%, revisar ROI y línea (sección 3.4) y repetir. Si sigue sin
+Si sale <80%, revisar counting zone y línea (sección 3.4) y repetir. Si sigue sin
 andar, escalar.
 
 ### 4.3. Telemetría
@@ -511,7 +511,7 @@ Síntomas: personas pasan pero no se disparan eventos.
 3. **Iluminación**: si el local está muy oscuro (<100 lux), la YOLO pierde
    recall. Pedir al encargado subir iluminación o reubicar.
 4. **Frame de preview**: correr `preview.py` y mirar si las personas
-   aparecen en el frame y en el ROI configurado. Muchas veces el ROI está
+   aparecen en el frame y en la counting zone configurado. Muchas veces la counting zone está
    desplazado respecto a la puerta real.
 
 ### 5.4. Conteo manual no coincide
@@ -528,12 +528,12 @@ Anotar para el reporte a ingeniería:
 ```bash
 sudo PYTHONPATH=. python3 scripts/preview.py --config /etc/people-counter/config.yaml &
 sleep 5
-# abrir http://people-counter.local:8080 y tomar screenshot del L (con la ROI dibujada encima si pasaste --config)
+# abrir http://people-counter.local:8080 y tomar screenshot del L (con la counting zone dibujada encima si pasaste --config)
 kill %1
 ```
 
-Comparar el ROI configurado con la ubicación real de la puerta en el frame.
-`preview.py --config` superpone la ROI y la línea virtual del config sobre
+Comparar la counting zone configurado con la ubicación real de la puerta en el frame.
+`preview.py --config` superpone la counting zone y la línea virtual del config sobre
 el frame rectificado, así se puede ver directamente si están en su lugar.
 
 ### 5.5. El servicio reinicia solo
@@ -543,7 +543,7 @@ sudo journalctl -u people-counter --since '1 hour ago' | grep -Ei "error|excepti
 ```
 
 - `Killed` o `OOM`: el dispositivo está quedándose sin RAM. Puede ser que
-  un preview (`focus_assist.py`, `preview.py`, `roi_picker.py`) quedó
+  un preview (`focus_assist.py`, `preview.py`, `counting_zone_picker.py`) quedó
   abierto en paralelo. Matarlo y volver a probar.
 - `TimeoutError` en Hailo: driver PCIe tiene algún problema. Reboot del
   dispositivo (`sudo reboot`) y volver a verificar. Si persiste, escalar.
@@ -590,7 +590,7 @@ del dispositivo suele resolverlo. Si no, escalar.
   cortado, HAT desprendido).
 - Cualquier FAIL del preflight que no está cubierto en la sección 5.
 - El preflight pasa pero el servicio no levanta (reboot no resuelve).
-- Precisión del conteo manual <85% después de ajustar ROI y repetir test
+- Precisión del conteo manual <85% después de ajustar counting zone y repetir test
   en 24h.
 - Temperaturas fuera de rango sostenidas (CPU >85 °C, Hailo >80 °C).
 - Desconexiones MQTT frecuentes (>3 por hora) con buena conectividad de
@@ -657,7 +657,7 @@ cd /usr/src/people-counter && sudo PYTHONPATH=. python3 scripts/preflight.py
 # Logs en vivo
 sudo journalctl -u people-counter -f
 
-# Preview de cámaras con overlay de ROI + línea (puerto 8080)
+# Preview de cámaras con overlay de counting zone + línea (puerto 8080)
 cd /usr/src/people-counter && sudo PYTHONPATH=. python3 scripts/preview.py --config /etc/people-counter/config.yaml
 
 # Reiniciar servicio tras editar config

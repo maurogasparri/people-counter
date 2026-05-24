@@ -72,8 +72,8 @@ class StaticSuppressor:
             sin quedar suprimida; un FP estructural está "hot" ~100% del
             tiempo y igual se caza tras la ventana. (Antes 3s — demasiado
             corto: una persona parada ~3s se suprimía y su track moría dentro
-            del ROI sin contar el cruce. La región de conteo además se exenta
-            via ``exempt_roi`` en update_and_filter.)
+            de la counting zone sin contar el cruce. La región de conteo además
+            se exenta via ``exempt_counting_zone`` en update_and_filter.)
         hit_rate_threshold: Fracción mínima de la ventana en que la
             celda debe estar activa para suprimirse. 0.7 distingue
             FP estructural (≈1.0) de presencia humana ocasional (~0.3-0.5).
@@ -139,7 +139,7 @@ class StaticSuppressor:
     def update_and_filter(
         self,
         detections: Iterable[_HasCentroid],
-        exempt_roi: tuple[float, float, float, float] | None = None,
+        exempt_counting_zone: tuple[float, float, float, float] | None = None,
     ) -> list[_HasCentroid]:
         """Registra el frame actual y devuelve detections sin las que
         caen en celdas hot.
@@ -148,14 +148,15 @@ class StaticSuppressor:
         nunca filtra — sin historia suficiente no se puede distinguir
         FP estable de presencia legítima.
 
-        ``exempt_roi`` (``x_min, x_max, y_min, y_max``): las detecciones cuyo
+        ``exempt_counting_zone`` (``x_min, x_max, y_min, y_max``): las detecciones cuyo
         centroide cae dentro de este rectángulo NUNCA se suprimen, aunque su
-        celda esté hot. Exenta el ROI de conteo — el suppressor existe para
+        celda esté hot. Exenta la counting zone — el suppressor existe para
         clutter estructural de la periferia (maniquíes, racks), pero dentro
         del umbral de la puerta una detección persistente es una persona real
-        (parada/dudando), y suprimirla mata su track antes de que salga del
-        ROI → el cruce nunca se cuenta. El keep-alive del tracker dentro del
-        ROI es defensa adicional para los dropouts del detector. ``None`` =>
+        (parada/dudando), y suprimirla mata su track antes de que salga de la
+        counting zone → el cruce nunca se cuenta. El keep-alive del tracker
+        dentro de la counting zone es defensa adicional para los dropouts del
+        detector. ``None`` =>
         sin exención.
         """
         now = self._time_fn()
@@ -187,5 +188,5 @@ class StaticSuppressor:
             d
             for d in det_list
             if self._cell_of(d.centroid[0], d.centroid[1]) not in hot_cells
-            or _in_rect(d.centroid, exempt_roi)
+            or _in_rect(d.centroid, exempt_counting_zone)
         ]

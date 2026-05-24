@@ -15,7 +15,7 @@ training_data/
   captures/                          (gitignored — frames rectificados, ~1.4GB)
     <site_name>/*.jpg                (un subdir por site, frames sueltos adentro)
     capture.log
-    roi_<site>.jpg                   (ROI snapshots per-site, opcional)
+    counting_zone_<site>.jpg         (counting zone snapshots per-site, opcional)
   roboflow_uploaded_manifest.txt     (gitignored — los 945 filenames subidos)
   clips/                             (gitignored — opcional, record_clips.py)
   roboflow_sample/                   (gitignored — opcional, sample_for_roboflow.py)

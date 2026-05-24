@@ -2,7 +2,7 @@
 
 Un único :class:`Counter` parametrizado por:
 
-- Un ROI rectangular opcional (gate of interest — los tracks fuera del ROI
+- Una counting zone rectangular opcional (gate of interest — los tracks fuera de la counting zone
   se ignoran).
 - Uno o más segmentos direccionales :class:`Line`. Cada línea lleva labels
   per-dirección: un cruce en una dirección configurada emite el label
@@ -11,30 +11,30 @@ Un único :class:`Counter` parametrizado por:
 
 Un track se cuenta cuando, EN ORDEN:
 
-  1. Entra al ROI desde afuera.
+  1. Entra a la counting zone desde afuera.
   2. Cruza una de las líneas configuradas en una dirección con label
-     mientras está dentro del ROI.
-  3. **Sale del ROI**.
+     mientras está dentro de la counting zone.
+  3. **Sale de la counting zone**.
 
-El conteo dispara recién en (3): la salida del ROI es obligatoria. NO hay
-"salida sintética" por muerte del track dentro del ROI — una persona que
-cruza la línea pero se queda en el ROI (parada/sentada/dudando en la puerta,
+El conteo dispara recién en (3): la salida de la counting zone es obligatoria. NO hay
+"salida sintética" por muerte del track dentro de la counting zone — una persona que
+cruza la línea pero se queda en la counting zone (parada/sentada/dudando en la puerta,
 o que el detector pierde por pose fuera de distribución) NO se cuenta. Esto
 evita falsos positivos de gente lingering en el umbral.
 
-**Cancelación neta dentro del ROI (máquina de estados de la zona):**
-durante una visita al ROI se acumula un balance NETO de cruces por línea —
+**Cancelación neta dentro de la counting zone (máquina de estados de la zona):**
+durante una visita a la counting zone se acumula un balance NETO de cruces por línea —
 cada cruce in-segment hacia un lado suma, hacia el opuesto resta. Al salir
 se emite según el SIGNO del neto: si quedó ±1, ese es el sentido contado;
 si quedó 0, la persona "fue y vino" (cruzó y re-cruzó en sentido opuesto
-dentro del ROI) y NO se cuenta. Esto reemplaza el viejo "gana el último
+dentro de la counting zone) y NO se cuenta. Esto reemplaza el viejo "gana el último
 cruce". Un gate one-way (línea con label en una sola dirección) es sticky:
 el cruce de vuelta no tiene label, no resta, así que un IN no se cancela
 por volver a salir por el lado sin label.
 
-Sin ROI configurado no hay gate de salida (todo el frame es "inside"), así
+Sin counting zone configurado no hay gate de salida (todo el frame es "inside"), así
 que un cruce de línea solo no cuenta — en la práctica siempre se configura
-un ROI.
+una counting zone.
 
 Cuando dispara (3), la meta del track se resetea así el mismo track puede
 contar otro ciclo completo más tarde — importante cuando una persona entra
@@ -45,7 +45,7 @@ para que el track muera.
 Schema:
 
     counter:
-      roi:                                # opcional
+      counting_zone:                      # opcional
         x_min: 100
         x_max: 1050
         y_min: 150
@@ -273,22 +273,24 @@ def _aggregate_confidence_from_track(track: Track) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# ROI validation
+# Counting zone validation
 # ---------------------------------------------------------------------------
 
 
-def _validate_roi(
-    roi: dict[str, float],
+def _validate_counting_zone(
+    zone: dict[str, float],
 ) -> tuple[float, float, float, float]:
     try:
-        x_min = float(roi["x_min"])
-        x_max = float(roi["x_max"])
-        y_min = float(roi["y_min"])
-        y_max = float(roi["y_max"])
+        x_min = float(zone["x_min"])
+        x_max = float(zone["x_max"])
+        y_min = float(zone["y_min"])
+        y_max = float(zone["y_max"])
     except (KeyError, TypeError, ValueError) as e:
-        raise ValueError(f"counter.roi malformed: {e}") from e
+        raise ValueError(f"counter.counting_zone malformed: {e}") from e
     if not (x_min < x_max and y_min < y_max):
-        raise ValueError(f"counter.roi requires x_min<x_max and y_min<y_max, got {roi}")
+        raise ValueError(
+            f"counter.counting_zone requires x_min<x_max and y_min<y_max, got {zone}"
+        )
     return x_min, x_max, y_min, y_max
 
 
@@ -298,13 +300,13 @@ def _validate_roi(
 
 
 class Counter:
-    """Counter ROI + N líneas direccionales.
+    """Counter counting_zone + N líneas direccionales.
 
     La meta del track se keea bajo ``META_KEY``. El counter maneja:
 
-    - ``inside``: si el track está actualmente dentro del ROI.
+    - ``inside``: si el track está actualmente dentro de la counting zone.
     - ``crossing_net``: balance NETO de cruces por línea durante la
-      visita actual al ROI. Cada cruce in-segment con label hacia el
+      visita actual a la counting zone. Cada cruce in-segment con label hacia el
       lado +1 suma 1, hacia -1 resta 1. Se resetea en entry; el signo
       al exit decide el evento (0 = fue y vino, no cuenta).
     - ``line_sides``: cache per-line del "lado" del tracking point del
@@ -313,7 +315,7 @@ class Counter:
 
     Tracking point — centroide del bbox
     -----------------------------------
-    El counter usa el centroide del bbox como tracking point para ROI +
+    El counter usa el centroide del bbox como tracking point para la counting zone +
     cruce de línea. El montaje es cenital sobre el umbral de la puerta a
     medir, así que el cruce ocurre cerca del nadir, donde el paralaje es
     ~cero (cabeza y pies proyectan al mismo pixel) — el centroide es el
@@ -365,19 +367,19 @@ class Counter:
     DEFAULT_DEATH_EMIT_GRACE_FRAMES = 30
 
     # Guards anti-falso-positivo en death-emit. Cubren el caso reportado en
-    # producción: persona SENTADA dentro del ROI cuya cabeza jitterea
+    # producción: persona SENTADA dentro de la counting zone cuya cabeza jitterea
     # atravesando la línea (centroide cruza por ~3-10px sin que haya entrada
     # o salida real del edificio). Sin estos guards, el death-emit dispara
     # porque tecnicamente se registró un cross. Dos checks complementarios:
-    #   1. ``had_outside_pos``: el track DEBE haber sido visto fuera del ROI
-    #      en algún momento de su vida. Si spawneó adentro del ROI y nunca
+    #   1. ``had_outside_pos``: el track DEBE haber sido visto fuera de la counting zone
+    #      en algún momento de su vida. Si spawneó adentro de la counting zone y nunca
     #      salió, no hay evidencia de que realmente entró/salió del edificio.
     #      Esto filtra sitters + clutter + re-id failures que spawnean tracks
-    #      nuevos adentro del ROI.
+    #      nuevos adentro de la counting zone.
     #   2. ``visit_range >= MIN``: el track debe haber recorrido al menos
     #      este desplazamiento (en px, max de x_range y y_range) durante la
     #      visita. Filtra el edge case donde un track salió brevemente del
-    #      ROI (had_outside_pos=True) y después jittereó adentro sin
+    #      counting zone (had_outside_pos=True) y después jittereó adentro sin
     #      movimiento real. Default 80 px ≈ media zancada de adulto a la
     #      altura de montaje típica. **Tuneable per-instancia** via el
     #      kwarg ``min_visit_range_for_death_emit`` del constructor — bajarlo
@@ -390,7 +392,7 @@ class Counter:
     def __init__(
         self,
         lines: list[Line],
-        roi: Optional[dict[str, float]] = None,
+        counting_zone: Optional[dict[str, float]] = None,
         *,
         min_crossing_movement_px: float = 0.0,
         death_emit_grace_frames: Optional[int] = None,
@@ -399,10 +401,12 @@ class Counter:
         """
         Args:
             lines: Al menos una línea de conteo axis-aligned.
-            roi: ROI rectangular opcional gateando la región contada.
+            counting_zone: Counting zone rectangular opcional gateando la región
+                contada. Lo que el incumbent (FFC) llama TrackingZone — la
+                región física del gate.
             min_crossing_movement_px: Threshold de debounce — si el
                 track se movió menos que este valor (en pixels) entre
-                frames consecutivos *dentro* del ROI, los flips de lado
+                frames consecutivos *dentro* de la counting zone, los flips de lado
                 de línea de este frame se ignoran. Evita falsos cruces
                 por jitter del tracker cerca de la línea (problema
                 reconocido en sistemas de conteo cenital sin debounce).
@@ -420,7 +424,7 @@ class Counter:
                 emitir por muerte → evita doble-conteo si el tracker
                 eventualmente adopta.
             min_visit_range_for_death_emit: Desplazamiento mínimo (px) que
-                el track debe haber recorrido durante la visita al ROI para
+                el track debe haber recorrido durante la visita a la counting zone para
                 que death-emit fire. Solo se actualiza con detecciones
                 REALES (no Kalman pushes), así un sitter con cabeza
                 jitterosa cerca de la línea no dispara. ``None`` (default)
@@ -433,8 +437,8 @@ class Counter:
         if not lines:
             raise ValueError("Counter requires at least one line.")
         self._lines: list[Line] = list(lines)
-        self._roi: Optional[tuple[float, float, float, float]] = (
-            _validate_roi(roi) if roi else None
+        self._counting_zone: Optional[tuple[float, float, float, float]] = (
+            _validate_counting_zone(counting_zone) if counting_zone else None
         )
         self.death_emit_grace_frames: int = (
             int(death_emit_grace_frames)
@@ -460,7 +464,7 @@ class Counter:
         # Snapshot per-track del estado relevante para el death-emit. Lo
         # populamos en check_all (después de _process_track) y lo consultamos
         # cuando un track desaparece de la dict (= muerte): si tenía un cruce
-        # registrado y nunca salió del ROI, emitimos acá. Ver _emit_on_death.
+        # registrado y nunca salió de la counting zone, emitimos acá. Ver _emit_on_death.
         self._tracking_state: dict[int, dict] = {}
         # Cola de muertes pendientes con su edad. Cuando un track desaparece
         # de la dict, en vez de death-emit inmediato, lo movemos acá con
@@ -470,7 +474,7 @@ class Counter:
         # en el exit. Si no reaparece, al expirar fire death-emit (fallback).
         self._potential_deaths: dict[int, dict] = {}
         # Métrica de stitching para la telemetría: cuántos track_ids distintos
-        # vimos cruzar el ROI hoy. ``stitching_ratio`` = unique_ids / conteos
+        # vimos cruzar la counting zone hoy. ``stitching_ratio`` = unique_ids / conteos
         # emitidos; >1 indica fragmentación del tracker (un mismo sujeto se
         # spawnea con varios IDs). Reset diario.
         self._seen_track_ids: set[int] = set()
@@ -488,9 +492,13 @@ class Counter:
         return list(self._lines)
 
     @property
-    def roi(self) -> Optional[tuple[float, float, float, float]]:
-        """ROI como ``(x_min, x_max, y_min, y_max)`` o ``None`` si unset."""
-        return self._roi
+    def counting_zone(self) -> Optional[tuple[float, float, float, float]]:
+        """Counting zone como ``(x_min, x_max, y_min, y_max)`` o ``None`` si unset.
+
+        Es lo que el incumbent (FFC) llama TrackingZone — la región física del
+        gate donde el counter mide entradas/salidas. En nuestro sistema se usa
+        como gate semántico POST-tracker (no filtra detecciones pre-tracker)."""
+        return self._counting_zone
 
     @property
     def total_in(self) -> int:
@@ -534,12 +542,12 @@ class Counter:
         return rows
 
     def check_all(self, tracks: dict[int, Track]) -> list[CountEvent]:
-        # Camino normal: entrar al ROI → cruzar la línea (con detección real) →
-        # salir del ROI → emite. Procesa también las MUERTES de tracks: si un
+        # Camino normal: entrar a la counting zone → cruzar la línea (con detección real) →
+        # salir de la counting zone → emite. Procesa también las MUERTES de tracks: si un
         # track desaparece de la dict habiendo CRUZADO (net != 0) y sin haber
-        # SALIDO del ROI (inside aún True), emitimos el conteo igual en
+        # SALIDO de la counting zone (inside aún True), emitimos el conteo igual en
         # ``_emit_on_death``. Cubre el caso que el detector pierde a la persona
-        # después del cruce y el Kalman parka adentro del ROI sin alcanzar el
+        # después del cruce y el Kalman parka adentro de la counting zone sin alcanzar el
         # borde → sin death-emit ese conteo se perdía. El gate es selectivo:
         # un track que entró pero NUNCA cruzó (net=0) NO se cuenta en muerte —
         # así una persona que duda en la entrada y vuelve no genera un falso
@@ -612,10 +620,11 @@ class Counter:
         }
 
     def _emit_on_death(self, snap: dict) -> Optional[CountEvent]:
-        """Emite un CountEvent para un track que murió SIN haber salido del
-        ROI, si tenía un cruce de línea registrado. Caso típico: el detector
-        pierde a la persona después de cruzar y el Kalman parka adentro del
-        ROI antes de alcanzar el borde — sin esto, el conteo se perdía."""
+        """Emite un CountEvent para un track que murió SIN haber salido de la
+        counting zone, si tenía un cruce de línea registrado. Caso típico: el
+        detector pierde a la persona después de cruzar y el Kalman parka adentro
+        de la counting zone antes de alcanzar el borde — sin esto, el conteo se
+        perdía."""
         if not snap.get("inside"):
             return None  # ya había salido (o nunca entró)
         net = snap.get("net") or []
@@ -623,8 +632,8 @@ class Counter:
             return None  # entró pero NUNCA cruzó — no contar
 
         # Guard 1: had_outside_pos. El track debe haber sido visto FUERA del
-        # ROI en algún momento de su vida. Filtra sitters + clutter + re-id
-        # failures que spawnean adentro del ROI: si la cabeza de un sentado
+        # counting zone en algún momento de su vida. Filtra sitters + clutter + re-id
+        # failures que spawnean adentro de la counting zone: si la cabeza de un sentado
         # jitterea atravesando la línea, el cross se registra pero el track
         # nunca tuvo evidencia de "entrar desde afuera" — no es una pasada
         # real, no emitir.
@@ -638,7 +647,7 @@ class Counter:
         # Guard 2: visit_range mínimo. El track debe haber recorrido al menos
         # MIN_VISIT_RANGE_FOR_DEATH_EMIT px durante la visita (max de x_range
         # y y_range). Filtra el edge case donde un track tuvo outside_pos
-        # pero después solo jittereó adentro del ROI sin movimiento real.
+        # pero después solo jittereó adentro de la counting zone sin movimiento real.
         x_range = float(snap.get("visit_x_range", 0.0))
         y_range = float(snap.get("visit_y_range", 0.0))
         if max(x_range, y_range) < self.min_visit_range_for_death_emit:
@@ -713,7 +722,7 @@ class Counter:
     @property
     def stitching_ratio(self) -> float:
         """Canary de fragmentación del tracker: track_ids únicos vistos cruzar
-        el ROI hoy / conteos emitidos. Ideal ≈ 1.0 (cada persona = 1 ID = 1
+        la counting zone hoy / conteos emitidos. Ideal ≈ 1.0 (cada persona = 1 ID = 1
         evento). >1.5 sugiere fragmentación (el detector pierde personas y el
         tracker spawnea IDs nuevos en vez de adoptar). 0 si no hubo conteo
         emitido todavía. Análogo a ``wifi_ble_stitching_ratio``.
@@ -776,14 +785,14 @@ class Counter:
             decisive = dx * new_side
         return decisive >= self.MIN_KALMAN_CROSS_DISPLACEMENT_PX
 
-    def _inside_roi(self, cx: float, cy: float) -> bool:
-        if self._roi is None:
+    def _inside_counting_zone(self, cx: float, cy: float) -> bool:
+        if self._counting_zone is None:
             return True
-        x_min, x_max, y_min, y_max = self._roi
+        x_min, x_max, y_min, y_max = self._counting_zone
         return x_min <= cx <= x_max and y_min <= cy <= y_max
 
     def _tracking_point(self, track: Track) -> tuple[float, float]:
-        """Pixel usado para ROI + cruce de línea: el centroide del bbox.
+        """Pixel usado para la counting zone + cruce de línea: el centroide del bbox.
 
         El montaje es cenital sobre el umbral de la puerta a medir, así
         que el cruce ocurre cerca del nadir donde el paralaje es ~cero —
@@ -805,29 +814,29 @@ class Counter:
         cx, cy = self._tracking_point(track)
         meta = track.meta.setdefault(self.META_KEY, {})
         was_inside = bool(meta.get("inside", False))
-        is_inside = self._inside_roi(cx, cy)
+        is_inside = self._inside_counting_zone(cx, cy)
 
         # ¿Esta posición viene de una detección REAL este frame, o es una
         # predicción del Kalman (track PENDING sin match)? Solo registramos
         # cruces de línea con detección real: un track perdido que el Kalman
         # extrapola puede "cruzar" la línea por inercia y doble-contar. La
-        # extrapolación SÍ se usa para las transiciones entry/exit del ROI —
+        # extrapolación SÍ se usa para las transiciones entry/exit de la counting zone —
         # así un track que cruzó (con detección real) y después se perdió
-        # igual SALE del ROI y emite el cruce ya registrado (no se pierde el
+        # igual SALE de la counting zone y emite el cruce ya registrado (no se pierde el
         # conteo). El doble-conteo del drift se evita acá, no congelando el
         # track en el tracker.
         is_real = int(getattr(track, "disappeared", 0) or 0) == 0
 
-        # Memoria de la última posición outside-ROI. La entry-fresca
+        # Memoria de la última posición outside-counting-zone. La entry-fresca
         # abajo la usa para snapshotear sides[] desde la trayectoria de
         # approach (lado inequívoco de donde viene el track) en lugar de
-        # la primera detección inside — que con ROI chico + detector miss
+        # la primera detección inside — que con counting zone chica + detector miss
         # rate puede caer ya del otro lado de la línea y dejar el cache
         # corrupto, perdiendo el cruce.
         #
         # Solo se actualiza con DETECCIONES REALES (is_real=True). Los
         # frames de pura extrapolación Kalman pueden alucinar posiciones
-        # outside ROI muy lejanas (ej. (888,109) cuando el sitter está a
+        # outside counting zone muy lejanas (ej. (888,109) cuando el sitter está a
         # (470,330)) durante el exit del track — si esa posición
         # alucinada se guarda y el track muere + es ghost-adopted, el
         # nuevo ciclo del track hereda un last_outside_pos espurio que
@@ -849,10 +858,10 @@ class Counter:
             meta["line_sides"] = sides
 
         # Balance NETO de cruces por línea durante la visita actual al
-        # ROI (máquina de estados de la zona). Cada cruce in-segment
+        # counting zone (máquina de estados de la zona). Cada cruce in-segment
         # hacia el lado +1 suma 1, hacia el lado -1 resta 1 (solo cuando
         # la dirección tiene label — un gate one-way es "sticky": el
-        # cruce de vuelta no tiene label y no cancela). Al salir del ROI
+        # cruce de vuelta no tiene label y no cancela). Al salir de la counting zone
         # se emite según el SIGNO del neto: >0 = quedó del lado +1 (cruzó
         # neto en esa dirección), <0 = lado -1, 0 = fue y vino, NO cuenta.
         # Esto reemplaza el viejo "gana el último cruce" que contaba mal
@@ -866,7 +875,7 @@ class Counter:
             # Guard anti-entry-Kalman: si el primer frame inside es pura
             # extrapolación Kalman (is_real=False), NO disparar la
             # entry-fresca. El track no fue REALMENTE observado adentro
-            # — el Kalman lo proyectó al ROI desde una FP del detector
+            # — el Kalman lo proyectó a la counting zone desde una FP del detector
             # afuera, y la entry-fresca le snapshotearía sides[] +
             # configuraría was_inside=True habilitando el zigzag clásico
             # sobre la línea + EXIT por Kalman emitiendo count espurio.
@@ -883,9 +892,9 @@ class Counter:
                 )
                 return None
             # Entry fresca: resetear estado del ciclo y snapshotear
-            # sides desde la última posición outside-ROI conocida (el
+            # sides desde la última posición outside-counting-zone conocida (el
             # lado del cual el track se aproxima — inequívoco). Esto
-            # protege contra el case patológico donde, con ROI chico
+            # protege contra el case patológico donde, con counting zone chica
             # y detector miss rate, la primera detección inside cae
             # ya del otro lado de la línea y dejaría sides[] cacheado
             # del lado equivocado (resultando en cruces no detectados).
@@ -896,7 +905,7 @@ class Counter:
             meta["last_track_pos"] = (cx, cy)
             # Tracking de rango de movimiento durante la visita (para los
             # guards del death-emit). Se inicializa en la posición de entrada
-            # y se actualiza con cada detección REAL dentro del ROI.
+            # y se actualiza con cada detección REAL dentro de la counting zone.
             meta["visit_x_min"] = cx
             meta["visit_x_max"] = cx
             meta["visit_y_min"] = cy
@@ -905,7 +914,7 @@ class Counter:
             for i in range(len(net)):
                 net[i] = 0
             outside_pos = meta.get("last_outside_pos")
-            # Flag: ¿este track tuvo posición OUTSIDE ROI en algún momento?
+            # Flag: ¿este track tuvo posición OUTSIDE counting zone en algún momento?
             # Es evidencia de que entró desde afuera (legitimate walk-through)
             # vs spawneó adentro (sitter/clutter/re-id failure).
             meta["had_outside_pos"] = outside_pos is not None
@@ -913,7 +922,7 @@ class Counter:
             for i, line in enumerate(self._lines):
                 sides[i] = line.side_of(snap_x, snap_y)
             # Registrar el track_id para la métrica de stitching. Set: cada
-            # ID que entró al ROI hoy se registra una sola vez (idempotent).
+            # ID que entró a la counting zone hoy se registra una sola vez (idempotent).
             self._seen_track_ids.add(track.track_id)
             logger.info(  # TRACKDBG [REVERT]
                 "TRACKDBG entry tid=%d pos=(%.0f,%.0f) snap=(%.0f,%.0f) sides=%s is_real=%s",
@@ -976,10 +985,10 @@ class Counter:
                     label = line.crossing_label(prev_side, new_side)
                     if label is not None:
                         net[i] += 1 if new_side == 1 else -1
-                        # Anclar la posición del cruce dentro del ROI. El
+                        # Anclar la posición del cruce dentro de la counting zone. El
                         # emit en exit la usa para el position_x/y del
                         # CountEvent (no la posición de salida, que está
-                        # fuera del ROI por definición).
+                        # fuera de la counting zone por definición).
                         meta["last_crossing_pos"] = (cx, cy)
                         logger.info(  # TRACKDBG [REVERT]
                             "TRACKDBG cross tid=%d line=%d new_side=%+d net=%+d pos=(%.0f,%.0f) label=%s",
@@ -998,7 +1007,7 @@ class Counter:
             # rápido, o gaps del detector). En este caso anclamos al
             # midpoint del segmento de exit — la posición real del
             # cruce cae entre los dos frames; el midpoint es la mejor
-            # aproximación y suele caer dentro del ROI.
+            # aproximación y suele caer dentro de la counting zone.
             # Registrar el cruce de la transición de exit si:
             #   - es una detección REAL, o
             #   - es una extrapolación Kalman DECISIVA (track caminando que el
@@ -1064,17 +1073,17 @@ class Counter:
             for i in range(len(net)):
                 net[i] = 0
             # Guard de exit-por-Kalman: tracks que nacieron adentro del
-            # ROI (had_outside_pos=False) no deben emitir counts vía
+            # counting zone (had_outside_pos=False) no deben emitir counts vía
             # extrapolación Kalman. Filtra el caso del sitter parado
             # cerca de la línea: la persona se mueve un poco, cruza la
             # línea (cross real, net != 0), el detector la pierde, y el
             # Kalman extrapola la velocidad residual hacia afuera del
-            # ROI — sin este guard, el cruce intra-visita generaría un
+            # counting zone — sin este guard, el cruce intra-visita generaría un
             # count espurio aunque la persona nunca salió de la tienda.
             # Para exits con detección real (is_real=True) el guard NO
             # aplica: si el track salió observado, vale el count
             # aunque haya nacido inside (caso del primer-frame-perdido
-            # por el detector en el borde del ROI). Coherente con el
+            # por el detector en el borde de la counting zone). Coherente con el
             # mismo guard en _emit_on_death (capa 3 del rescue cascade).
             if (
                 label
@@ -1134,7 +1143,7 @@ class Counter:
                 )
             # Salió sin veredicto: o nunca cruzó la línea, o cruzó y
             # volvió a cruzar (balance neto 0 — "fue y vino" dentro del
-            # ROI). En ambos casos NO se cuenta.
+            # counting zone). En ambos casos NO se cuenta.
             logger.debug(
                 "exit_without_net_crossing",
                 extra={"track_id": track.track_id},
@@ -1153,7 +1162,7 @@ def build_counter(config: dict[str, Any]) -> Counter:
     Schema (estricto):
 
         counter:
-          roi:                              # opcional
+          counting_zone:                    # opcional
             x_min: 100
             x_max: 1050
             y_min: 150
@@ -1190,7 +1199,7 @@ def build_counter(config: dict[str, Any]) -> Counter:
 
     return Counter(
         lines=lines,
-        roi=counter_cfg.get("roi"),
+        counting_zone=counter_cfg.get("counting_zone"),
         min_crossing_movement_px=float(
             counter_cfg.get("min_crossing_movement_px", 0.0) or 0.0
         ),

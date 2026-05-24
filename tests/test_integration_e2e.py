@@ -38,9 +38,9 @@ BASELINE_MM = 140.0
 
 
 def _make_config(tmpdir: str) -> dict[str, Any]:
-    """Build a minimally-valid pipeline config with an ROI counter.
+    """Build a minimally-valid pipeline config with an counting zone counter.
 
-    The ROI spans y=[180, 300] with a horizontal counting line at y=240.
+    The counting zone spans y=[180, 300] with a horizontal counting line at y=240.
     Tracks entering at y<240 ("side_a") and exiting at y>240 ("side_b")
     produce ingress events; the mirror direction produces egress.
     """
@@ -95,7 +95,7 @@ def _make_config(tmpdir: str) -> dict[str, Any]:
             },
         },
         "counter": {
-            "roi": {"x_min": 100, "x_max": 540, "y_min": 180, "y_max": 300},
+            "counting_zone": {"x_min": 100, "x_max": 540, "y_min": 180, "y_max": 300},
             "lines": [
                 {
                     "from": [100, 240],
@@ -311,13 +311,13 @@ def _telemetry_payloads(mqtt_mock: MagicMock) -> list[dict[str, Any]]:
 
 
 def test_e2e_ingress_event_published(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A person walking top→bottom through the ROI emits one ingress event."""
+    """A person walking top→bottom through the counting zone emits one ingress event."""
     tmpdir = tempfile.mkdtemp()
     config = _make_config(tmpdir)
 
     # Scripted trajectory (cx=320 kept constant; cy walks top→bottom).
-    # 3 frames outside (above) to reach CONFIRMED, then enter ROI from
-    # side_a (y<240), cross line, exit ROI below at side_b (y>300).
+    # 3 frames outside (above) to reach CONFIRMED, then enter counting zone from
+    # side_a (y<240), cross line, exit counting zone below at side_b (y>300).
     trajectory_y = [50, 100, 150, 190, 230, 260, 295, 320]
     detections = [[_det_at(320, y)] for y in trajectory_y]
 
@@ -356,7 +356,7 @@ def test_e2e_ingress_event_published(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — indeciso (enters ROI, turns back) emits NO counting event
+# Test 2 — indeciso (enters counting zone, turns back) emits NO counting event
 # ---------------------------------------------------------------------------
 
 
@@ -364,7 +364,7 @@ def test_e2e_indeciso_no_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """A person entering but turning back on the same side is not counted.
 
     Trajectory: approaches from above (3 frames to reach CONFIRMED), dips
-    into the ROI on side_a only, never crosses the line, then exits on
+    into the counting zone on side_a only, never crosses the line, then exits on
     the same side. ROICounter must emit zero counting events.
     """
     tmpdir = tempfile.mkdtemp()

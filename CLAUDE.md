@@ -65,7 +65,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Profundidad**: SGBM + matcher derecho + WLS filter. `vision.num_disparities: auto` deriva el rango desde `mounting_height_m`.
 - **Detección**: YOLOv8n fine-tuneado (cenital), HEF para Hailo-8L. NMS on-chip. VStream API con scheduler ROUND_ROBIN. Modelo activo: `people-counter-detector`. Pipeline detallado en `scripts/training/README.md`.
 - **Tracking**: euclidiano 3D (x, y, profundidad) con Kalman per-track + state machine corta (CANDIDATE → CONFIRMED → PENDING → LOST).
-- **Conteo**: línea virtual + ROI rectangular. Track entra al ROI → cruza línea → sale del ROI = evento `direction='in'` o `'out'` (terminología canónica fleet-wide, schema y MQTT). Publicación inmediata vía MQTT.
+- **Conteo**: línea virtual + counting zone rectangular. Track entra a la counting zone → cruza línea → sale de la counting zone = evento `direction='in'` o `'out'` (terminología canónica fleet-wide, schema y MQTT). Publicación inmediata vía MQTT.
 
 ### Captura WiFi/BLE
 
@@ -110,7 +110,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **Config**: archivo único per-device.
   - `/etc/people-counter/config.yaml` (per-device): fuente única de verdad en runtime. `load_config()` lee SOLO este archivo, sin merge con el example. Tiene que contener todas las keys requeridas (validadas en `_validate`).
   - `config/config.example.yaml` (en repo): TEMPLATE documentado de la flota. NO se mergea en runtime — sirve para provisionar un device nuevo (operator copia → `/etc/people-counter/config.yaml` y edita) y para auditar qué keys son válidas. Cambios fleet-wide se shippean editando el template + redeployando el config a cada device. Una whitelist chica de feature toggles end-user (`CLOUD_OVERRIDABLE`: `operating_hours`, `counting_enabled`, `external_traffic_enabled`) puede pushearse vía AWS IoT Device Shadow sin restart — workflow del operator en `docs/shadow_operator_guide.md`. Los deltas se persisten al MISMO `config.yaml` (single source of truth: el operator SSH ve lo que el device tiene corriendo). Deltas con valores inválidos se rechazan en `apply_shadow_delta` ANTES de escribir — no hay fail_open/fail_closed porque no hay separación local-válido vs cloud-inválido.
-  - **Hardware-agnostic**: los parámetros que dependen del hardware/setup del device (sensor, lens, bracket, board ChArUco, AE timings) están consolidados en `src/config/hardware.py` (dataclass `HardwareParams` + `load_hardware_params()`). Cambiar de sensor / bracket / lens / board se hace editando keys del config; ningún script tiene constantes hardware hardcodeadas. Los setup tools (focus_assist, calibrate, preview, roi_picker, diagnose_bracket, diagnose_depth) leen `HardwareParams` al startup; el runtime también plumb-ea los mismos valores a `StereoCapture`.
+  - **Hardware-agnostic**: los parámetros que dependen del hardware/setup del device (sensor, lens, bracket, board ChArUco, AE timings) están consolidados en `src/config/hardware.py` (dataclass `HardwareParams` + `load_hardware_params()`). Cambiar de sensor / bracket / lens / board se hace editando keys del config; ningún script tiene constantes hardware hardcodeadas. Los setup tools (focus_assist, calibrate, preview, counting_zone_picker, diagnose_bracket, diagnose_depth) leen `HardwareParams` al startup; el runtime también plumb-ea los mismos valores a `StereoCapture`.
 - **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. **Nunca commitear**.
 - **Tests**: pytest, estructura espejo de src.
 - **No usar clases salvo que haya estado.** Tracker, MQTTClient justifican clases. Resto = funciones.
@@ -123,7 +123,7 @@ people-counter/
 ├── CLAUDE.md, README.md, pyproject.toml, .gitignore
 ├── src/
 │   ├── vision/         <- capture, calibration, depth, detect, static_suppressor, world_coords, best_frame
-│   ├── tracking/       <- tracker (Kalman + state machine), counter (ROI + line crossings)
+│   ├── tracking/       <- tracker (Kalman + state machine), counter (counting zone + line crossings)
 │   ├── wifi_ble/       <- wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher
 │   ├── mqtt/           <- client (AWS IoT), buffer (SQLite outbox)
 │   ├── cloud/          <- persist_event Lambda (IoT Rules → Postgres)
@@ -161,9 +161,9 @@ people-counter/
 | S1 | Análisis y diseño inicial | **DONE** — repo, dependencias, arquitectura base |
 | S2 | Captura estéreo y servicios | **DONE** — picamera2, dual cam, servicios systemd |
 | S3 | Calibración estéreo | **DONE** — fisheye K-B (ChArUco A3), `diagnose_depth`, wizard browser-driven |
-| S4 | Profundidad y región de interés | **DONE** — SGBM + WLS, ROI rect, num_disparities auto desde mounting_height |
+| S4 | Profundidad y región de interés | **DONE** — SGBM + WLS, counting zone rect, num_disparities auto desde mounting_height |
 | S5 | Detección neuronal de personas | **DONE** — YOLOv8n cenital fine-tuneado, HEF Hailo-8L, modelo `people-counter-detector` (~945 imgs, hard negatives) |
-| S6 | Seguimiento y conteo | **DONE** — tracker Kalman + state machine + ghost pool/ID adoption + counter ROI/línea con net-balance + death-emit con guards (rescue-with-guardrails philosophy) |
+| S6 | Seguimiento y conteo | **DONE** — tracker Kalman + state machine + ghost pool/ID adoption + counter counting zone/línea con net-balance + death-emit con guards (rescue-with-guardrails philosophy) |
 | S7 | Captura WiFi y BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos (randomized), hashing + dedup 4 reglas (incl. fingerprint), MAX-RSSI para shoppers |
 | S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`, `wifi_ble_stitching_ratio`, `last_shadow_apply_ts`) + Device Shadow activado con 3 toggles overridables (`operating_hours`, `counting_enabled`, `external_traffic_enabled`) — workflow operator en `docs/shadow_operator_guide.md` |
 | S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambda `persist_event` + Lambda `ingest_pos_transaction` + RDS Postgres 16 (bucket_15min server-derived via GENERATED) + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con custom domain HTTPS |
@@ -206,10 +206,10 @@ people-counter/
 - `tracking.state_machine.reid_gate_px: 200` — gate de distancia para re-id en PENDING. Pareado con `pending_velocity_decay: 0.85` que reduce el predict del Kalman cerca de la última observación, así el gate cubre gaps de ~1s a velocidad de caminata sin necesidad de ser más ancho.
 - `tracking.state_machine.pending_grace_frames: 3` — frames iniciales de PENDING en los que el predict del Kalman se mantiene full velocity antes de aplicar `pending_velocity_decay`. Cubre gaps cortos del detector (1-3 frames) preservando la trayectoria; después de la gracia el decay arranca para evitar drift del predictor.
 - `tracking.ambiguous_match_ratio: 0.8` — ratio test estilo Lowe post-Hungarian. Si el segundo mejor candidato de una asignación está dentro del 80% del mejor, la match se rechaza por ambigua. Filtra el caso "dos detecciones cerca, dos tracks cerca, Hungarian arma un cruce arbitrario".
-- **Tracking point del counter = centroide del bbox.** El montaje es cenital sobre el umbral de la puerta a medir, así que el cruce ocurre cerca del nadir donde el paralaje es ~cero (cabeza y pies proyectan al mismo pixel) — el centroide es el foot-point efectivo. La corrección de paralaje image-space que existía (`counter.foot_projection_enabled` + `world_coords.project_to_floor`) se retiró: comprimía la trayectoria hacia el principal point y rompía los INs en puerta central, sin aportar en la zona del cruce. La altura 3D de SGBM se sigue usando, pero solo para clasificar adult/child (`vision/depth.py`), no para la posición del cruce. Una corrección de paralaje en world-space (counter en mm sobre el plano del piso) queda como opción futura — bajo ROI para geometría de puerta central.
-- **Conteo = entrar al ROI → cruzar la línea → SALIR del ROI** (semántica de gate, en `Counter._process_track`). Ruta principal: emit en el frame de salida del ROI con verdict del balance neto de cruces de la visita. Fallback ("death-emit-if-crossed", ver design philosophy abajo): track que cruzó y muere ADENTRO del ROI sin alcanzar el borde igual emite, sujeto a dos guards anti-FP (`had_outside_pos` + `MIN_VISIT_RANGE_FOR_DEATH_EMIT`). No hay U-turn cancellation: un round-trip real (entrar+cruzar+salir, luego re-entrar+cruzar+salir por el otro lado) cuenta 1 IN + 1 OUT — la cancelación previa se removió porque cancelaba tráfico legítimo, no solo dudas en la puerta. Una "duda" sin segundo cruce completo produce un único evento al salir, así que igual no se sobre-cuenta.
-- **Cancelación neta dentro del ROI**: durante una visita al ROI el counter acumula un balance NETO de cruces por línea (cada cruce in-segment con label hacia un lado suma, hacia el opuesto resta). Al salir emite según el SIGNO del neto: ±1 = sentido contado, 0 = la persona "fue y vino" (cruzó y re-cruzó dentro del ROI) y NO cuenta. Reemplaza el viejo "gana el último cruce". Gate one-way = sticky (el cruce de vuelta sin label no resta).
-- **Keep-alive del tracker dentro del ROI**: `EuclideanTracker.keepalive_roi` (lo setea `main` desde `counter.roi`) — un track PENDING cuya última posición predicha cae dentro del ROI NO muere por timeout (`pending_max_frames`/`max_disappeared`); se mantiene vivo (extrapolando con el Kalman, NO congelado) hasta re-matchear o hasta que su predicción salga del ROI. Cubre "cruzó la línea y el detector lo pierde adentro": el track sigue a la persona y SALE del ROI por extrapolación → emite el cruce (sin keep-alive moría adentro y se perdía el conteo). Complementa la exención del `static_suppressor` (que ya no suprime detecciones dentro del ROI vía `exempt_roi`). Salvaguardas: (1) **anti-doble-conteo en el counter, no en el tracker** — `Counter._process_track` registra un cruce de línea SOLO con detección real (`track.disappeared == 0`), nunca en un frame de pura predicción Kalman; así el drift de un track perdido que extrapola "cruzando" la línea no cuenta, pero el cruce real ya registrado SÍ se emite cuando el track sale del ROI (aunque la salida sea por extrapolación). (Esto reemplazó un "freeze" del track que tenía el efecto colateral de clavar a los crossers reales perdidos mid-ROI y perder su conteo.) (2) **cap `keepalive_max_frames`** (default 600 ≈ 24s) — misses consecutivos máximos; garbage-collectea huérfanos (re-id falló, persona ya no está). Como `disappeared` se resetea con cualquier hit, el lingering real nunca llega al cap. (3) el preview esconde los fantasmas de larga ausencia (PENDING con `disappeared > pending_max_frames`) además del clutter estático. El historial `positions` se capa a 512.
+- **Tracking point del counter = centroide del bbox.** El montaje es cenital sobre el umbral de la puerta a medir, así que el cruce ocurre cerca del nadir donde el paralaje es ~cero (cabeza y pies proyectan al mismo pixel) — el centroide es el foot-point efectivo. La corrección de paralaje image-space que existía (`counter.foot_projection_enabled` + `world_coords.project_to_floor`) se retiró: comprimía la trayectoria hacia el principal point y rompía los INs en puerta central, sin aportar en la zona del cruce. La altura 3D de SGBM se sigue usando, pero solo para clasificar adult/child (`vision/depth.py`), no para la posición del cruce. Una corrección de paralaje en world-space (counter en mm sobre el plano del piso) queda como opción futura — bajo counting zone para geometría de puerta central.
+- **Conteo = entrar a la counting zone → cruzar la línea → SALIR de la counting zone** (semántica de gate, en `Counter._process_track`). Ruta principal: emit en el frame de salida de la counting zone con verdict del balance neto de cruces de la visita. Fallback ("death-emit-if-crossed", ver design philosophy abajo): track que cruzó y muere ADENTRO de la counting zone sin alcanzar el borde igual emite, sujeto a dos guards anti-FP (`had_outside_pos` + `MIN_VISIT_RANGE_FOR_DEATH_EMIT`). No hay U-turn cancellation: un round-trip real (entrar+cruzar+salir, luego re-entrar+cruzar+salir por el otro lado) cuenta 1 IN + 1 OUT — la cancelación previa se removió porque cancelaba tráfico legítimo, no solo dudas en la puerta. Una "duda" sin segundo cruce completo produce un único evento al salir, así que igual no se sobre-cuenta.
+- **Cancelación neta dentro de la counting zone**: durante una visita a la counting zone el counter acumula un balance NETO de cruces por línea (cada cruce in-segment con label hacia un lado suma, hacia el opuesto resta). Al salir emite según el SIGNO del neto: ±1 = sentido contado, 0 = la persona "fue y vino" (cruzó y re-cruzó dentro de la counting zone) y NO cuenta. Reemplaza el viejo "gana el último cruce". Gate one-way = sticky (el cruce de vuelta sin label no resta).
+- **Keep-alive del tracker dentro de la counting zone**: `EuclideanTracker.keepalive_counting_zone` (lo setea `main` desde `counter.counting_zone`) — un track PENDING cuya última posición predicha cae dentro de la counting zone NO muere por timeout (`pending_max_frames`/`max_disappeared`); se mantiene vivo (extrapolando con el Kalman, NO congelado) hasta re-matchear o hasta que su predicción salga de la counting zone. Cubre "cruzó la línea y el detector lo pierde adentro": el track sigue a la persona y SALE de la counting zone por extrapolación → emite el cruce (sin keep-alive moría adentro y se perdía el conteo). Complementa la exención del `static_suppressor` (que ya no suprime detecciones dentro de la counting zone vía `exempt_counting_zone`). Salvaguardas: (1) **anti-doble-conteo en el counter, no en el tracker** — `Counter._process_track` registra un cruce de línea SOLO con detección real (`track.disappeared == 0`), nunca en un frame de pura predicción Kalman; así el drift de un track perdido que extrapola "cruzando" la línea no cuenta, pero el cruce real ya registrado SÍ se emite cuando el track sale de la counting zone (aunque la salida sea por extrapolación). (Esto reemplazó un "freeze" del track que tenía el efecto colateral de clavar a los crossers reales perdidos mid-counting-zone y perder su conteo.) (2) **cap `keepalive_max_frames`** (default 600 ≈ 24s) — misses consecutivos máximos; garbage-collectea huérfanos (re-id falló, persona ya no está). Como `disappeared` se resetea con cualquier hit, el lingering real nunca llega al cap. (3) el preview esconde los fantasmas de larga ausencia (PENDING con `disappeared > pending_max_frames`) además del clutter estático. El historial `positions` se capa a 512.
 
 ## Design philosophy del counter: rescue con guardrails
 
@@ -219,14 +219,14 @@ con guardrails", no hacia "solo contar lo observado directamente". El
 trade-off es explícito y tuneable per-site.
 
 **Modos de falla del conteo "ingenuo" (contar solo crosses observados con
-detección real seguidos de exit observado del ROI):**
+detección real seguidos de exit observado de la counting zone):**
 
 1. **Crosser perdido en la zona de la línea** — el detector dropea a la
    persona justo cuando está atravesando la línea. Sin rescue, la trayectoria
    nunca registra el cross con detección real → conteo perdido.
-2. **Crosser parqueado adentro del ROI** — la persona cruza con detección
+2. **Crosser parqueado adentro de la counting zone** — la persona cruza con detección
    real, después se pierde, el Kalman extrapola pero el `pending_velocity_decay`
-   la frena dentro del ROI antes de alcanzar el borde → la salida del ROI
+   la frena dentro de la counting zone antes de alcanzar el borde → la salida de la counting zone
    nunca dispara → conteo perdido.
 
 **Nuestras tres capas de rescue, en cascada (de la primera a la última que
@@ -251,23 +251,23 @@ dispara):**
    solo porque el snap está en zona geométricamente distinta). El resto
    del meta sí se hereda — el fix es selectivo a `last_outside_pos`.
 2. **Decisive Kalman cross at exit** (`Counter._decisive_kalman_cross`): si
-   la salida del ROI es un frame de pura extrapolación Kalman (`disappeared
+   la salida de la counting zone es un frame de pura extrapolación Kalman (`disappeared
    > 0`), se acepta el cruce SI `disappeared <= MAX_KALMAN_CROSS_FRAMES`
    (15) Y el desplazamiento desde la última posición REAL en la dirección
    del cruce es `>= MIN_KALMAN_CROSS_DISPLACEMENT_PX` (30 px) Y el track
-   tiene `had_outside_pos=True` (estuvo afuera del ROI alguna vez en su
+   tiene `had_outside_pos=True` (estuvo afuera de la counting zone alguna vez en su
    vida — mismo guard que capa 3). El gate del inside-was-inside se mantiene
-   estricto: ningún cross registra en frames de predicción adentro del ROI.
+   estricto: ningún cross registra en frames de predicción adentro de la counting zone.
    La relajación es SOLO en la transición de exit. Cubre
    "walked-then-lost-mid-line" sin re-introducir el doble-conteo del drift
    estacionario ni el caso del sitter pegado a la línea cuyo Kalman alucina
    un exit lateral al moverse (bug observado en piloto 2026-05-23 17:45,
-   ver `test_kalman_exit_skipped_when_track_born_inside_roi`).
+   ver `test_kalman_exit_skipped_when_track_born_inside_counting_zone`).
 3. **Death-emit-if-crossed** (`Counter._emit_on_death`): track muere
-   adentro del ROI (`inside=True`) con cruce registrado (`net != 0`) y
+   adentro de la counting zone (`inside=True`) con cruce registrado (`net != 0`) y
    pasa DOS guards anti-FP: (a) `had_outside_pos` — el track DEBE haber sido
-   visto fuera del ROI alguna vez en su vida (filtra sitters / clutter / re-id
-   failures que spawnean directo adentro del ROI); (b) `visit_range >=
+   visto fuera de la counting zone alguna vez en su vida (filtra sitters / clutter / re-id
+   failures que spawnean directo adentro de la counting zone); (b) `visit_range >=
    MIN_VISIT_RANGE_FOR_DEATH_EMIT` (80 px, max de x_range y y_range durante
    la visita; filtra el edge case de track con outside_pos válido pero que
    después solo jittereó). Diferido por `death_emit_grace_frames` (sincronizado
@@ -279,7 +279,7 @@ entry-fresca): si el PRIMER frame inside del track es pura extrapolación
 Kalman (`is_real=False`), la entry-fresca NO se dispara — `was_inside`
 permanece False, no se snapshotean `sides[]`, no se registra el track
 en `_seen_track_ids`, no hay ciclo de visita iniciado. El detector emitió
-una FP outside ROI y Kalman la proyectó adentro; sin este guard el ciclo
+una FP outside counting zone y Kalman la proyectó adentro; sin este guard el ciclo
 arrancaría con sides[] alucinado, el detector después "encontraría"
 ruido sobre la línea y se generaría el zigzag clásico + exit por Kalman
 con un COUNT espurio. Si la persona realmente está adentro, el próximo
@@ -325,7 +325,7 @@ agresivo en sites con detección flakey, conservador frente a sitters/clutter.
 **Trade-off conocido del guard `MIN_VISIT_RANGE_FOR_DEATH_EMIT`**: la
 métrica `visit_range` se actualiza solo con detecciones REALES (no Kalman
 pushes). En sites con detector muy flakey, un crosser real puede tener
-`visit_range < 80` porque la mayoría de sus frames adentro del ROI fueron
+`visit_range < 80` porque la mayoría de sus frames adentro de la counting zone fueron
 extrapolación. En ese caso el guard 2 rechaza death-emit → si capas 1 y 2
 no agarraron, conteo perdido. Síntoma: `death_emit_count = 0` con
 `track_stitching_ratio > 1.3` sostenido. Fix: bajar el threshold del

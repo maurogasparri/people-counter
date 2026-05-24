@@ -65,7 +65,7 @@ predominante.
 | S11 — Validación y tests | 6.9h | 5.2% |
 | Misc / unmapped (configs, tooling cross) | 7.0h | 5.3% |
 | S7 — Captura WiFi y BLE | 2.5h | 1.9% |
-| S4 — Profundidad y ROI | 0.6h | 0.4% |
+| S4 — Profundidad y counting zone | 0.6h | 0.4% |
 | **Total** | **132.0h** | **100%** |
 
 ### Hitos del PoC
@@ -182,7 +182,7 @@ Totales por agrupación (medidos del repo):
 | Captura estéreo (picamera2 dual cam, raw mode, timestamps) | T02 | 4 | 04-03 | 04-09 | T01 |
 | Calibración fisheye + ChArUco (K-B solve, dual-pass detect) | T03 | 12 | 04-03 | 04-23 | T02 |
 | Depth pipeline (SGBM + WLS filter, world coords) | T04 | 5 | 04-04 | 04-23 | T03 |
-| Setup tools UI — wizards browser-driven (focus_assist, calibrate, preview, roi_picker, diagnose_*) | T05 | 18 | 04-20 | 05-12 | T03, T04 |
+| Setup tools UI — wizards browser-driven (focus_assist, calibrate, preview, counting_zone_picker, diagnose_*) | T05 | 18 | 04-20 | 05-12 | T03, T04 |
 
 > **Iteraciones de diseño dentro de T03 (~10h de 12h)**. Las primeras
 > dos semanas de calibración exploraron alternativas del modelo
@@ -219,7 +219,7 @@ Totales por agrupación (medidos del repo):
 | Labeling + training (Roboflow Smart Polygon + Kaggle T4) | T13 | 3.0 | 05-03 | 05-09 | T12 |
 | Hailo compile + runtime integración (NMS, cluster, static suppressor) | T14 | 4.5 | 05-03 | 05-08 | T13 |
 | Tracker (Kalman + state machine + reid) | T15 | 3.0 | 04-08 | 05-11 | T04, T14 |
-| Counter (ROI + line crossing + foot projection) | T16 | 1.7 | 04-28 | 05-08 | T15 |
+| Counter (counting zone + line crossing + foot projection) | T16 | 1.7 | 04-28 | 05-08 | T15 |
 
 > **Evolución de T15 (~2h de 3h)**. El tracker arrancó (Abr 8) como un
 > asociador centroide single-pass — MVP integrador para validar el bucle
@@ -563,7 +563,7 @@ tarde/noche: 18h #####  19h #####  20h ████████ (peak 47c)
    consolidadas en este repo ahorra ~25-30% del tiempo de visión +
    tracking + counter.
 2. **Calibración 12h fue subestimable a priori** — el solver fisheye + cobertura del board es donde se va el tiempo, no en la integración. Con el modelo de distorsión definido upfront y el sensor mode canónico documentado, son 3-4h. Para sensors/lenses nuevos presupuestar 1.5× del baseline consolidado.
-3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-ROI) probablemente cueste 6-10h cada uno.
+3. **Setup tools UX (T05) fue el segundo costo más alto (18h)** — wizards browser-driven, AE lock canónico, dual-pass detect, gates de coverage. Un wizard nuevo (ej. para zonas, líneas múltiples, multi-zona) probablemente cueste 6-10h cada uno.
 4. **Detector "barato" en horas locales pero caro en wall-clock** — 11h directas, pero hay 20+ días de calendario entre captura → label → train → compile porque cada etapa tiene wait externo (Roboflow labeling humano, Kaggle queue, Hailo compile en Docker).
 5. **Infra AWS ~10.5h con análisis arquitectural dominando el costo** — del total, ~6h fueron análisis de trade-offs (RDS vs EC2, managed hosting de Grafana ponderando operabilidad + portabilidad cross-cuenta + custom domain como entregable, Lambda VPC vs IAM auth out-of-VPC) + diseño detallado del CFN; ~3h deployment phaseado con 2 pausas manuales para DNS (validación ACM + CNAME final); ~2h refinamiento de capas downstream (Lambda + schema). `infra/deploy.ps1` orquesta las 5 fases (CFN core → push imagen + bootstrap SQL → ACM cert + pause DNS → CFN Fargate+ALB → pause CNAME final). Para un proyecto análogo con stack similar, presupuestar **8-12h** repartidas en este balance (análisis dominante, deployment apoyado en CFN declarativo). Los **dashboards funcionales no están** — para piloto real presupuestar 3-5h adicionales armando dashboards en Grafana 13 sobre las views de `bootstrap.sql`.
 6. **Cross-cutting suma ~13h (15% del total medido)** — config + docs + cleanup. Para próximos proyectos similares, presupuestar 15-20% extra sobre las feature stories.
@@ -760,7 +760,7 @@ genuinamente nuevo que hay que hacer.**
 | T13 | Detector — labeling + training | 2.5 | Trabajo activo. (Wall-clock adicional: ~1-2 días de espera externa) |
 | T14 | Detector — Hailo compile + integración | 3.5 | Receta conocida |
 | T15 | Tracker (Kalman + ByteTrack from day 1) | **3-4** | Integración + edge cases del state machine + reid + velocity decay. Happy path 1.5h, pero los corner cases siempre aparecen. |
-| T16 | Counter (ROI + line crossing) | 1.5 | |
+| T16 | Counter (counting zone + line crossing) | 1.5 | |
 | T17 | Docs (setup + lab + privacy) | 3 | |
 | T18 | Tests E2E + integración explícita | 3 | Más allá de los tests embedded en cada T |
 | T19 | Cleanup / hygiene normal | 1.5 | Sin deuda técnica acumulada |
@@ -774,7 +774,7 @@ Las horas de la task table son **desarrollo de software**. Aparte hay
 trabajo **físico / operativo** que hay que hacer una vez para poner el
 dispositivo PoC en funcionamiento. No es desarrollo — son procedimientos
 documentados que se ejecutan con tooling ya construido (verify_hardware,
-setup_device.sh, focus_assist, calibrate, roi_picker).
+setup_device.sh, focus_assist, calibrate, counting_zone_picker).
 
 | Actividad | Hands-on | Wait | Notas |
 |-----------|---------:|-----:|-------|
@@ -782,14 +782,14 @@ setup_device.sh, focus_assist, calibrate, roi_picker).
 | **Foco con lab protocol universal** (mount a 2.0m, target a 1.5m, ambos lentes, esmalte transparente al seam para fijar) | **1-2h** | +15-20min touch-dry / 30-60min cure full | Los lens M12 tienen play mecánico, casi siempre iterás 2-3 ciclos de foco. Llave dedicada durante el foco, se retira antes de pintar. |
 | **Calibración estéreo** (wizard browser-driven, ChArUco A3 a 1.0/2.0/3.0m, ~20 poses con coverage gates) | **1.5-2h** | — | Si alguna pose falla coverage o gate de re-detect, se re-corre. Validar con diagnose_depth.py (error <5% a 2m). |
 | **Provisioning del device** (flash SD con OS, ejecutar setup_device.sh, escribir /etc/people-counter/config.yaml, dropear calib.npz + HEF + certs X.509, enable services) | 2.5h | — | Mayormente wait por installs apt |
-| **ROI + líneas de conteo** (`roi_picker.py` en el local final, definir ROI rectangular + línea virtual con etiquetas `in`/`out`) | 1h | — | Necesita la Pi montada en su posición real |
-| **Validación E2E** (walk-through con personas, verificar eventos MQTT, dashboard cloud recibiendo, tunear thresholds si hace falta) | **2-4h** | — | Primera vez aparecen issues de ROI/thresholds que requieren tuning iterativo. 2h es el caso happy-path, 4h con tuning normal. |
+| **Counting zone + líneas de conteo** (`counting_zone_picker.py` en el local final, definir counting zone rectangular + línea virtual con etiquetas `in`/`out`) | 1h | — | Necesita la Pi montada en su posición real |
+| **Validación E2E** (walk-through con personas, verificar eventos MQTT, dashboard cloud recibiendo, tunear thresholds si hace falta) | **2-4h** | — | Primera vez aparecen issues de counting zone/thresholds que requieren tuning iterativo. 2h es el caso happy-path, 4h con tuning normal. |
 | **TOTAL operaciones PoC** | **~14-18h** | **+ ~30min cure del esmalte** | |
 
 > **Calendario operaciones**: con esmalte (touch-dry 15-20min, full
 > 30-60min) **todo entra en una sola sesión de lab + un día de visita
 > al local**. Día 1: ensamblaje + flash + foco + esmalte + calibración
-> + ground-truth. Día 2: visita al local, ROI + validación E2E. ~12h
+> + ground-truth. Día 2: visita al local, counting zone + validación E2E. ~12h
 > hands-on totales distribuidas en 2 días, sin esperas overnight.
 
 ### Dimensionamiento del dataset del detector — iterativo vs bulk
@@ -926,7 +926,7 @@ que **no se pueden compactar** por más straightforward que sea el resto:
 | Concepto | Horas |
 |----------|------:|
 | Desarrollo de software (T00 → T19) — naive | 101-117h |
-| Operaciones físicas (ensamblaje + provisioning + foco + calib + ROI + validación) | 14-18h |
+| Operaciones físicas (ensamblaje + provisioning + foco + calib + counting zone + validación) | 14-18h |
 | Sub-total naive | 115-135h |
 | +15% buffer de fricción operativa | +17-20h |
 | **TOTAL hands-on realista** | **~130-155h** |
@@ -1008,7 +1008,7 @@ queda entregable con M5+M6+M7); son inputs para el planning del piloto.
 - Foco con el lab protocol universal + esmalte transparente para fijar
   el lens M12 (~1h hands-on + 30min cure).
 - Calibración stereo con el wizard (~1h).
-- ROI + línea con `roi_picker.py` montado en la posición real (~1h).
+- counting zone + línea con `counting_zone_picker.py` montado en la posición real (~1h).
 - Validación E2E con walks manuales y tuning iterativo de thresholds
   (~2h).
 

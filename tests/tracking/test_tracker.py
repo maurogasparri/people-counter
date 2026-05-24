@@ -214,19 +214,19 @@ def test_pending_timeout_becomes_lost_and_new_id_issued():
     assert len(new_ids) == 1
 
 
-def test_keepalive_roi_keeps_pending_alive_inside():
-    """Un track PENDING cuya posición cae dentro del keepalive_roi NO muere
+def test_keepalive_counting_zone_keeps_pending_alive_inside():
+    """Un track PENDING cuya posición cae dentro del keepalive_counting_zone NO muere
     por timeout, ni siquiera pasados pending_max_frames y max_disappeared.
-    Modela "cruzó y se quedó adentro del ROI mirando algo"."""
+    Modela "cruzó y se quedó adentro de la counting zone mirando algo"."""
     tracker = EuclideanTracker(
         max_distance=50,
         confirm_frames=2,
         pending_max_frames=3,
         max_disappeared=5,
-        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+        keepalive_counting_zone=(50.0, 200.0, 150.0, 300.0),
     )
-    # Track estático dentro del ROI (velocidad ~0 → la predicción Kalman
-    # se queda en el lugar, dentro del ROI).
+    # Track estático dentro de la counting zone (velocidad ~0 → la predicción Kalman
+    # se queda en el lugar, dentro de la counting zone).
     tracker.update([np.array([100, 200, 3000])])
     tracker.update([np.array([100, 200, 3000])])
     tid = list(tracker.tracks.keys())[0]
@@ -235,15 +235,15 @@ def test_keepalive_roi_keeps_pending_alive_inside():
     # Muchísimos misses, mucho más que ambos caps de timeout.
     for _ in range(50):
         tracker.update([])
-    # Sigue vivo (PENDING) porque su posición quedó dentro del ROI.
+    # Sigue vivo (PENDING) porque su posición quedó dentro de la counting zone.
     assert tid in tracker.tracks
     assert tracker.tracks[tid].state == PENDING
     # Y el historial de posiciones está acotado por el cap.
     assert len(tracker.tracks[tid].positions) <= 512
 
 
-def test_keepalive_roi_recovers_to_confirmed_after_long_gap():
-    """Tras un gap largo dentro del ROI, una detección que reaparece cerca
+def test_keepalive_counting_zone_recovers_to_confirmed_after_long_gap():
+    """Tras un gap largo dentro de la counting zone, una detección que reaparece cerca
     re-identifica el MISMO track (preservando ID + meta del counter)."""
     tracker = EuclideanTracker(
         max_distance=50,
@@ -251,7 +251,7 @@ def test_keepalive_roi_recovers_to_confirmed_after_long_gap():
         pending_max_frames=3,
         max_disappeared=5,
         reid_gate_px=60,
-        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+        keepalive_counting_zone=(50.0, 200.0, 150.0, 300.0),
     )
     tracker.update([np.array([100, 200, 3000])])
     tracker.update([np.array([100, 200, 3000])])
@@ -265,9 +265,9 @@ def test_keepalive_roi_recovers_to_confirmed_after_long_gap():
     assert tracker.tracks[tid].state == CONFIRMED
 
 
-def test_keepalive_roi_extrapolates_does_not_freeze():
-    """Un track PENDING dentro del ROI SIGUE extrapolando con el Kalman (no se
-    congela) — así puede seguir a la persona y salir del ROI para que el
+def test_keepalive_counting_zone_extrapolates_does_not_freeze():
+    """Un track PENDING dentro de la counting zone SIGUE extrapolando con el Kalman (no se
+    congela) — así puede seguir a la persona y salir de la counting zone para que el
     counter emita el cruce. El doble-conteo del drift lo evita el counter
     (cuenta cruces solo con detección real), no congelando el track acá."""
     tracker = EuclideanTracker(
@@ -277,9 +277,9 @@ def test_keepalive_roi_extrapolates_does_not_freeze():
         max_disappeared=10,
         pending_grace_frames=3,
         pending_velocity_decay=1.0,  # sin decay → extrapola a velocidad plena
-        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+        keepalive_counting_zone=(50.0, 200.0, 150.0, 300.0),
     )
-    # Caminando hacia abajo: velocidad ~ +10 px/frame en y, dentro del ROI.
+    # Caminando hacia abajo: velocidad ~ +10 px/frame en y, dentro de la counting zone.
     tracker.update([np.array([100, 200, 3000])])
     tracker.update([np.array([100, 210, 3000])])
     tid = list(tracker.tracks.keys())[0]
@@ -296,7 +296,7 @@ def test_keepalive_roi_extrapolates_does_not_freeze():
     )
 
 
-def test_keepalive_roi_capped_orphan_dies():
+def test_keepalive_counting_zone_capped_orphan_dies():
     """El keep-alive está acotado a keepalive_max_frames misses consecutivos:
     un huérfano (re-id falló, persona ya no está) se garbage-collectea pasado
     el cap, en vez de quedar como fantasma eterno acumulándose en el preview."""
@@ -305,7 +305,7 @@ def test_keepalive_roi_capped_orphan_dies():
         confirm_frames=2,
         pending_max_frames=3,
         max_disappeared=10,
-        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+        keepalive_counting_zone=(50.0, 200.0, 150.0, 300.0),
         keepalive_max_frames=5,
     )
     tracker.update([np.array([100, 200, 3000])])
@@ -317,16 +317,16 @@ def test_keepalive_roi_capped_orphan_dies():
     assert tid not in tracker.tracks
 
 
-def test_keepalive_roi_does_not_protect_outside():
-    """Un track FUERA del keepalive_roi muere normalmente por timeout —
-    el keep-alive solo aplica dentro del ROI."""
+def test_keepalive_counting_zone_does_not_protect_outside():
+    """Un track FUERA del keepalive_counting_zone muere normalmente por timeout —
+    el keep-alive solo aplica dentro de la counting zone."""
     tracker = EuclideanTracker(
         max_distance=50,
         confirm_frames=2,
         pending_max_frames=5,
-        keepalive_roi=(50.0, 200.0, 150.0, 300.0),
+        keepalive_counting_zone=(50.0, 200.0, 150.0, 300.0),
     )
-    # Track fuera del ROI (x=400 > x_max=200).
+    # Track fuera de la counting zone (x=400 > x_max=200).
     tracker.update([np.array([400, 400, 3000])])
     tracker.update([np.array([400, 400, 3000])])
     tid = list(tracker.tracks.keys())[0]

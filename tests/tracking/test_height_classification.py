@@ -1,6 +1,6 @@
 """Test de integración: tracker → counter → CountEvent con height_class.
 
-Maneja el Counter unificado (ROI + line) end-to-end desde sintético
+Maneja el Counter unificado (counting zone + line) end-to-end desde sintético
 detections, checking that per-frame height metadata propagates through
 the tracker into the emitted CountEvent.
 """
@@ -12,14 +12,14 @@ from src.tracking.tracker import EuclideanTracker
 
 
 def _make_counter() -> Counter:
-    """ROI 0..200 x 50..150, single horizontal line at y=100 with both
+    """Counting zone 0..200 x 50..150, single horizontal line at y=100 with both
     directions labelled. Tracks crossing top->bottom emit ``ingress``."""
     return Counter(
         lines=[Line(
             from_xy=(0, 100), to_xy=(200, 100),
             labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
         )],
-        roi={"x_min": 0, "x_max": 200, "y_min": 50, "y_max": 150},
+        counting_zone={"x_min": 0, "x_max": 200, "y_min": 50, "y_max": 150},
     )
 
 
@@ -34,7 +34,7 @@ def _run_crossing(tracker, counter, metas_per_frame, positions_per_frame):
 
 
 # Trajectory: y goes 60 (inside, above line) → 80 (still inside, above) →
-# 110 (inside, crossed below) → 160 (outside ROI, exit triggers count).
+# 110 (inside, crossed below) → 160 (outside counting zone, exit triggers count).
 _INGRESS_POSITIONS = [
     [np.array([50, 60, 2000])],
     [np.array([50, 80, 2000])],

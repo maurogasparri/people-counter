@@ -14,7 +14,7 @@
 #   device           — identidad (seteada durante provisioning)
 #   vision           — mounting height + capture/runtime + SGBM + calibración
 #   detection        — modelo + thresholds (editar solo con modelo nuevo)
-#   counter          — ROI + lines (geometría per-site) + height classifier
+#   counter          — counting_zone + lines (geometría per-site) + height classifier
 #   wifi_ble         — toggles de probing + bandas de RSSI
 #   mqtt             — endpoint AWS IoT + certs per-device
 #   logging          — nivel (paths fleet-wide)
@@ -257,12 +257,12 @@ detection:
   # ON por default: en retail real el clutter estructural es la norma
   # (mostradores, displays con maniquíes, sillas en el cuadro) y el
   # suppressor es la única defensa contra FPs persistentes que generan
-  # counts fantasma. El ROI de conteo se EXENTA automáticamente (el
-  # runtime pasa counter.roi como exempt_roi): una persona parada en el
-  # umbral de la puerta nunca se suprime, así no se mata su track ni se
-  # dispara un count fantasma vía synthetic-exit. El suppressor solo
-  # ataca la periferia (fuera del ROI). Apagar SOLO si se come cabezas
-  # reales fuera del ROI.
+  # counts fantasma. La counting zone se EXENTA automáticamente (el
+  # runtime pasa counter.counting_zone como exempt_counting_zone): una
+  # persona parada en el umbral de la puerta nunca se suprime, así no se
+  # mata su track ni se dispara un count fantasma vía synthetic-exit. El
+  # suppressor solo ataca la periferia (fuera de la counting zone). Apagar
+  # SOLO si se come cabezas reales fuera de la counting zone.
   static_suppressor:
     enabled: true
     cell_size_px: 30                # Resolución espacial del filtro.
@@ -289,11 +289,11 @@ detection:
 
 
 # =============================================================================
-# COUNTER — ROI + N líneas direccionales (geometría per-site)
+# COUNTER — counting zone + N líneas direccionales (geometría per-site)
 # =============================================================================
 #
-# Lifecycle: un track que entra al ROI, cruza una de las líneas
-# configuradas en una dirección con label, y sale del ROI emite un evento
+# Lifecycle: un track que entra a la counting zone, cruza una de las líneas
+# configuradas en una dirección con label, y sale de la counting zone emite un evento
 # con ese label. Los cruces en direcciones sin label se ignoran
 # silenciosamente — así se modela un gate one-way (una puerta es IN-only,
 # la otra OUT-only, o ambas direcciones en la misma línea).
@@ -301,7 +301,7 @@ detection:
 # Ejemplos (coords sobre el frame canonical 1152×648):
 #   * Una puerta, ambas direcciones cuentan (entrada de retail típica):
 #       counter:
-#         roi: { x_min: 356, x_max: 796, y_min: 264, y_max: 384 }
+#         counting_zone: { x_min: 356, x_max: 796, y_min: 264, y_max: 384 }
 #         lines:
 #           - from: [356, 324]
 #             to:   [796, 324]
@@ -311,7 +311,7 @@ detection:
 #
 #   * Dos puertas físicamente separadas (una IN, otra OUT):
 #       counter:
-#         roi: { x_min: 200, x_max: 952, y_min: 224, y_max: 424 }
+#         counting_zone: { x_min: 200, x_max: 952, y_min: 224, y_max: 424 }
 #         lines:
 #           - from: [220, 324]      # mitad izquierda — gate IN
 #             to:   [560, 324]
@@ -325,14 +325,14 @@ detection:
 # top_to_bottom / bottom_to_top; las verticales usan left_to_right /
 # right_to_left.
 counter:
-  # ROI centrado en frame 1152×648 (canonical). 660×240 px cubre con margen
+  # Counting zone centrada en frame 1152×648 (canonical). 660×240 px cubre con margen
   # el ancho de una puerta de retail mounted a 2.5-3m + un lead-in lateral
-  # para que el tracker capture al sujeto antes del cruce (entra al ROI ya
+  # para que el tracker capture al sujeto antes del cruce (entra a la counting zone ya
   # CONFIRMED y no fragmenta IDs justo en la zona de la línea). Alto generoso
   # (240, centrado en y=324 con la línea de cruce en el medio) da margen
-  # para lingering dentro del ROI (persona que cruza y se para). El operador
-  # después ajusta per-site con scripts/roi_picker.py una vez instalado.
-  roi:
+  # para lingering dentro de la counting zone (persona que cruza y se para). El operador
+  # después ajusta per-site con scripts/counting_zone_picker.py una vez instalado.
+  counting_zone:
     x_min: 246
     x_max: 906
     y_min: 204
@@ -363,14 +363,14 @@ counter:
   # doble-conteo por jitter en el piloto.
   min_crossing_movement_px: 0.0
 
-  # U-turn cancellation usa el ROI como zona de cancelación: cuando un
-  # evento de cruce cae dentro del ROI y existe un evento opuesto
-  # reciente (≤5s, hardcoded) también dentro del ROI, ambos se cancelan
+  # U-turn cancellation usa la counting zone como zona de cancelación: cuando un
+  # evento de cruce cae dentro de la counting zone y existe un evento opuesto
+  # reciente (≤5s, hardcoded) también dentro de la counting zone, ambos se cancelan
   # mutuamente. Captura "persona dudó en la entrada, cruzó y volvió
   # enseguida" así como fragmentación de track cerca de la línea
   # (track A cruza IN, jitter parte el track, track B cruza OUT) sin
   # contabilizar IN+OUT espurios. Activo automáticamente cuando hay
-  # ROI configurado — sin params extra.
+  # counting zone configurada — sin params extra.
 
 
 # =============================================================================
@@ -644,10 +644,10 @@ height:
 # --- Tracker + state machine (tuning de algo, fleet-uniform tras piloto) ----
 tracking:
   # Filtro de clutter estático: tracks fantasma de FPs del detector sobre
-  # estructura fija (sombra/borde/piso). Un track FUERA del ROI que no se
+  # estructura fija (sombra/borde/piso). Un track FUERA de la counting zone que no se
   # movió en toda su vida = clutter (la gente se mueve; el clutter no). Se
   # esconde del live preview + del contador de "Tracks" del dashboard. NO toca
-  # conteo ni tracking (esos tracks están fuera del ROI, nunca cuentan) — es
+  # conteo ni tracking (esos tracks están fuera de la counting zone, nunca cuentan) — es
   # solo cosmético, sin riesgo de recall. Complementa el static_suppressor
   # (que es por celda de detección y no caza FPs que flickerean).
   stationary_clutter_filter:
@@ -675,13 +675,13 @@ tracking:
                                     # clutter flickery (el detector dispara sobre
                                     # estructura fija ~15-20% de los frames)
                                     # confirmaban en 2 frames y spawneaban tracks
-                                    # fantasma PENDING fuera del ROI (clutter
-                                    # visual; el conteo NO se afecta, es por ROI).
+                                    # fantasma PENDING fuera de la counting zone (clutter
+                                    # visual; el conteo NO se afecta, es por la counting zone).
                                     # El static_suppressor no los caza porque
                                     # flickerean por debajo de su hit_rate_threshold.
                                     # 3 frames consecutivos filtra la mayoría. A
                                     # 14 fps son ~215ms = ~30cm: sigue apareciendo
-                                    # antes del ROI a paso de caminata. Bajar a 2
+                                    # antes de la counting zone a paso de caminata. Bajar a 2
                                     # solo si el detector dropea frame-a-frame y se
                                     # pierden pasadas rápidas.
     pending_max_frames: 30          # Misses antes de PENDING -> LOST. A
@@ -692,9 +692,9 @@ tracking:
                                     # misma cabeza — confidence medianas
                                     # más largas por track → mejor
                                     # estimación de altura.
-    keepalive_max_frames: 600       # Cap del keep-alive DENTRO del ROI de
-                                    # conteo (misses consecutivos). Un track
-                                    # dentro del ROI no muere por
+    keepalive_max_frames: 600       # Cap del keep-alive DENTRO de la counting zone
+                                    # (misses consecutivos). Un track
+                                    # dentro de la counting zone no muere por
                                     # pending_max_frames — se mantiene para
                                     # no perder el cruce de una persona que
                                     # cruzó y se quedó parada (el detector la

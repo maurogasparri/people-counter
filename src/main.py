@@ -767,7 +767,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 sm_cfg.get("ambiguous_match_ratio", 1.0),
             )
         ),
-        # Cap del keep-alive dentro del ROI (misses consecutivos). Garbage-
+        # Cap del keep-alive dentro de la counting zone (misses consecutivos). Garbage-
         # collectea fantasmas huérfanos sin tocar el lingering real (que
         # resetea disappeared con cualquier hit). Optional; default 600 ≈ 24s.
         keepalive_max_frames=int(
@@ -1120,7 +1120,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     _last_ext_ts = 0.0
 
     # Filtro de clutter estático: tracks fantasma de FPs sobre estructura fija
-    # (fuera del ROI, sin moverse) se esconden del preview + del contador de
+    # (fuera de la counting zone, sin moverse) se esconden del preview + del contador de
     # tracks. Solo display/stats — no toca conteo/tracking (ver
     # stationary_track_ids). Gateable por config.
     _scf = config.get("tracking", {}).get("stationary_clutter_filter", {}) or {}
@@ -1315,12 +1315,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # adult/child, no para la posición del cruce.)
             if counter is None:
                 counter = build_counter(config)
-                # Keep-alive del tracker dentro del ROI de conteo: un track
+                # Keep-alive del tracker dentro de la counting zone: un track
                 # que cruzó la línea y se queda adentro (mirando algo) no
                 # debe morir por timeout antes de salir — si no, el cruce
                 # nunca se cuenta (no hay salida sintética). El static
-                # suppressor ya exenta este mismo ROI a nivel detección.
-                tracker.keepalive_roi = counter.roi
+                # suppressor ya exenta esta misma counting zone a nivel detección.
+                tracker.keepalive_counting_zone = counter.counting_zone
                 # Sincronizar el grace del death-emit con la adoption window
                 # del tracker (+ 2 frames de buffer). Garantiza que el counter
                 # SIEMPRE le da chance al tracker a adoptar el ghost antes de
@@ -1330,9 +1330,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     tracker.adoption_window_frames + 2
                 )
                 logger.info(
-                    "Counter inicializado: %s (keepalive_roi=%s)",
+                    "Counter inicializado: %s (keepalive_counting_zone=%s)",
                     type(counter).__name__,
-                    counter.roi,
+                    counter.counting_zone,
                 )
 
             # --- Setear focal length + baseline desde la calibración ---
@@ -1421,13 +1421,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # Durante warm-up devuelve la lista intacta. Si el feature
             # está disabled, suppressor=None y skip.
             if static_suppressor is not None:
-                # El ROI de conteo se exenta: una persona parada en el umbral
+                # La counting zone se exenta: una persona parada en el umbral
                 # de la puerta NO debe suprimirse (mataría su track y dispararía
                 # un count fantasma vía synthetic-exit). El suppressor solo
-                # ataca clutter estructural de la periferia, fuera del ROI.
+                # ataca clutter estructural de la periferia, fuera de la counting zone.
                 all_detections = static_suppressor.update_and_filter(
                     all_detections,
-                    exempt_roi=counter.roi if counter is not None else None,
+                    exempt_counting_zone=counter.counting_zone if counter is not None else None,
                 )
 
             # Separa las detecciones en buckets spawn-eligible vs match-only.
@@ -1777,12 +1777,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # corre siempre. ``push`` es no-bloqueante; fallas se loggean
             # pero no rompen el pipeline.
             if viewer is not None:
-                # Clutter estático: tracks fantasma fuera del ROI que no se
+                # Clutter estático: tracks fantasma fuera de la counting zone que no se
                 # mueven. Se esconden del preview + del contador (no del conteo).
                 clutter_ids = (
                     stationary_track_ids(
                         tracks,
-                        counter.roi if counter is not None else None,
+                        counter.counting_zone if counter is not None else None,
                         _scf_min_frames,
                         _scf_max_move_px,
                     )
@@ -1790,7 +1790,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     else set()
                 )
                 # Fantasmas de larga ausencia del keep-alive: PENDING que solo
-                # siguen vivos porque están dentro del ROI y excedieron el
+                # siguen vivos porque están dentro de la counting zone y excedieron el
                 # pending_max_frames normal (re-id falló, son huérfanos). Se
                 # esconden del preview + del contador de "Tracks" — no afectan
                 # el conteo (un cruce solo se registra con detección real).
@@ -1866,9 +1866,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             last_depth_panel = depth_to_colormap(depth_map)
                         elif last_depth_panel is None:
                             last_depth_panel = depth_to_colormap(None)
-                        # Esconder del preview el clutter estático (fuera del
-                        # ROI, sin moverse) y los fantasmas de larga ausencia
-                        # del keep-alive (PENDING huérfanos dentro del ROI).
+                        # Esconder del preview el clutter estático (fuera de la
+                        # counting zone, sin moverse) y los fantasmas de larga ausencia
+                        # del keep-alive (PENDING huérfanos dentro de la counting zone).
                         viewer_tracks = (
                             {
                                 tid: t

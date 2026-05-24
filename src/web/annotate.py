@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 _COLOR_CONFIRMED = (0, 255, 0)
 _COLOR_PENDING = (0, 165, 255)
 _COLOR_CANDIDATE = (180, 180, 180)
-_COLOR_ROI = (0, 0, 255)         # rojo
+_COLOR_COUNTING_ZONE = (0, 0, 255)         # rojo
 
 # Paleta de la counting-line por label de dirección. Cualquier otra cosa cae
 # a blanco así que un label exótico igual renderiza visiblemente. Verdes para
@@ -74,10 +74,10 @@ def annotate_left(
     tracks: dict,
     counter: Optional[Any],
 ) -> np.ndarray:
-    """Dibuja ROI, línea y tracks sobre una copia de ``frame``.
+    """Dibuja la counting zone, línea y tracks sobre una copia de ``frame``.
 
     NO dibuja totales/FPS — esos van en el dashboard del viewer (evita el
-    overlay duplicado). Acá solo la geometría (ROI + línea) + las
+    overlay duplicado). Acá solo la geometría (counting zone + línea) + las
     cajas/centroides/track-ids de los tracks.
 
     Deliberadamente NO dibuja las detecciones raw del detector: las cajas
@@ -92,7 +92,7 @@ def annotate_left(
         tracks: dict[int, Track] de EuclideanTracker (idealmente ya
             filtrado de clutter por el caller).
         counter: instancia del Counter (se lee para el overlay de geometría
-            ROI + línea). Puede ser None.
+            counting zone + línea). Puede ser None.
     """
     out = frame.copy()
 
@@ -305,7 +305,7 @@ def compose_3panel(
 
 # ----------------------------------------------------------------- internals
 def _draw_counter_geometry(frame: np.ndarray, counter: Optional[Any]) -> None:
-    """Overlay del rectángulo del ROI (si hay) y cada segmento de
+    """Overlay del rectángulo de la counting zone (si hay) y cada segmento de
     línea con una flecha perpendicular mostrando la dirección contada.
 
     Cada línea se dibuja en el color que matchea su label dominante
@@ -316,14 +316,14 @@ def _draw_counter_geometry(frame: np.ndarray, counter: Optional[Any]) -> None:
     """
     if counter is None:
         return
-    roi = getattr(counter, "roi", None)
-    if roi is not None:
+    zone = getattr(counter, "counting_zone", None)
+    if zone is not None:
         try:
-            x_min, x_max, y_min, y_max = roi
+            x_min, x_max, y_min, y_max = zone
             cv2.rectangle(frame, (int(x_min), int(y_min)),
-                          (int(x_max), int(y_max)), _COLOR_ROI, 4)
+                          (int(x_max), int(y_max)), _COLOR_COUNTING_ZONE, 4)
         except Exception:
-            logger.debug("ROI overlay failed", exc_info=True)
+            logger.debug("counting zone overlay failed", exc_info=True)
 
     lines = getattr(counter, "lines", None) or []
     for line in lines:

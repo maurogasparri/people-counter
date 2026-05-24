@@ -168,7 +168,7 @@ Si necesitás cambiar alguna de estas, **SSH + edit `/etc/people-counter/config.
 - Cualquier knob de `vision.*` (resolución, FPS, SGBM tuning, AE lock).
 - Cualquier knob de `detection.*` (model_path, thresholds, NMS, static suppressor).
 - Cualquier knob de `tracking.*` (Kalman tuning, state machine, reid_gate_px).
-- Cualquier knob de `counter.*` (ROI, líneas, height_classifier).
+- Cualquier knob de `counter.*` (counting zone, líneas, height_classifier).
 - Cualquier knob de `wifi_ble.*` que no sea `external_traffic_enabled` (interfaces,
   thresholds RSSI, stitching params).
 - `mqtt.*`, `buffer.*`, `logging.*`, `status_led.*`, `telemetry.*`.

@@ -96,10 +96,10 @@
 |---|---:|---|
 | Filtro de Kalman para tracking | 1 | `src/tracking/kalman.py` + tests |
 | Tracker con asociación 2-stage + ghost pool + decay tunable + Lowe ratio | 2 | `src/tracking/tracker.py` + tests. Incluye state machine CANDIDATE→CONFIRMED→PENDING→LOST, two-stage matching (high+low conf), ghost pool con ID adoption (IoU+dist gates), `pending_velocity_decay`, `last_observed_position` separado del Kalman pushed |
-| Line crossing counter con ROI + net-balance + death-emit con guards | 1.5 | `src/tracking/counter.py` + tests. Net-balance de cruces por visita ROI, gate de cruce solo con detección real, decisive Kalman cross al exit, death-emit-if-crossed con guards (`had_outside_pos` + `MIN_VISIT_RANGE_FOR_DEATH_EMIT`), debounce |
-| ROI picker interactivo (define line y zona) | 1 | `scripts/roi_picker.py` |
+| Line crossing counter con counting zone + net-balance + death-emit con guards | 1.5 | `src/tracking/counter.py` + tests. Net-balance de cruces por visita counting zone, gate de cruce solo con detección real, decisive Kalman cross al exit, death-emit-if-crossed con guards (`had_outside_pos` + `MIN_VISIT_RANGE_FOR_DEATH_EMIT`), debounce |
+| counting zone picker interactivo (define line y zona) | 1 | `scripts/counting_zone_picker.py` |
 | World coords + clasificación adulto/niño | 0.5 | `src/vision/world_coords.py` |
-| Static suppressor + exempt ROI (filtro de FP sobre clutter fuera del ROI) | 1 | `src/vision/static_suppressor.py`. Exime el ROI de conteo (los tracks dentro no se filtran) para no perder lingerers reales |
+| Static suppressor + exempt counting zone (filtro de FP sobre clutter fuera de la counting zone) | 1 | `src/vision/static_suppressor.py`. Exime la counting zone de conteo (los tracks dentro no se filtran) para no perder lingerers reales |
 | Generador de reportes de eventos | 0.5 | `src/vision/report.py` |
 | Pruebas integrales del pipeline visual | 1.5 | Conteo correcto sobre baseline frames |
 | Live preview HTTP/MJPEG para validación operativa | 1 | `src/web/viewer.py` + `src/web/annotate.py` + tests. Composite L\|R\|disparidad servido vía MJPEG; overlay de tracks (bbox fijo cuadrado, trayectoria 30-frames, id, height), reconexión robusta al restart del pipeline, panel de stats (counts, hourly, exterior). Usado por el operador durante el piloto |

@@ -59,7 +59,7 @@ BEST_FRAME_DEFAULTS: dict[str, Any] = {
 #     (passersby / shoppers). Útil para apagar privacidad por sucursal
 #     ante consulta legal / cliente que pide pausarlo, sin SSH.
 #
-# El resto de los knobs (thresholds, ROI, tracker tuning, vision params)
+# El resto de los knobs (thresholds, counting_zone, tracker tuning, vision params)
 # requieren visualización o análisis técnico — se siguen modificando vía
 # SSH a /etc/people-counter/config.yaml + restart.
 CLOUD_OVERRIDABLE = {
@@ -92,7 +92,7 @@ def load_device_config(path: str | Path = DEFAULT_DEVICE_CONFIG_PATH) -> dict[st
     """Carga el config per-device strict — solo lee ``path``, sin merge.
 
     Lo usan los setup tools (``calibrate.py``, ``focus_assist.py``,
-    ``preview.py``, ``roi_picker.py``, ``diagnose_depth.py``) que necesitan
+    ``preview.py``, ``counting_zone_picker.py``, ``diagnose_depth.py``) que necesitan
     pullear runtime knobs como ``vision.resolution`` de la misma fuente que
     el pipeline. Strict por diseño: si el archivo no existe o le falta una
     key que el tool requiere, el tool falla rápido con un error claro en

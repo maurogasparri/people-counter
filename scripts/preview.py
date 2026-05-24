@@ -195,28 +195,28 @@ def _draw_counter_overlay(
     src_w: int,
     src_h: int,
 ) -> None:
-    """Draw ROI rectangle + virtual counting line + direction labels on the
-    preview, matching the runtime config of the pipeline. Coords in the
-    config are at the source frame resolution (e.g. 2304x1296); we scale
-    them to the preview resolution.
+    """Draw counting zone rectangle + virtual counting line + direction
+    labels on the preview, matching the runtime config of the pipeline.
+    Coords in the config are at the source frame resolution (e.g.
+    2304x1296); we scale them to the preview resolution.
     """
     ph, pw = vis.shape[:2]
     sx = pw / src_w
     sy = ph / src_h
 
-    roi = counter_cfg.get("roi") or {}
+    zone = counter_cfg.get("counting_zone") or {}
     line = counter_cfg.get("line") or {}
     labels = counter_cfg.get("direction_labels") or {}
 
-    # ROI rectangle (yellow)
-    if all(k in roi for k in ("x_min", "x_max", "y_min", "y_max")):
-        x1 = int(roi["x_min"] * sx)
-        x2 = int(roi["x_max"] * sx)
-        y1 = int(roi["y_min"] * sy)
-        y2 = int(roi["y_max"] * sy)
+    # Counting zone rectangle (yellow)
+    if all(k in zone for k in ("x_min", "x_max", "y_min", "y_max")):
+        x1 = int(zone["x_min"] * sx)
+        x2 = int(zone["x_max"] * sx)
+        y1 = int(zone["y_min"] * sy)
+        y2 = int(zone["y_max"] * sy)
         cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 220, 220), 2)
         cv2.putText(
-            vis, "ROI", (x1 + 6, y1 + 22),
+            vis, "zone", (x1 + 6, y1 + 22),
             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 220), 2, cv2.LINE_AA,
         )
 
@@ -279,7 +279,7 @@ def main() -> None:
                              "provided, the preview matches the pipeline's "
                              "actual setup: takes resolution from config, "
                              "rectifies frames using the calibration .npz, "
-                             "and draws the ROI rectangle + counting line + "
+                             "and draws the counting zone rectangle + counting line + "
                              "direction labels on the L preview. Use this to "
                              "verify the runtime layout before launching "
                              "main.py.")
@@ -290,7 +290,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Optional: load runtime config so the preview reflects the pipeline's
-    # actual setup (resolution, calibration, ROI / line overlay).
+    # actual setup (resolution, calibration, counting zone / line overlay).
     runtime_cfg = None
     calibration = None
     counter_cfg = None
@@ -298,7 +298,7 @@ def main() -> None:
         from src.config.loader import load_config
         runtime_cfg = load_config(args.config)
         vision_cfg = runtime_cfg.get("vision", {})
-        # Honour the resolution from config so the ROI/line scale match
+        # Honour the resolution from config so the counting zone / line scale match
         # whatever main.py will see.
         cfg_res = vision_cfg.get("resolution")
         if cfg_res:
@@ -306,7 +306,7 @@ def main() -> None:
                 print(f"Resolución del config: {cfg_res} (override del CLI "
                       f"{args.resolution})")
             args.resolution = list(cfg_res)
-        # Calibration for rectification — without it the ROI overlay still
+        # Calibration for rectification — without it the counting zone overlay still
         # shows but at the un-rectified frame, which won't match the
         # pipeline's coordinate system exactly.
         cal_path = vision_cfg.get("calibration_file")
@@ -316,11 +316,11 @@ def main() -> None:
             print(f"Calibración cargada: {cal_path} (frames serán rectificados)")
         elif cal_path:
             print(f"⚠ calibration_file en config ({cal_path}) no existe — "
-                  f"frames sin rectificar; ROI/línea pueden no coincidir "
+                  f"frames sin rectificar; counting zone / línea pueden no coincidir "
                   f"exacto con lo que ve el pipeline.")
         counter_cfg = runtime_cfg.get("counter")
         if counter_cfg:
-            print("ROI + línea de conteo se dibujarán sobre el preview L.")
+            print("Counting zone + línea de conteo se dibujarán sobre el preview L.")
 
     if args.resolution is None:
         # No --config y no --resolution: leer del device config strict —
@@ -449,7 +449,7 @@ def main() -> None:
             _draw_overlay(vis_l, "IZQ")
             _draw_overlay(vis_r, "DER")
 
-            # ROI + counting line drawn only on L (the preview reference for
+            # Counting zone + counting line drawn only on L (the preview reference for
             # alignment), in the same coordinate system the pipeline uses.
             if counter_cfg is not None:
                 _draw_counter_overlay(vis_l, counter_cfg, src_w, src_h)

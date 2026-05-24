@@ -32,7 +32,7 @@ from src.vision.best_frame import BestFrameManager
 # ---------------------------------------------------------------------------
 
 
-ROI = {"x_min": 100, "x_max": 500, "y_min": 200, "y_max": 400}
+COUNTING_ZONE = {"x_min": 100, "x_max": 500, "y_min": 200, "y_max": 400}
 
 
 def _line_h() -> Line:
@@ -71,7 +71,7 @@ def test_counter_unchanged_when_manager_none():
     no awareness of the feature — same payload as before this feature
     landed. (The wiring layer in main.py handles the path attachment.)
     """
-    counter = Counter(lines=[_line_h()], roi=ROI)
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
     track = _track([[300, 210, 3000]])
     counter._process_track(track)
     _step(counter, track, [300, 280, 3000])
@@ -96,7 +96,7 @@ def test_observe_then_commit_produces_path(tmp_path: Path):
     write from a stale buffer.
     """
     mgr = BestFrameManager(tmp_path, buffer_size=8)
-    counter = Counter(lines=[_line_h()], roi=ROI)
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
     track = _track([[300, 210, 3000]])
 
     # Per-frame observe — bbox covers a sensible chunk of the frame.
@@ -126,7 +126,7 @@ def test_commit_with_no_observations_returns_none(tmp_path: Path):
     None gracefully. The publish path then omits best_frame_path.
     """
     mgr = BestFrameManager(tmp_path)
-    counter = Counter(lines=[_line_h()], roi=ROI)
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
     track = _track([[300, 210, 3000]])
     counter._process_track(track)
     _step(counter, track, [300, 320, 3000])
@@ -140,7 +140,7 @@ def test_two_full_cycles_produce_two_paths(tmp_path: Path):
     produce two distinct JPGs (one per event), without state leaking
     between cycles."""
     mgr = BestFrameManager(tmp_path, buffer_size=10)
-    counter = Counter(lines=[_line_h()], roi=ROI)
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
     track = _track([[300, 210, 3000]])
     bbox = (140, 40, 200, 80)
 

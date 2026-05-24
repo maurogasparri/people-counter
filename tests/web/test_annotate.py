@@ -29,11 +29,11 @@ def _two_way_counter() -> Counter:
             from_xy=(50, 150), to_xy=(250, 150),
             labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
         )],
-        roi={"x_min": 50, "x_max": 250, "y_min": 100, "y_max": 200},
+        counting_zone={"x_min": 50, "x_max": 250, "y_min": 100, "y_max": 200},
     )
 
 
-def _no_roi_counter() -> Counter:
+def _no_counting_zone_counter() -> Counter:
     return Counter(
         lines=[Line(
             from_xy=(0, 240), to_xy=(400, 240),
@@ -86,7 +86,7 @@ def test_annotate_left_with_empty_inputs_does_not_crash():
     assert out is not frame
 
 
-def test_annotate_left_draws_roi_and_tracks():
+def test_annotate_left_draws_counting_zone_and_tracks():
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
     counter = _two_way_counter()
     tracks = {
@@ -114,10 +114,10 @@ def test_annotate_left_draws_roi_and_tracks():
     assert out.any()
 
 
-def test_annotate_left_with_no_roi_counter():
-    """Counter without ROI should still draw the line + arrow."""
+def test_annotate_left_with_no_counting_zone_counter():
+    """Counter without counting zone should still draw the line + arrow."""
     frame = np.zeros((300, 400, 3), dtype=np.uint8)
-    out = annotate_left(frame, {}, _no_roi_counter())
+    out = annotate_left(frame, {}, _no_counting_zone_counter())
     # The line at y=240 should produce non-zero pixels along that row.
     assert out[240, :, :].any()
 
@@ -132,7 +132,7 @@ def test_annotate_left_hides_candidate_tracks():
     candidate_track = _FakeTrack(
         track_id=1,
         state=CANDIDATE,
-        positions=[np.array([175.0, 80.0, 0.0])],  # arriba del ROI/línea
+        positions=[np.array([175.0, 80.0, 0.0])],  # arriba de la counting zone/línea
         meta={},
     )
     out = annotate_left(frame, {1: candidate_track}, None)

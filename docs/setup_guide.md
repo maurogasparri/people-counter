@@ -502,7 +502,7 @@ Tres artefactos por dispositivo justifican backup. El resto (`buffer.db`,
 
 | Path en la Pi | Qué es | Estrategia |
 |---------------|--------|------------|
-| `/etc/people-counter/config.yaml` | device_id, store, ROI, endpoint MQTT | Queda en `provisioned/<id>/` durante `create` |
+| `/etc/people-counter/config.yaml` | device_id, store, counting zone, endpoint MQTT | Queda en `provisioned/<id>/` durante `create` |
 | `/etc/people-counter/calibration.npz` | calibración estéreo per-unidad | Pull al workstation con `harvest` post-calibración |
 | `/etc/people-counter/certs/` | X.509 client cert per-device | **No se respalda** — se re-emite ante restore (cert rotation) |
 
