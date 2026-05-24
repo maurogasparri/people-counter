@@ -1159,6 +1159,78 @@ def test_kalman_exit_counts_when_track_has_outside_history():
     assert counter.total_out == 1
 
 
+def test_entry_fresca_skipped_when_first_inside_frame_is_kalman():
+    """Reproduce el bug del entry-Kalman alucinado (piloto 2026-05-24
+    09:47-09:54, tid=35): el detector emitió una FP outside ROI, el
+    Kalman la proyectó adentro, y la entry-fresca con is_real=False
+    snapshoteaba sides[] + configuraba was_inside=True habilitando el
+    zigzag clásico sobre la línea + un exit por Kalman emitiendo un
+    COUNT IN falso.
+
+    El fix: en la entry-fresca, si el primer frame inside es
+    is_real=False, NO disparar la entry-fresca. Esperar al próximo
+    frame real adentro; si la persona realmente está ahí, viene en
+    1-3 ticks. Sin frame real inside nunca jamás → el track no entra
+    al estado "inside" del counter y no contribuye a counts.
+    """
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Frame 1: outside ROI, real → establece last_outside_pos.
+    track = _make_track(1, [[300, 150, 3000]])
+    assert counter._process_track(track) is None
+
+    # Frame 2: Kalman push entra al ROI (y=250 inside) PERO disappeared
+    # > 0 (is_real=False) — Kalman alucinado. La entry-fresca debe
+    # SKIPearse; was_inside permanece False; no se cuenta nada todavía.
+    track.positions.append(np.array([300, 250, 3000], dtype=float))
+    track.disappeared = 3
+    assert counter._process_track(track) is None
+    meta = track.meta.get(Counter.META_KEY, {})
+    assert not meta.get("inside", False), \
+        "entry-fresca con Kalman NO debe setear inside=True"
+
+    # Frame 3: track sale del ROI por Kalman a (300, 520). Como nunca
+    # tuvo entry-fresca legítima, was_inside=False — el exit branch
+    # tampoco se dispara. No hay count.
+    track.positions.append(np.array([300, 520, 3000], dtype=float))
+    track.disappeared = 5
+    ev = counter._process_track(track)
+    assert ev is None
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_entry_fresca_deferred_until_real_detection():
+    """Variante del anterior: el primer frame inside es Kalman (skipea),
+    pero el SIGUIENTE frame inside es real → entry-fresca dispara ahí
+    con la misma información geométrica (last_outside_pos sigue válido).
+    """
+    counter = Counter(lines=[_line_h()], roi=ROI)
+    # Frame 1: outside real → establece last_outside_pos.
+    track = _make_track(1, [[300, 150, 3000]])
+    counter._process_track(track)
+
+    # Frame 2: Kalman push inside (skipea entry-fresca).
+    track.positions.append(np.array([300, 250, 3000], dtype=float))
+    track.disappeared = 3
+    counter._process_track(track)
+    assert not track.meta.get(Counter.META_KEY, {}).get("inside", False)
+
+    # Frame 3: detección REAL inside (disappeared=0). Acá sí dispara
+    # la entry-fresca. sides[] se snapshotean desde el last_outside_pos
+    # capturado en Frame 1.
+    track.positions.append(np.array([300, 260, 3000], dtype=float))
+    track.disappeared = 0
+    counter._process_track(track)
+    assert track.meta[Counter.META_KEY]["inside"] is True
+
+    # Frame 4: cruza la línea + sale del ROI con detección real →
+    # cuenta normal (ingress).
+    track.positions.append(np.array([300, 520, 3000], dtype=float))
+    ev = counter._process_track(track)
+    assert ev is not None
+    assert ev.direction == "ingress"
+
+
 def test_last_outside_pos_only_updated_with_real_detections():
     """Reproduce el bug de last_outside_pos envenenado por Kalman
     extrapolation (observado en piloto 2026-05-23 18:10).

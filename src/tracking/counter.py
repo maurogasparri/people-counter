@@ -863,6 +863,25 @@ class Counter:
             meta["crossing_net"] = net
 
         if is_inside and not was_inside:
+            # Guard anti-entry-Kalman: si el primer frame inside es pura
+            # extrapolación Kalman (is_real=False), NO disparar la
+            # entry-fresca. El track no fue REALMENTE observado adentro
+            # — el Kalman lo proyectó al ROI desde una FP del detector
+            # afuera, y la entry-fresca le snapshotearía sides[] +
+            # configuraría was_inside=True habilitando el zigzag clásico
+            # sobre la línea + EXIT por Kalman emitiendo count espurio.
+            # Bug observado en piloto 2026-05-24 09:47-09:54 (tid=35):
+            # entry is_real=False -> 9 crosses zigzag en 6 min -> exit
+            # Kalman -> COUNT IN falso. Si la persona realmente está
+            # adentro, va a venir un frame is_real=True en 1-3 ticks y
+            # la entry-fresca se dispara ahí con misma información
+            # geométrica (last_outside_pos sigue válido).
+            if not is_real:
+                logger.info(  # TRACKDBG [REVERT]
+                    "TRACKDBG entry_kalman_skipped tid=%d pos=(%.0f,%.0f)",
+                    track.track_id, cx, cy,
+                )
+                return None
             # Entry fresca: resetear estado del ciclo y snapshotear
             # sides desde la última posición outside-ROI conocida (el
             # lado del cual el track se aproxima — inequívoco). Esto

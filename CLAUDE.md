@@ -274,6 +274,20 @@ dispara):**
    con `adoption_window_frames + 2`) — si la ghost adoption resucita el track
    dentro del grace, el death-emit se cancela (no double-count).
 
+**Guard adicional anti-entry-Kalman alucinada** (`Counter._process_track`,
+entry-fresca): si el PRIMER frame inside del track es pura extrapolación
+Kalman (`is_real=False`), la entry-fresca NO se dispara — `was_inside`
+permanece False, no se snapshotean `sides[]`, no se registra el track
+en `_seen_track_ids`, no hay ciclo de visita iniciado. El detector emitió
+una FP outside ROI y Kalman la proyectó adentro; sin este guard el ciclo
+arrancaría con sides[] alucinado, el detector después "encontraría"
+ruido sobre la línea y se generaría el zigzag clásico + exit por Kalman
+con un COUNT espurio. Si la persona realmente está adentro, el próximo
+frame con detección real (1-3 ticks) dispara la entry-fresca con la
+misma información geométrica (`last_outside_pos` sigue válido). Bug
+observado en piloto 2026-05-24 09:47-09:54 (tid=35 — 9 crosses zigzag
++ COUNT IN falso); log de skip = `TRACKDBG entry_kalman_skipped`.
+
 **Knobs para mover el balance "agresivo → conservador" per-site:**
 
 | Knob | Default | Efecto al subirlo |
