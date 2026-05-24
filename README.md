@@ -80,7 +80,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Config | Defaults + Per-device + Cloud + Hardware-agnostic | `config/config.example.yaml` (defaults canónicos), `/etc/people-counter/config.yaml` (per-device override), AWS IoT Shadow (business cloud). Parámetros de hardware (sensor, lens, bracket, board ChArUco, AE timings) consolidados en `src/config/hardware.py` (HardwareParams) y leídos por el runtime + todos los setup tools — swap de sensor / bracket / board = solo editar config.yaml, ningún script tiene constantes hardware hardcodeadas |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
-| Detección | Pipeline activo | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN. El detector se entrena específicamente para geometría cenital (no se usa el stock COCO porque CrowdHuman entrena vistas frontales/laterales). Modelo activo: `people-counter-detector` — fine-tune sobre dataset propio multi-site (945 imgs sampleadas con `sample_for_roboflow.py` desde 5 sites capturados en paralelo, ratio post-screening ~2:1 positivos:hard-negatives, labeling con Smart Polygon de Roboflow click-por-imagen en 1h 45min). Defense-in-depth runtime: containment filter post-NMS + `StaticSuppressor` por celda. Pipeline en `scripts/training/`: notebook único `train_head_detector.ipynb` para iteraciones, compile HEF en WSL2, deploy a la Pi |
+| Detección | Pipeline activo | YOLOv8n HEF en Hailo-8L, VDevice persistente con scheduling ROUND_ROBIN. El detector se entrena específicamente para geometría cenital (no se usa el stock COCO porque CrowdHuman entrena vistas frontales/laterales). Modelo activo: `people-counter-detector` **v2** — fine-tune sobre dataset propio multi-site (544 imgs / 438 cajas, bbox cabeza+hombros, 5 sites en paralelo, validation set held-out de 245 imgs). Pipeline canónico: `sample_for_labeling.py` (estratificado) o `mine_active_learning.py` (informativo) → labeling local en **X-AnyLabeling** → `labelme_to_yolo.py` → Kaggle dataset privado → notebook único `train_head_detector.ipynb` en Kaggle T4 (~20 min). Defense-in-depth runtime: containment filter post-NMS + `StaticSuppressor` por celda + `tracking_zone` polygon opcional. **v1→v2 con active learning subió mAP50 de 0.805 → 0.956 contra val held-out** (la 2da ronda de AL bajó a 0.939 — sweet spot detectado, ver tabla completa en `scripts/training/README.md`). |
 | Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab universal (mount-independent, sirve para flota mount 2.0–3.5m): poses a 1.0/2.0/3.0m, foco único a 1.5m ±20cm. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, beeps cortos diferenciados (start / pose nueva / tick de hold / captura / undo / fin) con pose-announce gateado (capture queda bloqueado hasta que el browser confirma fin del beep vía POST `/announce-done`), tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
 | Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, beeps en eventos (start / fin) + **pulso adaptativo tipo detector** (tap corto que acelera a medida que el score del centro se acerca al threshold de paso, lock holgado a >1.5×MIN_SCORE), auto-open del reporte. Target range lab protocol 1.30–1.70m (foco a 1.5m ±20cm) por default — universal para mount 2.0–3.5m. Lens locking con esmalte de uñas transparente aplicado al seam barrel↔holder (touch-dry 15min, cura full 30-60min) + llave dedicada en el barrel durante el foco — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
 | Preview en vivo | Disponible | `preview.py` — tool minimal browser-driven con UX consistente con focus / calib (start overlay, header). MJPEG side-by-side L|R con grid de tercios + crosshair central. Para apuntar el bracket, verificar oclusiones, o sanity check del wiring antes de correr foco/calibración. Sin detección, sin análisis. Flag `--meter centre/spot` |
@@ -251,39 +251,48 @@ Pipeline end-to-end (todo en `scripts/training/` — ver
 walkthrough completo):
 
 ```
-captura multi-site (motion-trigger)  →  sampling estratificado a Roboflow
-                                    →  labeling con Smart Polygon (AI-Assisted)
-                                    →  Generate Version (incluir nulls)
-                                    →  Notebook Kaggle T4 (~20 min)
-                                    →  best.onnx  →  hailomz compile (Docker x86)
-                                    →  HEF en la Pi
+captura multi-site (motion-trigger)   →  sample_for_labeling.py (estratificado)
+                                      →  X-AnyLabeling (local, bbox cabeza+hombros)
+                                      →  labelme_to_yolo.py (dataset YOLO)
+                                      →  Kaggle dataset privado (upload vía API)
+                                      →  Notebook Kaggle T4 (~20 min)
+                                      →  best.onnx  →  hailomz compile (Docker x86)
+                                      →  HEF en la Pi
 ```
 
 Pasos resumidos:
 
-1. **Captura de validation set**: `capture_mjpeg.py` multi-site con
+1. **Captura del pool de training**: `capture_mjpeg.py` multi-site con
    motion-trigger + background sampling. Filenames `_motion_` / `_bg_`
    para sampling balanceado downstream.
-2. **Sampling para Roboflow**: `sample_for_roboflow.py` arma un subset
-   estratificado por site (~75 motion + ~65 bg por site, con `--site-cap`
-   para capear sites con sesgo conocido).
-3. **Labeling con Smart Polygon** (Roboflow AI-Assisted Labeling, click-por-imagen
-   sobre el project type **Object Detection**). Click-per-image consume menos
-   credits que una pasada batch sobre todo el dataset. Revisión manual:
-   promover bg con persona a positivo, dejar el resto como hard negatives.
-4. **Generate Version**: confirmar `Filter Null = Use / Include Null
-   Images` (Roboflow descarta sin labels por default). Augmentations:
-   flip H, rotate ±10°, brightness ±20%, blur ligero.
-5. **Training en Kaggle T4**: `train_head_detector.ipynb` (notebook
-   único — para iterar a v3/v4/... basta cambiar la URL de Roboflow
-   en Cell 2 y el `name` del run en Cell 3). ~20 min por iteración.
-   Descarga vía Kaggle CLI con Save & Run All.
-6. **Compilación HEF**: `hailomz compile` en Docker x86 Linux
+2. **Sampling estratificado para labeling**: `sample_for_labeling.py`
+   arma un batch diverso por site (motion + bg balanceados) en una
+   carpeta plana lista para X-AnyLabeling. `--exclude-manifest` saltea
+   imgs ya usadas en otro batch (anti leak train/val).
+3. **Active learning** (a partir de v3): `mine_active_learning.py`
+   identifica frames informativos vía disagreement v1↔v_actual +
+   uncertainty del modelo actual. Selecciona top-N en vez de muestrear
+   al azar. v3→v4 con esta técnica subió mAP50 de 0.80 → 0.96.
+4. **Labeling con X-AnyLabeling** (local, no SaaS): bbox cabeza+hombros
+   (convención canónica en `scripts/training/label_guide.md`).
+   Export YOLO format directo desde la app.
+5. **Conversión a dataset YOLO**: `labelme_to_yolo.py` toma la carpeta
+   labeleada (`.json` formato labelme) y produce la estructura
+   canónica de Ultralytics (`images/`, `labels/`, `data.yaml`).
+   Imgs sin `.json` se tratan como background revisado (`.txt` vacío).
+6. **Subir a Kaggle dataset privado** vía Kaggle CLI:
+   `kaggle datasets version -p training_data/dataset_v_next ...`. El
+   notebook consume desde ahí (no más signed URLs de Roboflow).
+7. **Training en Kaggle T4**: `train_head_detector.ipynb`. Para iterar
+   a v3/v4/... basta cambiar el slug del dataset + name del run.
+   ~20 min por iteración. Descarga del modelo entrenado vía Kaggle CLI.
+8. **Compilación HEF**: `hailomz compile` en Docker x86 Linux
    (WSL2 desde Windows). Receta exacta en
-   `scripts/training/README.md` — flags críticos: `--classes 1` y
-   `--end-node-names` obligatorio. Calibration set = 200 imgs
-   muestreadas con `sample_for_calib.py` (sin leak del train).
-7. **Deploy**: `scp` del `.hef` a `/usr/src/people-counter/models/`
+   [`scripts/training/README.md`](scripts/training/README.md) — flags
+   críticos: `--classes 1` y `--end-node-names` obligatorio.
+   Calibration set = 200 imgs muestreadas con `sample_for_calib.py`
+   (sin leak del train).
+9. **Deploy**: `scp` del `.hef` a `/usr/src/people-counter/models/`
    en la Pi + edición de `detection.model_path` en
    `/etc/people-counter/config.yaml`.
 
@@ -291,11 +300,13 @@ Bench tooling:
 
 - `bench_detector.py` — inferencia + diff de reportes (baseline vs
   fine-tuned) sobre carpeta de frames. Subcomandos `bench` y `diff`.
-- `bench_roboflow_api.py` — triage de modelos publicados en Roboflow
-  Universe vía REST, sin descargar pesos. Útil para evaluar
-  candidatos antes de fine-tunear.
 - `eval_yolo.py` — corre un modelo sobre una carpeta y dumpea
   bboxes + summary para sanity-check rápido.
+- `compare_detectors.py` — side-by-side de dos modelos sobre el mismo
+  set (visual + métricas), valida que v_next no regresione casos del
+  v_actual.
+- `analyze_eval_summary.py` — análisis estadístico del output del
+  eval (distribución de confidence, breakdown por site).
 
 Defense-in-depth runtime (independiente del modelo):
 - **Containment filter** post-NMS: descarta bbox chico contenido
@@ -349,17 +360,19 @@ scripts/
 ├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock
 ├── capture_baseline_frames.py  # Captura frames rectificados de la Pi para validation bench (no training)
 ├── training/
-│   ├── README.md          # Walkthrough end-to-end del pipeline de detector
-│   ├── train_head_detector.ipynb  # Notebook Kaggle T4 (descarga el dataset directo de Roboflow vía signed URL)
-│   ├── bench_detector.py       # Bench de inferencia + diff de reportes (baseline vs fine-tuned)
-│   ├── bench_roboflow_api.py   # Triage de modelos en Roboflow Universe vía REST sin descargar pesos
-│   ├── capture_mjpeg.py        # Captura multi-site de streams MJPEG (random-interval + motion-trigger)
-│   ├── record_clips.py         # Grabación continua de clips MP4 multi-site (validation E2E con tracker)
-│   ├── sample_for_roboflow.py  # Sampling estratificado de capturas para subir a Roboflow
-│   ├── sample_for_calib.py     # Sampling balanceado para el calib set del QAT de Hailo
-│   ├── polys_to_bboxes.py      # Conversión de polígonos a bboxes YOLO (legacy, no aplica al pipeline actual)
-│   ├── eval_yolo.py            # Corre un modelo YOLO sobre una carpeta de frames
-│   └── .env.example       # Convención del env var ROBOFLOW_API_KEY
+│   ├── README.md              # Walkthrough end-to-end del pipeline de detector (X-AnyLabeling + active learning + Kaggle)
+│   ├── label_guide.md         # Convención canónica de labeling (bbox cabeza+hombros) + setup X-AnyLabeling
+│   ├── train_head_detector.ipynb  # Notebook Kaggle T4 (consume Kaggle dataset privado, ~20 min)
+│   ├── sample_for_labeling.py # Muestreo estratificado del pool de captures para X-AnyLabeling (anti leak train/val via --exclude-manifest)
+│   ├── mine_active_learning.py # Active learning v_next: minado por disagreement v1↔v_actual + uncertainty
+│   ├── labelme_to_yolo.py     # Conversión de labels X-AnyLabeling (.json labelme) a dataset YOLO + data.yaml
+│   ├── capture_mjpeg.py       # Captura multi-site de streams MJPEG (random-interval + motion-trigger)
+│   ├── record_clips.py        # Grabación continua de clips MP4 multi-site (validation E2E con tracker)
+│   ├── sample_for_calib.py    # Sampling balanceado para el calib set del QAT de Hailo
+│   ├── bench_detector.py      # Bench de inferencia + diff de reportes (baseline vs fine-tuned)
+│   ├── compare_detectors.py   # Side-by-side de dos modelos (visual + métricas) — anti regresión
+│   ├── analyze_eval_summary.py # Análisis estadístico del eval (distribución conf, breakdown por site)
+│   ├── eval_yolo.py           # Corre un modelo YOLO sobre una carpeta de frames
 ├── verify_hardware.py     # Verificación de hardware
 └── setup_device.sh        # Setup automático del dispositivo (pasos 4-10)
 config/

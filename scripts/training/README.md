@@ -7,56 +7,168 @@ input 640×640. Compilado a HEF para Hailo-8L con NMS on-chip.
 End-to-end:
 
 ```
-dataset Roboflow (overhead heads)  →  notebook Kaggle T4 (training, ~20 min)
-                                  →  best.onnx  (export desde ultralytics)
-                                  →  hailomz compile (Docker x86 Linux)
-                                  →  drop-in del HEF en la Pi
-                                  →  postproceso runtime (containment + static suppressor)
+captures multi-site (motion-trigger)  →  sample_for_labeling.py (estratificado)
+                                      →  X-AnyLabeling (local, bbox cabeza+hombros)
+                                      →  labelme_to_yolo.py (dataset YOLO)
+                                      →  Kaggle dataset privado (upload vía API)
+                                      →  notebook Kaggle T4 (training, ~20 min)
+                                      →  best.onnx (export desde ultralytics)
+                                      →  hailomz compile (Docker x86 Linux)
+                                      →  drop-in del HEF en la Pi
+                                      →  postproceso runtime (tracking_zone +
+                                         containment + static suppressor)
 ```
 
 Esta carpeta contiene infraestructura **del lado del workstation**:
-descarga de datasets, captura de validation sets, benchmarks, sampling,
-y el notebook de training. La compilación corre en Docker x86 Linux,
-la Pi solo ejecuta el `.hef` final.
+captura del pool, sampling para labeling, conversión a YOLO, active learning,
+benchmarks, eval. El labeling se hace en **X-AnyLabeling local**. La
+compilación corre en Docker x86 Linux; la Pi solo ejecuta el `.hef` final.
+
+## Convención de labeling
+
+**Antes de cada sesión de labeling**, leer [`label_guide.md`](label_guide.md).
+Resumen ejecutivo:
+
+- **Una sola clase: `person`** (no `head`).
+- **Bbox = CABEZA + HOMBROS** desde vista cenital (forma de "T").
+- **No** la silueta completa (rompe el v1, que generalizaba mal en bordes).
+- **No** solo la cabeza (los hombros dan robustez a oclusión).
+- Etiquetar también personas estáticas (cierra el gap del v1).
+- No etiquetar reflejos, maniquíes, personas afuera de la vidriera.
 
 ## Herramientas
 
+### Captura del pool de training
+
 | Archivo | Para qué |
 |---|---|
-| `train_head_detector.ipynb` | Notebook único Kaggle T4. Para iterar el modelo (v3, v4, ...) basta actualizar la URL de Roboflow en Cell 2 y el `name` del run en Cell 3. ~20 min en T4. El notebook descarga el dataset directo desde Roboflow vía signed URL — no pasa por la PC local. |
-| `bench_detector.py` | Bench de inferencia de modelos locales `.pt`/`.onnx` (subcomandos `bench` y `diff`). |
-| `bench_roboflow_api.py` | Triage de modelos publicados en Roboflow Universe vía REST sin descargar pesos. Útil para evaluar candidatos rápido. |
-| `capture_mjpeg.py` | Capturador multi-site de streams MJPEG HTTP. Modos: random-interval o motion-trigger (`cv2.absdiff` entre frames consecutivos, multiplica × 10–50 la fracción útil). `--background-interval` agrega samples de fondo para medir FP rate. `--operating-hours` filtra por horario local. Soporta SBS estéreo + rectificación on-the-fly. |
+| `capture_mjpeg.py` | Capturador multi-site de streams MJPEG. Modos `--motion-trigger` (filtra absdiff, multiplica ×10–50 la fracción útil) o `--background-interval` (samples de fondo para FP rate). `--operating-hours` filtra por horario local. SBS estéreo + rectificación on-the-fly. |
 | `record_clips.py` | Grabación continua de clips MP4 multi-site (un subprocess `ffmpeg` por site, `-c copy`). Para validation E2E con tracker — los snapshots de `capture_mjpeg.py` no preservan continuidad temporal. |
-| `sample_for_roboflow.py` | Sampling estratificado de capturas para subir a Roboflow (balance positivos / hard negatives). |
-| `polys_to_bboxes.py` | Conversión de polígonos a bboxes YOLO. Útil sólo si en algún momento el project exporta segmentación en vez de detection; con nuestro setup actual no hace falta. |
+| `sample_for_calib.py` | Muestreo para calibration set del compile a HEF (200 imgs balanceadas por site, separadas de train/eval). |
+
+### Labeling local (X-AnyLabeling)
+
+| Archivo | Para qué |
+|---|---|
+| `sample_for_labeling.py` | **Muestreo estratificado** del pool `training_data/captures/` a una carpeta plana lista para X-AnyLabeling. Estratifica por site y por motion/bg. Renombra cada copia con prefijo `<site>__` para evitar colisiones, escribe `manifest.txt` con el mapeo. `--exclude-manifest` saltea imgs ya usadas en otro batch (anti leak train/val). `--exclude-window-seconds` extiende la exclusión a frames temporalmente cercanos del mismo site (los ramos del motion-trigger son casi-duplicados). |
+| `mine_active_learning.py` | **Active learning** para v_next: minar el pool por frames informativos en vez de muestrear al azar. Combina dos señales: (1) disagreement entre el modelo actual y un oráculo high-recall (señal de recall — el oráculo detecta algo que el modelo actual perdió → probable persona); (2) uncertainty del modelo actual (detecciones con confidence 0.2-0.5). Selecciona top-N por score y los copia a carpeta para X-AnyLabeling con manifest que explica por qué se eligió cada uno. Excluye train+val+ventana via `--exclude-manifest`. |
+| `labelme_to_yolo.py` | **Conversión** de la carpeta labeleada en X-AnyLabeling (formato labelme: `.json` con shapes `rectangle`) al formato canónico de Ultralytics: `images/`, `labels/<name>.txt` con `class cx cy w h` normalizado, `data.yaml`. Una imagen SIN `.json` se trata como **negativo revisado** (escribe `.txt` vacío → Ultralytics la usa como background, baja FPs). El caller garantiza que todas las imgs fueron miradas. |
+| [`label_guide.md`](label_guide.md) | Convención de labeling + setup de X-AnyLabeling (qué/cómo etiquetar, casos dudosos, atajos). |
+
+### Eval + comparación de modelos
+
+| Archivo | Para qué |
+|---|---|
+| `bench_detector.py` | Bench de inferencia de modelos locales `.pt`/`.onnx`. Subcomandos `bench` (corre y dumpea JSON con métricas) y `diff` (compara dos reports). |
 | `eval_yolo.py` | Corre un modelo YOLO sobre una carpeta de frames, dibuja bboxes y dumpea labels + summary. |
+| `compare_detectors.py` | Side-by-side de dos detectores sobre el mismo set (visual + métricas), útil para validar que v_next no degradó casos que v_actual manejaba bien. |
+| `analyze_eval_summary.py` | Análisis estadístico del output del eval — distribución de confidence, breakdown por site, etc. |
 | `../capture_baseline_frames.py` | Captura frames rectificados de la Pi para usar como bench corpus (validación, **no** training). |
-| `.env.example` | Convención del env-var `ROBOFLOW_API_KEY` (el `.env` real está gitignoreado). |
 
-## Composición del dataset
+## Histórico de iteraciones del detector
 
-Roboflow project: `people-counter-detector`, tipo Object Detection
-(los polygons salen como bboxes auto en este tipo de project).
+Convención canónica desde el inicio: **single-class `person`, bbox
+cabeza+hombros**, vista cenital, labeling local en X-AnyLabeling.
 
-- **Volumen**: ~945 imgs sampleadas con `sample_for_roboflow.py` (490 motion + 455 bg) desde el pool multi-site `training_data/captures/`. Manifest exacto de los frames subidos en `training_data/roboflow_uploaded_manifest.txt`.
-- **Labeling**: AI-Assisted Labeling con **Smart Polygon** (la "varita mágica" de Roboflow, basada en SAM). Click-por-objeto en cada imagen — mucho más barato en credits que una pasada batch sobre todo el dataset. Revisión manual sobre las labels generadas para fix de bordes y descartar falsos.
-- **Sites**: 5 sites en paralelo (workers concurrentes de `capture_mjpeg.py`, no secuencial).
-- **Stratificación por site**: per-site uniforme (motion + bg balanceados), con override por site (`--site-cap`) para los que tengan sesgo conocido — sites con vidriera, reflejos fuertes o escena pobre se capean para no sobre-representarlos.
-- **Labeling**: 1h 45min totales con Smart Polygon (~6-7s/img incluyendo click + ajuste + next).
-- **Hard negatives explícitos**: bg captures del `--background-interval` cubren clutter persistente (ropa colgada, sombras, estructura). En la revisión, las bg que terminan teniendo persona se promueven a positivo; las que quedan limpias entran como "null examples" en Roboflow.
-- **Ratio target post-screening**: ~2:1 positivos:negativos. Cargado a positivos para favorecer recall.
-- **Defense-in-depth runtime** (independiente del modelo): post-NMS el pipeline aplica containment filter (descarta bbox chico contenido >50% en otro de mayor confianza) + `StaticSuppressor` (cuadricula el frame en celdas de 30px y suprime detecciones sobre celdas con hit-rate ≥70% en una ventana rolling de 3s).
+Métricas evaluadas contra el **mismo val set held-out** (245 imgs / 174
+cajas) para todas las iteraciones — comparable apples-to-apples.
 
-> **Generate Version en Roboflow**: confirmá `Filter Null = Use / Include Null Images` antes de generar — por default Roboflow descarta las imágenes sin labels y se pierde todo el aporte de los hard negatives. Augmentations recomendadas: flip H, rotate ±10°, brightness ±20%, blur ligero (2× = ~1890 imgs finales). Evitar mosaic, shear/perspective fuerte y cutout-on-bbox: rompen el realismo cenital.
+| Versión | Train imgs | Train cajas | Δ sobre anterior | mAP50 | mAP50-95 | Precision | Recall | FPS (Pi) | Estado |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---|
+| **v1** | 294 | 133 | (baseline) | 0.805 | 0.385 | 0.785 | 0.764 | — | Primera iter manual. Validó la convención cabeza+hombros y el flow X-AnyLabeling end-to-end. Recall bajo (gap en estáticos y personas marginales). |
+| **v2** | 544 (+250 AL) | 438 (+305) | + 250 imgs informativas mineadas con active learning | **0.956** | **0.567** | **0.919** | **0.907** | **26.8** | **Deployado producción** desde 2026-05-20. Δ mAP50 +0.151 confirmó el ROI del AL. Confirmado "detecta de maravilla" en hardware. |
+| v3 | 794 (+250 AL) | ~580 | + 250 imgs vía 2da iter de active learning | 0.939 | 0.538 | 0.884 | 0.902 | — | **Descartado**. Δ mAP50 −0.017, Δ mAP50-95 −0.029, Δ precision −0.035 vs v2 — peor en TODO excepto recall (similar). Rendimientos decrecientes después de la 1ra iter de AL. Lección: no insistir cuando el AL ya capturó las ganancias informativas. |
 
-## Validation set
+**Total labelado**: 245 (val) + 294 (train v1) + 250 (AL v2) + 250 (AL
+v3 descartado) = **1039 imgs propias** con convención cabeza+hombros.
+
+**Tamaño efectivo en producción** (v2 deployed): **544 imgs train + 245
+val = 789 imgs**. Las 250 del v3 quedaron labeladas pero no aportaron
+al modelo final — costo hundido pero confirmó empíricamente el sweet
+spot con datos concretos (no intuición).
+
+**Fuente de las métricas**: `results.csv` + eval final del notebook
+Kaggle (`m.val(split="test")` sobre el val held-out). Logs originales
+en `debug/kaggle_kernel/output/people-counter-v{3,4,5}-train.log`
+(nombres legacy de los runs Kaggle, mapean a v1/v2/v3 nuevo).
+
+### Lecciones del proceso (citables para TFG)
+
+- **Val set held-out FIRST** — sin baseline fijo las métricas de mejora
+  son ilusorias.
+- **Convención escrita antes de empezar** (`label_guide.md`) — el drift
+  entre sesiones de labeling es silencioso y caro.
+- **No labelar todas las imgs del pool** — bajo retorno arriba de ~1500
+  con muestreo random. Mejor **diversidad estratificada** (por site +
+  motion/bg) + **active learning** para iteraciones.
+- **Active learning > random sampling** para iteraciones — v1→v2
+  agregó 250 imgs informativas y subió mAP50 de 0.80 → 0.96 (+0.16);
+  v3 con otra ronda al azar no movió la aguja.
+- **Detectar el sweet spot** — v3 mostró rendimientos decrecientes;
+  saber cuándo parar de iterar es parte de la metodología, no
+  desperdicio de horas.
+
+## Workflow de iteración (active learning)
+
+Iteración típica para v(N+1) tras observar gaps del modelo actual v(N):
+
+```bash
+# 1. Identificar frames informativos del pool (active learning).
+#    --v1 = oráculo high-recall (opcional, para señal de disagreement);
+#    --v3 = modelo actual (current; el nombre del flag es histórico).
+python scripts/training/mine_active_learning.py \
+    --captures training_data/captures/ \
+    --output training_data/label_v_next_01/ \
+    --v3 models/training/people-counter-detector.pt \
+    --v1 models/training/people-counter-detector.pt \
+    --n-total 250 \
+    --exclude-manifest training_data/label_train_v1.manifest \
+    --exclude-manifest training_data/label_val_01.manifest
+
+# 2. Labeling local en X-AnyLabeling (ver label_guide.md).
+#    Abrir training_data/label_v_next_01/ en X-AnyLabeling.
+#    Dibujar rectángulos cabeza+hombros. Save → .json + .txt YOLO local.
+
+# 3. Convertir a YOLO + mergear con el train acumulado.
+python scripts/training/labelme_to_yolo.py \
+    --input training_data/label_v_next_01/ \
+    --output training_data/dataset_v_next/
+
+# 4. Subir a Kaggle dataset privado (workflow vía API en
+#    memory: kaggle_automation_via_api).
+kaggle datasets version -p training_data/dataset_v_next -m "v_next batch 01"
+
+# 5. Notebook Kaggle T4: attach el dataset privado en el sidebar,
+#    actualizar el name del run, Save & Run All (~20 min en T4).
+
+# 6. Eval del nuevo modelo contra el val set held-out.
+python scripts/training/eval_yolo.py \
+    --model models/training/people-counter-detector-v_next.pt \
+    --frames training_data/label_val_01/ \
+    --report debug/eval_v_next.json
+
+# 7. Comparar con el modelo actual (precisión, recall, donde falla cada uno).
+python scripts/training/compare_detectors.py \
+    --frames training_data/label_val_01/ \
+    --models current=models/training/people-counter-detector.pt \
+             v_next=models/training/people-counter-detector-v_next.pt \
+    --output debug/compare_v_next.html
+
+# 8. Si v_next no regresiona en casos que el actual maneja bien,
+#    compilar a HEF + deployar (ver "Compilar a HEF y deployar" abajo).
+#    Si NO mejora, descartar y documentarlo (lección citable).
+```
+
+**Histórico**: v1→v2 con active learning mejoró mAP50 de 0.80 → 0.96
+(ver tabla de iteraciones abajo). La 2da ronda de AL (v3) no mejoró
+sobre v2 — rendimientos decrecientes después de la primera iter.
+
+## Validation set held-out
 
 `capture_mjpeg.py` corre en el workstation contra los streams MJPEG de
 los sites disponibles. Los sites se declaran en `training_data/sites.yaml`
 (gitignored porque contiene IPs reales + matrices de calibración).
-Template documentado en `training_data/sites.yaml.example`. Ejemplo de
-corrida:
+Template documentado en `training_data/sites.yaml.example`. Ejemplo:
 
 ```bash
 python scripts/training/capture_mjpeg.py \
@@ -81,6 +193,34 @@ listo para training sin post-processing manual y sin dependencia de
 dumps externos. Ver `training_data/README.md` para el flujo completo
 y `training_data/sites.yaml.example` para el formato.
 
+**El validation set se reserva** (no se entrena con él) para comparar
+modelos cross-iteración. Los batches de training van en carpetas separadas
+(`label_train_v1`, `label_v_next_01`, etc.) — el `--exclude-manifest` de
+`sample_for_labeling.py` / `mine_active_learning.py` garantiza zero
+overlap.
+
+## Composición del dataset actual
+
+- **Volumen v2 (deployed)**: 294 imgs base (`label_train_01`) + 250 imgs
+  nuevas vía active learning (`label_al_01`).
+- **Single-class** `person`, bbox cabeza+hombros.
+- **Sites**: 5 en paralelo (workers concurrentes de `capture_mjpeg.py`).
+- **Estratificación**: per-site uniforme (motion + bg balanceados), con
+  override `--site-cap` para sites con sesgo conocido (vidriera, reflejos
+  fuertes).
+- **Hard negatives explícitos**: bg captures del `--background-interval`
+  cubren clutter persistente (ropa colgada, sombras, estructura). En la
+  revisión las bg con persona se promueven a positivo; las limpias entran
+  como background (`.txt` vacío en formato YOLO).
+- **Ratio target post-screening**: ~2:1 positivos:negativos. Cargado a
+  positivos para favorecer recall.
+- **Defense-in-depth runtime** (independiente del modelo): post-NMS el
+  pipeline aplica containment filter (descarta bbox chico contenido >50%
+  en otro de mayor confianza) + `StaticSuppressor` (cuadricula el frame
+  en celdas de 30px y suprime detecciones sobre celdas con hit-rate ≥70%
+  en una ventana rolling de 15s) + opcionalmente `tracking_zone` polygon
+  filter pre-tracker (ver `docs/tracker_tuning.md` patrón 6).
+
 ## Workflow del bench
 
 ```bash
@@ -100,13 +240,6 @@ python scripts/training/bench_detector.py bench \
     --weights /path/to/best.pt \
     --frames debug/baseline_frames \
     --report debug/bench_local.json
-
-# Bench de un modelo Roboflow Universe vía API (sin bajar pesos)
-export ROBOFLOW_API_KEY=...
-python scripts/training/bench_roboflow_api.py \
-    --frames debug/baseline_frames \
-    --report debug/bench_remote.json \
-    --models "<workspace>/<project>/<version>"
 
 # Diff entre dos reportes locales
 python scripts/training/bench_detector.py diff \
@@ -142,7 +275,7 @@ backend WSL2 en Windows y la imagen `hailo8_ai_sw_suite_2025-10`.
 ### Export YOLOv8n a ONNX
 
 Lo hace el notebook `train_head_detector.ipynb` automáticamente al
-final del run (Cell 4: `m.export(format="onnx", imgsz=640, opset=11,
+final del run (`m.export(format="onnx", imgsz=640, opset=11,
 simplify=True)`). El `.onnx` queda disponible en el panel Output del
 Kaggle como `<name>.onnx`.
 
@@ -158,7 +291,8 @@ mv ~/Downloads/people-counter-detector.onnx \
 
 200 imágenes representativas del dominio de deployment, balanceadas
 por site, **sin overlap con training/eval**. Pegarlas en
-`models/training/people-counter-detector/calib/`.
+`models/training/people-counter-detector/calib/`. Generar el set con
+`sample_for_calib.py` desde el pool de captures.
 
 ### Compile a HEF
 

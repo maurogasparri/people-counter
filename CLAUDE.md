@@ -141,13 +141,17 @@ people-counter/
 │   ├── provision.py    <- create/deploy/harvest/reprovision/list (disaster recovery) + seed sites/devices en RDS (psycopg+boto3)
 │   ├── reset_dedup.py  <- reset diario del dedup (config-aware, lo llama people-counter-reset.service)
 │   ├── verify_hardware.py, setup_device.sh
-│   └── training/       <- train_head_detector.ipynb (Kaggle T4, descarga directo de Roboflow),
-│                          bench_detector.py, bench_roboflow_api.py, capture_mjpeg.py,
-│                          record_clips.py, sample_for_roboflow.py, sample_for_calib.py,
-│                          polys_to_bboxes.py, eval_yolo.py
+│   └── training/       <- pipeline X-AnyLabeling + active learning + Kaggle:
+│                          sample_for_labeling.py (estratificado), mine_active_learning.py
+│                          (v_next minado), labelme_to_yolo.py (export → dataset YOLO),
+│                          train_head_detector.ipynb (Kaggle T4 ~20min sobre dataset privado),
+│                          capture_mjpeg.py, record_clips.py, sample_for_calib.py,
+│                          bench_detector.py, compare_detectors.py, analyze_eval_summary.py,
+│                          eval_yolo.py + label_guide.md (convención cabeza+hombros).
 ├── training_data/      <- gitignoreado salvo README + sites.yaml.example. Workspace local:
-│                          sites.yaml inline (matrices + IPs), captures rectificadas, manifest
-│                          de los frames subidos a Roboflow.
+│                          sites.yaml inline (matrices + IPs), captures rectificadas, batches
+│                          de labeling para X-AnyLabeling (`label_train_*`, `label_val_*`,
+│                          `label_v_next_*`) con manifests anti-leak train/val.
 ├── calibration/        <- board ChArUco A3 PDF (calib.io)
 ├── infra/cloudformation/ <- people-counter.yaml (stack completo)
 ├── docs/               <- setup_guide, lab_calibration_guide, pilot_operator_guide
@@ -377,11 +381,13 @@ YOLOv8n fine-tuneado para detección cenital de cabezas. Pipeline ONNX → HEF c
 
 - **Bench tooling**:
   - `bench_detector.py` para modelos locales `.pt`/`.onnx`
-  - `bench_roboflow_api.py` para triage de modelos publicados en Roboflow Universe via REST
+  - `compare_detectors.py` para side-by-side de dos modelos (anti regresión v_actual → v_next)
+  - `analyze_eval_summary.py` para análisis estadístico del eval (distribución conf, breakdown por site)
 - **Capturador de validation set**: `capture_mjpeg.py` multi-site con motion-trigger + background sampling. Filenames `_motion_` / `_bg_`.
 - **Postproceso geométrico** post-NMS: cluster por centroide (`cluster_distance_px`), containment filter (bbox chico contenido en otro grande), static suppressor (celdas hot).
 - **Compilación HEF**: `hailomz compile` en WSL2/Docker (x86 only, Hailo no soporta Windows nativo). Calibration set = 200 imgs representativas.
-- **Training**: notebook `scripts/training/train_head_detector.ipynb` en Kaggle T4 (~20 min). Iteración: actualizar URL Roboflow + name del run.
+- **Labeling**: local en **X-AnyLabeling** (no más Roboflow). Convención canónica: bbox cabeza+hombros, single-class `person` — ver `scripts/training/label_guide.md`. Sampleo via `sample_for_labeling.py` (estratificado por site + motion/bg) o `mine_active_learning.py` (informativo para v_next). Conversión a dataset YOLO via `labelme_to_yolo.py`. Upload a Kaggle dataset privado vía CLI.
+- **Training**: notebook `scripts/training/train_head_detector.ipynb` en Kaggle T4 (~20 min). Iteración: actualizar slug del Kaggle dataset + name del run. v1→v2 con active learning subió mAP50 de 0.805 → 0.956 (deployed; eval contra val held-out 245 imgs / 174 cajas). La 2da ronda de AL (v3) bajó a 0.939 — sweet spot detectado en v2.
 
 ### Boundary fuerte
 
