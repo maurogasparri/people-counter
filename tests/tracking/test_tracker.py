@@ -485,6 +485,99 @@ def test_ghost_adoption_preserves_id_after_lost():
     assert tid not in tracker._ghosts  # se removió del pool tras adopción
 
 
+def test_ghost_adoption_invalidates_far_outside_pos():
+    """Regresión del FP observado en piloto 2026-05-24 09:15-09:18 (tid=20).
+
+    Escenario: track muere por Kalman exit con ``last_outside_pos`` lejano
+    (extrapolación alucinada, ej. ghost extrapoló a (375, 140) cuando su
+    centroide real estaba en zona muy distinta). El new track que adopta
+    el ID arranca con centroide en otra zona (ej. (399, 378)). Sin el
+    fix, el meta heredado tenía outside_pos=(375,140) — at >150 px del
+    new centroide — y eso producía:
+      (a) had_outside_pos=True espurio en el next entry-fresca,
+          bypaseando el guard del exit-by-Kalman.
+      (b) cross artificial en el primer frame inside-was-inside (sides[]
+          flipea de un lado al opuesto sólo porque el snap está en zona
+          geométricamente distinta de la posición real).
+
+    El fix invalida ``last_outside_pos`` del meta heredado si está a más
+    de ``GHOST_OUTSIDE_INVALIDATE_PX`` (150) del nuevo centroide.
+    """
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=2,
+        max_disappeared=3,
+        reid_gate_px=60,
+        adoption_window_frames=10,
+        adoption_iou_min=0.3,
+        adoption_max_dist_px=100.0,
+    )
+    # Track 1: nace y opera en zona ~(400, 380). Le inyectamos al meta
+    # un last_outside_pos=(375, 140) — como si su Kalman lo hubiera
+    # extrapolado lejos al morir.
+    det = np.array([400.0, 380.0, 3000.0])
+    tracker.update([det], detection_metas=[{"bbox": [390, 370, 410, 390]}])
+    tracker.update([det], detection_metas=[{"bbox": [390, 370, 410, 390]}])
+    tid = list(tracker.tracks.keys())[0]
+    tracker.tracks[tid].meta["last_outside_pos"] = (375.0, 140.0)
+    tracker.tracks[tid].meta["custom_marker"] = "preserved"  # otra key meta
+
+    # Track muere → enghost (con el outside_pos lejano + custom_marker).
+    for _ in range(6):
+        tracker.update([])
+    assert tid in tracker._ghosts
+    ghost_outside_before = tracker._ghosts[tid].meta_snapshot.get("last_outside_pos")
+    assert ghost_outside_before == (375.0, 140.0)
+
+    # Nueva detección cerca del último centroide del ghost (~(400,380))
+    # — pasa los gates de adopción. Distancia ghost↔new ≈ 5px, OK.
+    new_det = np.array([399.0, 378.0, 3000.0])
+    tracker.update([new_det], detection_metas=[{"bbox": [389, 368, 409, 388]}])
+
+    assert tid in tracker.tracks  # adopción OK
+    meta = tracker.tracks[tid].meta
+    # Con el fix: outside_pos heredado se invalida (distancia ~239 px > 150).
+    assert meta.get("last_outside_pos") is None
+    # Las demás keys del meta SE PRESERVAN (el fix es selectivo).
+    assert meta.get("custom_marker") == "preserved"
+
+
+def test_ghost_adoption_preserves_close_outside_pos():
+    """Regression contra el fix anterior: si el outside_pos del ghost está
+    CERCA del centroide del nuevo track (<150 px), se preserva — cubre el
+    caso legítimo donde el ghost murió mid-trajectory y otro track tomó
+    la posta inmediatamente cerca (ej. crosser real cuya identidad se
+    fragmentó por un detector miss)."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=2,
+        max_disappeared=3,
+        reid_gate_px=60,
+        adoption_window_frames=10,
+        adoption_iou_min=0.3,
+        adoption_max_dist_px=100.0,
+    )
+    # Track en (400, 250) con outside_pos cercano (380, 200) — ~54 px.
+    det = np.array([400.0, 250.0, 3000.0])
+    tracker.update([det], detection_metas=[{"bbox": [390, 240, 410, 260]}])
+    tracker.update([det], detection_metas=[{"bbox": [390, 240, 410, 260]}])
+    tid = list(tracker.tracks.keys())[0]
+    tracker.tracks[tid].meta["last_outside_pos"] = (380.0, 200.0)
+
+    for _ in range(6):
+        tracker.update([])
+
+    # New track en (405, 255) — cerca del ghost. dist outside↔new ≈ 60 px,
+    # bajo el threshold de 150 → outside_pos se preserva.
+    new_det = np.array([405.0, 255.0, 3000.0])
+    tracker.update([new_det], detection_metas=[{"bbox": [395, 245, 415, 265]}])
+
+    meta = tracker.tracks[tid].meta
+    assert meta.get("last_outside_pos") == (380.0, 200.0)  # preservado
+
+
 def test_ghost_pool_rejects_low_iou_match():
     """Si el bbox de la nueva detección NO overlap suficiente con el bbox
     del ghost (IoU < adoption_iou_min), NO se adopta — spawnea track nuevo."""

@@ -240,7 +240,16 @@ dispara):**
    counter ve continuidad de identidad y emite naturalmente en el exit
    observado. Cubre "persona pierde detección y reaparece poco después en
    posición similar". Más estricto geométricamente que un overlap booleano
-   (filtra ID-swaps entre personas adyacentes).
+   (filtra ID-swaps entre personas adyacentes). **Caveat anti-FP del
+   meta heredado**: si `last_outside_pos` del ghost está a más de
+   `GHOST_OUTSIDE_INVALIDATE_PX` (150) del centroide del nuevo track, se
+   invalida (no se hereda al nuevo track). Sin esto, un ghost que murió
+   por Kalman extrapolation alucinada (outside_pos lejos del lugar real
+   del centroide) le pasa al nuevo track un snap absurdo que produce (a)
+   `had_outside_pos=True` espurio bypaseando el guard del exit-by-Kalman,
+   y (b) un cross artificial en el primer frame post-entry (sides[] flipea
+   solo porque el snap está en zona geométricamente distinta). El resto
+   del meta sí se hereda — el fix es selectivo a `last_outside_pos`.
 2. **Decisive Kalman cross at exit** (`Counter._decisive_kalman_cross`): si
    la salida del ROI es un frame de pura extrapolación Kalman (`disappeared
    > 0`), se acepta el cruce SI `disappeared <= MAX_KALMAN_CROSS_FRAMES`
