@@ -28,6 +28,14 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/people-counter /var/log/people-counter /etc/people-counter /usr/src/people-counter
 PrivateTmp=true
 
+# Resource accounting — habilita las métricas que expone systemd vía
+# `systemctl show people-counter --property=MemoryCurrent,MemoryPeak,CPUUsageNSec`
+# y `systemd-cgtop`. Costo ~0 (solo lectura de cgroup counters que ya existen).
+# Sin esto, MemoryCurrent y MemoryPeak son [not set] y no podemos auditar
+# crecimiento de RSS / leaks en producción sin shellar a la Pi con ps.
+MemoryAccounting=yes
+CPUAccounting=yes
+
 # Capabilities que necesita el servicio corriendo como user no-root (pi):
 #  - CAP_NET_BIND_SERVICE: el web viewer bindea al puerto 80 (--web-viewer-port).
 #  - CAP_NET_ADMIN: WiFi probing — el pipeline pone wlan0 en monitor mode via

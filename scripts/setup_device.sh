@@ -98,6 +98,17 @@ grep -q "^dtparam=eth_led0=" "$CONFIG_TXT" \
 grep -q "^dtparam=eth_led1=" "$CONFIG_TXT" \
     || echo "dtparam=eth_led1=4" >> "$CONFIG_TXT"
 
+# Memory cgroup controller. Raspbian Trixie lo deshabilita por default
+# (overhead histórico de Pi1 con poca RAM, irrelevante en Pi5 8GB). Sin
+# esto MemoryCurrent / MemoryPeak son [not set] en `systemctl show
+# people-counter` y no podemos auditar crecimiento de RSS / leaks en
+# producción sin shellar y correr ps. Habilitamos memory + cpuset.
+CMDLINE_TXT="/boot/firmware/cmdline.txt"
+if [ -f "$CMDLINE_TXT" ] && ! grep -q "cgroup_enable=memory" "$CMDLINE_TXT"; then
+    info "  Enabling memory cgroup controller (requires reboot to take effect)"
+    sed -i 's/$/ cgroup_enable=memory cgroup_memory=1/' "$CMDLINE_TXT"
+fi
+
 # =========================================================================
 # Step 5: Hailo
 # =========================================================================
