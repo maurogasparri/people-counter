@@ -176,6 +176,7 @@
 | Declaración de privacidad | 0.5 | `docs/privacy.md` |
 | Project gantt interno | 0.5 | `docs/project_gantt.md` |
 | **Documentación del procedimiento de migración de datos históricos** | **0.5** | **`docs/historical-data-migration.md`, `scripts/templates/migrate_historical.py`** |
+| **Hardening anti-FP durante piloto (sesión 2026-05-24)** | **6** | **9 commits sobre `src/tracking/counter.py`, `src/tracking/tracker.py`, `src/vision/pre_filter.py` (NEW), `src/web/annotate.py`, `src/web/viewer.py`, config, runbook, matrix. Incluye: rename `counter.roi → counting_zone`; expone 5 knobs del rescue cascade config-driven; nuevos guards `min_count_height_m` / `min_real_inside_frames` / `height_confidence_gate`; filtro pre-tracker `tracking_zone` con modos `polygon` / `frame_margin_px` / `auto_margin_px`; keepalive condicional a entry real (opción E); fix doble-conteo `last_outside_pos` stale; blur del preview fuera de tracking_zone; `/health` endpoint + auto-reload del MJPEG. 889 tests verde (38 nuevos).** |
 
 ## S12 — EP-11 Cierre del prototipo (8h)
 

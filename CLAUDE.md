@@ -168,7 +168,7 @@ people-counter/
 | S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`, `wifi_ble_stitching_ratio`, `last_shadow_apply_ts`) + Device Shadow activado con 3 toggles overridables (`operating_hours`, `counting_enabled`, `external_traffic_enabled`) — workflow operator en `docs/shadow_operator_guide.md` |
 | S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambda `persist_event` + Lambda `ingest_pos_transaction` + RDS Postgres 16 (bucket_15min server-derived via GENERATED) + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con custom domain HTTPS |
 | S10 | Visualización analítica | EN CURSO — Grafana 13 deployado, datasource conectada; faltan dashboards (PRIORIDAD: operaciones — footfall/turn-in rate/conversion) + tiles de canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`) + alert rules para tracker watchlist (ver `docs/tracker_tuning.md`) |
-| S11 | Validación y documentación | EN CURSO — rename `counter.roi` → `counter.counting_zone` fleet-wide + knobs config-driven del rescue cascade + runbook operacional (`docs/tracker_tuning.md`) + matriz de cobertura discriminante (`docs/counter_test_matrix.md`) con 4 gap-fills. 851 tests verde. |
+| S11 | Validación y documentación | EN CURSO — rename `counter.roi` → `counter.counting_zone` + rename `pre_filter` → `tracking_zone` (alineación con FFC) + 4 guards nuevos anti-FP (`min_count_height_m`, `min_real_inside_frames`, `height_confidence_gate`, `tracking_zone` polygon filter pre-tracker) + keepalive condicional a entry real + fix doble-conteo por `last_outside_pos` stale + auto-reload del MJPEG preview vía `/health` polling + blur del preview fuera de la tracking_zone. Runbook `docs/tracker_tuning.md` con 6 patrones síntoma→fix. Matriz `docs/counter_test_matrix.md` con 14 dimensiones. 889 tests verde. |
 | S12 | Cierre del prototipo | PENDIENTE — hardening final + entregables + cleanup TRACKDBG temporal |
 
 ## Reglas duras
@@ -293,9 +293,13 @@ observado en piloto 2026-05-24 09:47-09:54 (tid=35 — 9 crosses zigzag
 | Knob | Default | Efecto al subirlo |
 |---|---|---|
 | `MIN_KALMAN_CROSS_DISPLACEMENT_PX` | 30 | Capa 2 más estricta — más Kalman crosses descartados. ∞ = no rescue de Kalman crosses. |
-| `min_visit_range_for_death_emit` (Counter kwarg) | 80 | Capa 3 más estricta — más death-emits filtrados. Bajarlo (ej. 50) en sites con detector flakey donde el síntoma `death_emit_count = 0 + ratio > 1.3` indica que el guard rechaza crossers reales con poca observación. |
-| `adoption_window_frames` | 30 | ↑ = más chance de adopción ID, ↓ = más fragmentación. 0 = sin ghost pool. |
-| `adoption_iou_min` | 0.3 | ↑ = adopción más conservadora (anti ID-swap). |
+| `min_visit_range_for_death_emit` (`counter`) | 80 | Capa 3 más estricta — más death-emits filtrados. Bajarlo (ej. 50) en sites con detector flakey donde el síntoma `death_emit_count = 0 + ratio > 1.3` indica que el guard rechaza crossers reales con poca observación. |
+| `min_count_height_m` (`counter`) | 0.0 (off) | Filtro anti-FP no-humanos por altura mediana del track. 1.0 filtra perros + objetos < 1m sin perder niños de 4+ años. Track sin medición SGBM (None) NUNCA se filtra. Caso piloto 2026-05-24: perro caminando + campera en silla. |
+| `min_real_inside_frames` (`counter`) | 0 (off) | Mínimo de frames con detección real inside antes de emitir. 2 filtra single-frame entries al borde del counting_zone (detector flickea 1 vez + Kalman extrapola la "visita"). Caso piloto tid=67: 1 frame al borde + 247 px Kalman → IN espurio. |
+| `height_confidence_gate` (`counter`) | 0.5 | Umbral de median(conf) del track para reportar demografía en el CountEvent. NO afecta el conteo, solo height_class/height_m/head_depth_m. |
+| `tracking.tracking_zone` polygon | disabled | Filtro pre-tracker por polígono ("modo estricto"). Descarta detecciones cuyo centroide cae fuera de la tracking_zone ANTES del tracker. Tres modos: `polygon` manual (control fino), `frame_margin_px` (predecible/simétrico, recomendado), `auto_margin_px` (expand desde counting_zone). Análogo a TrackingZone del incumbent FFC. |
+| `adoption_window_frames` (`tracking.state_machine`) | 30 | ↑ = más chance de adopción ID, ↓ = más fragmentación. 0 = sin ghost pool. |
+| `adoption_iou_min` (`tracking.state_machine`) | 0.3 | ↑ = adopción más conservadora (anti ID-swap). |
 
 Los tres al máximo + adoption en 0 = el modelo "puro observacional" (contar
 SOLO con detecciones reales en exit observado). Defaults actuales = híbrido
@@ -336,14 +340,26 @@ sitters/jitter y rescatar crossers con muy poca observación.
 - Logs TRACKDBG (cuando habilitados): `ghost_adopted`, `death_emit_skipped`
   con `reason=no_outside_history|small_visit_range`, etc.
 
-**Runbook operacional**: `docs/tracker_tuning.md` documenta los 4 patrones
+**Runbook operacional**: `docs/tracker_tuning.md` documenta los 6 patrones
 síntoma→fix más comunes con comandos exactos (queries SQL a `telemetry`,
 `journalctl | grep TRACKDBG`) + lookup table del árbol diagnóstico. Es la
 referencia que usa el operador del piloto cuando la telemetría dispara
 una alerta. Todos los knobs del rescue cascade
 (`adoption_window_frames`, `adoption_iou_min`, `adoption_max_dist_px`,
-`ghost_outside_invalidate_px`, `min_visit_range_for_death_emit`) son
+`ghost_outside_invalidate_px`, `min_visit_range_for_death_emit`,
+`min_count_height_m`, `min_real_inside_frames`, `height_confidence_gate`,
+`tracking_zone.{frame_margin_px,auto_margin_px,polygon}`) son
 config-driven y tuneables per-site sin redeploy de código.
+
+**Modo estricto / tracking_zone** (`tracking.tracking_zone`): filtro
+pre-tracker por polígono opt-in para sites con clutter estructural
+(tiendas de ropa con perchero, mostradores, vidrieras con tráfico
+exterior visible). Descarta detecciones fuera del polígono ANTES de
+cualquier procesamiento downstream, reduciendo FPs sin afectar el
+rescue cascade del counter (la tracking_zone debe ser más amplia que
+counting_zone para preservar lead-in del approach). El live preview
+renderea blureado/oscurecido lo que cae fuera de la tracking_zone para
+feedback visual al operador. Ver patrón 6 de `tracker_tuning.md`.
 
 **Matriz de cobertura discriminante**: `docs/counter_test_matrix.md` mapea
 las ~14 dimensiones que el counter + tracker bifurcan a los tests que

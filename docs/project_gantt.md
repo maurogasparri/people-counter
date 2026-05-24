@@ -10,6 +10,16 @@ activos).
 **Esfuerzo medido**: **136.9h efectivas** en **70 sesiones** (gaps ≥ 1.5h
 entre commits) + ~40h estimadas del bundle pre-existente que trajo el
 initial commit. **Total ≈ 175-180h**.
+
+> **Nota — sesión 2026-05-24 tarde (no reflejada en las 136.9h)**: 9
+> commits adicionales (~6h efectivas) en hardening anti-FP del piloto:
+> guards `min_count_height_m` / `min_real_inside_frames` /
+> `height_confidence_gate` config-driven; filtro pre-tracker
+> `tracking_zone` con 3 modos (polygon, frame_margin_px, auto_margin_px);
+> keepalive condicional a entry real; fix doble-conteo
+> `last_outside_pos`; blur del preview fuera de tracking_zone; `/health`
+> endpoint + auto-reload del MJPEG. **Total acumulado real ≈ 143h**.
+> Se regenerará en el cierre de S11/S12.
 **Modalidad**: solo developer, sesiones partidas mañana/noche (3.7h/día
 activo promedio, ~42% de los días con doble turno mañana+tarde-noche
 detectado).
