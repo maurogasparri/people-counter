@@ -7,6 +7,7 @@ from src.tracking.tracker import (
     CONFIRMED,
     PENDING,
     EuclideanTracker,
+    _GhostInfo,
 )
 
 
@@ -501,7 +502,7 @@ def test_ghost_adoption_invalidates_far_outside_pos():
           geométricamente distinta de la posición real).
 
     El fix invalida ``last_outside_pos`` del meta heredado si está a más
-    de ``GHOST_OUTSIDE_INVALIDATE_PX`` (150) del nuevo centroide.
+    de ``ghost_outside_invalidate_px`` (default 150) del nuevo centroide.
     """
     tracker = EuclideanTracker(
         max_distance=50,
@@ -541,6 +542,44 @@ def test_ghost_adoption_invalidates_far_outside_pos():
     assert meta.get("last_outside_pos") is None
     # Las demás keys del meta SE PRESERVAN (el fix es selectivo).
     assert meta.get("custom_marker") == "preserved"
+
+
+def test_ghost_outside_invalidate_px_is_configurable():
+    """``ghost_outside_invalidate_px`` es un kwarg del tracker. Subirlo a 300
+    permite que un outside_pos a 240 px sobreviva la adopción (que con default
+    150 sería invalidado). Habilita tuning per-site sin tocar código."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        confirm_frames=2,
+        pending_max_frames=2,
+        max_disappeared=3,
+        reid_gate_px=60,
+        adoption_window_frames=10,
+        adoption_iou_min=0.3,
+        adoption_max_dist_px=100.0,
+        ghost_outside_invalidate_px=300.0,  # ← override del default 150
+    )
+    assert tracker.ghost_outside_invalidate_px == 300.0
+
+    # Escenario diseñado para caer entre los dos thresholds:
+    # outside_pos=(500, 200), centroide=(399, 378) → distancia ~205 px.
+    # Con default 150 el outside_pos se invalidaría; con override 300
+    # se preserva.
+    ghost_meta = {
+        "last_outside_pos": (500.0, 200.0),
+        "custom_marker": "preserved",
+    }
+    ghost = _GhostInfo(
+        track_id=20,
+        last_observed_position=np.array([400.0, 380.0, 3000.0]),
+        last_bbox=(370, 350, 430, 410),
+        meta_snapshot=ghost_meta,
+    )
+    tracker._ghosts[20] = ghost
+    tracker._resurrect_ghost(ghost, np.array([399.0, 378.0, 3000.0]))
+
+    track = tracker._tracks[20]
+    assert track.meta.get("last_outside_pos") == (500.0, 200.0)
 
 
 def test_ghost_adoption_preserves_close_outside_pos():

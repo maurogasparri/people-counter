@@ -1197,10 +1197,21 @@ def build_counter(config: dict[str, Any]) -> Counter:
         labels = dict(raw.get("labels") or {})
         lines.append(Line(from_xy=from_xy, to_xy=to_xy, labels=labels))
 
+    # ``min_visit_range_for_death_emit`` per-site (tuneo del rescue cascade
+    # capa 3). None → el Counter usa su DEFAULT (80px). Bajarlo a 50 en sites
+    # con detector flakey cuando la telemetría muestra ``death_emit_count = 0``
+    # con ``track_stitching_ratio > 1.3`` sostenido (rescate-de-crossers-con-
+    # poca-observación rechazado por el guard). Ver docs/tracker_tuning.md.
+    min_visit_range_cfg = counter_cfg.get("min_visit_range_for_death_emit")
+    min_visit_range_kwarg = (
+        float(min_visit_range_cfg) if min_visit_range_cfg is not None else None
+    )
+
     return Counter(
         lines=lines,
         counting_zone=counter_cfg.get("counting_zone"),
         min_crossing_movement_px=float(
             counter_cfg.get("min_crossing_movement_px", 0.0) or 0.0
         ),
+        min_visit_range_for_death_emit=min_visit_range_kwarg,
     )

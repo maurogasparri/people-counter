@@ -455,6 +455,12 @@ Deberías ver un resumen con N hashes únicos.
 
 ## 5. Troubleshooting común
 
+> **Tracker/counter (counts perdidos o de más, fragmentación de IDs):** los
+> 4 patrones síntoma→fix más comunes están documentados en
+> [`docs/tracker_tuning.md`](tracker_tuning.md), con queries SQL exactas a
+> `telemetry` y comandos `journalctl | grep TRACKDBG`. Esta sección cubre
+> síntomas del bring-up; el tracker tuning es operación continua.
+
 ### 5.1. No conecta a MQTT (`iot_endpoint: FAIL`)
 
 ```bash

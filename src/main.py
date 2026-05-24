@@ -776,6 +776,39 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 sm_cfg.get("keepalive_max_frames", 600),
             )
         ),
+        # Ghost pool / ID adoption — capa 1 del rescue cascade. Ver
+        # docs/tracker_tuning.md para cuándo tunear. Defaults conservadores:
+        # ventana 30 frames (~1.5s @ 20fps), IoU mínimo 0.3 (anti ID-swap),
+        # distancia máxima 100 px (anti teleport).
+        adoption_window_frames=int(
+            tracker_cfg.get(
+                "adoption_window_frames",
+                sm_cfg.get("adoption_window_frames", 30),
+            )
+        ),
+        adoption_iou_min=float(
+            tracker_cfg.get(
+                "adoption_iou_min",
+                sm_cfg.get("adoption_iou_min", 0.3),
+            )
+        ),
+        adoption_max_dist_px=float(
+            tracker_cfg.get(
+                "adoption_max_dist_px",
+                sm_cfg.get("adoption_max_dist_px", 100.0),
+            )
+        ),
+        # Threshold para invalidar el ``last_outside_pos`` heredado por el
+        # adoptante de un ghost cuando está absurdamente lejos. Default 150
+        # px protege contra ghosts muertos por Kalman alucinado. Subir solo
+        # en sites con tracks muy largos donde el outside_pos legítimo puede
+        # estar lejos del centroide actual.
+        ghost_outside_invalidate_px=float(
+            tracker_cfg.get(
+                "ghost_outside_invalidate_px",
+                sm_cfg.get("ghost_outside_invalidate_px", 150.0),
+            )
+        ),
     )
 
     # Static FP suppressor: defense-in-depth contra detecciones que el

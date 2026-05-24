@@ -223,6 +223,7 @@ class EuclideanTracker:
         adoption_window_frames: int = 30,
         adoption_iou_min: float = 0.3,
         adoption_max_dist_px: float = 100.0,
+        ghost_outside_invalidate_px: float = 150.0,
     ) -> None:
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
@@ -312,6 +313,18 @@ class EuclideanTracker:
         self.adoption_window_frames = max(0, int(adoption_window_frames))
         self.adoption_iou_min = max(0.0, float(adoption_iou_min))
         self.adoption_max_dist_px = max(0.0, float(adoption_max_dist_px))
+        # Cap absoluto de distancia entre el ``last_outside_pos`` heredado de
+        # un ghost y el centroide del track que lo adopta. Si la distancia lo
+        # supera, ``last_outside_pos`` se INVALIDA (no se hereda al nuevo
+        # track) — el ghost murió por extrapolación Kalman alucinada lejos
+        # del centroide real, heredar esa posición espuria produciría
+        # ``had_outside_pos=True`` falso bypaseando el guard del rescue
+        # cascade. Threshold más laxo que ``adoption_max_dist_px`` porque
+        # outside_pos es del exit observado (puede estar legítimamente lejos
+        # del último centroide), pero no debería estar a >150 px del nuevo
+        # centroide del adoptante. Caso real piloto 2026-05-24 09:15-09:18
+        # (tid=20 FP de 1 ingress).
+        self.ghost_outside_invalidate_px = max(0.0, float(ghost_outside_invalidate_px))
         self._next_id = 0
         self._tracks: OrderedDict[int, Track] = OrderedDict()
         # Pool de tracks recién muertos esperando posible adopción.
@@ -1040,17 +1053,12 @@ class EuclideanTracker:
     # cuya posición de "última outside" cae demasiado lejos del centroide
     # del nuevo track. Sin este filtro, un ghost que murió por Kalman
     # extrapolation alucinada (ej. last_outside_pos a (375,140) cuando
-    # el adoptante está a (399,378) = ~239 px) le pasa al nuevo track un
-    # snap inicial absurdo que genera (a) had_outside_pos=True espurio
-    # → bypasea el guard del exit-by-Kalman, y (b) un cross artificial
-    # en el primer frame post-entry-fresca (el sides[] flipea de un lado
-    # al opuesto solo porque el snap está en zona distinta). Caso real
-    # observado en piloto 2026-05-24 09:15-09:18 (tid=20 FP de 1 ingress).
-    # Threshold más laxo que adoption_max_dist_px=100 porque la outside_pos
-    # puede estar legítimamente lejos del último centroide del ghost (el
-    # ghost se "iba" de la counting zone cuando murió, last_outside_pos es del exit
-    # observado), pero no debería estar a >150 px del nuevo centroide.
-    GHOST_OUTSIDE_INVALIDATE_PX = 150.0
+    # Threshold configurable per-instancia vía ``ghost_outside_invalidate_px``
+    # del constructor (ver docstring + comentario donde se guarda en
+    # ``__init__``). El bug original que motivó este guard: ghost que muere
+    # por Kalman extrapolation lejos del centroide real pasaría un
+    # ``last_outside_pos`` espurio al adoptante, bypaseando el guard del
+    # rescue cascade.
 
     def _resurrect_ghost(self, ghost: _GhostInfo, centroid: np.ndarray) -> None:
         """Recrea el Track con el track_id + meta del ghost, anclado en la
@@ -1059,8 +1067,8 @@ class EuclideanTracker:
         (no CANDIDATE) porque la adopción es evidencia de continuidad.
 
         Invalida ``last_outside_pos`` heredado si está absurdamente lejos
-        del centroide del nuevo track (ver GHOST_OUTSIDE_INVALIDATE_PX) —
-        el nuevo track tendrá que demostrar SU propio outside con
+        del centroide del nuevo track (ver ``ghost_outside_invalidate_px``)
+        — el nuevo track tendrá que demostrar SU propio outside con
         detecciones reales antes de habilitar el rescue cascade.
         """
         centroid = np.asarray(centroid, dtype=float)
@@ -1071,7 +1079,7 @@ class EuclideanTracker:
                 ox, oy = float(ghost_outside[0]), float(ghost_outside[1])
                 dist = ((ox - float(centroid[0])) ** 2
                         + (oy - float(centroid[1])) ** 2) ** 0.5
-                if dist > self.GHOST_OUTSIDE_INVALIDATE_PX:
+                if dist > self.ghost_outside_invalidate_px:
                     meta["last_outside_pos"] = None
                     logger.info(  # TRACKDBG [REVERT]
                         "TRACKDBG ghost_outside_invalidated tid=%d dist=%.1f",

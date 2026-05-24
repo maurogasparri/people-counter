@@ -336,6 +336,23 @@ sitters/jitter y rescatar crossers con muy poca observación.
 - Logs TRACKDBG (cuando habilitados): `ghost_adopted`, `death_emit_skipped`
   con `reason=no_outside_history|small_visit_range`, etc.
 
+**Runbook operacional**: `docs/tracker_tuning.md` documenta los 4 patrones
+síntoma→fix más comunes con comandos exactos (queries SQL a `telemetry`,
+`journalctl | grep TRACKDBG`) + lookup table del árbol diagnóstico. Es la
+referencia que usa el operador del piloto cuando la telemetría dispara
+una alerta. Todos los knobs del rescue cascade
+(`adoption_window_frames`, `adoption_iou_min`, `adoption_max_dist_px`,
+`ghost_outside_invalidate_px`, `min_visit_range_for_death_emit`) son
+config-driven y tuneables per-site sin redeploy de código.
+
+**Matriz de cobertura discriminante**: `docs/counter_test_matrix.md` mapea
+las ~14 dimensiones que el counter + tracker bifurcan a los tests que
+cubren cada celda significativa. Documenta también las celdas
+"structurally void" con justificación (CANDIDATE, B4×C1, A2 short-circuit,
+etc.). Sirve para auditoría de cobertura, onboarding y trazabilidad
+regulatoria. Mantener vivo: cuando se agrega una bifurcación nueva al
+código, agregar la celda al matrix antes de commitear.
+
 ## Pipeline del detector
 
 YOLOv8n fine-tuneado para detección cenital de cabezas. Pipeline ONNX → HEF compilado para Hailo-8L.

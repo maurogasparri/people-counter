@@ -632,6 +632,40 @@ def test_build_counter_optional_counting_zone():
     assert c.counting_zone is None
 
 
+def test_build_counter_reads_min_visit_range_from_config():
+    """``counter.min_visit_range_for_death_emit`` del YAML debe propagarse al
+    Counter (tuneable per-site sin tocar código). Ver docs/tracker_tuning.md
+    patrón 2 (crossers perdidos)."""
+    cfg = {
+        "counter": {
+            "counting_zone": COUNTING_ZONE,
+            "min_visit_range_for_death_emit": 50.0,
+            "lines": [{
+                "from": [100, 300], "to": [500, 300],
+                "labels": {"top_to_bottom": "ingress"},
+            }],
+        },
+    }
+    c = build_counter(cfg)
+    assert c.min_visit_range_for_death_emit == 50.0
+
+
+def test_build_counter_min_visit_range_defaults_when_absent():
+    """Sin la key del config, el Counter usa su DEFAULT (80px). Asegura
+    back-compat con configs viejos de la flota antes del rename."""
+    cfg = {
+        "counter": {
+            "counting_zone": COUNTING_ZONE,
+            "lines": [{
+                "from": [100, 300], "to": [500, 300],
+                "labels": {"top_to_bottom": "ingress"},
+            }],
+        },
+    }
+    c = build_counter(cfg)
+    assert c.min_visit_range_for_death_emit == Counter.DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT
+
+
 # ---------------------------------------------------------------------------
 # reset_daily / custom labels
 # ---------------------------------------------------------------------------
@@ -1537,3 +1571,202 @@ def test_min_visit_range_override_relaxes_guard_2():
     # visit_y_range=20 ≥ 20 → death-emit FIRES (con el default 80 hubiera
     # sido rechazado).
     assert counter.total_in == 1
+
+
+# ---------------------------------------------------------------------------
+# Coverage matrix gap fills (ver docs/counter_test_matrix.md).
+# Estos tests llenan celdas significativas del matrix discriminante que el
+# resto de la suite no cubría:
+#   * Death + zigzag-net-0 (A1+B3+C3)
+#   * Entry/exit real con |net| >= 2 (A1+B1+C5)
+#   * Multi-line: cada línea acumula net independiente (G2 cross-line)
+# ---------------------------------------------------------------------------
+
+
+def test_death_with_zigzag_net_zero_does_not_emit():
+    """A1+B3+C3: track entra, cruza ida+vuelta (net=0 por zigzag), muere
+    inside counting zone. El short-circuit ``not any(n != 0 for n in net)``
+    en ``_emit_on_death`` debe bloquear el emit — equivalente al
+    ``test_indeciso_with_two_way_line_cancels_net_zero`` pero por muerte
+    en vez de exit observado.
+    """
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    # outside (had_outside_pos=True), entry, cruza, vuelve a cruzar (net=0),
+    # muere DENTRO de la counting zone con guard 2 (visit_range >= 80) OK.
+    track = _make_track(1, [[300, 150, 3000]])  # outside arriba
+    counter.check_all({1: track})
+    _advance(counter, track, [300, 250, 3000])   # entry arriba de línea
+    _advance(counter, track, [300, 350, 3000])   # cross abajo (net=+1)
+    _advance(counter, track, [300, 250, 3000])   # vuelta arriba (net=0)
+    # visit_y_range = 100 (250..350) ≥ 80 → pasa guard 2.
+
+    # Track desaparece dentro de la counting zone con net=0.
+    counter.check_all({})
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    # Net=0 short-circuit: no emit.
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_real_cycle_with_double_crossing_same_direction_counts_once():
+    """A1+B1+C5: track entra, cruza ida, vuelve, cruza ida de nuevo (|net|=+2),
+    sale. El verdict es por SIGNO del net (no magnitud) → un solo ingress
+    emitido. Verifica que ``Counter._totals`` no se multiplica por crossings
+    intermedios cuando el balance neto sigue siendo del mismo lado.
+    """
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    track = _make_track(1, [[300, 150, 3000]])  # outside arriba
+    counter.check_all({1: track})
+    _advance(counter, track, [300, 250, 3000])   # entry arriba
+    _advance(counter, track, [300, 350, 3000])   # cross abajo (net=+1)
+    _advance(counter, track, [300, 250, 3000])   # vuelve arriba (net=0)
+    _advance(counter, track, [300, 350, 3000])   # cross abajo de nuevo (net=+1)
+    # net = +1 final (no +2: cada cruce suma 1 si va al +1, resta 1 si va al -1).
+    # Verificamos el invariante del net signed.
+    ev = _advance(counter, track, [300, 450, 3000])  # exit abajo
+    assert ev is not None
+    assert ev.direction == "ingress"
+    assert counter.total_in == 1
+    assert counter.total_out == 0
+
+
+def test_multi_line_each_line_tracks_independent_net():
+    """G2: dos líneas configuradas en la misma counting zone. Cada una acumula
+    su net independiente. Un cruce de la línea A no afecta el net de la línea B.
+    Verdict final es el último label no-nulo (defensiva — en producción las
+    líneas cubren regiones disjuntas, pero el invariante debe valer).
+    """
+    line_top = Line(
+        from_xy=(100, 250), to_xy=(500, 250),
+        labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
+    )
+    line_bottom = Line(
+        from_xy=(100, 350), to_xy=(500, 350),
+        labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
+    )
+    counter = Counter(lines=[line_top, line_bottom], counting_zone=COUNTING_ZONE)
+    track = _make_track(1, [[300, 150, 3000]])  # outside arriba
+    counter.check_all({1: track})
+    _advance(counter, track, [300, 220, 3000])   # entry arriba de ambas líneas
+    _advance(counter, track, [300, 300, 3000])   # cruza line_top hacia abajo (net_top=+1)
+    _advance(counter, track, [300, 400, 3000])   # cruza line_bottom hacia abajo (net_bottom=+1)
+    ev = _advance(counter, track, [300, 500, 3000])  # exit
+    assert ev is not None
+    # Ambas líneas tienen net=+1, mismo label → un solo emit ingress.
+    assert counter.total_in == 1
+    assert counter.total_out == 0
+
+
+def test_ghost_adoption_preserves_counter_meta_so_resurrected_track_emits():
+    """K2 end-to-end: validar el contrato counter↔tracker que justifica la
+    capa 1 del rescue cascade.
+
+    Track A entra a la counting zone, cruza la línea con detección real
+    (crossing_net=+1, inside=True, had_outside_pos=True). El detector lo
+    pierde antes del exit. El tracker lo mueve al ghost pool. Track B aparece
+    cerca, adopta el ID + meta. Cuando Track B (con el ID adoptado) finalmente
+    sale de la counting zone, el counter emite el ingress acumulado por Track A
+    — el conteo no se pierde, gracias a que el meta del counter sobrevive
+    la transición de identidad.
+
+    Sin este test, podríamos preservar el ID pero romper el flujo de conteo
+    silenciosamente (regresión de la integración counter↔tracker).
+    """
+    from src.tracking.tracker import EuclideanTracker
+
+    tracker = EuclideanTracker(
+        max_distance=200,         # cubre saltos del test sintético
+        confirm_frames=2,
+        pending_max_frames=2,
+        max_disappeared=3,
+        reid_gate_px=150,
+        adoption_window_frames=10,
+        adoption_iou_min=0.3,
+        adoption_max_dist_px=100.0,
+        # Velocity decay full + grace=0 → tras el primer miss el Kalman
+        # frena la velocidad a 0 (después del primer predict ya extrapolado).
+        # Suficiente para que el track muera DENTRO de la counting zone en
+        # vez de salirse por inercia y disparar exit-Kalman prematuro.
+        pending_velocity_decay=0.0,
+        pending_grace_frames=0,
+    )
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+
+    # Frame 1-2: confirma el track con detecciones outside (movimiento suave).
+    tracker.update(
+        [np.array([300.0, 180.0, 3000.0])],
+        detection_metas=[{"bbox": [280, 160, 320, 200]}],
+    )
+    tracker.update(
+        [np.array([300.0, 195.0, 3000.0])],
+        detection_metas=[{"bbox": [280, 175, 320, 215]}],
+    )
+    counter.check_all(tracker.tracks)
+    tid_a = list(tracker.tracks.keys())[0]
+    assert tracker.tracks[tid_a].state == CONFIRMED
+
+    # Frame 3: entra a la counting zone (real).
+    tracker.update(
+        [np.array([300.0, 215.0, 3000.0])],
+        detection_metas=[{"bbox": [280, 195, 320, 235]}],
+    )
+    counter.check_all(tracker.tracks)
+
+    # Frame 4: avanza dentro de la counting zone, justo arriba de la línea (y=300).
+    tracker.update(
+        [np.array([300.0, 280.0, 3000.0])],
+        detection_metas=[{"bbox": [280, 260, 320, 300]}],
+    )
+    counter.check_all(tracker.tracks)
+
+    # Frame 5: cruza la línea hacia abajo (real), net=+1.
+    tracker.update(
+        [np.array([300.0, 320.0, 3000.0])],
+        detection_metas=[{"bbox": [280, 300, 320, 340]}],
+    )
+    counter.check_all(tracker.tracks)
+
+    # Meta post-cross: inside=True, net=+1, had_outside_pos=True.
+    meta_before_death = dict(tracker.tracks[tid_a].meta.get(Counter.META_KEY, {}))
+    assert meta_before_death.get("inside") is True
+    assert meta_before_death.get("crossing_net") == [1]
+    assert meta_before_death.get("had_outside_pos") is True
+
+    # Frames 6-9: detector pierde al track. Con velocity_decay=0 + grace=0,
+    # Kalman da UN paso de inercia (~+25 px) y se congela. Track queda dentro
+    # de la counting zone (y_max=400) hasta morir LOST.
+    for _ in range(4):
+        tracker.update([])
+        counter.check_all(tracker.tracks)
+    assert tid_a not in tracker.tracks
+    assert tid_a in tracker._ghosts, "Track muerto debería estar en ghost pool"
+
+    # Frame 10: detección nueva con bbox que overlap el último del ghost
+    # ((280, 300, 320, 340)) y dentro del gate de adoption → adopta el ID.
+    tracker.update(
+        [np.array([295.0, 315.0, 3000.0])],
+        detection_metas=[{"bbox": [275, 295, 315, 335]}],
+    )
+    # Identidad preservada.
+    assert tid_a in tracker.tracks, "Ghost adoption debería resucitar el ID"
+    # Meta del counter heredada (incluyendo el cruce registrado por Track A).
+    meta_after_adoption = tracker.tracks[tid_a].meta.get(Counter.META_KEY, {})
+    assert meta_after_adoption.get("inside") is True, (
+        f"meta post-adoption inesperada: {meta_after_adoption}"
+    )
+    assert meta_after_adoption.get("crossing_net") == [1]
+    assert meta_after_adoption.get("had_outside_pos") is True
+
+    # Frame 11: Track B (con ID adoptado) sale de la counting zone. El counter
+    # debe emitir el ingress acumulado por Track A — el contrato K2 funciona.
+    tracker.update(
+        [np.array([300.0, 450.0, 3000.0])],
+        detection_metas=[{"bbox": [280, 430, 320, 470]}],
+    )
+    events = counter.check_all(tracker.tracks)
+    assert len(events) == 1, "El cruce de Track A debe contarse vía Track B (adoptado)"
+    assert events[0].direction == "ingress"
+    assert events[0].track_id == tid_a  # mismo ID preservado
+    assert counter.total_in == 1
+    assert counter.total_out == 0
