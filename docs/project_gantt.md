@@ -5,16 +5,18 @@ con la estructura formal del plan de proyecto. Sirve como input para
 herramientas de project management (MS Project, GanttProject, etc.) y
 como referencia para estimar tareas similares a futuro.
 
-**Período medido**: 2026-04-02 → 2026-05-23 (52 días calendario, 36
+**Período medido**: 2026-04-02 → 2026-05-24 (53 días calendario, 37
 activos).
-**Esfuerzo medido**: **132.0h efectivas** en **67 sesiones** (gaps ≥ 1.5h
+**Esfuerzo medido**: **136.9h efectivas** en **70 sesiones** (gaps ≥ 1.5h
 entre commits) + ~40h estimadas del bundle pre-existente que trajo el
-initial commit. **Total ≈ 170-175h**.
+initial commit. **Total ≈ 175-180h**.
 **Modalidad**: solo developer, sesiones partidas mañana/noche (3.7h/día
-activo promedio, 42% de los días con doble turno mañana+tarde-noche
+activo promedio, ~42% de los días con doble turno mañana+tarde-noche
 detectado).
 **Métrica de fuente**: timestamps reconstruidos desde el tag local
-`pre-rewrite-20260523-143821` (508 commits originales, pre squash).
+`pre-rewrite-20260523-143821` (508 commits originales) + delta de
+commits post-rewrite con author date > 2026-05-23 (Device Shadow + UI +
+tracker hardening). Sin doble-conteo de squashed commits.
 
 > **Nota metodológica**. Horas derivadas de timestamps de commits
 > agrupados por gaps. Sesión = `(último commit − primer commit) + 30min
@@ -38,11 +40,11 @@ detectado).
 
 ### PoC entregado (datos medidos)
 
-- **132h efectivas en 52 días calendario** (2026-04-02 → 2026-05-23),
-  36 días activos, 67 sesiones partidas mañana/noche detectadas.
+- **136.9h efectivas en 53 días calendario** (2026-04-02 → 2026-05-24),
+  37 días activos, 70 sesiones partidas mañana/noche detectadas.
 - **+ ~40-60h estimadas del skeleton bundleado** en el initial commit
   (20 módulos en `src/` + ~130 tests + pyproject + main.py).
-- **Total real del proyecto: ~170-190h hands-on**.
+- **Total real del proyecto: ~175-195h hands-on**.
 
 ### Distribución del esfuerzo medido
 
@@ -81,6 +83,8 @@ predominante.
 | **M8** | **S9 cerrado: read-only PostgreSQL para socios + cloud DR documentado + Lambda POS ingest deployada (T9.8 + T9.10 + T9.11)** | **✓ Done (05-23)** |
 | **M9** | **Counter production-grade: 3-layer rescue cascade (ghost pool + decisive Kalman + death-emit guards) + telemetry canaries (track_stitching_ratio + ghost_adoption_count + death_emit_count)** | **✓ Done (05-22)** |
 | **M10** | **Repo reorganizado: 508 → 124 commits con prefijo `[S<N>/T<X>]` + sanitización + commit_mapping regenerado** | **✓ Done (05-23)** |
+| **M11** | **Device Shadow activado end-to-end: 3 toggles overridables (operating_hours + counting_enabled + external_traffic_enabled), persist al config.yaml in-place, validación pre-apply, dedup anti-loop, telemetry canary, UI pills de estado** | **✓ Done (05-24)** |
+| **M12** | **Tracker hardening: fix de FP del sitter cerca de la línea por ghost adoption con outside_pos lejano (capa 1 del rescue ahora invalida outside_pos heredado a >150px del adoptante)** | **✓ Done (05-24)** |
 | — | Dashboards funcionales (ECS Fargate Grafana 13 detrás de ALB sobre RDS Postgres) | **⊘ Pendiente** (CFN desplegado + datasource configurado, dashboards no construidos) |
 
 ### Iteraciones de diseño exploradas

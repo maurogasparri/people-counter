@@ -165,8 +165,8 @@ people-counter/
 | S5 | Detección neuronal de personas | **DONE** — YOLOv8n cenital fine-tuneado, HEF Hailo-8L, modelo `people-counter-detector` (~945 imgs, hard negatives) |
 | S6 | Seguimiento y conteo | **DONE** — tracker Kalman + state machine + ghost pool/ID adoption + counter ROI/línea con net-balance + death-emit con guards (rescue-with-guardrails philosophy) |
 | S7 | Captura WiFi y BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos (randomized), hashing + dedup 4 reglas (incl. fingerprint), MAX-RSSI para shoppers |
-| S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `wifi_ble_stitching_ratio`) |
-| S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambda `persist_event` + RDS Postgres 16 + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con custom domain HTTPS |
+| S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`, `wifi_ble_stitching_ratio`, `last_shadow_apply_ts`) + Device Shadow activado con 3 toggles overridables (`operating_hours`, `counting_enabled`, `external_traffic_enabled`) — workflow operator en `docs/shadow_operator_guide.md` |
+| S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambda `persist_event` + Lambda `ingest_pos_transaction` + RDS Postgres 16 (bucket_15min server-derived via GENERATED) + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con custom domain HTTPS |
 | S10 | Visualización analítica | EN CURSO — Grafana 13 deployado, datasource conectada; faltan dashboards (footfall, turn-in rate, geomap, tiles de canaries) |
 | S11 | Validación y documentación | EN CURSO — diagnóstico TRACKDBG en piloto, audit + actualización de docs (CLAUDE.md, schema, api, sprints) |
 | S12 | Cierre del prototipo | PENDIENTE — hardening final + entregables + cleanup TRACKDBG temporal |

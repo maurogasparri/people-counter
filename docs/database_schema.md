@@ -65,6 +65,7 @@ erDiagram
         real        track_stitching_ratio    "canary fragmentación del tracker"
         int         ghost_adoption_count     "capa 1 rescue: ID adoptions"
         int         death_emit_count         "capa 3 rescue: death-emits firing"
+        timestamptz last_shadow_apply_ts     "canary Device Shadow: ultimo delta aplicado, NULL si nunca hubo push"
         text        error
         timestamptz received_at
     }
