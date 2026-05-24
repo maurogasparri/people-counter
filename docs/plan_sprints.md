@@ -151,11 +151,11 @@
 |---|---:|---|
 | Grafana sobre Fargate (provisioning del servicio) | 1 | Incorporado en CFN |
 | Diseño visual de los 4 dashboards | 1.5 | Wireframes y decisiones de UX |
-| Vista 1 — Dashboard consolidado de la red | 1 | JSON del dashboard provisioning |
+| **Vista 1 — Operaciones (PRIORIDAD)**: KPIs por sucursal (footfall, in/out, turn-in rate, conversion) | 1 | JSON del dashboard provisioning |
 | Vista 2 — Detalle de sucursal con drill-down | 1 | JSON del dashboard provisioning |
-| Vista 3 — Monitoreo de la flota | 1 | JSON del dashboard provisioning |
+| Vista 3 — Monitoreo de la flota (canaries del tracker + uptime devices) | 1 | JSON del dashboard provisioning. **Pendiente**: paneles para `track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count` (canaries que ya están en RDS desde S8). |
 | Vista 4 — Reportes exportables (CSV export nativo) | 1 | JSON del dashboard provisioning |
-| Alerting configurado para US-02 (umbrales por sucursal) | 1 | Reglas de Grafana alerting |
+| Alerting configurado para US-02 (umbrales por sucursal) | 1 | Reglas de Grafana alerting. **Pendiente**: alert rules para `track_stitching_ratio > 1.3` sostenido 1h y `death_emit_count / total > 0.3`. Requiere definir notification channel (Slack/email) con el cliente del piloto. Ver `docs/tracker_tuning.md` para los thresholds operacionales. |
 | CloudWatch monitoring + dashboards básicos | 0.5 | Métricas y alarmas |
 | Integration tests de Lambda + bucket de eventos | 1 | `tests/cloud/test_persist_event.py` ampliado |
 

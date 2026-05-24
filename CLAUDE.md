@@ -167,8 +167,8 @@ people-counter/
 | S7 | Captura WiFi y BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos (randomized), hashing + dedup 4 reglas (incl. fingerprint), MAX-RSSI para shoppers |
 | S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`, `wifi_ble_stitching_ratio`, `last_shadow_apply_ts`) + Device Shadow activado con 3 toggles overridables (`operating_hours`, `counting_enabled`, `external_traffic_enabled`) — workflow operator en `docs/shadow_operator_guide.md` |
 | S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambda `persist_event` + Lambda `ingest_pos_transaction` + RDS Postgres 16 (bucket_15min server-derived via GENERATED) + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con custom domain HTTPS |
-| S10 | Visualización analítica | EN CURSO — Grafana 13 deployado, datasource conectada; faltan dashboards (footfall, turn-in rate, geomap, tiles de canaries) |
-| S11 | Validación y documentación | EN CURSO — diagnóstico TRACKDBG en piloto, audit + actualización de docs (CLAUDE.md, schema, api, sprints) |
+| S10 | Visualización analítica | EN CURSO — Grafana 13 deployado, datasource conectada; faltan dashboards (PRIORIDAD: operaciones — footfall/turn-in rate/conversion) + tiles de canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`) + alert rules para tracker watchlist (ver `docs/tracker_tuning.md`) |
+| S11 | Validación y documentación | EN CURSO — rename `counter.roi` → `counter.counting_zone` fleet-wide + knobs config-driven del rescue cascade + runbook operacional (`docs/tracker_tuning.md`) + matriz de cobertura discriminante (`docs/counter_test_matrix.md`) con 4 gap-fills. 851 tests verde. |
 | S12 | Cierre del prototipo | PENDIENTE — hardening final + entregables + cleanup TRACKDBG temporal |
 
 ## Reglas duras
