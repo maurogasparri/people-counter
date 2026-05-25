@@ -1201,6 +1201,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     _ext_cache: dict[str, Any] = {}
     _last_ext_ts = 0.0
 
+    # Buffer de eventos de conteo recientes para el flash +IN/+OUT en el
+    # preview. Key = track_id, value = (label, mono_ts, pos_x, pos_y). TTL
+    # = 1.5s (matchea la duración del fade en annotate). Se guarda la
+    # posición del cruce, no la del track actual — sobrevive al death-emit.
+    _recent_count_flashes: dict[int, tuple[str, float, float, float]] = {}
+    _COUNT_FLASH_TTL_S = 1.5
+
     # Filtro de clutter estático: tracks fantasma de FPs sobre estructura fija
     # (fuera de la counting zone, sin moverse) se esconden del preview + del contador de
     # tracks. Solo display/stats — no toca conteo/tracking (ver
@@ -1845,7 +1852,23 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     )
 
             # --- Publicar eventos de conteo ---
+            # Capturamos el monotonic_now una sola vez por iteración del loop
+            # para que el TTL del flash sea consistente entre publish y
+            # annotate (el resto del frame puede tardar varios ms entre
+            # ambos puntos).
+            _mono_now_for_flash = time.monotonic()
             for event in events:
+                # Registramos el evento en el buffer del flash visual ANTES
+                # del publish. La posición usada es la registrada por el
+                # Counter al momento del cruce (CountEvent.position_x/y) —
+                # sobrevive al death-emit y no depende de que el track siga
+                # vivo cuando el frame se renderea.
+                _recent_count_flashes[event.track_id] = (
+                    event.direction,
+                    _mono_now_for_flash,
+                    float(event.position_x),
+                    float(event.position_y),
+                )
                 # El device manda event_time RAW (timestamp epoch del cruce
                 # real). El bucket_15min se deriva server-side via columna
                 # GENERATED — desacopla el device del schema bucket size:
@@ -2028,6 +2051,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             if hidden_ids
                             else tracks
                         )
+                        # Prune flashes vencidos antes de pasarle al annotate.
+                        # Hacerlo aca (al push del viewer) y no por iteracion
+                        # del loop principal mantiene el costo proporcional al
+                        # rate del viewer (~8 fps) en lugar del loop (~25 fps).
+                        _push_mono = time.monotonic()
+                        _recent_count_flashes = {
+                            tid: data
+                            for tid, data in _recent_count_flashes.items()
+                            if _push_mono - data[1] <= _COUNT_FLASH_TTL_S
+                        }
                         left_annot = annotate_left(
                             rect_l, viewer_tracks, counter,
                             tracking_zone_polygon=(
@@ -2035,6 +2068,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                                 if tracking_zone_enabled
                                 else None
                             ),
+                            recent_counts=_recent_count_flashes,
+                            now_mono=_push_mono,
                         )
                         composite = compose_3panel(
                             left_annot,

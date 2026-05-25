@@ -9,6 +9,7 @@ from src.tracking.counter import Counter, Line
 from src.tracking.tracker import CONFIRMED, PENDING, CANDIDATE
 from src.web.annotate import (
     _BBOX_DISPLAY_SIZE_PX,
+    _COUNT_FLASH_DURATION_S,
     annotate_left,
     compose_3panel,
     depth_to_colormap,
@@ -447,3 +448,126 @@ def test_annotate_left_height_label_uses_median_of_history():
         f"La mediana de los samples debe absorber el outlier "
         f"(median={median}, esperado entre 1620-1625)"
     )
+
+
+# ==========================================================================
+# Flash +IN/+OUT al contar
+# ==========================================================================
+
+
+def _empty_frame(h=300, w=400):
+    return np.zeros((h, w, 3), dtype=np.uint8)
+
+
+def _corner_counter() -> Counter:
+    """Counter con la línea y la zona en la esquina superior izquierda,
+    LEJOS del área donde los tests del flash dibujan (pos_x≈350, pos_y≈250).
+    Mantiene el counter válido pero su geometría no contamina la región
+    donde verificamos los píxeles del flash."""
+    return Counter(
+        lines=[Line(
+            from_xy=(10, 10), to_xy=(60, 10),
+            labels={"top_to_bottom": "ingress"},
+        )],
+        counting_zone={"x_min": 10, "x_max": 60, "y_min": 5, "y_max": 50},
+    )
+
+
+def test_flash_in_writes_green_text_above_position():
+    """Flash recién disparado (elapsed=0) → píxeles verdes que NO están en
+    el render sin flash. Se compara contra baseline para aislar la
+    contribución del flash del overlay de la counting geometry."""
+    counter = _corner_counter()
+    pos_x, pos_y = 350, 250  # x lejos del rectángulo de la counting zone
+
+    baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None)
+    flashed = annotate_left(
+        _empty_frame(), {}, counter,
+        recent_counts={7: ("ingress", 100.0, float(pos_x), float(pos_y))},
+        now_mono=100.0,
+    )
+
+    # Diff: pixels nuevos respecto al baseline. Si son verdes → es del flash.
+    diff = (flashed.astype(int) - baseline.astype(int))
+    green_added = ((diff[..., 1] > 80) & (diff[..., 0] < 30) & (diff[..., 2] < 30)).sum()
+    assert green_added > 100, f"Esperaba píxeles verdes nuevos del flash +IN, got {green_added}"
+
+
+def test_flash_out_writes_blue_text():
+    """Flash de OUT (label egress) → píxeles azules que aparecen sobre el
+    baseline."""
+    counter = _corner_counter()
+    pos_x, pos_y = 350, 250
+
+    baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None)
+    flashed = annotate_left(
+        _empty_frame(), {}, counter,
+        recent_counts={7: ("egress", 100.0, float(pos_x), float(pos_y))},
+        now_mono=100.0,
+    )
+
+    diff = (flashed.astype(int) - baseline.astype(int))
+    blue_added = ((diff[..., 0] > 80) & (diff[..., 1] < 30) & (diff[..., 2] < 30)).sum()
+    assert blue_added > 100, f"Esperaba píxeles azules nuevos del flash +OUT, got {blue_added}"
+
+
+def test_flash_expires_after_duration():
+    """Pasado _COUNT_FLASH_DURATION_S el render debe ser bit-idéntico al
+    baseline sin flash. Compara contra el frame sin recent_counts."""
+    counter = _corner_counter()
+    recent = {7: ("ingress", 100.0, 350.0, 250.0)}
+
+    baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None)
+    expired = annotate_left(
+        _empty_frame(), {}, counter,
+        recent_counts=recent,
+        now_mono=100.0 + _COUNT_FLASH_DURATION_S + 0.5,
+    )
+    assert np.array_equal(baseline, expired), (
+        "Flash vencido debe dar render bit-idéntico al sin-flash"
+    )
+
+
+def test_flash_fade_alpha_proportional_to_elapsed():
+    """Alpha proporcional a (1 - elapsed/duration). A 50% del tiempo de
+    vida el verde sumado debe ser menor que al 0%."""
+    counter = _corner_counter()
+    recent = {7: ("ingress", 100.0, 350.0, 250.0)}
+
+    baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None).astype(int)
+    fresh = annotate_left(
+        _empty_frame(), {}, counter, recent_counts=recent, now_mono=100.0,
+    ).astype(int)
+    half = annotate_left(
+        _empty_frame(), {}, counter,
+        recent_counts=recent, now_mono=100.0 + _COUNT_FLASH_DURATION_S / 2.0,
+    ).astype(int)
+
+    g_fresh_max = int(np.max(fresh[..., 1] - baseline[..., 1]))
+    g_half_max  = int(np.max(half[..., 1]  - baseline[..., 1]))
+    assert g_fresh_max > g_half_max + 20, (
+        f"El verde delta al 50% del fade debe ser perceptiblemente más bajo "
+        f"que al disparar (fresh={g_fresh_max}, half={g_half_max})"
+    )
+
+
+def test_flash_none_or_empty_dict_is_noop():
+    """recent_counts=None o {} no debe romper ni mutar la salida vs frame sin flash."""
+    frame = _empty_frame()
+    counter = _two_way_counter()
+    baseline = annotate_left(frame, {}, counter, recent_counts=None)
+    empty = annotate_left(frame, {}, counter, recent_counts={})
+    assert np.array_equal(baseline, empty), "recent_counts={} y None deben dar el mismo render"
+
+
+def test_flash_position_clamped_to_frame_top():
+    """Si el centroide está muy cerca del borde superior, el texto va
+    debajo (no se sale del frame)."""
+    frame = _empty_frame()
+    counter = _two_way_counter()
+    # pos_y muy chica → anchor_y - text_h < 0 → debería caer abajo
+    recent = {7: ("ingress", 100.0, 200.0, 20.0)}
+    out = annotate_left(frame, {}, counter, recent_counts=recent, now_mono=100.0)
+    # No crashea + algún píxel verde aparece en algún lugar del frame.
+    green = ((out[..., 1] > 100) & (out[..., 0] < 80) & (out[..., 2] < 80)).sum()
+    assert green > 50, "Aun cerca del borde superior el flash debe renderear (clamped abajo)"

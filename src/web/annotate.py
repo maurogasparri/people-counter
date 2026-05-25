@@ -68,12 +68,34 @@ _BBOX_DISPLAY_SIZE_PX = 80
 # frame.
 _TRAIL_LENGTH = 30
 
+# Flash visual +IN/+OUT al contar: vida útil del overlay en segundos. ~1.5s
+# es suficiente para que el operador asocie visualmente el evento con el
+# cruce sin que el overlay se vuelva permanente en la escena. Fade lineal
+# del alpha durante la vida (1.0 al disparar → 0.0 al expirar).
+_COUNT_FLASH_DURATION_S = 1.5
+# Tamaño del texto del flash (HERSHEY_SIMPLEX). 2.0 es grande pero no tapa
+# multiples tracks en escena llena.
+_COUNT_FLASH_FONT_SCALE = 1.8
+_COUNT_FLASH_FONT_THICKNESS = 4
+# Offset vertical del flash respecto del centroide del track (px hacia
+# arriba). Suficiente para no pisar el label #ID + altura.
+_COUNT_FLASH_Y_OFFSET = 60
+# Kernel del blur del fondo del flash. Reemplaza un rectángulo negro
+# opaco — el blur del contexto deja que se note "hay algo abajo" sin
+# tapar al sujeto y mejora el contraste de los colores oscuros del texto
+# (especialmente el azul del +OUT, que sobre negro pierde mucho). Kernel
+# 21 da diffusion fuerte sin emborronar el texto encima (que va sin blur
+# en la misma operación de overlay).
+_COUNT_FLASH_BLUR_KERNEL = (21, 21)
+
 
 def annotate_left(
     frame: np.ndarray,
     tracks: dict,
     counter: Optional[Any],
     tracking_zone_polygon: Optional[list[tuple[float, float]]] = None,
+    recent_counts: Optional[dict[int, tuple[str, float, float, float]]] = None,
+    now_mono: Optional[float] = None,
 ) -> np.ndarray:
     """Dibuja la counting zone, línea y tracks sobre una copia de ``frame``.
 
@@ -99,6 +121,15 @@ def annotate_left(
             área del frame está siendo procesada por el pipeline (el resto
             es ignorado por el ``tracking_zone`` del tracker). None = sin
             blur (back-compat, sites sin tracking_zone activo).
+        recent_counts: dict ``{track_id: (label, mono_ts, pos_x, pos_y)}``
+            con los eventos de conteo recientes que disparó el counter. Para
+            cada uno se dibuja un flash visual "+IN" o "+OUT" durante
+            ``_COUNT_FLASH_DURATION_S`` con fade lineal del alpha. La
+            posición usada es la registrada al momento del cruce (sobrevive
+            al death-emit del track) — no la posición actual del tracker.
+        now_mono: timestamp monotónico actual (``time.monotonic()``). Si se
+            omite cae a ``time.monotonic()`` interno — solo se inyecta en
+            tests para controlar el fade. None en producción.
     """
     out = frame.copy()
 
@@ -248,7 +279,91 @@ def annotate_left(
                         cv2.FONT_HERSHEY_SIMPLEX, 0.85, display_colour, 2,
                         cv2.LINE_AA)
 
+    # Flash +IN/+OUT sobre los tracks que el counter acaba de contar. Se
+    # dibuja AL FINAL para quedar arriba del bbox/label/trail.
+    if recent_counts:
+        if now_mono is None:
+            import time
+            now_mono = time.monotonic()
+        _draw_count_flashes(out, recent_counts, now_mono)
+
     return out
+
+
+def _draw_count_flashes(
+    frame: np.ndarray,
+    recent_counts: dict[int, tuple[str, float, float, float]],
+    now_mono: float,
+) -> None:
+    """Dibuja "+IN" o "+OUT" sobre las posiciones de los eventos recientes
+    con fade-out lineal del alpha. ``recent_counts`` viene del caller y
+    contiene SOLO los eventos vivos (≤ _COUNT_FLASH_DURATION_S de edad);
+    el pruning lo hace el caller. Aquí asumimos que todo lo que llega se
+    dibuja, pero igual sanity-checkeamos la edad para evitar artifacts si
+    el caller prunee con TTL distinto.
+    """
+    for _tid, (label, mono_ts, pos_x, pos_y) in recent_counts.items():
+        elapsed = now_mono - mono_ts
+        if elapsed < 0 or elapsed > _COUNT_FLASH_DURATION_S:
+            continue
+        # Alpha lineal: 1.0 al disparar → 0.0 al expirar. Cv2 no tiene alpha
+        # blending nativo en putText, así que usamos addWeighted sobre una
+        # capa temp del overlay.
+        alpha = max(0.0, 1.0 - elapsed / _COUNT_FLASH_DURATION_S)
+
+        # Color por label. Matchea la paleta de la counting line:
+        # in/ingress = verde, out/egress = azul.
+        text_color = _LINE_COLOR_BY_LABEL.get(label, _LINE_COLOR_FALLBACK)
+        # Texto canónico — usamos +IN/+OUT para que el operador lea "+1"
+        # mentalmente independientemente del label interno
+        # (ingress/egress/in/out).
+        if label in ("in", "ingress", "enter"):
+            text = "+IN"
+        elif label in ("out", "egress", "leave"):
+            text = "+OUT"
+        else:
+            text = f"+{label.upper()}"
+
+        # Posición: arriba del centroide del cruce, centrado en X. Si queda
+        # cortado por el borde superior, lo movemos hacia abajo del
+        # centroide (mejor que recortarlo).
+        (text_w, text_h), baseline = cv2.getTextSize(
+            text, cv2.FONT_HERSHEY_SIMPLEX,
+            _COUNT_FLASH_FONT_SCALE, _COUNT_FLASH_FONT_THICKNESS,
+        )
+        anchor_x = int(pos_x) - text_w // 2
+        anchor_y = int(pos_y) - _COUNT_FLASH_Y_OFFSET
+        if anchor_y - text_h < 0:
+            anchor_y = int(pos_y) + _COUNT_FLASH_Y_OFFSET + text_h
+
+        # Capa overlay para alpha blending. Dibujamos en una copia del
+        # frame y luego mezclamos con el original según alpha. Es chico
+        # (solo la región del texto) así no es costoso.
+        x0 = max(0, anchor_x - 8)
+        y0 = max(0, anchor_y - text_h - 8)
+        x1 = min(frame.shape[1], anchor_x + text_w + 8)
+        y1 = min(frame.shape[0], anchor_y + baseline + 8)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        roi = frame[y0:y1, x0:x1]
+        # Overlay = blur del ROI original. Reemplaza el rectángulo negro
+        # opaco para que el contexto detrás del texto siga siendo visible
+        # (no tapa cabezas/cuerpos al sujeto contado) y los colores
+        # oscuros del texto (azul del +OUT) ganen contraste contra un
+        # fondo difuminado en lugar de negro absoluto.
+        overlay = cv2.GaussianBlur(roi, _COUNT_FLASH_BLUR_KERNEL, 0)
+        # Texto sobre el overlay (coords relativas al ROI).
+        cv2.putText(
+            overlay,
+            text,
+            (anchor_x - x0, anchor_y - y0),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            _COUNT_FLASH_FONT_SCALE,
+            text_color,
+            _COUNT_FLASH_FONT_THICKNESS,
+            cv2.LINE_AA,
+        )
+        cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0, roi)
 
 
 def depth_to_colormap(
