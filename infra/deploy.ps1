@@ -304,26 +304,42 @@ if ($StartFromPhase -le 4) {
         -ModuleName "query_aggregates.py"
 }
 
-# === [5/6] CNAMEs finales (grafana -> ALB, api -> API GW domain) ===
+# === [5/6] CNAMEs finales (grafana ALB + API GW + SES DKIM) ===
+# Tambien resuelve la bootstrap de SES: derivar SMTP password y writeback al
+# secret, esperar VerificationStatus=SUCCESS, restart del Grafana service.
 if ($StartFromPhase -le 5) {
     Write-Host ""
-    Write-Host "[5/6] CNAMEs finales..." -ForegroundColor Cyan
+    Write-Host "[5/6] CNAMEs finales + bootstrap SES..." -ForegroundColor Cyan
 
     $ALB_DNS = Get-StackOutput "GrafanaAlbDnsName"
     if (-not $ALB_DNS) { throw "GrafanaAlbDnsName no encontrado en outputs" }
     $API_TARGET = Get-StackOutput "IngestPosDomainTarget"
     if (-not $API_TARGET) { throw "IngestPosDomainTarget no encontrado en outputs" }
 
+    # DKIM tokens del SES domain identity (creados en Phase 1, siempre disponibles)
+    $DKIM_NAME_1  = Get-StackOutput "SesDkimToken1Name"
+    $DKIM_VALUE_1 = Get-StackOutput "SesDkimToken1Value"
+    $DKIM_NAME_2  = Get-StackOutput "SesDkimToken2Name"
+    $DKIM_VALUE_2 = Get-StackOutput "SesDkimToken2Value"
+    $DKIM_NAME_3  = Get-StackOutput "SesDkimToken3Name"
+    $DKIM_VALUE_3 = Get-StackOutput "SesDkimToken3Value"
+    if (-not $DKIM_NAME_1) { throw "SesDkimToken1Name no encontrado — el stack no creo la SES identity?" }
+
     $zonePrefix = $DomainName.Split('.')[0]   # ej. tfg.gasparri.com.ar -> tfg
     Write-Host ""
-    Write-Host "Agregar al DNS provider (2 CNAMEs):" -ForegroundColor Yellow
+    Write-Host "Agregar al DNS provider los siguientes CNAMEs:" -ForegroundColor Yellow
+    Write-Host "  --- Service domains ---"
     Write-Host "  1) $FULL_DOMAIN   CNAME  $ALB_DNS       (relativo: $GrafanaSubdomain.$zonePrefix)"
     Write-Host "  2) $API_DOMAIN          CNAME  $API_TARGET   (relativo: api.$zonePrefix)"
+    Write-Host "  --- SES DKIM (3 tokens del dominio raiz) ---"
+    Write-Host "  3) $DKIM_NAME_1  CNAME  $DKIM_VALUE_1"
+    Write-Host "  4) $DKIM_NAME_2  CNAME  $DKIM_VALUE_2"
+    Write-Host "  5) $DKIM_NAME_3  CNAME  $DKIM_VALUE_3"
     Write-Host ""
 
-    Wait-ForUser "Agrega ambos CNAMEs en tu DNS provider"
+    Wait-ForUser "Agrega los 5 CNAMEs en tu DNS provider"
 
-    # Verificacion de resolucion (best-effort, no falla si el TTL no propago)
+    # Verificacion de resolucion de los 2 CNAMEs de servicio (best-effort)
     foreach ($pair in @(@($FULL_DOMAIN, $ALB_DNS), @($API_DOMAIN, $API_TARGET))) {
         $fqdn = $pair[0]; $tgt = $pair[1]
         Write-Host "  Verificando $fqdn -> $tgt ..." -ForegroundColor Cyan
@@ -338,6 +354,98 @@ if ($StartFromPhase -le 5) {
             if ($attempt -lt 6) { Start-Sleep 30 }
         } while ($attempt -lt 6)
     }
+
+    # --- SES: esperar verification + derivar SMTP password + restart Grafana ---
+    Write-Host ""
+    Write-Host "  Esperando que SES verifique el dominio $DomainName ..." -ForegroundColor Cyan
+    Write-Host "  (DKIM tarda 1-30 min en propagar segun el TTL del DNS provider)"
+    $sesAttempt = 0
+    do {
+        $sesAttempt++
+        $sesStatus = aws sesv2 get-email-identity --email-identity $DomainName --query 'VerifiedForSendingStatus' --output text 2>$null
+        if ($sesStatus -eq "True") {
+            Write-Host "    SES domain VERIFIED" -ForegroundColor Green
+            break
+        }
+        Write-Host "    [$sesAttempt/20] VerifiedForSendingStatus=$sesStatus, retry en 30s..."
+        if ($sesAttempt -lt 20) { Start-Sleep 30 }
+    } while ($sesAttempt -lt 20)
+    if ($sesStatus -ne "True") {
+        Write-Host "  SES NO verifico todavia. Avanzo igual; rerun -StartFromPhase 5 cuando propague." -ForegroundColor Yellow
+    }
+
+    # Email identity (AlertEmail) requiere click en el inbox — aviso solamente.
+    $alertEmailStatus = aws sesv2 get-email-identity --email-identity $AlertEmail --query 'VerifiedForSendingStatus' --output text 2>$null
+    if ($alertEmailStatus -ne "True") {
+        Write-Host ""
+        Write-Host "  ATENCION: $AlertEmail aun NO esta verificado (SES sandbox lo exige)." -ForegroundColor Yellow
+        Write-Host "  Reviza tu inbox + spam — AWS mando un mail con un link de verificacion."
+        Write-Host "  Sin esto Grafana no puede mandar alertas (rechazado por SES)."
+    } else {
+        Write-Host "  $AlertEmail YA esta verificado en SES" -ForegroundColor Green
+    }
+
+    # Derivar SMTP password del rawSecretKey + writeback al secret.
+    Write-Host ""
+    Write-Host "  Derivando SMTP password del IAM access key (HMAC-SHA256)..." -ForegroundColor Cyan
+    $smtpSecretArn = Get-StackOutput "SesSmtpSecretArn"
+    if (-not $smtpSecretArn) { throw "SesSmtpSecretArn no encontrado en outputs" }
+    $smtpSecretJson = aws secretsmanager get-secret-value --secret-id $smtpSecretArn --query SecretString --output text
+    $smtpSecret = $smtpSecretJson | ConvertFrom-Json
+
+    if ($smtpSecret.smtpPassword -ne "PLACEHOLDER_SET_BY_DEPLOY_PS1" -and $smtpSecret.smtpPassword -notlike "*PLACEHOLDER*") {
+        Write-Host "    smtpPassword ya estaba derivado (skip)" -ForegroundColor Green
+    } else {
+        # Algoritmo SES SMTP password derivation:
+        #   message  = "SendRawEmail"
+        #   version  = 0x04
+        #   hash     = HMAC-SHA256(secret_access_key, message)
+        #   password = base64(version || hash)
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [Text.Encoding]::UTF8.GetBytes($smtpSecret.rawSecretKey)
+        $hash = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes("SendRawEmail"))
+        $payload = New-Object byte[] (1 + $hash.Length)
+        $payload[0] = 0x04
+        [Array]::Copy($hash, 0, $payload, 1, $hash.Length)
+        $smtpPassword = [Convert]::ToBase64String($payload)
+
+        # Update secret con smtpPassword derivado. Mantenemos rawSecretKey en
+        # el JSON por si hay que re-derivar (ej. tras stack delete/recreate);
+        # el Grafana task solo lee smtpUser y smtpPassword.
+        #
+        # CRITICAL: pasamos el JSON via `file://` y NO como string literal —
+        # PowerShell 5.1 traga las quotes de un argumento de línea de comandos
+        # con `{` `}` al invocar nativos, dejando JSON corrupto `{key:value}`
+        # en lugar de `{"key":"value"}`. ECS Secrets Manager rechaza al
+        # inyectar al container con "invalid character 'r' looking for
+        # beginning of object key string". `file://` evita el quoting de
+        # shell y manda los bytes exactos.
+        $newSecret = @{
+            smtpUser      = $smtpSecret.smtpUser
+            smtpPassword  = $smtpPassword
+            rawSecretKey  = $smtpSecret.rawSecretKey
+        } | ConvertTo-Json -Compress
+        $secretFile = Join-Path $env:TEMP "pc-ses-secret-$([Guid]::NewGuid()).json"
+        try {
+            $newSecret | Out-File -FilePath $secretFile -Encoding ASCII -NoNewline
+            aws secretsmanager put-secret-value `
+                --secret-id $smtpSecretArn `
+                --secret-string "file://$secretFile" | Out-Null
+        } finally {
+            Remove-Item $secretFile -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "    smtpPassword derivado y writeback al secret" -ForegroundColor Green
+    }
+
+    # Force restart del Grafana service para que tome el nuevo secret value.
+    # ECS no rehidrata secrets en running tasks — hay que matar la task actual.
+    Write-Host "  Force restart del Grafana service para tomar el nuevo secret..." -ForegroundColor Cyan
+    aws ecs update-service `
+        --cluster "people-counter-grafana-$Environment" `
+        --service "people-counter-grafana-$Environment" `
+        --force-new-deployment --query 'service.deployments[0].rolloutState' --output text | Out-Null
+    Write-Host "    rolling deploy iniciado (no espero a que estabilice)" -ForegroundColor Green
+
     Write-Host "[5/6] OK" -ForegroundColor Green
 }
 

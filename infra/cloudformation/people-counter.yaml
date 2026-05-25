@@ -819,6 +819,76 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertTopic]
 
+  # =========================================================================
+  # SES — email delivery para alerting de Grafana (S10)
+  # =========================================================================
+  # Grafana alerting necesita un canal de delivery. Reutilizamos SES porque ya
+  # tenemos el dominio (mismo que Grafana/API custom domain). DKIM auto via
+  # SES — emite 3 CNAMEs que entran al DNS externo (mismo pattern que ACM).
+  # Sandbox: max 200 emails/dia + destinatario debe estar verificado. Para 1
+  # operador alcanza; salir del sandbox via support request si la flota crece.
+
+  SesDomainIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref DomainName
+      DkimSigningAttributes:
+        NextSigningKeyLength: RSA_2048_BIT
+
+  # Identity adicional para el AlertEmail (sandbox requirement). Al crearla,
+  # AWS manda un mail de verificacion con un link — el operador debe clickear
+  # antes de que Grafana pueda mandarle alertas. Sin esto el SES rechaza el
+  # send con "Email address is not verified".
+  SesAlertEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref AlertEmail
+
+  # IAM user dedicado con scope minimo: solo ses:SendRawEmail desde el
+  # domain identity de la cuenta. NO da listIdentities ni cosas de mgmt.
+  SesSmtpUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "people-counter-ses-smtp-${Environment}"
+      Policies:
+        - PolicyName: ses-send-raw
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ses:SendRawEmail, ses:SendEmail]
+                Resource:
+                  - !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${DomainName}"
+
+  SesSmtpAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref SesSmtpUser
+
+  # Secret que Grafana consume via ECS Secrets injection. Pre-popular con
+  # smtpUser (IAM access key ID) + rawSecretKey (para derivar el password
+  # offline) + smtpPassword=PLACEHOLDER (lo settea deploy.ps1 con el HMAC
+  # derivado del rawSecretKey).
+  #
+  # Por qué no derivar el smtpPassword aca: CFN no tiene intrinsic functions
+  # para HMAC-SHA256. Alternativas: (a) Custom Resource Lambda — overkill
+  # para una operacion one-shot al setup; (b) post-CFN script — simple,
+  # transparente, y reusa el flow ya existente de pause-for-DNS.
+  SesSmtpSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "people-counter-ses-smtp-${Environment}"
+      Description: SES SMTP creds para Grafana alerting. smtpPassword se setea post-CFN via deploy.ps1.
+      SecretString: !Sub |
+        {
+          "smtpUser": "${SesSmtpAccessKey}",
+          "rawSecretKey": "${SesSmtpAccessKey.SecretAccessKey}",
+          "smtpPassword": "PLACEHOLDER_SET_BY_DEPLOY_PS1"
+        }
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
   GrafanaEcrRepo:
     Type: AWS::ECR::Repository
     DeletionPolicy: Delete
@@ -905,7 +975,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [secretsmanager:GetSecretValue]
-                Resource: !Ref RdsMasterSecret
+                Resource:
+                  - !Ref RdsMasterSecret
+                  - !Ref SesSmtpSecret
 
   # Task role: para llamadas AWS API en runtime desde Grafana. Vacio por
   # ahora — Grafana OSS no llama AWS APIs. Placeholder para datasources
@@ -958,6 +1030,17 @@ Resources:
             # mata el modo de falla observado el 2026-05-25.
             - {Name: GF_DATABASE_MAX_OPEN_CONN,       Value: "10"}
             - {Name: GF_DATABASE_MAX_IDLE_CONN,       Value: "5"}
+            # SMTP via AWS SES — alerting de Grafana al operador. Sandbox SES:
+            # destinatario debe estar verificado (SesAlertEmailIdentity en este
+            # template). FROM usa el subdominio alerts@ del DomainName, cubierto
+            # por la DKIM del SesDomainIdentity. STARTTLS mandatory: SES rechaza
+            # plain SMTP en el puerto 587 (submission).
+            - {Name: GF_SMTP_ENABLED,         Value: "true"}
+            - {Name: GF_SMTP_HOST,            Value: !Sub "email-smtp.${AWS::Region}.amazonaws.com:587"}
+            - {Name: GF_SMTP_STARTTLS_POLICY, Value: "MandatoryStartTLS"}
+            - {Name: GF_SMTP_FROM_ADDRESS,    Value: !Sub "alerts@${DomainName}"}
+            - {Name: GF_SMTP_FROM_NAME,       Value: "People Counter Alerts"}
+            - {Name: GF_SMTP_SKIP_VERIFY,     Value: "false"}
           Secrets:
             # Fargate inyecta el password del JSON del secret como env var
             # GF_DATABASE_PASSWORD. La sintaxis ${ARN}:password:: extrae la
@@ -965,6 +1048,13 @@ Resources:
             # / version-id vacios.
             - Name: GF_DATABASE_PASSWORD
               ValueFrom: !Sub "${RdsMasterSecret}:password::"
+            # SES SMTP creds desde el SesSmtpSecret. smtpUser = IAM access key
+            # ID (Grafana lo usa como usuario SMTP); smtpPassword = derivado
+            # del rawSecretKey vía HMAC-SHA256, lo settea deploy.ps1 post-CFN.
+            - Name: GF_SMTP_USER
+              ValueFrom: !Sub "${SesSmtpSecret}:smtpUser::"
+            - Name: GF_SMTP_PASSWORD
+              ValueFrom: !Sub "${SesSmtpSecret}:smtpPassword::"
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -1396,6 +1486,30 @@ Outputs:
   AlertTopicArn:
     Value: !Ref AlertTopic
     Export: {Name: !Sub "people-counter-${Environment}-AlertTopicArn"}
+
+  # SES outputs — deploy.ps1 los lee para mostrar al operador qué CNAMEs
+  # agregar al DNS y esperar VerificationStatus=SUCCESS.
+  SesDkimToken1Name:
+    Description: DKIM CNAME #1 — agregar al DNS del dominio
+    Value: !GetAtt SesDomainIdentity.DkimDNSTokenName1
+  SesDkimToken1Value:
+    Value: !GetAtt SesDomainIdentity.DkimDNSTokenValue1
+  SesDkimToken2Name:
+    Description: DKIM CNAME #2
+    Value: !GetAtt SesDomainIdentity.DkimDNSTokenName2
+  SesDkimToken2Value:
+    Value: !GetAtt SesDomainIdentity.DkimDNSTokenValue2
+  SesDkimToken3Name:
+    Description: DKIM CNAME #3
+    Value: !GetAtt SesDomainIdentity.DkimDNSTokenName3
+  SesDkimToken3Value:
+    Value: !GetAtt SesDomainIdentity.DkimDNSTokenValue3
+  SesSmtpSecretArn:
+    Description: ARN del Secrets Manager con creds SMTP de SES (smtpUser + smtpPassword)
+    Value: !Ref SesSmtpSecret
+  SesAlertEmail:
+    Description: Email del operador que necesita verificacion manual (link en su inbox)
+    Value: !Ref AlertEmail
 
   IoTPolicyName:
     Value: !Ref IoTDevicePolicy
