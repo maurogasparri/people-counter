@@ -673,7 +673,7 @@ Resources:
   # =========================================================================
   # Query Aggregates API — Lambda + 2 routes en el MISMO IngestPosApi
   # =========================================================================
-  # Endpoint REST de consulta de agregados (T9.12, US-12, RF-13). Conviven con
+  # Endpoint REST de consulta de agregados (T9.12, US-09, RF-13). Conviven con
   # /pos/transactions en la misma API Gateway HTTP API por dos razones:
   # (1) compartir custom domain api.<DomainName> sin pagar API GW extra; (2)
   # configurar throttling una sola vez vía RouteSettings.

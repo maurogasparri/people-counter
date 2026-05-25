@@ -1,5 +1,5 @@
 -- Migración: rol ``lambda_query_reader`` para la Lambda query_aggregates
--- (T9.12, US-12, RF-13). Auth IAM (rds_iam), SELECT-only sobre tablas raw.
+-- (T9.12, US-09, RF-13). Auth IAM (rds_iam), SELECT-only sobre tablas raw.
 --
 -- Patrón idempotente DO $$ + DROP IF EXISTS para re-runs. Para nuevos
 -- deploys, el rol ya está en bootstrap.sql.

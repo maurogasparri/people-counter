@@ -32,7 +32,7 @@
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
-| Especificaciones funcionales (RF-01 a RF-13) y no funcionales (RNF-01 a RNF-14) | 2 | Documento de especificaciones |
+| Especificaciones funcionales (RF-01 a RF-13) y no funcionales (RNF-01 a RNF-12) | 2 | Documento de especificaciones |
 | Diseño general de arquitectura HW + SW + cloud | 2 | Diagramas de arquitectura |
 | BOM y adquisición de componentes | 1 | Lista de materiales |
 | Setup del repositorio con CI básica | 1 | `pyproject.toml`, configuración ruff/pytest, `.gitignore`, README inicial |
@@ -142,7 +142,7 @@
 | Esquema SQL events + vistas materializadas | 1 | `infra/sql/bootstrap.sql` |
 | Acceso programático a datos del sistema vía SQL directo (cierra US-08, RF-12) | 1 | Usuario `readonly_external` con SELECT sobre vistas; `docs/api_access.md` con ejemplos de queries; whitelist de IPs en SG |
 | **API REST de ingest de datos POS (cierra US-06, RF-11)** | **2** | **Schema `pos_transactions`, Lambda `ingest_pos_transaction`, API Gateway con IAM auth, vista `conversion_rate_by_store`** |
-| **API REST de consulta de agregados (cierra US-12, RF-13)** | **2** | **Lambda `query_aggregates.py` con cursor pagination opaco + RFC 8288 Link header + RFC 7807 errors + ETag/Cache-Control + OpenAPI 3.1 servido en `/v1/openapi.json` + EMF metrics; rol `lambda_query_reader` (IAM auth, SELECT-only); `docs/api_access.md` con `curl --aws-sigv4` examples** |
+| **API REST de consulta de agregados (cierra US-09, RF-13)** | **2** | **Lambda `query_aggregates.py` con cursor pagination opaco + RFC 8288 Link header + RFC 7807 errors + ETag/Cache-Control + OpenAPI 3.1 servido en `/v1/openapi.json` + EMF metrics; rol `lambda_query_reader` (IAM auth, SELECT-only); `docs/api_access.md` con `curl --aws-sigv4` examples** |
 | Deploy scripts (sh + ps1) | 0.5 | `scripts/deploy_lambda.sh`, `.ps1`, `infra/deploy.ps1` |
 | Política documentada de backups y DR | 0.5 | Sección en `docs/` |
 
@@ -210,15 +210,15 @@
 | Épica | US habilitadas | US que cierra |
 |---|---|---|
 | EP-00 Análisis | --- | --- |
-| EP-01 HW + captura | US-09 (datos) | --- |
+| EP-01 HW + captura | US-10 (datos) | --- |
 | EP-02 Calibración | US-01, US-05 (precondición) | --- |
 | EP-03 Profundidad | US-05 (precondición) | --- |
 | EP-04 Detección | US-05 (datos) | --- |
 | EP-05 Tracking | US-01, US-05 (datos) | --- |
 | EP-06 WiFi/BLE | US-04 (datos) | --- |
-| EP-07 Mensajería | US-09 (datos), US-10, US-11 | **US-10, US-11** |
-| EP-08 Cloud + APIs | US-01, US-03, US-06, US-07, US-09 (precondición), US-08, US-12 | **US-06** (T9.11 ingest POS), **US-08** (T9.8 acceso SQL readonly), **US-12** (T9.12 API REST de consulta) |
-| EP-09 Visualización | --- | **US-01, US-02, US-03, US-04, US-05, US-07, US-09** |
+| EP-07 Mensajería | US-10 (datos), US-11, US-12 | **US-11, US-12** |
+| EP-08 Cloud + APIs | US-01, US-03, US-06, US-07, US-10 (precondición), US-08, US-09 | **US-06** (T9.11 ingest POS), **US-08** (T9.8 acceso SQL readonly), **US-09** (T9.12 API REST de consulta) |
+| EP-09 Visualización | --- | **US-01, US-02, US-03, US-04, US-05, US-07, US-10** |
 | EP-10 PoC + docs | (validación cruzada de todas) | --- |
 | EP-11 Cierre | --- | --- |
 

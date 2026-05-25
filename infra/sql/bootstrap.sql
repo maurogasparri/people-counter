@@ -477,7 +477,7 @@ GRANT USAGE ON SCHEMA public TO lambda_pos_writer;
 GRANT INSERT, SELECT ON pos_transactions TO lambda_pos_writer;
 
 -- =============================================================================
--- User Lambda query_aggregates — IAM auth, SELECT-only (T9.12, US-12, RF-13)
+-- User Lambda query_aggregates — IAM auth, SELECT-only (T9.12, US-09, RF-13)
 -- =============================================================================
 -- Tercer role separado para least privilege: la Lambda de consulta NO debe
 -- poder insertar/modificar. Solo SELECT sobre las tablas raw que necesita el

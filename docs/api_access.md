@@ -1,8 +1,8 @@
-# Acceso programático a los datos (US-08 + US-12)
+# Acceso programático a los datos (US-08 + US-09)
 
 Hay dos formas de consumir datos del sistema sin pasar por Grafana:
 
-1. **REST API** (`GET https://api.tfg.gasparri.com.ar/v1/aggregates`) — **US-12**
+1. **REST API** (`GET https://api.tfg.gasparri.com.ar/v1/aggregates`) — **US-09**
    (RF-13). Recomendado para integraciones con sistemas externos (ERP del
    retailer, CRM, BI corporativo). Auth: AWS SigV4. Ver sección **REST API**
    abajo.

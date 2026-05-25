@@ -1,4 +1,4 @@
-"""AWS Lambda: API REST de consulta de agregados (T9.12, US-12, RF-13).
+"""AWS Lambda: API REST de consulta de agregados (T9.12, US-09, RF-13).
 
 Invocada por API Gateway v2 (HTTP API) con IAM auth (SigV4) desde sistemas
 externos (ERP, CRM, BI corporativo del retailer). Devuelve una sola respuesta
