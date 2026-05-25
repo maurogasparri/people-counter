@@ -396,17 +396,26 @@ if ($StartFromPhase -le 5) {
     if ($smtpSecret.smtpPassword -ne "PLACEHOLDER_SET_BY_DEPLOY_PS1" -and $smtpSecret.smtpPassword -notlike "*PLACEHOLDER*") {
         Write-Host "    smtpPassword ya estaba derivado (skip)" -ForegroundColor Green
     } else {
-        # Algoritmo SES SMTP password derivation:
-        #   message  = "SendRawEmail"
-        #   version  = 0x04
-        #   hash     = HMAC-SHA256(secret_access_key, message)
-        #   password = base64(version || hash)
-        $hmac = New-Object System.Security.Cryptography.HMACSHA256
-        $hmac.Key = [Text.Encoding]::UTF8.GetBytes($smtpSecret.rawSecretKey)
-        $hash = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes("SendRawEmail"))
-        $payload = New-Object byte[] (1 + $hash.Length)
+        # Algoritmo SES SMTP password derivation (SigV4-based, version 0x04).
+        # NO usar el algoritmo simple HMAC("SendRawEmail") — SES lo deprecó
+        # y devuelve 535 Authentication Credentials Invalid. El correcto
+        # encadena HMAC con date "11111111", region, "ses", "aws4_request",
+        # "SendRawEmail" partiendo de key = "AWS4" + secret_access_key.
+        # Ref: https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html
+        function _SesHmac { param([byte[]]$Key, [string]$Msg)
+            $h = New-Object System.Security.Cryptography.HMACSHA256
+            $h.Key = $Key
+            return $h.ComputeHash([Text.Encoding]::UTF8.GetBytes($Msg))
+        }
+        $sig = [Text.Encoding]::UTF8.GetBytes("AWS4" + $smtpSecret.rawSecretKey)
+        $sig = _SesHmac -Key $sig -Msg "11111111"
+        $sig = _SesHmac -Key $sig -Msg $REGION
+        $sig = _SesHmac -Key $sig -Msg "ses"
+        $sig = _SesHmac -Key $sig -Msg "aws4_request"
+        $sig = _SesHmac -Key $sig -Msg "SendRawEmail"
+        $payload = New-Object byte[] (1 + $sig.Length)
         $payload[0] = 0x04
-        [Array]::Copy($hash, 0, $payload, 1, $hash.Length)
+        [Array]::Copy($sig, 0, $payload, 1, $sig.Length)
         $smtpPassword = [Convert]::ToBase64String($payload)
 
         # Update secret con smtpPassword derivado. Mantenemos rawSecretKey en

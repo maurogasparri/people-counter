@@ -844,8 +844,12 @@ Resources:
     Properties:
       EmailIdentity: !Ref AlertEmail
 
-  # IAM user dedicado con scope minimo: solo ses:SendRawEmail desde el
-  # domain identity de la cuenta. NO da listIdentities ni cosas de mgmt.
+  # IAM user dedicado para SMTP. Action restringida a SendRawEmail/SendEmail,
+  # pero Resource=* porque SES sandbox chequea autorización sobre AMBAS
+  # identities (FROM y TO) y restringir a la del dominio causa
+  # "AccessDenied on identity/<recipient-email>" al enviar a destinatarios
+  # verificados. El principal sigue siendo least-privilege real: este IAM
+  # user no tiene ningún otro permiso ni se reusa para otra cosa.
   SesSmtpUser:
     Type: AWS::IAM::User
     Properties:
@@ -857,8 +861,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [ses:SendRawEmail, ses:SendEmail]
-                Resource:
-                  - !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${DomainName}"
+                Resource: "*"
 
   SesSmtpAccessKey:
     Type: AWS::IAM::AccessKey
