@@ -1663,7 +1663,7 @@ def _set_track_height_history(track, head_height_mm_values):
     classifier downstream usa para la mediana. Helper para tests del
     guard ``min_count_height_m``."""
     track.meta["detection_history"] = [
-        {"head_height_mm": v, "height_class": "unknown"}
+        {"head_height_mm": v}
         for v in head_height_mm_values
     ]
 
@@ -1764,8 +1764,10 @@ def test_height_confidence_gate_override_via_constructor():
 
 
 def test_height_confidence_gate_below_threshold_marks_unknown():
-    """Median conf < gate → demografía en CountEvent se reporta como unknown
-    aunque el track tenga altura medida."""
+    """Median conf < gate → height_m en CountEvent se reporta None
+    aunque el track tenga altura medida. La categorización adulto/niño
+    se aplica server-side desde height_m (NULL → 'unknown' en la
+    función SQL height_class)."""
     counter = Counter(
         lines=[_line_h()], counting_zone=COUNTING_ZONE,
         height_confidence_gate=0.7,
@@ -1774,22 +1776,21 @@ def test_height_confidence_gate_below_threshold_marks_unknown():
     counter.check_all({1: track})
     # detection_history con conf bajo el gate (0.4 < 0.7) + altura medida.
     track.meta["detection_history"] = [
-        {"head_height_mm": 1700.0, "height_class": "adult", "confidence": 0.4},
-        {"head_height_mm": 1720.0, "height_class": "adult", "confidence": 0.4},
-        {"head_height_mm": 1680.0, "height_class": "adult", "confidence": 0.4},
+        {"head_height_mm": 1700.0, "confidence": 0.4},
+        {"head_height_mm": 1720.0, "confidence": 0.4},
+        {"head_height_mm": 1680.0, "confidence": 0.4},
     ]
     _advance(counter, track, [300, 250, 3000])
     _advance(counter, track, [300, 350, 3000])
     ev = _advance(counter, track, [300, 450, 3000])
     assert ev is not None
     assert ev.direction == "ingress"  # SÍ cuenta — gate no afecta conteo
-    assert ev.height_class == "unknown"  # demografía blanqueada
-    assert ev.height_m is None
+    assert ev.height_m is None         # demografía blanqueada → SQL: 'unknown'
     assert ev.head_depth_m is None
 
 
 def test_height_confidence_gate_above_threshold_reports_demographics():
-    """Median conf >= gate → demografía se reporta normalmente."""
+    """Median conf >= gate → height_m se reporta normalmente."""
     counter = Counter(
         lines=[_line_h()], counting_zone=COUNTING_ZONE,
         height_confidence_gate=0.5,
@@ -1797,15 +1798,14 @@ def test_height_confidence_gate_above_threshold_reports_demographics():
     track = _make_track(1, [[300, 150, 3000]])
     counter.check_all({1: track})
     track.meta["detection_history"] = [
-        {"head_height_mm": 1700.0, "height_class": "adult", "confidence": 0.8},
-        {"head_height_mm": 1720.0, "height_class": "adult", "confidence": 0.75},
-        {"head_height_mm": 1680.0, "height_class": "adult", "confidence": 0.82},
+        {"head_height_mm": 1700.0, "confidence": 0.8},
+        {"head_height_mm": 1720.0, "confidence": 0.75},
+        {"head_height_mm": 1680.0, "confidence": 0.82},
     ]
     _advance(counter, track, [300, 250, 3000])
     _advance(counter, track, [300, 350, 3000])
     ev = _advance(counter, track, [300, 450, 3000])
     assert ev is not None
-    assert ev.height_class == "adult"
     assert ev.height_m == pytest.approx(1.7, abs=0.05)
 
 

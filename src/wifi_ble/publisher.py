@@ -1,23 +1,35 @@
-"""Bridge entre DedupEngine y MQTT.
+"""Bridge entre DedupEngine y MQTT — per-device events.
 
-Cada ``wifi_ble.summary_interval_seconds`` (default 900s = 15 min, acotado a
-[30, 900]) el publisher consulta los agregados de la ventana cerrada y publica
-un único payload reducido al topic ``wifi_ble``. Los hashes nunca salen del
-device — solo counts.
+Cada ``wifi_ble.summary_interval_seconds`` (default 900s = 15 min) el publisher
+consulta los registros per-device de la ventana cerrada y publica un único
+payload con un array ``devices`` al topic ``wifi_ble``.
 
 Payload publicado:
 
     {
-        "device_id": ...,
-        "timestamp": ...,
-        "type": "wifi_ble",
+        "device_id":  ...,
+        "timestamp":  ...,
+        "type":       "wifi_ble",
         "data": {
             "period_start": <epoch>,
             "period_end":   <epoch>,
-            "passersby":    160,        # RSSI >= rssi_passerby_threshold
-            "shoppers":      27         # RSSI >= rssi_shopper_threshold
+            "devices": [
+                {
+                    "visitor_hash":  "<32 hex chars>",  # group_id post-stitching
+                    "protocol":      "wifi" | "ble",
+                    "rssi_max":      -53,
+                    "first_seen_ts": <epoch float>,
+                    "last_seen_ts":  <epoch float>,
+                },
+                ...
+            ]
         }
     }
+
+La categorización passerby/shopper la aplica server-side la función SQL
+``rssi_class(rssi_max)`` — el device solo emite el RSSI crudo. Privacy:
+``visitor_hash`` es el ``group_id`` opaco post-stitching local (16 bytes,
+derivados de SHA-256 + salt diaria local). MACs crudas nunca salen del Pi.
 
 ``store_id`` lo infiere la Lambda persist_event desde el ``device_id``.
 """
@@ -46,29 +58,26 @@ class _MQTTPublisher(Protocol):
     ) -> int | None: ...
 
 
-class _DedupSummary(Protocol):
+class _DedupRecords(Protocol):
     """Subset de :class:`DedupEngine` que consume el publisher."""
 
-    def get_window_summary(
+    def get_window_records(
         self,
         since_ts: float,
         until_ts: float | None = ...,
-        rssi_passerby: float = ...,
-        rssi_shopper: float = ...,
-    ) -> dict[str, int]: ...
+    ) -> list[dict]: ...
 
 
 class WifiBlePublisher:
-    """Publica resúmenes WiFi/BLE periódicos al cloud.
+    """Publica eventos per-device WiFi/BLE periódicos al cloud.
 
     Se invoca ``maybe_publish()`` desde el main loop. El publisher decide
     por sí solo si tocaba publicar — no hace falta scheduling externo.
 
     Notes:
-        - Cuando la ventana no produjo detecciones (passersby == 0), no se
-          publica nada — evita ruido en la BD.
-        - WiFi y BLE van en el MISMO mensaje, post-L2 dedup local. Un
-          dispositivo detectado por ambos cuenta como 1 visitante.
+        - Cuando la ventana no produjo detecciones, no se publica nada.
+        - WiFi y BLE van en el MISMO mensaje, post-stitching local. Un
+          dispositivo detectado por ambos cuenta como 1 entry en ``devices``.
         - Las ventanas son disjuntas: ``last_period_end`` marca el inicio
           de la siguiente.
     """
@@ -76,29 +85,24 @@ class WifiBlePublisher:
     def __init__(
         self,
         mqtt_client: _MQTTPublisher,
-        dedup: _DedupSummary,
+        dedup: _DedupRecords,
         period_seconds: float = 900.0,
-        rssi_passerby: float = -75.0,
-        rssi_shopper: float = -55.0,
         now_fn=time.time,
     ) -> None:
         self._mqtt = mqtt_client
         self._dedup = dedup
         self._period = float(period_seconds)
-        self._rssi_passerby = float(rssi_passerby)
-        self._rssi_shopper = float(rssi_shopper)
         self._now = now_fn
         # Alineamos las ventanas a múltiplos de ``period_seconds`` desde el
         # epoch (Unix 0). Con period=900s (15min) los boundaries quedan
-        # exactamente en :00, :15, :30, :45 UTC. Esto sincroniza el
-        # period_bucket del wifi_ble con el event_bucket de counting_events
-        # en Postgres, así turn_in_rate y conversion_rate joinean limpio.
+        # exactamente en :00, :15, :30, :45 UTC. Esto sincroniza el bucket
+        # del wifi_ble con el de counting_events en Postgres, así
+        # turn_in_rate y conversion_rate joinean limpio.
         #
         # El primer ``maybe_publish`` emite el período del boundary que
         # antecede al arranque hasta el siguiente boundary. Es parcial
-        # (solo tiene datos desde el arranque, no del boundary completo),
-        # pero etiqueta una ventana completa de 15min — aceptable trade-off
-        # contra perder los primeros 1-15min de data por skip.
+        # (solo tiene datos desde el arranque), pero etiqueta una ventana
+        # completa — aceptable trade-off contra perder los primeros 1-15min.
         self._last_period_end: float = (
             self._now() // self._period
         ) * self._period
@@ -116,8 +120,7 @@ class WifiBlePublisher:
         ya está cerrada y se emite con esos límites exactos (no ``now``).
 
         Si el pipeline se atrasa y cruzó varios boundaries en una sola call,
-        emitimos solo el siguiente; el resto se cubre en las próximas calls
-        (el loop principal llama esto cada frame, catch-up es rápido).
+        emitimos solo el siguiente; el resto se cubre en las próximas calls.
 
         Returns:
             1 si se publicó, 0 si todavía no tocaba o si la ventana fue vacía.
@@ -131,11 +134,9 @@ class WifiBlePublisher:
         period_end = next_boundary
 
         try:
-            summary = self._dedup.get_window_summary(
+            devices = self._dedup.get_window_records(
                 since_ts=period_start,
                 until_ts=period_end,
-                rssi_passerby=self._rssi_passerby,
-                rssi_shopper=self._rssi_shopper,
             )
         except Exception:
             logger.exception(
@@ -147,7 +148,7 @@ class WifiBlePublisher:
             self._last_period_end = period_end
             return 0
 
-        if summary["passersby"] == 0:
+        if not devices:
             logger.debug(
                 "wifi_ble_publisher_empty_window",
                 extra={
@@ -159,28 +160,20 @@ class WifiBlePublisher:
             return 0
 
         try:
-            # El device manda period_start (cuándo arrancó la ventana del
-            # summary, alineado al múltiplo de _period) + last_seen_ts
-            # (última detección real dentro de la ventana, informativa).
+            # El device manda period_start (cuándo arrancó la ventana,
+            # alineado al múltiplo de _period) + un array per-device.
             # NO manda bucket_15min — eso lo deriva Postgres server-side
-            # vía GENERATED ALWAYS AS (date_bin de period_start) STORED.
-            # Desacopla el device del bucket size del schema (migrar a
-            # bucket de 5min en RDS = ALTER TABLE sin tocar device).
+            # vía GENERATED ALWAYS AS STORED desde last_seen_ts.
             payload = {
                 "period_start": int(period_start),
                 "period_end": int(period_end),
-                "passersby": summary["passersby"],
-                "shoppers": summary["shoppers"],
+                "devices": devices,
             }
-            last_seen = summary.get("last_seen_ts")
-            if last_seen is not None:
-                payload["last_seen_ts"] = float(last_seen)
             self._mqtt.publish_event("wifi_ble", payload)
             logger.info(
-                "wifi_ble_summary_published",
+                "wifi_ble_events_published",
                 extra={
-                    "passersby": summary["passersby"],
-                    "shoppers": summary["shoppers"],
+                    "n_devices": len(devices),
                     "period_seconds": int(period_end - period_start),
                 },
             )
@@ -189,7 +182,7 @@ class WifiBlePublisher:
         except Exception:
             logger.exception(
                 "wifi_ble_publisher_mqtt_publish_failed",
-                extra={"passersby": summary["passersby"]},
+                extra={"n_devices": len(devices)},
             )
             # MQTT failure: avanzamos la ventana igual. El MQTTClient tiene
             # outbox SQLite local que cubre la resiliencia — este publisher no

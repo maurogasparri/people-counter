@@ -245,7 +245,12 @@ def annotate_left(
         # Label de altura — mediana sobre los últimos N samples para
         # suavizar el jitter de ~1-2cm del SGBM frame-a-frame. Si la
         # historia es corta (<2 samples), cae al último valor crudo
-        # — sin suficiente ventana la mediana no aporta nada.
+        # — sin suficiente ventana la mediana no aporta nada. El
+        # preview muestra solo el número en metros (sin categoría
+        # adulto/niño): la clasificación vive server-side en la función
+        # SQL height_class(), y duplicarla acá implicaba mantener un
+        # threshold sincronizado que se desfasaría con cualquier cambio
+        # del cloud.
         if history:
             recent = history[-_HEIGHT_DISPLAY_MEDIAN_WINDOW:]
             head_samples = [
@@ -254,30 +259,13 @@ def annotate_left(
                 if isinstance(rec.get("head_height_mm"), (int, float))
                 and rec.get("head_height_mm") > 0
             ]
-            cls_samples = [
-                rec.get("height_class")
-                for rec in recent
-                if rec.get("height_class")
-            ]
             if head_samples:
                 head_samples.sort()
                 head_mm = head_samples[len(head_samples) // 2]
-            else:
-                head_mm = None
-            # Para height_class: voto mayoritario sobre la misma ventana.
-            # Estabiliza el label adult/child/unknown contra flips espurios
-            # cuando la altura mediana ronda el threshold 1.55m.
-            if cls_samples:
-                cls = max(set(cls_samples), key=cls_samples.count)
-            else:
-                cls = "unknown"
-            if head_mm is not None:
-                label = f"{head_mm/1000:.2f}m {cls}"
-            else:
-                label = cls
-            cv2.putText(out, label, (cx + 14, cy + 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.85, display_colour, 2,
-                        cv2.LINE_AA)
+                label = f"{head_mm/1000:.2f}m"
+                cv2.putText(out, label, (cx + 14, cy + 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.85, display_colour, 2,
+                            cv2.LINE_AA)
 
     # Flash +IN/+OUT sobre los tracks que el counter acaba de contar. Se
     # dibuja AL FINAL para quedar arriba del bbox/label/trail.

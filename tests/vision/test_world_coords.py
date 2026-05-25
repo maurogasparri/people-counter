@@ -3,11 +3,7 @@
 import numpy as np
 
 from src.vision.depth import head_depth_in_bbox, min_depth_at_bbox
-from src.vision.world_coords import (
-    aggregate_height_class,
-    classify_height,
-    head_height_above_floor,
-)
+from src.vision.world_coords import head_height_above_floor
 
 
 class TestHeadHeightAboveFloor:
@@ -32,47 +28,11 @@ class TestHeadHeightAboveFloor:
         assert head_height_above_floor(4000.0, 3500.0) is None
 
 
-class TestClassifyHeight:
-    def test_tall_person_is_adult(self):
-        assert classify_height(1700.0, adult_min_mm=1500.0) == "adult"
-
-    def test_short_person_is_child(self):
-        assert classify_height(1200.0, adult_min_mm=1500.0) == "child"
-
-    def test_exactly_at_threshold_is_adult(self):
-        """Threshold is inclusive on the adult side — avoids "unknown" gap."""
-        assert classify_height(1500.0, adult_min_mm=1500.0) == "adult"
-
-    def test_none_is_unknown(self):
-        assert classify_height(None, adult_min_mm=1500.0) == "unknown"
-
-    def test_threshold_is_configurable(self):
-        # 1400mm is adult with a 1300mm threshold, child with a 1500mm one
-        assert classify_height(1400.0, 1300.0) == "adult"
-        assert classify_height(1400.0, 1500.0) == "child"
-
-
-class TestAggregateHeightClass:
-    def test_majority_adult(self):
-        samples = ["adult", "adult", "adult", "child"]
-        assert aggregate_height_class(samples) == "adult"
-
-    def test_majority_child(self):
-        samples = ["child", "child", "adult"]
-        assert aggregate_height_class(samples) == "child"
-
-    def test_unknown_samples_ignored(self):
-        samples = ["unknown", "unknown", "child", "child", "unknown"]
-        assert aggregate_height_class(samples) == "child"
-
-    def test_all_unknown(self):
-        assert aggregate_height_class(["unknown"] * 5) == "unknown"
-        assert aggregate_height_class([]) == "unknown"
-
-    def test_tie_goes_to_most_recent(self):
-        # Equal counts: last non-unknown wins (bias toward latest stable bbox)
-        assert aggregate_height_class(["adult", "child"]) == "child"
-        assert aggregate_height_class(["child", "adult"]) == "adult"
+# NOTA: las clases TestClassifyHeight y TestAggregateHeightClass se
+# eliminaron en la migración 2026-05-26-drop-height-class. Ver el
+# COMMENT en src/vision/world_coords.py para el contexto: la
+# categorización adulto/niño ahora vive en la función SQL
+# height_class() del cloud, el device solo persiste height_m crudo.
 
 
 class TestMinDepthAtBbox:

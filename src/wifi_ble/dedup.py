@@ -502,75 +502,101 @@ class DedupEngine:
             )
         return out
 
-    def get_window_summary(
+    def get_window_records(
         self,
         since_ts: float,
         until_ts: float | None = None,
-        rssi_passerby: float = -75.0,
-        rssi_shopper: float = -55.0,
-    ) -> dict[str, float | int | None]:
-        """Agregados WiFi+BLE post-stitching para una ventana cerrada.
+    ) -> list[dict]:
+        """Per-device records de los visitors OBSERVADOS en la ventana.
 
-        Cuenta DISTINCT group_id donde al menos un miembro del grupo tuvo
-        first_seen en [since_ts, until_ts) Y rssi >= threshold (en cualquier
-        observacion). Un dispositivo stiched en N MACs cuenta como 1.
+        Devuelve UN dict por ``group_id`` cuyo MAX(last_seen) cae dentro de
+        ``[since_ts, until_ts)`` — es decir, cualquier grupo que tuvo
+        actividad observada durante la ventana, no sólo los nuevos. Esto
+        permite que un visitor presente en N ventanas seguidas se emita N
+        veces (uno por window), con su ``rssi_max`` LIFETIME (max de todas
+        las observaciones del group hasta el cierre de la ventana).
 
-        Args:
-            since_ts: epoch seconds — borde inferior inclusivo del first_seen.
-            until_ts: epoch seconds — borde superior exclusivo. None = ``now()``.
-            rssi_passerby: RSSI minimo para "paso por la zona" (default -75 dBm).
-            rssi_shopper:  RSSI minimo para "muy cerca / probable entrada" (-55).
+        Semántica resultante en el cloud:
+          - Visitor pasa lejos en ventana N, se acerca en ventana N+1:
+            ventana N emite con rssi_max=-75 (passerby), ventana N+1 emite
+            con rssi_max=-50 (shopper). Promoción capturada limpio.
+          - Visitor presente en ventanas N..N+5: 6 rows con su lifetime
+            max (no se "desclasifica" una vez que se acercó — match con
+            la semántica retail estándar de funnel).
+          - Visitor observado una vez en ventana N y se va: 1 row, simple.
 
-        Returns:
-            {"passersby": N, "shoppers": M, "last_seen_ts": epoch_seconds | None}
-            — invariante shoppers <= passersby. ``last_seen_ts`` es el MAX
-            del ``last_seen`` de todas las observaciones dentro de la ventana
-            (info diagnostica: cuando fue la ultima deteccion del periodo).
-            None si la ventana fue vacia.
+        Cada record:
+
+            {
+                "visitor_hash":   "<32 hex chars>" (group_id),
+                "protocol":       "wifi" | "ble" (del miembro con MAX rssi),
+                "rssi_max":       int dBm (MAX lifetime sobre miembros del group),
+                "first_seen_ts":  float epoch (MIN sobre miembros),
+                "last_seen_ts":   float epoch (MAX sobre miembros — cae en
+                                  la ventana actual),
+            }
+
+        Filtrado:
+          - Grupos sin ninguna lectura de RSSI se descartan (rssi_max None
+            no es persistible — la columna RDS es NOT NULL).
+          - Grupos cuyo MAX rssi cae por debajo de -90 dBm se descartan:
+            eco lejano que no aporta señal y sería filtrado por
+            ``rssi_class`` server-side igualmente.
+
+        Reemplaza ``get_window_summary`` (removida en PR 2). En la Lambda
+        cada row del array es idempotente por (device_id, visitor_hash,
+        period_start) — retries del mismo período colapsan via ON CONFLICT
+        DO UPDATE con GREATEST.
         """
         if until_ts is None:
             until_ts = time.time()
 
         with sqlite3.connect(self.db_path) as conn:
-            def _count(threshold: float) -> int:
-                # Un grupo cuenta si ALGUN miembro tiene first_seen en la
-                # ventana Y ALGUN miembro tiene rssi >= threshold. No
-                # requerimos que el mismo miembro cumpla ambas — un grupo
-                # que arranco con un probe debil pero despues tuvo un BLE
-                # fuerte cuenta como shopper.
-                return conn.execute(
-                    """
-                    SELECT COUNT(DISTINCT g.group_id) FROM hash_groups g
-                    WHERE g.group_id IN (
-                        SELECT group_id FROM hash_groups
-                        WHERE first_seen >= ? AND first_seen < ?
-                    )
-                    AND g.group_id IN (
-                        SELECT group_id FROM hash_groups
-                        WHERE rssi IS NOT NULL AND rssi >= ?
-                    )
-                    """,
-                    (since_ts, until_ts, threshold),
-                ).fetchone()[0]
-
-            passersby = _count(rssi_passerby)
-            shoppers = _count(rssi_shopper)
-            # last_seen_ts: maximo last_seen de cualquier observacion cuyo
-            # first_seen cayo en la ventana. Es informativa — no la usa
-            # ningun calculo aguas abajo, solo va al payload para que el
-            # server tenga "cuando fue la ultima actividad" sin recomputar.
-            row = conn.execute(
-                """SELECT MAX(last_seen) FROM hash_groups
-                   WHERE first_seen >= ? AND first_seen < ?""",
+            # Filtramos por MAX(last_seen) del group EN la ventana — captura
+            # tanto visitors nuevos como los "continuos" que siguen presentes.
+            # last_seen del miembro se actualiza con cada observación, así que
+            # max(last_seen) >= since indica actividad reciente del group.
+            rows = conn.execute(
+                """
+                WITH groups_active_in_window AS (
+                    SELECT group_id, MAX(last_seen) AS group_last_seen
+                    FROM hash_groups
+                    GROUP BY group_id
+                    HAVING MAX(last_seen) >= ? AND MAX(last_seen) < ?
+                )
+                SELECT
+                    g.group_id,
+                    -- protocolo del miembro con max_rssi más alto (argmax,
+                    -- equivalente al protocolo "dominante" del visitor).
+                    (SELECT protocol FROM hash_groups
+                     WHERE group_id = g.group_id AND max_rssi IS NOT NULL
+                     ORDER BY max_rssi DESC LIMIT 1) AS protocol,
+                    MAX(COALESCE(max_rssi, rssi))    AS rssi_max,
+                    MIN(first_seen)                  AS first_seen,
+                    g.group_last_seen                AS last_seen
+                FROM hash_groups h
+                JOIN groups_active_in_window g ON h.group_id = g.group_id
+                GROUP BY g.group_id, g.group_last_seen
+                """,
                 (since_ts, until_ts),
-            ).fetchone()
-            last_seen_ts = row[0] if row and row[0] is not None else None
+            ).fetchall()
 
-        return {
-            "passersby": passersby,
-            "shoppers": shoppers,
-            "last_seen_ts": last_seen_ts,
-        }
+        out: list[dict] = []
+        for group_id, protocol, rssi_max, first_seen, last_seen in rows:
+            if rssi_max is None or protocol is None:
+                continue  # grupo sin lectura de RSSI — no persistible
+            if rssi_max < -90:
+                continue  # eco lejano: se descartaría en rssi_class() anyway
+            # group_id es UUID hex (32 chars = 16 bytes). Lo emitimos como-is
+            # — la Lambda lo convierte a BYTEA via bytes.fromhex.
+            out.append({
+                "visitor_hash":  group_id,
+                "protocol":      protocol,
+                "rssi_max":      int(rssi_max),
+                "first_seen_ts": float(first_seen),
+                "last_seen_ts":  float(last_seen),
+            })
+        return out
 
     def get_stitching_ratio(self) -> float | None:
         """Ratio de compresion del stitching: groups / hashes.

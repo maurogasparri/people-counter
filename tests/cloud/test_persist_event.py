@@ -52,9 +52,10 @@ def fake_pg(monkeypatch):
 
 
 def test_counting_event_inserts(fake_pg):
-    """Schema del INSERT (8 columnas, sin bucket_15min — ahora GENERATED en RDS):
+    """Schema del INSERT (7 columnas, sin bucket_15min — ahora GENERATED en RDS;
+    sin height_class — categorización delegada a la función SQL height_class()):
         0=device_id, 1=store_id, 2=event_ts, 3=direction,
-        4=track_id, 5=confidence, 6=height_class, 7=height_m.
+        4=track_id, 5=confidence, 6=height_m.
     """
     from src.cloud.persist_event import handler
 
@@ -66,7 +67,7 @@ def test_counting_event_inserts(fake_pg):
             "direction": "in",
             "track_id": 42,
             "confidence": 0.87,
-            "height_class": "adult",
+            "height_class": "adult",  # legacy: si llega, se ignora silenciosamente
             "height_m": 1.75,
         },
     }
@@ -80,14 +81,15 @@ def test_counting_event_inserts(fake_pg):
     assert "INSERT INTO count_events" in sql
     # bucket_15min ya no aparece en el INSERT — es GENERATED server-side.
     assert "bucket_15min" not in sql
+    # height_class ya no es columna — la categorización vive en la función SQL.
+    assert "height_class" not in sql
     assert params[0] == "store-001-cam-01"
     assert params[1] == "store-001"          # store_id inferido
     # params[2] = event_ts (datetime UTC desde event_time o envelope timestamp).
     assert params[3] == "in"                 # direction
     assert params[4] == 42                   # track_id
     assert params[5] == 0.87                 # confidence
-    assert params[6] == "adult"              # height_class
-    assert params[7] == 1.75                 # height_m
+    assert params[6] == 1.75                 # height_m
 
 
 def test_counting_event_legacy_bucket_key_ignored(fake_pg):
@@ -157,11 +159,14 @@ def test_telemetry_event_without_shadow_apply_ts(fake_pg):
     # Sanity: no rompió por el campo ausente.
 
 
-def test_wifi_ble_event_inserts(fake_pg):
-    """Schema del INSERT (7 columnas, sin bucket_15min — ahora GENERATED en RDS;
-    con last_seen_ts opcional nullable):
-        0=device_id, 1=store_id, 2=period_start, 3=period_end,
-        4=passersby, 5=shoppers, 6=last_seen_ts.
+def test_wifi_ble_events_batch_insert(fake_pg):
+    """Schema del INSERT a wifi_ble_events (post PR 2: per-device, batched).
+
+    Cada element del array ``devices`` se inserta como una fila.
+    Columnas del INSERT (9, sin bucket_* — GENERATED server-side):
+        0=device_id, 1=store_id, 2=visitor_hash (BYTEA), 3=protocol,
+        4=rssi_max, 5=first_seen_ts, 6=last_seen_ts,
+        7=period_start, 8=period_end.
     """
     from src.cloud.persist_event import handler
 
@@ -172,31 +177,49 @@ def test_wifi_ble_event_inserts(fake_pg):
         "data": {
             "period_start": 1762962300,
             "period_end": 1762963200,
-            "passersby": 160,
-            "shoppers": 27,
-            "last_seen_ts": 1762963180.0,  # 20s antes del period_end
+            "devices": [
+                {
+                    "visitor_hash": "aa" * 16,
+                    "protocol": "wifi",
+                    "rssi_max": -55,
+                    "first_seen_ts": 1762962400.0,
+                    "last_seen_ts": 1762963180.0,
+                },
+                {
+                    "visitor_hash": "bb" * 16,
+                    "protocol": "ble",
+                    "rssi_max": -68,
+                    "first_seen_ts": 1762962500.0,
+                    "last_seen_ts": 1762963100.0,
+                },
+            ],
         },
     }
     result = handler(event, None)
 
     assert result["statusCode"] == 200
-    call_args = fake_pg["cursor"].execute.call_args
+    # executemany: call_args[0][0] = sql, [0][1] = lista de tuplas (rows).
+    call_args = fake_pg["cursor"].executemany.call_args
     sql = call_args[0][0]
-    params = call_args[0][1]
-    assert "INSERT INTO wifi_ble_summary" in sql
+    rows = call_args[0][1]
+    assert "INSERT INTO wifi_ble_events" in sql
     assert "bucket_15min" not in sql  # GENERATED server-side
-    assert "last_seen_ts" in sql
-    assert params[0] == "store-001-cam-01"
-    assert params[1] == "store-001"
-    assert params[4] == 160  # passersby
-    assert params[5] == 27   # shoppers
-    # params[6] = last_seen_ts (datetime UTC). Si no viene en el payload, None.
-    assert params[6] is not None
+    assert "ON CONFLICT" in sql       # idempotencia con MAX rssi_max
+    assert len(rows) == 2
+    # Primera fila: visitor_hash es bytes (BYTEA), rssi_max es int.
+    row0 = rows[0]
+    assert row0[0] == "store-001-cam-01"
+    assert row0[1] == "store-001"
+    assert row0[2] == bytes.fromhex("aa" * 16)
+    assert row0[3] == "wifi"
+    assert row0[4] == -55
+    # Segunda fila: protocolo ble + rssi distinto.
+    assert rows[1][3] == "ble"
+    assert rows[1][4] == -68
 
 
-def test_wifi_ble_event_without_last_seen_ts(fake_pg):
-    """Devices con firmware viejo no mandan ``last_seen_ts`` — el INSERT debe
-    funcionar con NULL en esa columna (la col del schema es NULLABLE)."""
+def test_wifi_ble_empty_devices_array_is_noop(fake_pg):
+    """devices=[] llega → no se inserta nada, no se rompe."""
     from src.cloud.persist_event import handler
 
     event = {
@@ -206,15 +229,39 @@ def test_wifi_ble_event_without_last_seen_ts(fake_pg):
         "data": {
             "period_start": 1762962300,
             "period_end": 1762963200,
-            "passersby": 50,
-            "shoppers": 8,
-            # last_seen_ts ausente — device viejo
+            "devices": [],
         },
     }
     result = handler(event, None)
     assert result["statusCode"] == 200
-    params = fake_pg["cursor"].execute.call_args[0][1]
-    assert params[6] is None  # last_seen_ts → NULL
+    # No se llamó a executemany (ni execute para este branch).
+    assert not fake_pg["cursor"].executemany.called
+
+
+def test_wifi_ble_bad_visitor_hash_skipped(fake_pg):
+    """Una entry con visitor_hash inválido (no es hex) se skippea, el resto se inserta."""
+    from src.cloud.persist_event import handler
+
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "wifi_ble",
+        "data": {
+            "period_start": 1762962300,
+            "period_end": 1762963200,
+            "devices": [
+                {"visitor_hash": "ZZ" * 16, "protocol": "wifi", "rssi_max": -55,
+                 "first_seen_ts": 1.0, "last_seen_ts": 2.0},  # ZZ no es hex
+                {"visitor_hash": "bb" * 16, "protocol": "ble", "rssi_max": -68,
+                 "first_seen_ts": 3.0, "last_seen_ts": 4.0},
+            ],
+        },
+    }
+    result = handler(event, None)
+    assert result["statusCode"] == 200
+    rows = fake_pg["cursor"].executemany.call_args[0][1]
+    assert len(rows) == 1
+    assert rows[0][2] == bytes.fromhex("bb" * 16)
 
 
 def test_unknown_type_returns_400(fake_pg):

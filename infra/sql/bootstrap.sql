@@ -19,7 +19,8 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- tablas; se recrean abajo. IF EXISTS hace este bloque idempotente en cold start.
 
 DROP TABLE IF EXISTS count_events       CASCADE;
-DROP TABLE IF EXISTS wifi_ble_summary   CASCADE;
+DROP TABLE IF EXISTS wifi_ble_events    CASCADE;
+DROP TABLE IF EXISTS wifi_ble_summary   CASCADE;  -- legacy, post PR 2 reemplazada por wifi_ble_events
 DROP TABLE IF EXISTS telemetry          CASCADE;
 DROP TABLE IF EXISTS pos_transactions   CASCADE;
 
@@ -46,12 +47,10 @@ CREATE TABLE IF NOT EXISTS count_events (
     -- mantiene para debug ad-hoc: investigar falsos positivos en stores con
     -- conteos sospechosos, detectar drift entre devices.
     confidence      REAL,
-    -- 'adult' | 'child' | 'unknown' (clasificacion server-side desde height_m).
-    -- Usado en S10 dashboards (US-05 breakdown adult/child).
-    height_class    TEXT         CHECK (height_class IN ('adult', 'child', 'unknown')),
-    -- Altura cruda en metros. Se mantiene para debug operativo: detectar
-    -- drift del mounting_height_m del config vs altura fisica real ("99% de
-    -- los eventos del device X tienen height_m < 1.0 -> alguien movio el bracket").
+    -- Altura cruda en metros (medición geométrica del par estéreo). La
+    -- categorización adulto/niño/desconocido se aplica server-side via la
+    -- función SQL height_class(height_m) — single source of truth del threshold.
+    -- Ver migración infra/sql/migrations/2026-05-26-drop-height-class.sql.
     height_m        REAL,
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- Idempotencia para reintentos del Lambda / replay del buffer del device.
@@ -69,37 +68,47 @@ CREATE INDEX IF NOT EXISTS idx_count_events_store_bucket_hour
 CREATE INDEX IF NOT EXISTS idx_count_events_day
     ON count_events (store_id, bucket_day DESC);
 
-CREATE TABLE IF NOT EXISTS wifi_ble_summary (
-    summary_id      UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+-- Per-device WiFi/BLE events (post PR 2). Un evento por cada visitor
+-- (group_id post-stitching local del device) por ventana de emisión.
+-- La categorización shopper/passerby se aplica server-side via la función
+-- SQL rssi_class(rssi_max) — el device solo persiste el RSSI crudo.
+-- Ver migración infra/sql/migrations/2026-05-26-wifi-ble-events.sql.
+CREATE TABLE IF NOT EXISTS wifi_ble_events (
+    event_id        UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id       TEXT         NOT NULL,
     store_id        TEXT         NOT NULL,
-    period_start    TIMESTAMPTZ  NOT NULL,                  -- inicio de la ventana (epoch del device)
-    period_end      TIMESTAMPTZ  NOT NULL,                  -- fin de la ventana
-    -- Bucket de 15min — derivado server-side desde period_start (alineado al
-    -- arranque de la ventana del device, NO al last_seen_ts que es no-determinístico).
-    -- Server-derived facilita migrar tamaño de bucket sin tocar device.
-    bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 900) * 900)) STORED,
-    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
-    bucket_day      DATE         GENERATED ALWAYS AS ((TIMESTAMP 'epoch' + floor(extract(epoch FROM (period_start - TIMESTAMPTZ 'epoch')) / 86400) * INTERVAL '1 day')::date) STORED,
-    passersby       INT          NOT NULL,                  -- post L2 dedup
-    shoppers        INT          NOT NULL,                  -- en rango cercano (RSSI fuerte)
-    -- Timestamp de la ÚLTIMA detección de un visitor dentro del período.
-    -- Info diagnóstica — útil para alarmas "no se ha visto a nadie hace N min",
-    -- o para diferenciar "no había nadie afuera" vs "el subsistema murió" sin
-    -- depender de `received_at` (que es de cuando llegó el msg, no del último
-    -- visitor real). NULLABLE: devices con firmware viejo no lo mandan.
-    last_seen_ts    TIMESTAMPTZ,
+    -- Identidad post-stitching local del device (group_id del DedupEngine).
+    -- 16 bytes: derivado de SHA-256 truncado + salt diaria local. Opaco,
+    -- no invertible a MAC. Se renueva cada día (people-counter-reset).
+    visitor_hash    BYTEA        NOT NULL,
+    protocol        TEXT         NOT NULL CHECK (protocol IN ('wifi', 'ble')),
+    -- RSSI máximo observado durante la ventana, en dBm (entero negativo
+    -- típicamente entre -100 y -20). NOT NULL — un device sin lectura no se emite.
+    rssi_max        INT          NOT NULL,
+    first_seen_ts   TIMESTAMPTZ  NOT NULL,
+    last_seen_ts    TIMESTAMPTZ  NOT NULL,
+    period_start    TIMESTAMPTZ  NOT NULL,
+    period_end      TIMESTAMPTZ  NOT NULL,
+    -- Buckets derivados de last_seen_ts. Si el visitor aparece en 2 ventanas
+    -- de 15min, se inserta 2 filas (una por ventana) pero ambas con el mismo
+    -- visitor_hash → COUNT(DISTINCT visitor_hash) por día sigue siendo 1.
+    bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (last_seen_ts - TIMESTAMPTZ 'epoch')) / 900) * 900)) STORED,
+    bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (last_seen_ts - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
+    bucket_day      DATE         GENERATED ALWAYS AS ((TIMESTAMP 'epoch' + floor(extract(epoch FROM (last_seen_ts - TIMESTAMPTZ 'epoch')) / 86400) * INTERVAL '1 day')::date) STORED,
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    -- Idempotencia ante retries del device: una sola fila por (device, ventana).
-    UNIQUE (device_id, period_start, period_end)
+    -- Idempotencia: la Lambda hace ON CONFLICT...DO UPDATE refinando
+    -- rssi_max al máximo y last_seen_ts al más reciente.
+    UNIQUE (device_id, visitor_hash, period_start)
 );
 
-CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_bucket15
-    ON wifi_ble_summary (store_id, bucket_15min DESC);
-CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_bucket_hour
-    ON wifi_ble_summary (store_id, bucket_hour DESC);
-CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_day
-    ON wifi_ble_summary (store_id, bucket_day DESC);
+CREATE INDEX IF NOT EXISTS idx_wifi_ble_events_store_bucket15
+    ON wifi_ble_events (store_id, bucket_15min DESC);
+CREATE INDEX IF NOT EXISTS idx_wifi_ble_events_store_bucket_hour
+    ON wifi_ble_events (store_id, bucket_hour DESC);
+CREATE INDEX IF NOT EXISTS idx_wifi_ble_events_store_day
+    ON wifi_ble_events (store_id, bucket_day DESC);
+CREATE INDEX IF NOT EXISTS idx_wifi_ble_events_store_day_visitor
+    ON wifi_ble_events (store_id, bucket_day, visitor_hash);
 
 CREATE TABLE IF NOT EXISTS telemetry (
     telemetry_id     UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -259,6 +268,44 @@ CREATE INDEX IF NOT EXISTS idx_devices_store ON devices (store_id);
 -- este bootstrap). lambda_writer escribe hechos, no necesita las dimensiones.
 
 -- =============================================================================
+-- Función: categorización por altura (single source of truth del threshold)
+-- =============================================================================
+-- IMMUTABLE le permite a Postgres inlinearla en plans de query, sin overhead
+-- por llamada. NULL → 'unknown' (cuando el detector no pudo medir profundidad
+-- confiable). El threshold 1.55 m coincide con el default histórico del
+-- config del device (counter.height_classifier.adult_min_m). Para modificar
+-- globalmente: CREATE OR REPLACE — se aplica retroactivo a vistas e historia.
+
+CREATE OR REPLACE FUNCTION height_class(h REAL) RETURNS TEXT
+LANGUAGE SQL IMMUTABLE AS $$
+    SELECT CASE
+        WHEN h IS NULL THEN 'unknown'
+        WHEN h < 1.55  THEN 'child'
+        ELSE 'adult'
+    END
+$$;
+
+COMMENT ON FUNCTION height_class(REAL) IS
+    'Clasifica una altura en metros como adulto / niño / desconocido. Threshold: 1.55 m. Para modificar globalmente: CREATE OR REPLACE FUNCTION; se aplica retroactivo a las vistas y a toda la historia.';
+
+-- Función rssi_class — categorización shopper/passerby/weak/unknown.
+-- Mismo patrón que height_class: el device emite el RSSI crudo, la
+-- función SQL lo categoriza server-side. shopper ⊆ passerby por
+-- convención (las vistas filtran explícito para preservar el invariante).
+CREATE OR REPLACE FUNCTION rssi_class(rssi INT) RETURNS TEXT
+LANGUAGE SQL IMMUTABLE AS $$
+    SELECT CASE
+        WHEN rssi IS NULL  THEN 'unknown'
+        WHEN rssi >= -55   THEN 'shopper'
+        WHEN rssi >= -75   THEN 'passerby'
+        ELSE                    'weak'
+    END
+$$;
+
+COMMENT ON FUNCTION rssi_class(INT) IS
+    'Clasifica un RSSI máximo en dBm como shopper / passerby / weak / unknown. Thresholds: shopper >= -55 dBm, passerby >= -75 dBm. Para modificarlos globalmente: CREATE OR REPLACE FUNCTION; se aplica retroactivo a las vistas y al histórico.';
+
+-- =============================================================================
 -- Capa de vistas: producto cartesiano fact × granularidad de bucket
 -- =============================================================================
 -- Convención de naming: <métrica>_by_bucket_<grano>. Tres granularidades
@@ -274,6 +321,8 @@ CREATE INDEX IF NOT EXISTS idx_devices_store ON devices (store_id);
 -- es la versión idempotente (CREATE OR REPLACE) que aplica a deploys nuevos.
 
 -- --- counting: ingresos y egresos con desglose demográfico ---
+-- Categorización adulto/niño/desconocido aplicada via la función SQL
+-- height_class(height_m) — single source of truth del threshold.
 CREATE OR REPLACE VIEW counting_by_bucket_15min AS
 SELECT
     store_id,
@@ -282,14 +331,12 @@ SELECT
     COUNT(*) FILTER (WHERE direction = 'out')                                           AS outs,
     COUNT(*) FILTER (WHERE direction = 'in')
         - COUNT(*) FILTER (WHERE direction = 'out')                                     AS net,
-    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'adult')                AS ins_adult,
-    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'child')                AS ins_child,
-    COUNT(*) FILTER (WHERE direction = 'in'
-                       AND (height_class IS NULL OR height_class = 'unknown'))          AS ins_unknown,
-    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'adult')                AS outs_adult,
-    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'child')                AS outs_child,
-    COUNT(*) FILTER (WHERE direction = 'out'
-                       AND (height_class IS NULL OR height_class = 'unknown'))          AS outs_unknown
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'adult')      AS ins_adult,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'child')      AS ins_child,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'unknown')    AS ins_unknown,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'adult')      AS outs_adult,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'child')      AS outs_child,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'unknown')    AS outs_unknown
 FROM count_events
 GROUP BY store_id, bucket_15min;
 
@@ -301,14 +348,12 @@ SELECT
     COUNT(*) FILTER (WHERE direction = 'out')                                           AS outs,
     COUNT(*) FILTER (WHERE direction = 'in')
         - COUNT(*) FILTER (WHERE direction = 'out')                                     AS net,
-    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'adult')                AS ins_adult,
-    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'child')                AS ins_child,
-    COUNT(*) FILTER (WHERE direction = 'in'
-                       AND (height_class IS NULL OR height_class = 'unknown'))          AS ins_unknown,
-    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'adult')                AS outs_adult,
-    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'child')                AS outs_child,
-    COUNT(*) FILTER (WHERE direction = 'out'
-                       AND (height_class IS NULL OR height_class = 'unknown'))          AS outs_unknown
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'adult')      AS ins_adult,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'child')      AS ins_child,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'unknown')    AS ins_unknown,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'adult')      AS outs_adult,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'child')      AS outs_child,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'unknown')    AS outs_unknown
 FROM count_events
 GROUP BY store_id, bucket_hour;
 
@@ -320,52 +365,54 @@ SELECT
     COUNT(*) FILTER (WHERE direction = 'out')                                           AS outs,
     COUNT(*) FILTER (WHERE direction = 'in')
         - COUNT(*) FILTER (WHERE direction = 'out')                                     AS net,
-    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'adult')                AS ins_adult,
-    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'child')                AS ins_child,
-    COUNT(*) FILTER (WHERE direction = 'in'
-                       AND (height_class IS NULL OR height_class = 'unknown'))          AS ins_unknown,
-    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'adult')                AS outs_adult,
-    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'child')                AS outs_child,
-    COUNT(*) FILTER (WHERE direction = 'out'
-                       AND (height_class IS NULL OR height_class = 'unknown'))          AS outs_unknown
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'adult')      AS ins_adult,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'child')      AS ins_child,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class(height_m) = 'unknown')    AS ins_unknown,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'adult')      AS outs_adult,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'child')      AS outs_child,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class(height_m) = 'unknown')    AS outs_unknown
 FROM count_events
 GROUP BY store_id, bucket_day;
 
--- --- wifi_ble: tráfico exterior con dedup entre cámaras (MAX intra-bucket) ---
+-- --- wifi_ble: tráfico exterior, DISTINCT visitor_hash + rssi_class ---
+-- Post PR 2: cuenta DISTINCT visitor_hash sobre wifi_ble_events, así el
+-- mismo visitor en N ventanas se dedup correctamente al rollup del bucket
+-- más grueso. Invariante shoppers ⊆ passersby preservado por convención
+-- de los thresholds de rssi_class().
 CREATE OR REPLACE VIEW wifi_ble_by_bucket_15min AS
-SELECT store_id, bucket_15min,
-       MAX(passersby) AS passersby,
-       MAX(shoppers)  AS shoppers,
-       COUNT(*)       AS cams_reporting
-FROM wifi_ble_summary
+SELECT
+    store_id, bucket_15min,
+    COUNT(DISTINCT visitor_hash) FILTER (
+        WHERE rssi_class(rssi_max) IN ('passerby', 'shopper')
+    ) AS passersby,
+    COUNT(DISTINCT visitor_hash) FILTER (
+        WHERE rssi_class(rssi_max) = 'shopper'
+    ) AS shoppers
+FROM wifi_ble_events
 GROUP BY store_id, bucket_15min;
 
 CREATE OR REPLACE VIEW wifi_ble_by_bucket_hour AS
-SELECT store_id, bucket_hour,
-       SUM(passersby_max) AS passersby,
-       SUM(shoppers_max)  AS shoppers
-FROM (
-    SELECT store_id, bucket_15min,
-           date_trunc('hour', bucket_15min) AS bucket_hour,
-           MAX(passersby) AS passersby_max,
-           MAX(shoppers)  AS shoppers_max
-    FROM wifi_ble_summary
-    GROUP BY store_id, bucket_15min, date_trunc('hour', bucket_15min)
-) per_15min
+SELECT
+    store_id, bucket_hour,
+    COUNT(DISTINCT visitor_hash) FILTER (
+        WHERE rssi_class(rssi_max) IN ('passerby', 'shopper')
+    ) AS passersby,
+    COUNT(DISTINCT visitor_hash) FILTER (
+        WHERE rssi_class(rssi_max) = 'shopper'
+    ) AS shoppers
+FROM wifi_ble_events
 GROUP BY store_id, bucket_hour;
 
 CREATE OR REPLACE VIEW wifi_ble_by_bucket_day AS
-SELECT store_id, bucket_day,
-       SUM(passersby_max) AS passersby,
-       SUM(shoppers_max)  AS shoppers
-FROM (
-    SELECT store_id, bucket_15min,
-           date_trunc('day', bucket_15min)::date AS bucket_day,
-           MAX(passersby) AS passersby_max,
-           MAX(shoppers)  AS shoppers_max
-    FROM wifi_ble_summary
-    GROUP BY store_id, bucket_15min, date_trunc('day', bucket_15min)::date
-) per_15min
+SELECT
+    store_id, bucket_day,
+    COUNT(DISTINCT visitor_hash) FILTER (
+        WHERE rssi_class(rssi_max) IN ('passerby', 'shopper')
+    ) AS passersby,
+    COUNT(DISTINCT visitor_hash) FILTER (
+        WHERE rssi_class(rssi_max) = 'shopper'
+    ) AS shoppers
+FROM wifi_ble_events
 GROUP BY store_id, bucket_day;
 
 -- --- pos: transacciones agregadas ---
@@ -666,9 +713,9 @@ END $$;
 CREATE USER lambda_writer;
 GRANT rds_iam TO lambda_writer;
 GRANT USAGE ON SCHEMA public TO lambda_writer;
-GRANT INSERT ON count_events, wifi_ble_summary, telemetry TO lambda_writer;
+GRANT INSERT ON count_events, wifi_ble_events, telemetry TO lambda_writer;
 -- ON CONFLICT necesita SELECT también para evaluar la condición unique:
-GRANT SELECT ON count_events, wifi_ble_summary, telemetry TO lambda_writer;
+GRANT SELECT ON count_events, wifi_ble_events, telemetry TO lambda_writer;
 
 -- =============================================================================
 -- User Lambda ingest_pos_transaction — IAM auth (sin password)
@@ -720,6 +767,12 @@ GRANT SELECT ON
     data_freshness_by_store,
     sites, devices
 TO lambda_query_reader;
+-- Las vistas counting_* y wifi_ble_* invocan las funciones de
+-- categorización en sus FILTER clauses — el planner necesita EXECUTE para
+-- inlinearlas. Las funciones SQL IMMUTABLE por default son PUBLIC, pero
+-- somos explícitos.
+GRANT EXECUTE ON FUNCTION height_class(REAL) TO lambda_query_reader;
+GRANT EXECUTE ON FUNCTION rssi_class(INT)    TO lambda_query_reader;
 
 -- =============================================================================
 -- User read-only para acceso programático externo (US-08)
@@ -779,6 +832,8 @@ GRANT SELECT ON
     data_freshness_by_store,
     sites, devices
 TO readonly_external;
+GRANT EXECUTE ON FUNCTION height_class(REAL) TO readonly_external;
+GRANT EXECUTE ON FUNCTION rssi_class(INT)    TO readonly_external;
 
 -- =============================================================================
 -- Database "grafana" — separada para el state interno de Grafana

@@ -86,15 +86,12 @@ class CountEvent:
     # Posición x del track al momento del cruce. Útil para downstream
     # analytics (clustering espacial de eventos).
     position_x: float = 0.0
-    # Atributos opcionales per-track que se populan cuando el classifier
-    # está enabled. "unknown" cuando faltan datos de height (sin profundidad,
-    # classifier disabled).
-    height_class: str = "unknown"
     # Mediana de head height (m) y head depth (m) a lo largo del historial
     # de detecciones del track. None cuando no se sampleó profundidad
     # (classifier disabled o cada frame detectado cayó fuera del depth map).
-    # Útil para analytics downstream — total_in/out solo no te dice el mix
-    # demográfico.
+    # La categorización adulto/niño se aplica server-side vía la función SQL
+    # height_class(height_m) sobre count_events. El device persiste solo la
+    # medición cruda — el threshold vive centralizado en SQL.
     height_m: Optional[float] = None
     head_depth_m: Optional[float] = None
     # Mediana de confidence YOLO a lo largo del historial de detecciones del
@@ -211,21 +208,6 @@ class Line:
 # ---------------------------------------------------------------------------
 # Helpers de agregación (metadata per-event extraída del track)
 # ---------------------------------------------------------------------------
-
-
-def _aggregate_height_class_from_track(track: Track) -> str:
-    """Toma los samples per-frame de height_class de la metadata del
-    track y elige un verdict por mayoría para el count event. Devuelve
-    "unknown" si al tracker no se le pasó metadata de clasificación
-    (feature disabled).
-    """
-    history = track.meta.get("detection_history", [])
-    if not history:
-        return "unknown"
-    from src.vision.world_coords import aggregate_height_class
-
-    samples = [rec.get("height_class", "unknown") for rec in history]
-    return aggregate_height_class(samples)
 
 
 def _aggregate_height_m_from_track(track: Track) -> Optional[float]:
@@ -686,7 +668,6 @@ class Counter:
             "visit_x_range": vx_max - vx_min,
             "visit_y_range": vy_max - vy_min,
             "real_inside_frames": int(meta.get("real_inside_frames", 0)),
-            "height_class": _aggregate_height_class_from_track(track),
             "height_m": _aggregate_height_m_from_track(track),
             "head_depth_m": _aggregate_head_depth_m_from_track(track),
             "confidence": _aggregate_confidence_from_track(track),
@@ -796,11 +777,9 @@ class Counter:
         # confiable si el bbox fue marginal a lo largo del track).
         conf = snap.get("confidence")
         if conf is not None and conf < self.height_confidence_gate:
-            height_class = "unknown"
             height_m = None
             head_depth_m = None
         else:
-            height_class = snap.get("height_class") or "unknown"
             height_m = snap.get("height_m")
             head_depth_m = snap.get("head_depth_m")
         return CountEvent(
@@ -809,7 +788,6 @@ class Counter:
             timestamp=now,
             position_x=cross_x,
             position_y=cross_y,
-            height_class=height_class,
             height_m=height_m,
             head_depth_m=head_depth_m,
             confidence=conf,
@@ -1283,19 +1261,18 @@ class Counter:
                 # marginal a lo largo de la trayectoria y la altura
                 # derivada no es confiable — el conteo en sí (dirección,
                 # cruce) se mantiene porque solo depende del centroide.
-                # Limpiar height_m/head_depth_m a None y height_class a
-                # "unknown" así los dashboards no surfacean valores
-                # demográficos espurios.
+                # Limpiar height_m/head_depth_m a None así los dashboards
+                # no surfacean valores demográficos espurios (la
+                # categorización adulto/niño se computa server-side desde
+                # height_m, así NULL → 'unknown' en la vista).
                 conf_median = _aggregate_confidence_from_track(track)
                 if (
                     conf_median is not None
                     and conf_median < self.height_confidence_gate
                 ):
-                    height_class = "unknown"
                     height_m = None
                     head_depth_m = None
                 else:
-                    height_class = _aggregate_height_class_from_track(track)
                     height_m = _aggregate_height_m_from_track(track)
                     head_depth_m = _aggregate_head_depth_m_from_track(track)
                 return CountEvent(
@@ -1304,7 +1281,6 @@ class Counter:
                     timestamp=now,
                     position_y=cross_y,
                     position_x=cross_x,
-                    height_class=height_class,
                     height_m=height_m,
                     head_depth_m=head_depth_m,
                     confidence=conf_median,

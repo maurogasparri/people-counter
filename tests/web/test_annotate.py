@@ -95,7 +95,7 @@ def test_annotate_left_draws_counting_zone_and_tracks():
             track_id=1, state=CONFIRMED,
             positions=[np.array([175.0, 155.0, 0.0])],
             meta={"detection_history": [
-                {"head_height_mm": 1620.0, "height_class": "adult"},
+                {"head_height_mm": 1620.0},
             ]},
         ),
         2: _FakeTrack(
@@ -207,7 +207,6 @@ def test_annotate_left_pending_marker_anchors_to_bbox_not_kalman_predict():
             {
                 "bbox": [150, 30, 250, 130],  # centro en (200, 80)
                 "head_height_mm": 1700.0,
-                "height_class": "adult",
             },
         ]},
     )
@@ -243,7 +242,7 @@ def test_annotate_left_pending_hysteresis_keeps_confirmed_color():
         state=PENDING,
         positions=[np.array([175.0, 155.0, 0.0])],
         meta={"detection_history": [
-            {"head_height_mm": 1620.0, "height_class": "adult"},
+            {"head_height_mm": 1620.0},
         ]},
     )
     track_recently_pending.disappeared = 1
@@ -272,7 +271,7 @@ def test_annotate_left_sustained_pending_flips_to_orange():
         state=PENDING,
         positions=[np.array([175.0, 155.0, 0.0])],
         meta={"detection_history": [
-            {"head_height_mm": 1620.0, "height_class": "adult"},
+            {"head_height_mm": 1620.0},
         ]},
     )
     track_long_pending.disappeared = 10  # Bien arriba del threshold (5)
@@ -318,7 +317,6 @@ def test_annotate_left_draws_track_bbox_from_history():
             {
                 "bbox": [150, 130, 200, 180],
                 "head_height_mm": 1620.0,
-                "height_class": "adult",
             },
         ]},
     )
@@ -350,7 +348,6 @@ def test_annotate_left_bbox_is_fixed_size_regardless_of_detection():
     history = [{
         "bbox": [400 - 90, 300 - 140, 400 + 90, 300 + 140],
         "head_height_mm": 1700.0,
-        "height_class": "adult",
     }]
     track = _FakeTrack(
         track_id=1,
@@ -384,8 +381,7 @@ def test_annotate_left_bbox_center_follows_latest_position():
     # 5 frames caminando de izquierda a derecha; el último centro es cx=600.
     centers_x = [400, 450, 500, 550, 600]
     history = [
-        {"bbox": [cx - 50, 200, cx + 50, 400], "head_height_mm": 1700.0,
-         "height_class": "adult"}
+        {"bbox": [cx - 50, 200, cx + 50, 400], "head_height_mm": 1700.0}
         for cx in centers_x
     ]
     track = _FakeTrack(
@@ -419,12 +415,12 @@ def test_annotate_left_height_label_uses_median_of_history():
 
     # Historia con valores estables alrededor de 1620mm + un outlier al final.
     history = [
-        {"head_height_mm": 1620.0, "height_class": "adult"},
-        {"head_height_mm": 1625.0, "height_class": "adult"},
-        {"head_height_mm": 1618.0, "height_class": "adult"},
-        {"head_height_mm": 1622.0, "height_class": "adult"},
-        {"head_height_mm": 1619.0, "height_class": "adult"},
-        {"head_height_mm": 1900.0, "height_class": "adult"},  # outlier
+        {"head_height_mm": 1620.0},
+        {"head_height_mm": 1625.0},
+        {"head_height_mm": 1618.0},
+        {"head_height_mm": 1622.0},
+        {"head_height_mm": 1619.0},
+        {"head_height_mm": 1900.0},  # outlier
     ]
     track = _FakeTrack(
         track_id=1,

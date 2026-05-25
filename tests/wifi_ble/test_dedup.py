@@ -154,41 +154,121 @@ def test_get_recent_hashes_returns_window():
     assert all(len(h) == 32 for h in recent)
 
 
-def test_get_window_summary_counts_passersby_and_shoppers():
-    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
-    t0 = time.time()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)
-    engine.process_detection("AA:BB:CC:DD:EE:02", "wifi", -65.0)
-    engine.process_detection("AA:BB:CC:DD:EE:03", "wifi", -85.0)
+# get_window_records (post PR 2: per-device events para el cloud)
+# ---------------------------------------------------------------------------
 
-    summary = engine.get_window_summary(
-        since_ts=t0 - 1,
-        until_ts=t0 + 10,
-        rssi_passerby=-75.0,
-        rssi_shopper=-55.0,
-    )
-    assert summary["passersby"] == 2
-    assert summary["shoppers"] == 1
-
-
-def test_get_window_summary_unifies_cross_protocol():
+def test_get_window_records_one_per_group():
+    """Un record por group_id — múltiples MACs stiched cuentan como 1 visitor."""
     engine, _ = _make_engine()
     t0 = time.time()
-    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)
-    engine.process_detection("AA:BB:CC:DD:EE:01", "ble", -52.0)
+    # Mismo dispositivo emitiendo cross-protocol dentro de la ventana corta
+    # → mismo group_id, un solo record.
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -55.0)
+    engine.process_detection("AA:BB:CC:DD:EE:01", "ble", -57.0)
+    # Otro dispositivo distinto.
+    engine.process_detection("11:22:33:44:55:66", "wifi", -70.0)
 
-    summary = engine.get_window_summary(since_ts=t0 - 1, until_ts=t0 + 10)
-    assert summary["passersby"] == 1
-    assert summary["shoppers"] == 1
+    records = engine.get_window_records(since_ts=t0 - 1, until_ts=t0 + 10)
+    assert len(records) == 2
+    # Cada record tiene el shape esperado.
+    for r in records:
+        assert set(r.keys()) == {
+            "visitor_hash", "protocol", "rssi_max",
+            "first_seen_ts", "last_seen_ts",
+        }
+        assert r["protocol"] in ("wifi", "ble")
+        assert isinstance(r["rssi_max"], int)
+    # visitor_hash es UUID hex de 32 chars (group_id).
+    assert all(len(r["visitor_hash"]) == 32 for r in records)
 
 
-def test_get_window_summary_shoppers_subset_of_passersby():
-    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
+def test_get_window_records_rssi_max_aggregates_over_group():
+    """rssi_max sale del miembro con la lectura más fuerte del grupo.
+
+    Para que se stitchen cross-protocol el RSSI debe estar dentro del gate
+    (cross_rssi_delta=5 dBm). Probamos rotación intra-protocolo (WiFi MAC
+    rotation con seqnum continuity) con dos RSSI distintos del mismo chip.
+    """
+    engine, _ = _make_engine()
     t0 = time.time()
-    for i, rssi in enumerate([-50.0, -52.0, -58.0, -65.0, -72.0]):
-        engine.process_detection(f"AA:BB:CC:DD:EE:{i:02x}", "wifi", rssi)
-    summary = engine.get_window_summary(since_ts=t0 - 1, until_ts=t0 + 10)
-    assert summary["shoppers"] <= summary["passersby"]
+    # Dos WiFi MACs distintas, seqnum cercano + RSSI cercano → mismo grupo.
+    engine.process_detection("AA:00:00:00:00:01", "wifi", -55.0, seqnum=1000)
+    engine.process_detection("BB:00:00:00:00:01", "wifi", -52.0, seqnum=1005)
+
+    records = engine.get_window_records(since_ts=t0 - 1, until_ts=t0 + 10)
+    assert len(records) == 1
+    # rssi_max = MAX(-55, -52) = -52.
+    assert records[0]["rssi_max"] == -52
+    assert records[0]["protocol"] == "wifi"
+
+
+def test_get_window_records_filters_weak_eco():
+    """Grupos con rssi_max < -90 dBm se descartan (eco lejano)."""
+    engine, _ = _make_engine()
+    t0 = time.time()
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -95.0)  # eco
+    engine.process_detection("11:22:33:44:55:66", "wifi", -60.0)  # válido
+
+    records = engine.get_window_records(since_ts=t0 - 1, until_ts=t0 + 10)
+    assert len(records) == 1
+    assert records[0]["rssi_max"] == -60
+
+
+def test_get_window_records_excludes_groups_outside_window():
+    """Grupos cuyo MAX(last_seen) cae fuera de la ventana se excluyen."""
+    engine, _ = _make_engine()
+    t0 = time.time()
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -55.0)
+
+    # Ventana en el futuro — el group quedó "viejo", no debe incluirse.
+    records = engine.get_window_records(since_ts=t0 + 100, until_ts=t0 + 200)
+    assert records == []
+
+
+def test_get_window_records_emits_continuous_visitor_each_window():
+    """Visitor presente en varias ventanas se emite UNA vez por ventana.
+
+    Caso clave del PR 2.1: el visitor que persiste entre ventanas (no es
+    "nuevo" en la ventana N+1, pero sigue ahí) debe seguir emitiéndose
+    para que el funnel del bucket N+1 lo refleje, y para capturar
+    promociones passerby→shopper cross-window.
+    """
+    engine, _ = _make_engine()
+    # Observación 1 dentro de la ventana A.
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -75.0)
+    win_a_end = time.time() + 0.01
+    # Esperamos a que el reloj pase (ventana A es pasada). Cambia last_seen
+    # del MISMO group (rotación virtual: misma MAC), simulando observación
+    # del visitor que sigue presente.
+    import time as _t
+    _t.sleep(0.05)
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)  # promovió
+    win_b_now = time.time() + 0.01
+
+    # Ventana B: el group sigue activo (su last_seen cae en B).
+    records_b = engine.get_window_records(
+        since_ts=win_a_end, until_ts=win_b_now,
+    )
+    assert len(records_b) == 1
+    assert records_b[0]["rssi_max"] == -50  # lifetime max — promoción capturada
+
+
+def test_get_window_records_visitor_inactive_not_re_emitted():
+    """Visitor cuyo last_seen quedó en ventana A NO se emite en ventana B.
+
+    El filtro es "MAX(last_seen) IN window", no "first_seen". Una vez que
+    el visitor dejó de aparecer (sin actualizar last_seen), no se re-emite
+    eternamente — sólo mientras esté activo.
+    """
+    engine, _ = _make_engine()
+    engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -55.0)
+    win_a_end = time.time() + 0.01
+
+    # Ventana B en el futuro, sin nuevas observaciones del visitor.
+    records_b = engine.get_window_records(
+        since_ts=win_a_end + 10, until_ts=win_a_end + 20,
+    )
+    assert records_b == []
 
 
 # ---------------------------------------------------------------------------

@@ -57,7 +57,7 @@ from src.vision.depth import (
     head_depth_in_bbox,
 )
 from src.vision.best_frame import BestFrameManager
-from src.vision.world_coords import classify_height, head_height_above_floor
+from src.vision.world_coords import head_height_above_floor
 from src.vision.detect import detect_persons, load_model
 from src.vision.static_suppressor import StaticSuppressor
 from src.web.annotate import annotate_left, compose_3panel, depth_to_colormap
@@ -414,12 +414,16 @@ def build_wifi_ble(
                    "valid_range": [30, _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS]},
         )
 
+    # Los thresholds rssi_passerby/rssi_shopper ya no se pasan al publisher:
+    # post PR 2 el publisher emite eventos per-device con rssi_max crudo,
+    # y la categorización vive en la función SQL rssi_class() server-side.
+    # Los valores del config se preservan para compat de las queries diag
+    # del device (get_traffic_counts, get_recent_records) pero NO afectan
+    # lo que se persiste en la nube.
     publisher = WifiBlePublisher(
         mqtt_client=mqtt_client,
         dedup=dedup,
         period_seconds=period_seconds,
-        rssi_passerby=float(wifi_cfg.get("rssi_passerby_threshold", -75.0)),
-        rssi_shopper=float(wifi_cfg.get("rssi_shopper_threshold", -55.0)),
     )
     return dedup, publisher, wifi_capture, ble_scanner
 
@@ -1637,7 +1641,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             mount_height_mm = (
                 float(vision_cfg.get("mounting_height_m", 0.0) or 0.0) * 1000.0
             )
-            adult_min_mm = float(hc_cfg.get("adult_min_m", 1.55)) * 1000.0
+            # Nota: la categorización adulto/niño se aplica server-side via
+            # la función SQL height_class(height_m). El device persiste solo
+            # la medición cruda (head_height_mm). Threshold centralizado en
+            # SQL, modificable sin redeploy.
 
             def _build_positions_metas(
                 dets: list,
@@ -1707,18 +1714,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             head_depth_mm,
                             mount_height_mm,
                         )
-                        height_class = classify_height(head_mm, adult_min_mm)
                     else:
                         head_mm = None
-                        height_class = "unknown"
 
                     # Sanity gate: alturas fuera del rango anthropometric
                     # son físicamente imposibles (estructura overhead
                     # dominando el bbox, speckle SGBM cerca-cámara, drift
                     # de calibración). El evento de conteo igual se emite
                     # porque hay detección real cruzando la línea, pero los
-                    # campos de altura caen a None / "unknown" para que el
-                    # dashboard no surfacee el valor falso. head_depth_mm
+                    # campos de altura caen a None para que el dashboard no
+                    # surfacee el valor falso (la función SQL height_class()
+                    # mapea NULL → 'unknown' en las vistas). head_depth_mm
                     # también se limpia: si el head pick fue absurdo, su
                     # depth no es confiable como near_depth_mm para el
                     # tracker — mejor usar el z (mediana del bbox central)
@@ -1728,7 +1734,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     ):
                         head_mm = None
                         head_depth_mm = None
-                        height_class = "unknown"
                     m.append(
                         {
                             "confidence": float(det.confidence),
@@ -1736,7 +1741,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                                 head_depth_mm if head_depth_mm is not None else z
                             ),
                             "head_height_mm": head_mm,
-                            "height_class": height_class,
                             # bbox pasado así el counter puede tomar el
                             # bbox-top como "pixel de cabeza" para la
                             # proyección de footpoint. Tuple mantenido como
@@ -1880,7 +1884,6 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     "direction": _WIRE_DIRECTION.get(event.direction, event.direction),
                     "track_id": event.track_id,
                     "event_time": event.timestamp,
-                    "height_class": event.height_class,
                     "height_m": (
                         round(event.height_m, 2) if event.height_m is not None else None
                     ),
@@ -1893,12 +1896,12 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 mqtt_client.publish_event("counting", payload)
                 logger.info(
                     "counting_event_published direction=%s track_id=%d "
-                    "total_in=%d total_out=%d height=%s conf=%.2f",
+                    "total_in=%d total_out=%d height_m=%s conf=%.2f",
                     event.direction,
                     event.track_id,
                     counter.total_in,
                     counter.total_out,
-                    event.height_class,
+                    f"{event.height_m:.2f}" if event.height_m is not None else "?",
                     float(event.confidence) if event.confidence is not None else 0.0,
                 )
 

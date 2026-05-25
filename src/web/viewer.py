@@ -74,10 +74,10 @@ _HTML = """<!DOCTYPE html>
     .status-pill.on{background:rgba(61,220,132,.16);color:var(--in);}
     .status-pill.off{background:rgba(255,140,66,.16);color:var(--out);}
     .status-pill.idle{background:rgba(139,148,163,.14);color:var(--muted);}
-    /* KPI boxes — mismo tamaño/padding/tipografía para IN/OUT y
-       Passersby/Shoppers. Los colores verde/naranja se aplican SOLO a
-       .kpi.in / .kpi.out via .v; los KPI sin clase de color heredan el
-       blanco default del card. */
+    /* KPI boxes — mismo tamaño/padding/tipografía para IN/OUT y para el
+       total de tráfico exterior. Los colores verde/naranja se aplican
+       SOLO a .kpi.in / .kpi.out via .v; los KPI sin clase de color
+       heredan el blanco default del card. */
     .kpis{display:flex;gap:12px;margin-bottom:12px;}
     .kpi{flex:1;text-align:center;border-radius:10px;padding:12px 8px;
       background:var(--panel2);border:1px solid var(--line);}
@@ -94,10 +94,6 @@ _HTML = """<!DOCTYPE html>
     th{text-align:left;color:var(--muted);font-weight:600;padding:5px 6px;
       border-bottom:1px solid var(--line);font-size:10.5px;text-transform:uppercase;}
     td{padding:5px 6px;border-bottom:1px solid #20242c;white-space:nowrap;}
-    .pill{padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600;}
-    .pill.shopper{background:rgba(61,220,132,.16);color:var(--in);}
-    .pill.passerby{background:rgba(91,157,255,.16);color:var(--accent);}
-    .pill.weak,.pill.unknown{background:rgba(139,148,163,.14);color:var(--muted);}
     .tag{font-size:9px;color:var(--muted);}
     .empty{color:var(--muted);text-align:center;padding:16px;}
     .stream{margin-top:14px;background:#000;border:1px solid var(--line);
@@ -143,12 +139,11 @@ _HTML = """<!DOCTYPE html>
           <span class='status-pill idle' id='external-status'>—</span>
         </div>
         <div class='kpis'>
-          <div class='kpi'><div class='k'>Passersby</div><div class='v' id='passersby'>0</div></div>
-          <div class='kpi'><div class='k'>Shoppers</div><div class='v' id='shoppers'>0</div></div>
+          <div class='kpi'><div class='k'>Total observados</div><div class='v' id='ext-total'>0</div></div>
         </div>
         <table>
-          <thead><tr><th>Hash</th><th>Hora</th><th>RSSI</th><th>Tipo</th></tr></thead>
-          <tbody id='ext'><tr><td class='empty' colspan='4'>Sin registros</td></tr></tbody>
+          <thead><tr><th>Hash</th><th>Hora</th><th>RSSI</th></tr></thead>
+          <tbody id='ext'><tr><td class='empty' colspan='3'>Sin registros</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -286,14 +281,16 @@ _HTML = """<!DOCTYPE html>
           `<td style='color:var(--out)'>${r.out}</td></tr>`
         ).join(''):"<tr><td class='empty' colspan='3'>Sin actividad hoy</td></tr>";
         const ext=s.exterior||{};
-        $('passersby').textContent=ext.passersby??0;
-        $('shoppers').textContent=ext.shoppers??0;
+        // Total = passersby (shoppers ⊆ passersby por invariante del dedup).
+        // La categorización passerby/shopper por RSSI vive ahora en la
+        // función SQL rssi_class() server-side; el device solo expone el
+        // total observado y los registros crudos.
+        $('ext-total').textContent=ext.passersby??0;
         const rows=ext.recent||[];
         $('ext').innerHTML=rows.length?rows.map(r=>
           `<tr><td>${r.hash} <span class='tag'>${(r.protocol||'').toUpperCase()}</span></td>`+
-          `<td>${fmtT(r.last_seen)}</td><td>${fmtR(r.rssi)}</td>`+
-          `<td><span class='pill ${r.classification}'>${r.classification}</span></td></tr>`
-        ).join(''):"<tr><td class='empty' colspan='4'>Sin registros</td></tr>";
+          `<td>${fmtT(r.last_seen)}</td><td>${fmtR(r.rssi)}</td></tr>`
+        ).join(''):"<tr><td class='empty' colspan='3'>Sin registros</td></tr>";
       }catch(e){_statsOk=false;}
     }
     setInterval(tick,1000);tick();

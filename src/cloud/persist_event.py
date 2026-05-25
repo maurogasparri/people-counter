@@ -158,9 +158,9 @@ def _insert_counting(conn, event: dict[str, Any]) -> None:
             """
             INSERT INTO count_events
                 (device_id, store_id, event_ts, direction,
-                 track_id, confidence, height_class, height_m)
+                 track_id, confidence, height_m)
             VALUES (%s, %s, %s, %s,
-                    %s, %s, %s, %s)
+                    %s, %s, %s)
             ON CONFLICT (device_id, event_ts, track_id, direction) DO NOTHING
             """,
             (
@@ -175,7 +175,10 @@ def _insert_counting(conn, event: dict[str, Any]) -> None:
                 data["direction"],
                 data.get("track_id"),
                 data.get("confidence"),
-                data.get("height_class"),
+                # height_class del payload (firmware viejo lo mandaba): se
+                # ignora silenciosamente. La categorización se aplica
+                # server-side via la función SQL height_class(height_m) en
+                # las vistas. Solo persistimos la medición cruda.
                 data.get("height_m"),
             ),
         )
@@ -255,34 +258,85 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
 
 
 def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
+    """Persiste un batch de eventos per-device WiFi/BLE.
+
+    Shape del payload (post PR 2):
+
+        data = {
+            "period_start": <epoch>,
+            "period_end":   <epoch>,
+            "devices": [
+                {
+                    "visitor_hash":  "<32 hex chars = 16 bytes>",
+                    "protocol":      "wifi" | "ble",
+                    "rssi_max":      -55,
+                    "first_seen_ts": <epoch float>,
+                    "last_seen_ts":  <epoch float>,
+                },
+                ...
+            ]
+        }
+
+    Cada dict del array se inserta como una fila de ``wifi_ble_events``.
+    ON CONFLICT (device_id, visitor_hash, period_start) DO UPDATE refina:
+    si la misma ventana llega 2 veces (retry del device), se queda con el
+    rssi_max más alto y el last_seen_ts más reciente.
+    """
     data = event["data"]
     device_id = event["device_id"]
-    # bucket_15min: omitido — la columna RDS es GENERATED ALWAYS AS STORED
-    # desde period_start. Devices con firmware viejo que mandaban bucket_15min
-    # o period_bucket: las keys se ignoran silenciosamente.
-    # last_seen_ts: opcional, info diagnostica (cuándo fue la última detección
-    # dentro de la ventana). None si el device es viejo o la ventana fue vacía
-    # (en cuyo caso ni siquiera deberíamos llegar acá).
-    last_seen_ts = data.get("last_seen_ts")
+    store_id = _infer_store_id(device_id)
+    period_start = _ts(data["period_start"])
+    period_end = _ts(data["period_end"])
+    devices = data.get("devices") or []
+
+    if not devices:
+        # Ventana vacía explícita — el publisher debería evitar emitir, pero si
+        # llega no es error, solo no inserta nada.
+        logger.info("wifi_ble_empty_window device_id=%s", device_id)
+        return
+
+    rows = []
+    for d in devices:
+        # visitor_hash llega como hex string. Postgres BYTEA acepta bytes desde
+        # bytes.fromhex() — psycopg lo mapea a el formato binario nativo.
+        try:
+            visitor_hash = bytes.fromhex(d["visitor_hash"])
+        except (KeyError, ValueError, TypeError):
+            logger.warning(
+                "wifi_ble_bad_visitor_hash device_id=%s hash=%r",
+                device_id, d.get("visitor_hash"),
+            )
+            continue
+        rows.append((
+            device_id, store_id, visitor_hash,
+            d["protocol"], int(d["rssi_max"]),
+            _ts(d["first_seen_ts"]), _ts(d["last_seen_ts"]),
+            period_start, period_end,
+        ))
+
+    if not rows:
+        return
+
+    # executemany con ON CONFLICT — refina rssi_max al máximo visto y
+    # last_seen_ts al más reciente, por si la misma ventana llega 2 veces.
     with conn.cursor() as cur:
-        cur.execute(
+        cur.executemany(
             """
-            INSERT INTO wifi_ble_summary
-                (device_id, store_id, period_start, period_end,
-                 passersby, shoppers, last_seen_ts)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (device_id, period_start, period_end) DO NOTHING
+            INSERT INTO wifi_ble_events
+                (device_id, store_id, visitor_hash, protocol, rssi_max,
+                 first_seen_ts, last_seen_ts, period_start, period_end)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (device_id, visitor_hash, period_start) DO UPDATE
+                SET rssi_max      = GREATEST(wifi_ble_events.rssi_max, EXCLUDED.rssi_max),
+                    last_seen_ts  = GREATEST(wifi_ble_events.last_seen_ts, EXCLUDED.last_seen_ts),
+                    first_seen_ts = LEAST(wifi_ble_events.first_seen_ts, EXCLUDED.first_seen_ts)
             """,
-            (
-                device_id,
-                _infer_store_id(device_id),
-                _ts(data["period_start"]),
-                _ts(data["period_end"]),
-                data["passersby"],
-                data["shoppers"],
-                _ts(last_seen_ts) if last_seen_ts is not None else None,
-            ),
+            rows,
         )
+    logger.info(
+        "wifi_ble_events_inserted device_id=%s n=%d",
+        device_id, len(rows),
+    )
 
 
 _DISPATCH = {

@@ -48,47 +48,10 @@ def head_height_above_floor(
     return float(height_mm)
 
 
-def classify_height(
-    head_height_mm: Optional[float],
-    adult_min_mm: float,
-) -> str:
-    """Clasifica una persona por altura de cabeza: adult / child / unknown.
-
-    Args:
-        head_height_mm: Salida de head_height_above_floor(). None → unknown.
-        adult_min_mm: Threshold en milímetros. height >= threshold → adult.
-
-    Returns:
-        "adult" | "child" | "unknown".
-    """
-    if head_height_mm is None:
-        return "unknown"
-    return "adult" if head_height_mm >= adult_min_mm else "child"
-
-
-def aggregate_height_class(samples: list[str]) -> str:
-    """Estabiliza clasificaciones per-frame en un único verdict per-track.
-
-    Usa voto por mayoría sobre las clasificaciones sampleadas del track,
-    ignorando samples "unknown". Empates (counts iguales adult/child) se
-    resuelven a la última observación no-unknown — sesgado hacia la
-    profundidad más reciente, que suele ser la más limpia (track ya
-    establecido, bbox estable).
-
-    Args:
-        samples: Lista de clasificaciones per-frame (valores de classify_height).
-
-    Returns:
-        Clasificación final del track: "adult", "child", o "unknown"
-        cuando no hay samples no-unknown.
-    """
-    valid = [s for s in samples if s != "unknown"]
-    if not valid:
-        return "unknown"
-    adult = sum(1 for s in valid if s == "adult")
-    child = sum(1 for s in valid if s == "child")
-    if adult > child:
-        return "adult"
-    if child > adult:
-        return "child"
-    return valid[-1]
+# NOTA: las funciones `classify_height` y `aggregate_height_class` se
+# eliminaron en la migración 2026-05-26-drop-height-class. La
+# categorización adulto/niño ahora vive centralizada en la función SQL
+# `height_class(height_m)` que se aplica server-side sobre
+# `count_events.height_m` (mediana ya estabilizada del detection_history
+# del track). El device solo persiste la medición cruda — ni el live
+# preview categoriza, solo muestra el número en metros.
