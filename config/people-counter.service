@@ -36,6 +36,17 @@ PrivateTmp=true
 MemoryAccounting=yes
 CPUAccounting=yes
 
+# Circuit breakers de memoria — sized para Pi 5 2GB (working set sostenido
+# observado en piloto = ~300MB peak). MemoryHigh actúa como soft cap: cuando
+# se cruza, el kernel reclama paginas del cgroup primero (presión sobre el
+# service, no sobre el resto del sistema). MemoryMax es hard cap: si lo cruza,
+# OOM killer mata al service y systemd lo reinicia (Restart=always). Sin estos
+# caps un memory leak hipotético podría comerse toda la RAM y arrastrar al
+# kernel + dbus + nm. Headroom amplio (5x sobre peak observado) para no
+# falsear triggers en bursts WiFi/BLE o preview concurrente.
+MemoryHigh=1G
+MemoryMax=1500M
+
 # Capabilities que necesita el servicio corriendo como user no-root (pi):
 #  - CAP_NET_BIND_SERVICE: el web viewer bindea al puerto 80 (--web-viewer-port).
 #  - CAP_NET_ADMIN: WiFi probing — el pipeline pone wlan0 en monitor mode via

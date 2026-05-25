@@ -18,7 +18,7 @@ Cada unidad consiste en:
 
 | Componente | Spec | Rol |
 |-----------|------|------|
-| Raspberry Pi 5 | 4GB RAM, ARM Cortex-A76 | SBC principal |
+| Raspberry Pi 5 | 2GB RAM, ARM Cortex-A76 | SBC principal (working set ~270 MB sostenido; ver [`docs/hardware_sizing.md`](docs/hardware_sizing.md)) |
 | Raspberry Pi Active Cooler | fan PWM + disipador | Gestión térmica |
 | Raspberry Pi AI HAT+ | 13 TOPS (Hailo-8L) | Inferencia neuronal |
 | 2x Arducam IMX708 | 12MP HDR, 120° HFOV, lente M12, CSI, baseline 14cm | Par estéreo |

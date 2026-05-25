@@ -11,7 +11,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 ```
 +---------------------------------------------+
 |        Dispositivo edge (por local)          |
-|  RPi5 4GB + Hailo-8L 13T + 2x IMX708         |
+|  RPi5 2GB + Hailo-8L 13T + 2x IMX708         |
 |                                              |
 |  +----------+  +----------+  +--------+      |
 |  |  Visión  |  | WiFi/BLE |  |  MQTT  |      |
@@ -47,7 +47,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ## Hardware por unidad
 
-- Raspberry Pi 5 4GB + Active Cooler
+- Raspberry Pi 5 2GB + Active Cooler (RAM dimensionada empíricamente — working set ~270 MB sostenido, peak 281 MB bajo stress brutal con balloon de 6GB simulando ambiente 2GB; ver `docs/hardware_sizing.md`)
 - Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — único HAT stackeado
 - 2× Arducam IMX708 12MP HDR M12 120° HFOV (B0310) vía CSI — par estéreo, baseline 14cm
 - Waveshare PoE HAT (H) 25.5W — alimentación, conectado por dupont (no stackeado)

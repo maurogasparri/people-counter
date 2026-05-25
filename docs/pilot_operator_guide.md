@@ -24,7 +24,7 @@ Si algo de lo anterior **no** está, parar acá y escalar a ingeniería.
 
 ### 1.1. Checklist de hardware (caja de campo)
 
-- [ ] Dispositivo ensamblado: RPi5 4GB + AI HAT+ (Hailo-8L) + 2x Arducam IMX708
+- [ ] Dispositivo ensamblado: RPi5 2GB + AI HAT+ (Hailo-8L) + 2x Arducam IMX708
       B0310 en bracket estéreo + PoE HAT (H) conectado por dupont + Active
       Cooler + microSD ya flasheada y provisionada.
 - [ ] Cable UTP CAT6 (largo según local; llevar 10m y 20m).

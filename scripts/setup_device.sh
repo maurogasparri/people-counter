@@ -109,6 +109,25 @@ if [ -f "$CMDLINE_TXT" ] && ! grep -q "cgroup_enable=memory" "$CMDLINE_TXT"; the
     sed -i 's/$/ cgroup_enable=memory cgroup_memory=1/' "$CMDLINE_TXT"
 fi
 
+# Sysctl tuning (swappiness=10 + dirty page caps). Permite correr en Pi 5 2GB
+# sin tocar swap bajo carga sostenida + bursts WiFi/BLE. Ver
+# config/sysctl-people-counter.conf para el detalle.
+info "  Deploying sysctl drop-in (vm.swappiness=10 + dirty page caps)"
+cp "$REPO_DIR/config/sysctl-people-counter.conf" /etc/sysctl.d/99-people-counter.conf
+sysctl --system 2>/dev/null | grep -E "swappiness|dirty" || true
+
+# Audio stack innecesario. Pipewire + wireplumber + pipewire-pulse arrancan
+# por default con la sesión del usuario `pi` (autostart como user units).
+# El sistema NO usa audio (RGB LED es GPIO directo); ocupan ~30 MB sostenido
+# de RAM por nada. Loginctl enable-linger + systemctl --user mask los frena
+# desde el próximo login del user.
+info "  Masking audio stack (no se usa, libera ~30 MB)"
+sudo -u pi XDG_RUNTIME_DIR=/run/user/$(id -u pi) systemctl --user mask \
+    pipewire.service pipewire.socket \
+    wireplumber.service \
+    pipewire-pulse.service pipewire-pulse.socket 2>/dev/null || \
+    warn "    (mask falló — probablemente la sesión user no esta corriendo aún; correr manualmente como pi tras el primer login)"
+
 # =========================================================================
 # Step 5: Hailo
 # =========================================================================
