@@ -614,6 +614,12 @@ Resources:
       ApiId: !Ref IngestPosApi
       StageName: "$default"
       AutoDeploy: true
+      # Throttle por route — HTTP API v2 no soporta UsagePlans, pero RouteSettings
+      # con ThrottlingRateLimit/Burst sí. Cap del stage protege ambos endpoints
+      # (POS ingest + Query API) contra abuse / pool exhaustion en RDS t4g.micro.
+      DefaultRouteSettings:
+        ThrottlingRateLimit: 10    # req/s steady
+        ThrottlingBurstLimit: 20   # burst concurrente
       Tags: {Project: people-counter, Environment: !Ref Environment}
 
   # Custom domain api.<DomainName> para la POS API. Solo se crea cuando se
@@ -665,8 +671,153 @@ Resources:
       AlarmActions: [!Ref AlertTopic]
 
   # =========================================================================
-  # ECR — repo privado para imagen Grafana (push manual desde Docker Hub)
+  # Query Aggregates API — Lambda + 2 routes en el MISMO IngestPosApi
   # =========================================================================
+  # Endpoint REST de consulta de agregados (T9.12, US-12, RF-13). Conviven con
+  # /pos/transactions en la misma API Gateway HTTP API por dos razones:
+  # (1) compartir custom domain api.<DomainName> sin pagar API GW extra; (2)
+  # configurar throttling una sola vez vía RouteSettings.
+  #
+  # Cap de throttle a nivel route (RouteSettings) — 10 req/s steady + burst 20.
+  # API Gateway HTTP API NO soporta UsagePlans (eso es REST API v1); con stage
+  # throttle alcanza para evitar que un cliente malicioso tire la Lambda.
+
+  QueryAggregatesLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "people-counter-query-aggregates-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: rds-iam-auth
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # SELECT-only sobre las tablas raw (least privilege). Creado por
+              # el bloque correspondiente en infra/sql/bootstrap.sql.
+              - Effect: Allow
+                Action: [rds-db:connect]
+                Resource: !Sub "arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${RdsInstance.DbiResourceId}/lambda_query_reader"
+
+  QueryAggregatesLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: QueryAggregatesLambdaLogGroup
+    Properties:
+      FunctionName: !Sub "people-counter-query-aggregates-${Environment}"
+      Runtime: python3.13
+      Handler: query_aggregates.handler
+      Role: !GetAtt QueryAggregatesLambdaRole.Arn
+      # Timeout 29s = max del API GW HTTP API integration. SQL pesado (90d × 1h)
+      # mide ~3-5s en t4g.micro; queda margen para timeouts transitorios.
+      Timeout: 29
+      MemorySize: 512
+      Environment:
+        Variables:
+          PG_HOST: !GetAtt RdsInstance.Endpoint.Address
+          PG_PORT: !GetAtt RdsInstance.Endpoint.Port
+          PG_DB: people_counter
+          PG_USER: lambda_query_reader
+          PG_REGION: !Ref AWS::Region
+          API_BASE_URL: !If
+            - HasApiCustomDomain
+            - !Sub "https://api.${DomainName}"
+            - !Sub "https://${IngestPosApi}.execute-api.${AWS::Region}.amazonaws.com"
+      Code:
+        ZipFile: |
+          # Placeholder — el codigo real esta en src/cloud/query_aggregates.py
+          # y se sube via Deploy-LambdaCode en deploy.ps1 (Phase 4).
+          def handler(event, context):
+              import json
+              print(json.dumps({"received": event}))
+              return {"statusCode": 501, "body": "Deploy real query_aggregates.py + psycopg layer"}
+      Tags:
+        - {Key: Project, Value: people-counter}
+        - {Key: Environment, Value: !Ref Environment}
+
+  QueryAggregatesLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/people-counter-query-aggregates-${Environment}"
+      RetentionInDays: 14
+
+  QueryAggregatesIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref IngestPosApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt QueryAggregatesLambda.Arn
+      IntegrationMethod: POST  # API GW invoca la Lambda con POST aunque la route sea GET.
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  QueryAggregatesRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IngestPosApi
+      RouteKey: "GET /v1/aggregates"
+      AuthorizationType: AWS_IAM
+      Target: !Sub "integrations/${QueryAggregatesIntegration}"
+
+  # OpenAPI spec endpoint — sin auth (los clientes B2B la consumen para generar
+  # su SDK ANTES de tener credenciales SigV4). El throttle del stage la cubre
+  # contra abuse.
+  QueryOpenapiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IngestPosApi
+      RouteKey: "GET /v1/openapi.json"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${QueryAggregatesIntegration}"
+
+  QueryAggregatesLambdaPermissionApiGw:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QueryAggregatesLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      # Wildcard para cubrir las 2 routes (/v1/aggregates y /v1/openapi.json).
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${IngestPosApi}/*/*/v1/*"
+
+  QueryAggregatesLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "people-counter-query-aggregates-errors-${Environment}"
+      AlarmDescription: Lambda query_aggregates con errores (auth IAM falla / DB unreachable / SQL roto)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - {Name: FunctionName, Value: !Ref QueryAggregatesLambda}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+
+  QueryAggregatesLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "people-counter-query-aggregates-latency-${Environment}"
+      AlarmDescription: Query API latency p99 alta (cliente percibe API lenta — investigar query plan / RDS)
+      Namespace: PeopleCounter/QueryAPI
+      MetricName: LatencyMs
+      Dimensions:
+        - {Name: Endpoint, Value: aggregates}
+        - {Name: Bucket,   Value: 15min}
+      Statistic: Maximum  # proxy de p99 con baja frecuencia de invocacion
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5000  # 5s sustained
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
 
   GrafanaEcrRepo:
     Type: AWS::ECR::Repository
@@ -800,6 +951,13 @@ Resources:
             - {Name: GF_ANALYTICS_CHECK_FOR_UPDATES,  Value: "false"}
             - {Name: GF_AUTH_ANONYMOUS_ENABLED,       Value: "false"}
             - {Name: GF_USERS_ALLOW_SIGN_UP,          Value: "false"}
+            # Cap del pool de conexiones a RDS — sin esto Grafana abre 1 conn
+            # por request y un burst (ej. scanner pegando /login concurrente)
+            # agota los slots de la t4g.micro (~85 conn, con reserva
+            # rds_reserved). max_open=10 deja techo holgado a single-task y
+            # mata el modo de falla observado el 2026-05-25.
+            - {Name: GF_DATABASE_MAX_OPEN_CONN,       Value: "10"}
+            - {Name: GF_DATABASE_MAX_IDLE_CONN,       Value: "5"}
           Secrets:
             # Fargate inyecta el password del JSON del secret como env var
             # GF_DATABASE_PASSWORD. La sintaxis ${ARN}:password:: extrae la
@@ -894,6 +1052,56 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref GrafanaTargetGroup
+
+  # Listener rules de bloqueo (403 fixed-response) para paths tipicos de
+  # scanners/bots. Decision en el ALB, no pega en el backend Grafana — baja
+  # carga + ruido en logs. Limite del ALB: max 5 path-patterns por rule,
+  # por eso se dividen en dos. Patrones del incidente 2026-05-25:
+  # /wp-config.php, /.aws/credentials, /.git/config, /config.json,
+  # /google-services.json (todos cubiertos por los wildcards de abajo).
+  GrafanaListenerRuleBlockScanners1:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: DeployGrafanaCondition
+    Properties:
+      ListenerArn: !Ref GrafanaListenerHttps
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - "/wp-*"      # wordpress (config.php, admin, login, content)
+              - "/.git/*"    # repos expuestos (.git/config, HEAD, etc)
+              - "/.env*"     # secrets en archivos .env / .env.local
+              - "/.aws/*"    # credentials, config
+              - "/.ssh/*"    # private keys
+      Actions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: "403"
+            ContentType: "text/plain"
+            MessageBody: "Forbidden"
+
+  GrafanaListenerRuleBlockScanners2:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: DeployGrafanaCondition
+    Properties:
+      ListenerArn: !Ref GrafanaListenerHttps
+      Priority: 11
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - "/phpmyadmin/*"
+              - "/phpinfo*"
+              - "/actuator/*"          # spring boot endpoints
+              - "/google-services.json"
+              - "/config.json"
+      Actions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: "403"
+            ContentType: "text/plain"
+            MessageBody: "Forbidden"
 
   # Listener HTTP:80 - redirect 301 a HTTPS para que Grafana nunca acepte
   # plain HTTP (defense in depth, aparte de force_ssl en Grafana mismo).

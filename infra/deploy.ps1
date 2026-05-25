@@ -80,9 +80,16 @@ function Invoke-CfnDeploy {
         [string]$CertArn = "",
         [string]$ApiCertArn = ""
     )
+    # El template crecio mas alla del limite inline de 51200 bytes — `deploy`
+    # requiere un bucket S3 para subirlo y referenciarlo via --template-url.
+    # Lifecycle del bucket rota objetos a 30d (idempotente, se creo una vez).
+    $accountId = aws sts get-caller-identity --query Account --output text
+    $s3Bucket = "pc-cfn-templates-$accountId"
     aws cloudformation deploy `
         --stack-name $STACK_NAME `
         --template-file $TEMPLATE `
+        --s3-bucket $s3Bucket `
+        --s3-prefix $STACK_NAME `
         --capabilities CAPABILITY_NAMED_IAM `
         --parameter-overrides `
             Environment=$Environment `
@@ -290,6 +297,11 @@ if ($StartFromPhase -le 4) {
         -FunctionName "people-counter-ingest-pos-$Environment" `
         -SourcePath (Join-Path $SCRIPT_DIR "..\src\cloud\ingest_pos_transaction.py") `
         -ModuleName "ingest_pos_transaction.py"
+
+    Deploy-LambdaCode `
+        -FunctionName "people-counter-query-aggregates-$Environment" `
+        -SourcePath (Join-Path $SCRIPT_DIR "..\src\cloud\query_aggregates.py") `
+        -ModuleName "query_aggregates.py"
 }
 
 # === [5/6] CNAMEs finales (grafana -> ALB, api -> API GW domain) ===

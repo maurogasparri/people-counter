@@ -477,6 +477,30 @@ GRANT USAGE ON SCHEMA public TO lambda_pos_writer;
 GRANT INSERT, SELECT ON pos_transactions TO lambda_pos_writer;
 
 -- =============================================================================
+-- User Lambda query_aggregates — IAM auth, SELECT-only (T9.12, US-12, RF-13)
+-- =============================================================================
+-- Tercer role separado para least privilege: la Lambda de consulta NO debe
+-- poder insertar/modificar. Solo SELECT sobre las tablas raw que necesita el
+-- query unificado (counts + wifi/ble + pos + sites/devices para enumerar).
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lambda_query_reader') THEN
+        REVOKE ALL ON ALL TABLES IN SCHEMA public FROM lambda_query_reader;
+        REVOKE ALL ON SCHEMA public FROM lambda_query_reader;
+        DROP USER lambda_query_reader;
+    END IF;
+END $$;
+
+CREATE USER lambda_query_reader;
+GRANT rds_iam TO lambda_query_reader;
+GRANT USAGE ON SCHEMA public TO lambda_query_reader;
+GRANT SELECT ON
+    count_events, wifi_ble_summary, pos_transactions,
+    sites, devices
+TO lambda_query_reader;
+
+-- =============================================================================
 -- User read-only para acceso programático externo (US-08)
 -- =============================================================================
 -- ``readonly_external`` permite a partners / analistas externos consultar los
