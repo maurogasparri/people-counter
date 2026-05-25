@@ -65,6 +65,14 @@ _BUCKET_COLS = {
     "1h": "bucket_hour",
     "1d": "bucket_day",
 }
+# Mapeo bucket → vista unificada (post migración 2026-05-26-views-cartesian-product).
+# La Lambda ahora consume estas vistas en lugar de tablas raw, simétrico con
+# el rol readonly_external. La vista hace los FULL OUTER JOINs internamente.
+_BUCKET_UNIFIED_VIEWS = {
+    "15min": "metrics_unified_by_bucket_15min",
+    "1h":    "metrics_unified_by_bucket_hour",
+    "1d":    "metrics_unified_by_bucket_day",
+}
 _BUCKET_INTERVALS = {
     "15min": timedelta(minutes=15),
     "1h": timedelta(hours=1),
@@ -349,8 +357,19 @@ def _query_aggregates(
 
     ``has_more`` = True si el LIMIT N+1 trajo N+1 filas (hay próxima página).
     Las filas en el output son el primer N (sin la N+1 sentinel).
+
+    Post migración 2026-05-26-views-cartesian-product: la query consume la
+    vista ``metrics_unified_by_bucket_<grano>`` que ya hace el FULL OUTER
+    JOIN de counting + wifi_ble + pos internamente. El Lambda mantiene el
+    grid (generate_series × sites) para devolver filas con ceros donde la
+    vista no tiene data y la paginación por cursor.
+
+    Los aliases ``in_*`` / ``out_*`` se preservan en la SELECT para no
+    cambiar el shape que espera ``_shape_row`` (la vista usa ``ins_*`` /
+    ``outs_*``).
     """
     bucket_col = _BUCKET_COLS[params["bucket"]]
+    unified_view = _BUCKET_UNIFIED_VIEWS[params["bucket"]]
     bucket_interval = {
         "15min": "15 minutes",
         "1h": "1 hour",
@@ -387,81 +406,35 @@ def _query_aggregates(
         SELECT b.bucket_start, s.store_id
         FROM bucket_series b
         CROSS JOIN sites_filter s
-    ),
-    counts AS (
-        SELECT
-            {bucket_col} AS bucket_start,
-            store_id,
-            COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'adult')                                AS in_adult,
-            COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'child')                                AS in_child,
-            COUNT(*) FILTER (WHERE direction = 'in'  AND (height_class IS NULL OR height_class = 'unknown'))    AS in_unknown,
-            COUNT(*) FILTER (WHERE direction = 'in')                                                            AS in_total,
-            COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'adult')                                AS out_adult,
-            COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'child')                                AS out_child,
-            COUNT(*) FILTER (WHERE direction = 'out' AND (height_class IS NULL OR height_class = 'unknown'))    AS out_unknown,
-            COUNT(*) FILTER (WHERE direction = 'out')                                                           AS out_total
-        FROM count_events
-        WHERE event_ts >= %(from_aligned)s
-          AND event_ts <  %(to_excl)s
-          AND store_id = ANY(%(sites)s)
-        GROUP BY {bucket_col}, store_id
-    ),
-    wifi_ble AS (
-        SELECT
-            {bucket_col} AS bucket_start,
-            store_id,
-            MAX(passersby) AS passersby,
-            MAX(shoppers)  AS shoppers
-        FROM wifi_ble_summary
-        WHERE period_start >= %(from_aligned)s
-          AND period_start <  %(to_excl)s
-          AND store_id = ANY(%(sites)s)
-        GROUP BY {bucket_col}, store_id
-    ),
-    pos AS (
-        SELECT
-            {bucket_col} AS bucket_start,
-            store_id,
-            COUNT(*) FILTER (WHERE type = 'sale')                                          AS sales,
-            COUNT(*) FILTER (WHERE type = 'return')                                        AS returns,
-            COUNT(*)                                                                       AS transactions,
-            COALESCE(SUM(items)        FILTER (WHERE type = 'sale'),   0)                  AS items_sale,
-            COALESCE(SUM(items)        FILTER (WHERE type = 'return'), 0)                  AS items_return,
-            COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0)                  AS amount_minor_sale,
-            COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0)                  AS amount_minor_return,
-            MAX(currency)                                                                  AS currency
-        FROM pos_transactions
-        WHERE event_ts >= %(from_aligned)s
-          AND event_ts <  %(to_excl)s
-          AND store_id = ANY(%(sites)s)
-        GROUP BY {bucket_col}, store_id
     )
     SELECT
         g.bucket_start,
         g.store_id,
-        COALESCE(c.in_adult,    0) AS in_adult,
-        COALESCE(c.in_child,    0) AS in_child,
-        COALESCE(c.in_unknown,  0) AS in_unknown,
-        COALESCE(c.in_total,    0) AS in_total,
-        COALESCE(c.out_adult,   0) AS out_adult,
-        COALESCE(c.out_child,   0) AS out_child,
-        COALESCE(c.out_unknown, 0) AS out_unknown,
-        COALESCE(c.out_total,   0) AS out_total,
-        COALESCE(w.passersby,   0) AS passersby,
-        COALESCE(w.shoppers,    0) AS shoppers,
-        COALESCE(p.sales,        0) AS sales,
-        COALESCE(p.returns,      0) AS returns,
-        COALESCE(p.transactions, 0) AS transactions,
-        COALESCE(p.items_sale,   0) AS items_sale,
-        COALESCE(p.items_return, 0) AS items_return,
-        COALESCE(p.amount_minor_sale,   0) AS amount_minor_sale,
-        COALESCE(p.amount_minor_return, 0) AS amount_minor_return,
-        COALESCE(p.currency, 'ARS') AS currency
+        -- Mapeo de columnas de la vista (ins_*, outs_*) al shape histórico
+        -- (in_*, out_*) que consume _shape_row sin cambios.
+        COALESCE(m.ins_adult,   0) AS in_adult,
+        COALESCE(m.ins_child,   0) AS in_child,
+        COALESCE(m.ins_unknown, 0) AS in_unknown,
+        COALESCE(m.ins,         0) AS in_total,
+        COALESCE(m.outs_adult,  0) AS out_adult,
+        COALESCE(m.outs_child,  0) AS out_child,
+        COALESCE(m.outs_unknown,0) AS out_unknown,
+        COALESCE(m.outs,        0) AS out_total,
+        COALESCE(m.passersby,   0) AS passersby,
+        COALESCE(m.shoppers,    0) AS shoppers,
+        COALESCE(m.sales,        0) AS sales,
+        COALESCE(m.returns,      0) AS returns,
+        COALESCE(m.transactions, 0) AS transactions,
+        COALESCE(m.items_sale,   0) AS items_sale,
+        COALESCE(m.items_return, 0) AS items_return,
+        COALESCE(m.amount_minor_sale,   0) AS amount_minor_sale,
+        COALESCE(m.amount_minor_return, 0) AS amount_minor_return,
+        COALESCE(m.currency, 'ARS') AS currency
     FROM grid g
-    LEFT JOIN counts   c ON c.bucket_start = g.bucket_start AND c.store_id = g.store_id
-    LEFT JOIN wifi_ble w ON w.bucket_start = g.bucket_start AND w.store_id = g.store_id
-    LEFT JOIN pos      p ON p.bucket_start = g.bucket_start AND p.store_id = g.store_id
-    WHERE (g.bucket_start, g.store_id) > (%(cursor_bucket)s, %(cursor_site)s)
+    LEFT JOIN {unified_view} m
+        ON m.store_id = g.store_id AND m.{bucket_col} = g.bucket_start
+    WHERE g.store_id = ANY(%(sites)s)
+      AND (g.bucket_start, g.store_id) > (%(cursor_bucket)s, %(cursor_site)s)
     ORDER BY g.bucket_start ASC, g.store_id ASC
     LIMIT %(limit_plus_one)s
     """
@@ -487,19 +460,18 @@ def _query_aggregates(
 
 
 def _query_data_freshness(conn, sites: list[str]) -> dict[str, str]:
-    """MAX(received_at) por site across las 3 tablas raw. ISO string en UTC."""
+    """Último timestamp de ingesta por sucursal. Devuelve dict con ISO strings UTC.
+
+    Post migración 2026-05-26-views-cartesian-product: consume la vista
+    ``data_freshness_by_store`` que ya hace el UNION ALL + MAX por sucursal
+    sobre las 3 facts (count_events, wifi_ble_summary, pos_transactions).
+    """
     if not sites:
         return {}
     sql = """
-    SELECT store_id, MAX(received_at) AS last_seen
-    FROM (
-        SELECT store_id, received_at FROM count_events       WHERE store_id = ANY(%(sites)s)
-        UNION ALL
-        SELECT store_id, received_at FROM wifi_ble_summary   WHERE store_id = ANY(%(sites)s)
-        UNION ALL
-        SELECT store_id, received_at FROM pos_transactions   WHERE store_id = ANY(%(sites)s)
-    ) u
-    GROUP BY store_id
+    SELECT store_id, last_received_at
+    FROM data_freshness_by_store
+    WHERE store_id = ANY(%(sites)s)
     """
     with conn.cursor() as cur:
         cur.execute(sql, {"sites": sites})

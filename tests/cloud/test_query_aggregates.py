@@ -302,7 +302,7 @@ def test_aggregates_happy_path_shape(fake_pg):
             cursor_mock.fetchall.return_value = [("site_a",)]
             cursor_mock.description = [MagicMock()]
             cursor_mock.description[0].name = "store_id"
-        elif "UNION ALL" in sql:
+        elif "data_freshness_by_store" in sql:
             cursor_mock.fetchall.return_value = [
                 ("site_a", datetime(2026, 5, 25, 13, 42, 18, tzinfo=timezone.utc))
             ]
@@ -415,7 +415,7 @@ def test_link_header_includes_next_when_has_more(fake_pg):
         if "FROM sites" in sql:
             _sql_row_factory(cursor_mock, ["store_id"], [("site_a",)])
             return
-        if "UNION ALL" in sql:
+        if "data_freshness_by_store" in sql:
             cursor_mock.fetchall.return_value = []
             return
         # Devolvemos limit+1 filas → has_more=True

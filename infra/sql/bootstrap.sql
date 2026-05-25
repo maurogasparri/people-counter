@@ -64,6 +64,8 @@ CREATE INDEX IF NOT EXISTS idx_count_events_device_ts
     ON count_events (device_id, event_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_count_events_bucket15
     ON count_events (store_id, bucket_15min DESC);
+CREATE INDEX IF NOT EXISTS idx_count_events_store_bucket_hour
+    ON count_events (store_id, bucket_hour DESC);
 CREATE INDEX IF NOT EXISTS idx_count_events_day
     ON count_events (store_id, bucket_day DESC);
 
@@ -94,6 +96,8 @@ CREATE TABLE IF NOT EXISTS wifi_ble_summary (
 
 CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_bucket15
     ON wifi_ble_summary (store_id, bucket_15min DESC);
+CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_bucket_hour
+    ON wifi_ble_summary (store_id, bucket_hour DESC);
 CREATE INDEX IF NOT EXISTS idx_wifi_ble_store_day
     ON wifi_ble_summary (store_id, bucket_day DESC);
 
@@ -200,6 +204,8 @@ CREATE TABLE IF NOT EXISTS pos_transactions (
 
 CREATE INDEX IF NOT EXISTS idx_pos_store_bucket15
     ON pos_transactions (store_id, bucket_15min DESC);
+CREATE INDEX IF NOT EXISTS idx_pos_store_bucket_hour
+    ON pos_transactions (store_id, bucket_hour DESC);
 CREATE INDEX IF NOT EXISTS idx_pos_store_day
     ON pos_transactions (store_id, bucket_day DESC);
 
@@ -253,183 +259,392 @@ CREATE INDEX IF NOT EXISTS idx_devices_store ON devices (store_id);
 -- este bootstrap). lambda_writer escribe hechos, no necesita las dimensiones.
 
 -- =============================================================================
--- View multi-cam: agregación por store con MAX (no SUM) para WiFi/BLE
+-- Capa de vistas: producto cartesiano fact × granularidad de bucket
 -- =============================================================================
--- Cuando un store tenga 2+ cams, WiFi/BLE range (~30-50m) excede al vision
--- range (3-5m), entonces las cams ven la misma gente. Tomar MAX en vez de SUM
--- evita doble-conteo. Con 1 cam por store, MAX = el row de esa cam.
+-- Convención de naming: <métrica>_by_bucket_<grano>. Tres granularidades
+-- (15min, hour, day) sobre cada fact (counting, wifi_ble, pos, occupancy)
+-- y sobre cada métrica derivada (turn_in_rate, conversion, visit_duration).
+-- Además, tres vistas unificadas (metrics_unified_by_bucket_<grano>) que
+-- combinan counting + wifi_ble + pos con FULL OUTER JOIN — consumidas
+-- por la Lambda query_aggregates. Y data_freshness_by_store con el último
+-- timestamp de ingesta cruzando las tres fuentes por sucursal.
+--
+-- Detalle de la implementación + COMMENTs por columna en la migración
+-- infra/sql/migrations/2026-05-26-views-cartesian-product.sql. Este bloque
+-- es la versión idempotente (CREATE OR REPLACE) que aplica a deploys nuevos.
 
-CREATE OR REPLACE VIEW wifi_ble_store_traffic AS
-SELECT
-    bucket_15min,
-    store_id,
-    MAX(passersby)   AS passersby,
-    MAX(shoppers)    AS shoppers,
-    COUNT(*)         AS cams_reporting
-FROM wifi_ble_summary
-GROUP BY bucket_15min, store_id;
-
--- =============================================================================
--- Counting agregado por bucket (15min — server-derived via GENERATED)
--- =============================================================================
--- bucket_15min es GENERATED ALWAYS AS STORED desde event_ts (ver tabla
--- arriba). Nunca es NULL; el device manda event_ts crudo y RDS deriva.
-
-CREATE OR REPLACE VIEW counting_by_bucket AS
+-- --- counting: ingresos y egresos con desglose demográfico ---
+CREATE OR REPLACE VIEW counting_by_bucket_15min AS
 SELECT
     store_id,
     bucket_15min,
-    COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
-    COUNT(*) FILTER (WHERE direction = 'out') AS outs,
+    COUNT(*) FILTER (WHERE direction = 'in')                                            AS ins,
+    COUNT(*) FILTER (WHERE direction = 'out')                                           AS outs,
     COUNT(*) FILTER (WHERE direction = 'in')
-      - COUNT(*) FILTER (WHERE direction = 'out') AS net
+        - COUNT(*) FILTER (WHERE direction = 'out')                                     AS net,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'adult')                AS ins_adult,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'child')                AS ins_child,
+    COUNT(*) FILTER (WHERE direction = 'in'
+                       AND (height_class IS NULL OR height_class = 'unknown'))          AS ins_unknown,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'adult')                AS outs_adult,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'child')                AS outs_child,
+    COUNT(*) FILTER (WHERE direction = 'out'
+                       AND (height_class IS NULL OR height_class = 'unknown'))          AS outs_unknown
 FROM count_events
 GROUP BY store_id, bucket_15min;
 
--- =============================================================================
--- Turn-in rate por bucket: gente que entro / gente que paso cerca
--- =============================================================================
--- Une counting (ins) con WiFi/BLE (passersby/shoppers). Usa wifi_ble_store_traffic
--- (MAX por store) para multi-cam dedup. FULL OUTER JOIN preserva buckets donde
--- solo una fuente reporto (e.g., WiFi/BLE OFF en el device, o un bucket sin
--- transito que no genero counting events).
-
-CREATE OR REPLACE VIEW turn_in_rate_by_bucket AS
-WITH ins AS (
-    SELECT store_id, bucket_15min, COUNT(*) AS ins
-    FROM count_events
-    WHERE direction = 'in'
-    GROUP BY store_id, bucket_15min
-)
-SELECT
-    COALESCE(i.store_id, w.store_id)        AS store_id,
-    COALESCE(i.bucket_15min, w.bucket_15min) AS bucket_15min,
-    COALESCE(i.ins, 0)                       AS ins,
-    COALESCE(w.passersby, 0)                 AS passersby,
-    COALESCE(w.shoppers, 0)                  AS shoppers,
-    CASE WHEN COALESCE(w.passersby, 0) > 0
-         THEN i.ins::float / w.passersby
-         ELSE NULL END                       AS turn_in_rate,
-    CASE WHEN COALESCE(w.shoppers, 0) > 0
-         THEN i.ins::float / w.shoppers
-         ELSE NULL END                       AS turn_in_shoppers_rate
-FROM ins i
-FULL OUTER JOIN wifi_ble_store_traffic w
-    ON w.store_id = i.store_id AND w.bucket_15min = i.bucket_15min;
-
--- =============================================================================
--- Rollups hourly / daily encima de los views de bucket
--- =============================================================================
--- Usan bucket_hour / bucket_day directos (generated columns) -> sin date_trunc.
-
-CREATE OR REPLACE VIEW counting_hourly AS
+CREATE OR REPLACE VIEW counting_by_bucket_hour AS
 SELECT
     store_id,
     bucket_hour,
-    COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
-    COUNT(*) FILTER (WHERE direction = 'out') AS outs,
+    COUNT(*) FILTER (WHERE direction = 'in')                                            AS ins,
+    COUNT(*) FILTER (WHERE direction = 'out')                                           AS outs,
     COUNT(*) FILTER (WHERE direction = 'in')
-      - COUNT(*) FILTER (WHERE direction = 'out') AS net
+        - COUNT(*) FILTER (WHERE direction = 'out')                                     AS net,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'adult')                AS ins_adult,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'child')                AS ins_child,
+    COUNT(*) FILTER (WHERE direction = 'in'
+                       AND (height_class IS NULL OR height_class = 'unknown'))          AS ins_unknown,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'adult')                AS outs_adult,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'child')                AS outs_child,
+    COUNT(*) FILTER (WHERE direction = 'out'
+                       AND (height_class IS NULL OR height_class = 'unknown'))          AS outs_unknown
 FROM count_events
 GROUP BY store_id, bucket_hour;
 
-CREATE OR REPLACE VIEW counting_daily AS
+CREATE OR REPLACE VIEW counting_by_bucket_day AS
 SELECT
     store_id,
     bucket_day,
-    COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
-    COUNT(*) FILTER (WHERE direction = 'out') AS outs,
+    COUNT(*) FILTER (WHERE direction = 'in')                                            AS ins,
+    COUNT(*) FILTER (WHERE direction = 'out')                                           AS outs,
     COUNT(*) FILTER (WHERE direction = 'in')
-      - COUNT(*) FILTER (WHERE direction = 'out') AS net,
-    -- Breakdown adult/child para US-05 (solo en daily, en 15min es ruido)
-    COUNT(*) FILTER (WHERE direction = 'in' AND height_class = 'adult') AS ins_adult,
-    COUNT(*) FILTER (WHERE direction = 'in' AND height_class = 'child') AS ins_child
+        - COUNT(*) FILTER (WHERE direction = 'out')                                     AS net,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'adult')                AS ins_adult,
+    COUNT(*) FILTER (WHERE direction = 'in'  AND height_class = 'child')                AS ins_child,
+    COUNT(*) FILTER (WHERE direction = 'in'
+                       AND (height_class IS NULL OR height_class = 'unknown'))          AS ins_unknown,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'adult')                AS outs_adult,
+    COUNT(*) FILTER (WHERE direction = 'out' AND height_class = 'child')                AS outs_child,
+    COUNT(*) FILTER (WHERE direction = 'out'
+                       AND (height_class IS NULL OR height_class = 'unknown'))          AS outs_unknown
 FROM count_events
 GROUP BY store_id, bucket_day;
 
--- =============================================================================
--- Conversion rate: visitas (counter) vs ventas (POS) — cierra US-06
--- =============================================================================
--- Granularidad de 15min para drill-down. FULL OUTER JOIN preserva buckets donde
--- solo una fuente reporto (counter sin POS, o POS fuera del horario de counter).
+-- --- wifi_ble: tráfico exterior con dedup entre cámaras (MAX intra-bucket) ---
+CREATE OR REPLACE VIEW wifi_ble_by_bucket_15min AS
+SELECT store_id, bucket_15min,
+       MAX(passersby) AS passersby,
+       MAX(shoppers)  AS shoppers,
+       COUNT(*)       AS cams_reporting
+FROM wifi_ble_summary
+GROUP BY store_id, bucket_15min;
 
-CREATE OR REPLACE VIEW conversion_rate_by_store AS
-WITH visits AS (
+CREATE OR REPLACE VIEW wifi_ble_by_bucket_hour AS
+SELECT store_id, bucket_hour,
+       SUM(passersby_max) AS passersby,
+       SUM(shoppers_max)  AS shoppers
+FROM (
     SELECT store_id, bucket_15min,
-           COUNT(*) FILTER (WHERE direction = 'in') AS visits
+           date_trunc('hour', bucket_15min) AS bucket_hour,
+           MAX(passersby) AS passersby_max,
+           MAX(shoppers)  AS shoppers_max
+    FROM wifi_ble_summary
+    GROUP BY store_id, bucket_15min, date_trunc('hour', bucket_15min)
+) per_15min
+GROUP BY store_id, bucket_hour;
+
+CREATE OR REPLACE VIEW wifi_ble_by_bucket_day AS
+SELECT store_id, bucket_day,
+       SUM(passersby_max) AS passersby,
+       SUM(shoppers_max)  AS shoppers
+FROM (
+    SELECT store_id, bucket_15min,
+           date_trunc('day', bucket_15min)::date AS bucket_day,
+           MAX(passersby) AS passersby_max,
+           MAX(shoppers)  AS shoppers_max
+    FROM wifi_ble_summary
+    GROUP BY store_id, bucket_15min, date_trunc('day', bucket_15min)::date
+) per_15min
+GROUP BY store_id, bucket_day;
+
+-- --- pos: transacciones agregadas ---
+CREATE OR REPLACE VIEW pos_by_bucket_15min AS
+SELECT
+    store_id, bucket_15min,
+    COUNT(*) FILTER (WHERE type = 'sale')                                       AS sales,
+    COUNT(*) FILTER (WHERE type = 'return')                                     AS returns,
+    COUNT(*)                                                                    AS transactions,
+    COALESCE(SUM(items)        FILTER (WHERE type = 'sale'),   0)               AS items_sale,
+    COALESCE(SUM(items)        FILTER (WHERE type = 'return'), 0)               AS items_return,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0)               AS amount_minor_sale,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0)               AS amount_minor_return,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0)
+        - COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0)         AS net_amount_minor,
+    MAX(currency)                                                               AS currency
+FROM pos_transactions
+GROUP BY store_id, bucket_15min;
+
+CREATE OR REPLACE VIEW pos_by_bucket_hour AS
+SELECT
+    store_id, bucket_hour,
+    COUNT(*) FILTER (WHERE type = 'sale')                                       AS sales,
+    COUNT(*) FILTER (WHERE type = 'return')                                     AS returns,
+    COUNT(*)                                                                    AS transactions,
+    COALESCE(SUM(items)        FILTER (WHERE type = 'sale'),   0)               AS items_sale,
+    COALESCE(SUM(items)        FILTER (WHERE type = 'return'), 0)               AS items_return,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0)               AS amount_minor_sale,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0)               AS amount_minor_return,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0)
+        - COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0)         AS net_amount_minor,
+    MAX(currency)                                                               AS currency
+FROM pos_transactions
+GROUP BY store_id, bucket_hour;
+
+CREATE OR REPLACE VIEW pos_by_bucket_day AS
+SELECT
+    store_id, bucket_day,
+    COUNT(*) FILTER (WHERE type = 'sale')                                       AS sales,
+    COUNT(*) FILTER (WHERE type = 'return')                                     AS returns,
+    COUNT(*)                                                                    AS transactions,
+    COALESCE(SUM(items)        FILTER (WHERE type = 'sale'),   0)               AS items_sale,
+    COALESCE(SUM(items)        FILTER (WHERE type = 'return'), 0)               AS items_return,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0)               AS amount_minor_sale,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0)               AS amount_minor_return,
+    COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0)
+        - COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0)         AS net_amount_minor,
+    MAX(currency)                                                               AS currency
+FROM pos_transactions
+GROUP BY store_id, bucket_day;
+
+-- --- occupancy: ocupación acumulada con cumsum por día ---
+CREATE OR REPLACE VIEW occupancy_by_bucket_15min AS
+WITH events_per_bucket AS (
+    SELECT store_id, bucket_15min,
+           COUNT(*) FILTER (WHERE direction = 'in')  AS ins,
+           COUNT(*) FILTER (WHERE direction = 'out') AS outs
     FROM count_events
-    GROUP BY store_id, bucket_15min
-),
-pos_agg AS (
-    SELECT
-        store_id,
-        bucket_15min,
-        COUNT(*) FILTER (WHERE type = 'sale')   AS sales,
-        COUNT(*) FILTER (WHERE type = 'return') AS returns,
-        COALESCE(SUM(items)        FILTER (WHERE type = 'sale'),   0) AS sales_items,
-        COALESCE(SUM(items)        FILTER (WHERE type = 'return'), 0) AS returns_items,
-        COALESCE(SUM(amount_minor) FILTER (WHERE type = 'sale'),   0) AS sales_amount_minor,
-        COALESCE(SUM(amount_minor) FILTER (WHERE type = 'return'), 0) AS returns_amount_minor
-    FROM pos_transactions
     GROUP BY store_id, bucket_15min
 )
 SELECT
-    COALESCE(v.store_id, p.store_id)         AS store_id,
-    COALESCE(v.bucket_15min, p.bucket_15min) AS bucket_15min,
-    COALESCE(v.visits, 0)                    AS visits,
-    COALESCE(p.sales, 0)                     AS sales,
-    COALESCE(p.returns, 0)                   AS returns,
-    COALESCE(p.sales_items, 0)               AS sales_items,
-    COALESCE(p.returns_items, 0)             AS returns_items,
-    COALESCE(p.sales_amount_minor, 0)        AS sales_amount_minor,
-    COALESCE(p.returns_amount_minor, 0)      AS returns_amount_minor,
-    COALESCE(p.sales_amount_minor, 0)
-      - COALESCE(p.returns_amount_minor, 0)  AS net_amount_minor,
-    -- Conversion rate = sales / visits. NULL si no hay visits (evita div/0).
-    CASE WHEN COALESCE(v.visits, 0) > 0
-         THEN p.sales::float / v.visits
-         ELSE NULL END                       AS conversion_rate
-FROM visits v
-FULL OUTER JOIN pos_agg p
-    ON v.store_id = p.store_id AND v.bucket_15min = p.bucket_15min;
+    store_id, bucket_15min, ins, outs,
+    SUM(ins - outs) OVER (
+        PARTITION BY store_id, date_trunc('day', bucket_15min)
+        ORDER BY bucket_15min
+    ) AS occupancy
+FROM events_per_bucket;
 
--- Rollups hourly / daily encima del 15min para reportes mas anchos.
-
-CREATE OR REPLACE VIEW conversion_rate_hourly AS
+CREATE OR REPLACE VIEW occupancy_by_bucket_hour AS
 SELECT
     store_id,
     date_trunc('hour', bucket_15min) AS bucket_hour,
-    SUM(visits)               AS visits,
-    SUM(sales)                AS sales,
-    SUM(returns)              AS returns,
-    SUM(sales_items)          AS sales_items,
-    SUM(returns_items)        AS returns_items,
-    SUM(sales_amount_minor)   AS sales_amount_minor,
-    SUM(returns_amount_minor) AS returns_amount_minor,
-    SUM(net_amount_minor)     AS net_amount_minor,
-    CASE WHEN SUM(visits) > 0
-         THEN SUM(sales)::float / SUM(visits)
-         ELSE NULL END        AS conversion_rate
-FROM conversion_rate_by_store
+    SUM(ins)  AS ins,
+    SUM(outs) AS outs,
+    AVG(occupancy)::numeric(10, 2) AS avg_occupancy,
+    MAX(occupancy) AS max_occupancy,
+    MIN(occupancy) AS min_occupancy
+FROM occupancy_by_bucket_15min
 GROUP BY store_id, date_trunc('hour', bucket_15min);
 
-CREATE OR REPLACE VIEW conversion_rate_daily AS
+CREATE OR REPLACE VIEW occupancy_by_bucket_day AS
 SELECT
     store_id,
     date_trunc('day', bucket_15min)::date AS bucket_day,
-    SUM(visits)               AS visits,
-    SUM(sales)                AS sales,
-    SUM(returns)              AS returns,
-    SUM(sales_items)          AS sales_items,
-    SUM(returns_items)        AS returns_items,
-    SUM(sales_amount_minor)   AS sales_amount_minor,
-    SUM(returns_amount_minor) AS returns_amount_minor,
-    SUM(net_amount_minor)     AS net_amount_minor,
-    CASE WHEN SUM(visits) > 0
-         THEN SUM(sales)::float / SUM(visits)
-         ELSE NULL END        AS conversion_rate
-FROM conversion_rate_by_store
+    SUM(ins)  AS ins,
+    SUM(outs) AS outs,
+    AVG(occupancy)::numeric(10, 2) AS avg_occupancy,
+    MAX(occupancy) AS max_occupancy,
+    MIN(occupancy) AS min_occupancy
+FROM occupancy_by_bucket_15min
 GROUP BY store_id, date_trunc('day', bucket_15min)::date;
+
+-- --- turn_in_rate: tasa de captación (ingresos / passersby o shoppers) ---
+CREATE OR REPLACE VIEW turn_in_rate_by_bucket_15min AS
+SELECT
+    COALESCE(c.store_id, w.store_id) AS store_id,
+    COALESCE(c.bucket_15min, w.bucket_15min) AS bucket_15min,
+    COALESCE(c.ins, 0) AS ins,
+    COALESCE(w.passersby, 0) AS passersby,
+    COALESCE(w.shoppers, 0) AS shoppers,
+    CASE WHEN COALESCE(w.passersby, 0) > 0 THEN c.ins::float / w.passersby ELSE NULL END AS turn_in_rate,
+    CASE WHEN COALESCE(w.shoppers, 0)  > 0 THEN c.ins::float / w.shoppers  ELSE NULL END AS turn_in_shoppers_rate
+FROM counting_by_bucket_15min c
+FULL OUTER JOIN wifi_ble_by_bucket_15min w
+    ON c.store_id = w.store_id AND c.bucket_15min = w.bucket_15min;
+
+CREATE OR REPLACE VIEW turn_in_rate_by_bucket_hour AS
+SELECT
+    COALESCE(c.store_id, w.store_id) AS store_id,
+    COALESCE(c.bucket_hour, w.bucket_hour) AS bucket_hour,
+    COALESCE(c.ins, 0) AS ins,
+    COALESCE(w.passersby, 0) AS passersby,
+    COALESCE(w.shoppers, 0) AS shoppers,
+    CASE WHEN COALESCE(w.passersby, 0) > 0 THEN c.ins::float / w.passersby ELSE NULL END AS turn_in_rate,
+    CASE WHEN COALESCE(w.shoppers, 0)  > 0 THEN c.ins::float / w.shoppers  ELSE NULL END AS turn_in_shoppers_rate
+FROM counting_by_bucket_hour c
+FULL OUTER JOIN wifi_ble_by_bucket_hour w
+    ON c.store_id = w.store_id AND c.bucket_hour = w.bucket_hour;
+
+CREATE OR REPLACE VIEW turn_in_rate_by_bucket_day AS
+SELECT
+    COALESCE(c.store_id, w.store_id) AS store_id,
+    COALESCE(c.bucket_day, w.bucket_day) AS bucket_day,
+    COALESCE(c.ins, 0) AS ins,
+    COALESCE(w.passersby, 0) AS passersby,
+    COALESCE(w.shoppers, 0) AS shoppers,
+    CASE WHEN COALESCE(w.passersby, 0) > 0 THEN c.ins::float / w.passersby ELSE NULL END AS turn_in_rate,
+    CASE WHEN COALESCE(w.shoppers, 0)  > 0 THEN c.ins::float / w.shoppers  ELSE NULL END AS turn_in_shoppers_rate
+FROM counting_by_bucket_day c
+FULL OUTER JOIN wifi_ble_by_bucket_day w
+    ON c.store_id = w.store_id AND c.bucket_day = w.bucket_day;
+
+-- --- conversion: ventas / ingresos ---
+CREATE OR REPLACE VIEW conversion_by_bucket_15min AS
+SELECT
+    COALESCE(c.store_id, p.store_id) AS store_id,
+    COALESCE(c.bucket_15min, p.bucket_15min) AS bucket_15min,
+    COALESCE(c.ins, 0) AS visits,
+    COALESCE(p.sales, 0) AS sales,
+    COALESCE(p.returns, 0) AS returns,
+    COALESCE(p.items_sale, 0) AS items_sale,
+    COALESCE(p.items_return, 0) AS items_return,
+    COALESCE(p.amount_minor_sale, 0) AS amount_minor_sale,
+    COALESCE(p.amount_minor_return, 0) AS amount_minor_return,
+    COALESCE(p.net_amount_minor, 0) AS net_amount_minor,
+    COALESCE(p.currency, 'ARS') AS currency,
+    CASE WHEN COALESCE(c.ins, 0) > 0 THEN p.sales::float / c.ins ELSE NULL END AS conversion_rate
+FROM counting_by_bucket_15min c
+FULL OUTER JOIN pos_by_bucket_15min p
+    ON c.store_id = p.store_id AND c.bucket_15min = p.bucket_15min;
+
+CREATE OR REPLACE VIEW conversion_by_bucket_hour AS
+SELECT
+    COALESCE(c.store_id, p.store_id) AS store_id,
+    COALESCE(c.bucket_hour, p.bucket_hour) AS bucket_hour,
+    COALESCE(c.ins, 0) AS visits,
+    COALESCE(p.sales, 0) AS sales,
+    COALESCE(p.returns, 0) AS returns,
+    COALESCE(p.items_sale, 0) AS items_sale,
+    COALESCE(p.items_return, 0) AS items_return,
+    COALESCE(p.amount_minor_sale, 0) AS amount_minor_sale,
+    COALESCE(p.amount_minor_return, 0) AS amount_minor_return,
+    COALESCE(p.net_amount_minor, 0) AS net_amount_minor,
+    COALESCE(p.currency, 'ARS') AS currency,
+    CASE WHEN COALESCE(c.ins, 0) > 0 THEN p.sales::float / c.ins ELSE NULL END AS conversion_rate
+FROM counting_by_bucket_hour c
+FULL OUTER JOIN pos_by_bucket_hour p
+    ON c.store_id = p.store_id AND c.bucket_hour = p.bucket_hour;
+
+CREATE OR REPLACE VIEW conversion_by_bucket_day AS
+SELECT
+    COALESCE(c.store_id, p.store_id) AS store_id,
+    COALESCE(c.bucket_day, p.bucket_day) AS bucket_day,
+    COALESCE(c.ins, 0) AS visits,
+    COALESCE(p.sales, 0) AS sales,
+    COALESCE(p.returns, 0) AS returns,
+    COALESCE(p.items_sale, 0) AS items_sale,
+    COALESCE(p.items_return, 0) AS items_return,
+    COALESCE(p.amount_minor_sale, 0) AS amount_minor_sale,
+    COALESCE(p.amount_minor_return, 0) AS amount_minor_return,
+    COALESCE(p.net_amount_minor, 0) AS net_amount_minor,
+    COALESCE(p.currency, 'ARS') AS currency,
+    CASE WHEN COALESCE(c.ins, 0) > 0 THEN p.sales::float / c.ins ELSE NULL END AS conversion_rate
+FROM counting_by_bucket_day c
+FULL OUTER JOIN pos_by_bucket_day p
+    ON c.store_id = p.store_id AND c.bucket_day = p.bucket_day;
+
+-- --- visit_duration: Ley de Little aplicada a occupancy + arrivals ---
+CREATE OR REPLACE VIEW visit_duration_by_bucket_hour AS
+SELECT
+    store_id, bucket_hour, avg_occupancy,
+    ins AS arrivals,
+    CASE WHEN ins > 0 THEN avg_occupancy / (ins / 60.0) ELSE NULL END AS visit_duration_minutes
+FROM occupancy_by_bucket_hour;
+
+CREATE OR REPLACE VIEW visit_duration_by_bucket_day AS
+SELECT
+    store_id,
+    date_trunc('day', bucket_hour)::date AS bucket_day,
+    SUM(arrivals) AS arrivals,
+    AVG(avg_occupancy)::numeric(10, 2) AS avg_occupancy,
+    CASE WHEN SUM(arrivals) > 0
+         THEN SUM(avg_occupancy * arrivals) / (SUM(arrivals) / 60.0) / SUM(arrivals)
+         ELSE NULL END AS visit_duration_minutes
+FROM visit_duration_by_bucket_hour
+GROUP BY store_id, date_trunc('day', bucket_hour)::date;
+
+-- --- metrics_unified: combinación counting + wifi_ble + pos para la Lambda ---
+CREATE OR REPLACE VIEW metrics_unified_by_bucket_15min AS
+SELECT
+    COALESCE(c.store_id, w.store_id, p.store_id) AS store_id,
+    COALESCE(c.bucket_15min, w.bucket_15min, p.bucket_15min) AS bucket_15min,
+    COALESCE(c.ins, 0) AS ins, COALESCE(c.outs, 0) AS outs, COALESCE(c.net, 0) AS net,
+    COALESCE(c.ins_adult, 0) AS ins_adult, COALESCE(c.ins_child, 0) AS ins_child, COALESCE(c.ins_unknown, 0) AS ins_unknown,
+    COALESCE(c.outs_adult, 0) AS outs_adult, COALESCE(c.outs_child, 0) AS outs_child, COALESCE(c.outs_unknown, 0) AS outs_unknown,
+    COALESCE(w.passersby, 0) AS passersby, COALESCE(w.shoppers, 0) AS shoppers,
+    COALESCE(p.sales, 0) AS sales, COALESCE(p.returns, 0) AS returns, COALESCE(p.transactions, 0) AS transactions,
+    COALESCE(p.items_sale, 0) AS items_sale, COALESCE(p.items_return, 0) AS items_return,
+    COALESCE(p.amount_minor_sale, 0) AS amount_minor_sale, COALESCE(p.amount_minor_return, 0) AS amount_minor_return,
+    COALESCE(p.currency, 'ARS') AS currency
+FROM counting_by_bucket_15min c
+FULL OUTER JOIN wifi_ble_by_bucket_15min w
+    ON c.store_id = w.store_id AND c.bucket_15min = w.bucket_15min
+FULL OUTER JOIN pos_by_bucket_15min p
+    ON COALESCE(c.store_id, w.store_id) = p.store_id
+   AND COALESCE(c.bucket_15min, w.bucket_15min) = p.bucket_15min;
+
+CREATE OR REPLACE VIEW metrics_unified_by_bucket_hour AS
+SELECT
+    COALESCE(c.store_id, w.store_id, p.store_id) AS store_id,
+    COALESCE(c.bucket_hour, w.bucket_hour, p.bucket_hour) AS bucket_hour,
+    COALESCE(c.ins, 0) AS ins, COALESCE(c.outs, 0) AS outs, COALESCE(c.net, 0) AS net,
+    COALESCE(c.ins_adult, 0) AS ins_adult, COALESCE(c.ins_child, 0) AS ins_child, COALESCE(c.ins_unknown, 0) AS ins_unknown,
+    COALESCE(c.outs_adult, 0) AS outs_adult, COALESCE(c.outs_child, 0) AS outs_child, COALESCE(c.outs_unknown, 0) AS outs_unknown,
+    COALESCE(w.passersby, 0) AS passersby, COALESCE(w.shoppers, 0) AS shoppers,
+    COALESCE(p.sales, 0) AS sales, COALESCE(p.returns, 0) AS returns, COALESCE(p.transactions, 0) AS transactions,
+    COALESCE(p.items_sale, 0) AS items_sale, COALESCE(p.items_return, 0) AS items_return,
+    COALESCE(p.amount_minor_sale, 0) AS amount_minor_sale, COALESCE(p.amount_minor_return, 0) AS amount_minor_return,
+    COALESCE(p.currency, 'ARS') AS currency
+FROM counting_by_bucket_hour c
+FULL OUTER JOIN wifi_ble_by_bucket_hour w
+    ON c.store_id = w.store_id AND c.bucket_hour = w.bucket_hour
+FULL OUTER JOIN pos_by_bucket_hour p
+    ON COALESCE(c.store_id, w.store_id) = p.store_id
+   AND COALESCE(c.bucket_hour, w.bucket_hour) = p.bucket_hour;
+
+CREATE OR REPLACE VIEW metrics_unified_by_bucket_day AS
+SELECT
+    COALESCE(c.store_id, w.store_id, p.store_id) AS store_id,
+    COALESCE(c.bucket_day, w.bucket_day, p.bucket_day) AS bucket_day,
+    COALESCE(c.ins, 0) AS ins, COALESCE(c.outs, 0) AS outs, COALESCE(c.net, 0) AS net,
+    COALESCE(c.ins_adult, 0) AS ins_adult, COALESCE(c.ins_child, 0) AS ins_child, COALESCE(c.ins_unknown, 0) AS ins_unknown,
+    COALESCE(c.outs_adult, 0) AS outs_adult, COALESCE(c.outs_child, 0) AS outs_child, COALESCE(c.outs_unknown, 0) AS outs_unknown,
+    COALESCE(w.passersby, 0) AS passersby, COALESCE(w.shoppers, 0) AS shoppers,
+    COALESCE(p.sales, 0) AS sales, COALESCE(p.returns, 0) AS returns, COALESCE(p.transactions, 0) AS transactions,
+    COALESCE(p.items_sale, 0) AS items_sale, COALESCE(p.items_return, 0) AS items_return,
+    COALESCE(p.amount_minor_sale, 0) AS amount_minor_sale, COALESCE(p.amount_minor_return, 0) AS amount_minor_return,
+    COALESCE(p.currency, 'ARS') AS currency
+FROM counting_by_bucket_day c
+FULL OUTER JOIN wifi_ble_by_bucket_day w
+    ON c.store_id = w.store_id AND c.bucket_day = w.bucket_day
+FULL OUTER JOIN pos_by_bucket_day p
+    ON COALESCE(c.store_id, w.store_id) = p.store_id
+   AND COALESCE(c.bucket_day, w.bucket_day) = p.bucket_day;
+
+-- --- data_freshness: último timestamp de ingesta por sucursal cross-fact ---
+CREATE OR REPLACE VIEW data_freshness_by_store AS
+SELECT store_id, MAX(last_received_at) AS last_received_at
+FROM (
+    SELECT store_id, MAX(received_at) AS last_received_at
+        FROM count_events GROUP BY store_id
+    UNION ALL
+    SELECT store_id, MAX(received_at)
+        FROM wifi_ble_summary GROUP BY store_id
+    UNION ALL
+    SELECT store_id, MAX(received_at)
+        FROM pos_transactions GROUP BY store_id
+) u
+GROUP BY store_id;
 
 -- =============================================================================
 -- User Lambda persist_event — IAM auth (sin password)
@@ -495,8 +710,14 @@ END $$;
 CREATE USER lambda_query_reader;
 GRANT rds_iam TO lambda_query_reader;
 GRANT USAGE ON SCHEMA public TO lambda_query_reader;
+-- Post migración 2026-05-26-views-cartesian-product: la Lambda consume las
+-- vistas unificadas + data_freshness, NO las tablas crudas. Simétrico con
+-- readonly_external (acceso solo via la capa de vistas).
 GRANT SELECT ON
-    count_events, wifi_ble_summary, pos_transactions,
+    metrics_unified_by_bucket_15min,
+    metrics_unified_by_bucket_hour,
+    metrics_unified_by_bucket_day,
+    data_freshness_by_store,
     sites, devices
 TO lambda_query_reader;
 
@@ -531,11 +752,31 @@ END $$;
 -- propio apply_bootstrap.py).
 CREATE USER readonly_external WITH PASSWORD 'CHANGE_ME_FROM_SECRETS_MANAGER';
 GRANT USAGE ON SCHEMA public TO readonly_external;
+-- Acceso solo a las vistas del producto cartesiano + dimensiones. NO se
+-- conceden las vistas metrics_unified_* (uso interno de la Lambda — el
+-- partner prefiere las vistas individuales por fuente).
 GRANT SELECT ON
-    counting_hourly, counting_daily, counting_by_bucket,
-    turn_in_rate_by_bucket,
-    conversion_rate_hourly, conversion_rate_daily, conversion_rate_by_store,
-    wifi_ble_store_traffic,
+    counting_by_bucket_15min,
+    counting_by_bucket_hour,
+    counting_by_bucket_day,
+    wifi_ble_by_bucket_15min,
+    wifi_ble_by_bucket_hour,
+    wifi_ble_by_bucket_day,
+    pos_by_bucket_15min,
+    pos_by_bucket_hour,
+    pos_by_bucket_day,
+    occupancy_by_bucket_15min,
+    occupancy_by_bucket_hour,
+    occupancy_by_bucket_day,
+    turn_in_rate_by_bucket_15min,
+    turn_in_rate_by_bucket_hour,
+    turn_in_rate_by_bucket_day,
+    conversion_by_bucket_15min,
+    conversion_by_bucket_hour,
+    conversion_by_bucket_day,
+    visit_duration_by_bucket_hour,
+    visit_duration_by_bucket_day,
+    data_freshness_by_store,
     sites, devices
 TO readonly_external;
 
