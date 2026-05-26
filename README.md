@@ -384,7 +384,7 @@ infra/
 ├── README.md                              # Walkthrough del deploy + costos + verificación E2E
 ├── cloudformation/people-counter.yaml     # Stack completo de AWS
 ├── deploy.ps1                             # Orquestador 5 fases (RDS + IoT + Lambda + ECR + cert ACM + ECS Fargate + ALB Grafana + CNAME). -StartFromPhase para resumir
-└── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_summary / telemetry / sales + 6 views + lambda_writer con rds_iam)
+└── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_events / telemetry / pos_transactions + funciones SQL height_class() y rssi_class() + vistas cartesian + lambda_writer con rds_iam)
 docs/
 ├── setup_guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
 ├── lab_calibration_guide.md      # Protocolo de foco + calibración en lab (universal para la flota)

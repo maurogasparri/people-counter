@@ -162,6 +162,49 @@ vision:
                                     # (focus_assist, calibrate wizard,
                                     # diagnose_bracket).
 
+  # --- Skip SGBM cuando tracks tienen height estable ---
+  # SGBM (depth) domina el budget per-frame (~50-70ms con WLS). Cuando
+  # todos los tracks activos ya acumularon suficientes samples de altura
+  # (mediana de detection_history settled) Y todas las detecciones
+  # corresponden a tracks existentes (no hay candidatos nuevos),
+  # reusamos el último depth_map cacheado en vez de correr SGBM otra
+  # vez. TTL acota la staleness: superado el TTL se fuerza SGBM aunque
+  # los tracks estén estables (para no quedarnos con depth congelado
+  # en el panel del viewer, y para cubrir movimiento lateral del
+  # visitor que el cache no captura).
+  #
+  # Trade-off: bbox del visitor puede moverse ~10-20px entre frames a
+  # caminata; depth_at_bbox lee del cache esa posición ligeramente
+  # corrida. La mediana de detection_history absorbe el ruido. Net:
+  # ganancia de FPS significativa en escenarios con tracks confirmados
+  # estables, sin impacto medible en height precision (ya está
+  # estabilizada por mediana).
+  depth_skip_stable_tracks:
+    enabled: true                   # Master toggle. Default ON.
+    height_samples_threshold: 20    # Mínimo de samples válidos de
+                                    # head_height_mm en detection_history
+                                    # del track antes de considerarlo
+                                    # "estable" y skippeable. 20 ≈ 1s @
+                                    # 20 FPS — suficiente para que la
+                                    # mediana absorba ruido de SGBM.
+                                    # Subir si la altura sigue noisy.
+    match_radius_px: 100.0          # Distancia 2D máxima entre el
+                                    # centroide de una detección y el
+                                    # último centroide de algún track
+                                    # activo para considerarla "matched"
+                                    # (= refresh de track existente, no
+                                    # candidato nuevo). Igual al ancho
+                                    # de cabeza típico — alineado con
+                                    # adoption_max_dist_px del tracker.
+    cache_ttl_seconds: 1.0          # Edad máxima del depth_map cacheado
+                                    # antes de forzar SGBM nuevo aunque
+                                    # los tracks estén estables. 1s
+                                    # cubre ~5 frames de skip a 5 FPS o
+                                    # ~20 frames a 20 FPS. Subir (2-3s)
+                                    # si querés más agressive caching;
+                                    # bajar (0.5s) si el visitor se
+                                    # mueve rápido y el cache desfasa.
+
   # --- ChArUco board + dual-pass detection ---
   charuco:
     board_cols: 9                   # Columnas (cuadrados) del board.

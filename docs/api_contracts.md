@@ -60,7 +60,6 @@ Todos los topics comparten el mismo envelope (construido por
     "direction": "in",
     "track_id": 42,
     "event_time": 1779897130.456,
-    "height_class": "adult",
     "height_m": 1.78,
     "confidence": 0.91
 }
@@ -71,13 +70,14 @@ Todos los topics comparten el mismo envelope (construido por
 | `direction` | string | ✓ | `"in"` o `"out"` — qué dirección cruzó la línea |
 | `track_id` | int | recomendado | ID interno del tracker. Junto con `(device_id, event_ts, direction)` forma el UNIQUE constraint para idempotencia |
 | `event_time` | number | ✓ | epoch seconds del cruce real (no del publish). Si falta, fallback al `timestamp` del envelope. **El device manda timestamp crudo** — Postgres deriva `bucket_15min`, `bucket_hour`, `bucket_day` server-side via columnas GENERATED. |
-| `height_class` | string | nullable | `"adult"` \| `"child"` \| `"unknown"` (clasificación server-side desde `height_m`). Power US-05 breakdown |
-| `height_m` | number | nullable | Altura cruda del sujeto. Usado para debug de drift del `mounting_height_m` del config |
+| `height_m` | number | nullable | Altura cruda del sujeto en metros. La categorización adulto/niño/desconocido la aplica la función SQL `height_class(height_m)` server-side — el device solo persiste la medición cruda. Threshold centralizado, modificable retroactivo a toda la historia con `CREATE OR REPLACE FUNCTION`. |
 | `confidence` | number | nullable | Score del detector \[0, 1\]. Debug-only |
 
 **Compatibilidad legacy**: la Lambda persist_event acepta también la key
-`event_bucket` (nombre anterior a 2026-05-18). Durante un rollout escalonado
-del firmware, devices viejos siguen ingestiando OK.
+`event_bucket` (nombre anterior a 2026-05-18) y `height_class` (campo
+removido en 2026-05-26 — categorización ahora vive server-side). Durante
+un rollout escalonado del firmware, devices viejos siguen ingestiando OK
+con esos campos silenciosamente ignorados.
 
 ## Topic: `telemetry` — health metrics del device
 
@@ -135,39 +135,68 @@ subset que llegue (`data.get()` per campo).
 **Idempotencia**: `UNIQUE (device_id, event_ts)` — retries de IoT con mismo
 sample timestamp no duplican.
 
-## Topic: `wifi_ble` — summary post-stitching
+## Topic: `wifi_ble` — eventos per-device post-stitching
 
 **Topic MQTT**: `people-counter/${Environment}/wifi_ble`
-**Frecuencia**: cada 15 minutos (configurable via `wifi_ble.publish_interval_s`)
-**Tabla destino**: `wifi_ble_summary`
+**Frecuencia**: cada 15 minutos (configurable via `wifi_ble.summary_interval_seconds`)
+**Tabla destino**: `wifi_ble_events`
 
-### `data` shape
+### `data` shape (post 2026-05-26)
 
 ```json
 {
     "period_start": 1779896700,
     "period_end": 1779897600,
-    "passersby": 160,
-    "shoppers": 27,
-    "last_seen_ts": 1779897580.4
+    "devices": [
+        {
+            "visitor_hash": "deadbeef00112233445566778899aabb",
+            "protocol": "wifi",
+            "rssi_max": -55,
+            "first_seen_ts": 1779896712.5,
+            "last_seen_ts": 1779897588.1
+        },
+        {
+            "visitor_hash": "ffee00cc01020304050607080a0b0c0d",
+            "protocol": "ble",
+            "rssi_max": -70,
+            "first_seen_ts": 1779896720.0,
+            "last_seen_ts": 1779897595.2
+        }
+    ]
 }
 ```
 
 | Campo | Tipo | Requerido | Notas |
 |---|---|---|---|
-| `period_start` | number | ✓ | epoch seconds, inicio de la ventana real medida (alineado al múltiplo de `summary_interval_seconds`). **Postgres deriva `bucket_15min` server-side** via GENERATED desde este timestamp. |
-| `period_end` | number | ✓ | epoch seconds, fin de la ventana |
-| `passersby` | int | ✓ | Conteo DISTINCT de `group_id` (no de hashes) en la ventana — gente que pasó cerca |
-| `shoppers` | int | ✓ | Subset de `passersby` con RSSI fuerte (entró al local) |
-| `last_seen_ts` | number | opcional | epoch seconds del último visitor REAL detectado dentro de la ventana (MAX `last_seen` del dedup). Info diagnóstica — útil para alarmas "no hay actividad hace N min" sin depender de `received_at`. Null si firmware viejo. |
+| `period_start` | number | ✓ | epoch seconds, inicio de la ventana de emisión (alineado al múltiplo de `summary_interval_seconds`). |
+| `period_end` | number | ✓ | epoch seconds, fin de la ventana de emisión. |
+| `devices[]` | array | ✓ | Un elemento por cada visitor observado en la ventana (post-stitching local). Puede ser `[]` si la ventana fue vacía — Lambda devuelve 200 OK sin insertar. |
+| `devices[].visitor_hash` | string | ✓ | 32 hex chars (= 16 bytes) — el `group_id` UUID del `DedupEngine` local del device. Opaco, no invertible a MAC. Se renueva cada día con `reset_daily()`. |
+| `devices[].protocol` | string | ✓ | `"wifi"` o `"ble"` — protocolo del miembro del group con MAX rssi (el "dominante" del visitor). |
+| `devices[].rssi_max` | int | ✓ | RSSI máximo lifetime del group hasta el cierre de la ventana, en dBm. La categorización shopper/passerby la aplica la función SQL `rssi_class(rssi_max)` server-side. |
+| `devices[].first_seen_ts` | number | ✓ | epoch seconds — MIN sobre los miembros del group (primera observación de cualquier rotación). |
+| `devices[].last_seen_ts` | number | ✓ | epoch seconds — MAX sobre los miembros (cae dentro de la ventana actual; **Postgres deriva `bucket_15min` server-side** desde este timestamp). |
+
+**Semántica per-window emission**: el `DedupEngine` filtra por `MAX(last_seen) IN window` —
+emite UN evento por cada group observado en la ventana actual, no sólo los nuevos.
+Caso clave: visitor presente en 2 ventanas seguidas → 2 rows en RDS con el mismo
+`visitor_hash` (uno por ventana). Day-level `COUNT(DISTINCT visitor_hash)` dedupa
+correctamente al 1 visitor único. Crucialmente, captura promociones passerby→shopper
+cross-window: si en ventana N rssi_max=-75 y en N+1 rssi_max=-50, ambas filas
+aparecen con sus respectivas clasificaciones.
 
 **Privacy nota**: este es el ÚNICO output del subsystema WiFi/BLE que sale del
-device. Los hashes individuales, RSSI per-detection y seqnums quedan en el
-SQLite local (`wifi_ble_dedup.sqlite`) y se purgan diariamente con
-`reset_daily()`. Nunca cruzan a la nube.
+device. Las MACs crudas nunca salen del Pi — el hashing pasa en `process_detection`
+con salt diaria local. El `visitor_hash` que llega a RDS es el `group_id` del
+stitching local, opaco. Los hashes individuales pre-stitching, RSSI per-detection
+y seqnums quedan en el SQLite local (`wifi_ble_dedup.sqlite`) y se purgan
+diariamente con `reset_daily()`. Nunca cruzan a la nube.
 
-**Idempotencia**: `UNIQUE (device_id, period_start, period_end)` — el publisher
-puede reintentar la misma ventana sin duplicar.
+**Idempotencia**: `UNIQUE (device_id, visitor_hash, period_start)` — el publisher
+puede reintentar la misma ventana sin duplicar. La Lambda usa `ON CONFLICT DO
+UPDATE` con `GREATEST` sobre `rssi_max` y `last_seen_ts` para que retries con
+información más reciente refinen el row (cubre el caso "MQTT falló mid-batch y
+en el retry tenemos una observación posterior con RSSI más fuerte").
 
 ---
 
@@ -314,9 +343,9 @@ porque `date_trunc`/`extract` directos sobre `timestamptz` son STABLE (no
 IMMUTABLE) y Postgres los rechaza en una generated column.
 
 **Aplica idéntico** a `count_events.bucket_15min` (desde `event_ts`) y
-`wifi_ble_summary.bucket_15min` (desde `period_start`): todas las columnas
+`wifi_ble_events.bucket_15min` (desde `last_seen_ts`): todas las columnas
 de bucket son server-derived, el device manda timestamps crudos. JOIN
-`count_events.bucket_15min = wifi_ble_summary.bucket_15min = pos_transactions.bucket_15min`
+`count_events.bucket_15min = wifi_ble_events.bucket_15min = pos_transactions.bucket_15min`
 sin recomputar nada en queries.
 
 ### Ejemplos de cliente

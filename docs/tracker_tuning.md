@@ -186,13 +186,26 @@ cruza la línea (perro caminando), el counter dispara un IN/OUT espurio.
 inconsistentes con la observación humana del operador. Buscar en logs:
 
 ```bash
-# Eventos de conteo con height_class=child o altura muy baja
+# Eventos de conteo con altura muy baja (height_m < 1.0). En el JSON del log
+# height_m es float; este grep agarra los que arrancan con "0." o "0.0..."
 sudo journalctl -u people-counter --since "1 hour ago" \
-    | grep "count_event" | grep -E '"height_class": "child"'
+    | grep '"counting_event_published"' | grep -E '"height_m": 0\.[0-9]'
 ```
 
-Si la mayoría de los counts del día son "child" con altura < 1 m → casi
-seguro son FPs no-humanos.
+O contra RDS — la función SQL `height_class()` clasifica los `height_m`
+crudos como `'child'` (< 1.55m), filtrá los muy bajos:
+
+```sql
+SELECT bucket_15min, COUNT(*) AS n_short
+FROM count_events
+WHERE store_id = '<store-id>'
+  AND bucket_day = CURRENT_DATE
+  AND height_m < 1.0
+GROUP BY bucket_15min ORDER BY bucket_15min DESC;
+```
+
+Si la mayoría de los counts del día tienen `height_m < 1.0` → casi seguro
+son FPs no-humanos.
 
 **Fix**:
 

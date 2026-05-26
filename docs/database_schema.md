@@ -10,8 +10,18 @@ DDL fuente:
 - SQLite outbox: [`src/mqtt/buffer.py`](../src/mqtt/buffer.py) `_ensure_db()`
 - SQLite stitching: [`src/wifi_ble/dedup.py`](../src/wifi_ble/dedup.py) `_ensure_db()`
 
-Snapshot del 2026-05-18 post-cleanup del schema (drop de columnas dead, bucket
-columns uniformizadas, `pos_transactions` agregada para T9.11 / US-06).
+Snapshot del 2026-05-26 post-refactor de categorización server-side:
+
+- `count_events.height_class` dropeada — categorización ahora vive en la
+  función SQL `height_class(REAL)`, aplicada en las vistas.
+- `wifi_ble_summary` reemplazada por `wifi_ble_events` (un evento per-device
+  por ventana, con `visitor_hash` post-stitching local y RSSI crudo).
+  Categorización passerby/shopper en función SQL `rssi_class(INT)`.
+
+Migraciones:
+- [`infra/sql/migrations/2026-05-26-drop-height-class.sql`](../infra/sql/migrations/2026-05-26-drop-height-class.sql)
+- [`infra/sql/migrations/2026-05-26-wifi-ble-events.sql`](../infra/sql/migrations/2026-05-26-wifi-ble-events.sql)
+- [`infra/sql/migrations/2026-05-26-restore-cascade-dropped-views.sql`](../infra/sql/migrations/2026-05-26-restore-cascade-dropped-views.sql)
 
 ---
 
@@ -32,23 +42,24 @@ erDiagram
         text        direction       "CHECK in_out"
         int         track_id
         real        confidence      "debug: investigar FPs"
-        text        height_class    "CHECK adult_child_unknown, US-05"
-        real        height_m        "debug: detectar drift de mounting_height_m"
+        real        height_m        "medicion cruda; categorizacion via SQL height_class()"
         timestamptz received_at
     }
 
-    wifi_ble_summary {
-        uuid        summary_id      PK
+    wifi_ble_events {
+        uuid        event_id        PK
         text        device_id
         text        store_id        "join key"
-        timestamptz period_start    "inicio ventana real medida"
-        timestamptz period_end      "fin ventana real medida"
-        timestamptz bucket_15min    "GENERATED desde period_start (server-side)"
-        timestamptz bucket_hour     "GENERATED desde period_start"
-        date        bucket_day      "GENERATED desde period_start"
-        int         passersby       "post stitching (4 reglas)"
-        int         shoppers        "RSSI cercano (por max_rssi)"
-        timestamptz last_seen_ts    "ultimo visitor del periodo (diagnostico)"
+        bytea       visitor_hash    "16 bytes; group_id post-stitching local (opaco)"
+        text        protocol        "CHECK wifi_ble"
+        int         rssi_max        "dBm crudo; categorizacion via SQL rssi_class()"
+        timestamptz first_seen_ts   "MIN sobre miembros del group"
+        timestamptz last_seen_ts    "MAX sobre miembros (puede caer en la ventana)"
+        timestamptz period_start    "inicio ventana de emision del device"
+        timestamptz period_end      "fin ventana de emision"
+        timestamptz bucket_15min    "GENERATED desde last_seen_ts (server-side)"
+        timestamptz bucket_hour     "GENERATED desde last_seen_ts"
+        date        bucket_day      "GENERATED desde last_seen_ts"
         timestamptz received_at
     }
 
@@ -86,17 +97,40 @@ erDiagram
         timestamptz received_at
     }
 
-    count_events     ||--o{ wifi_ble_summary  : "store_id + bucket_15min (turn-in rate)"
+    count_events     ||--o{ wifi_ble_events   : "store_id + bucket_15min (turn-in rate)"
     count_events     ||--o{ pos_transactions  : "store_id + bucket_15min (conversion rate)"
     count_events     ||--o{ telemetry         : "device_id (mismo device)"
-    wifi_ble_summary ||--o{ telemetry         : "device_id (mismo device)"
+    wifi_ble_events  ||--o{ telemetry         : "device_id (mismo device)"
 ```
+
+## Categorización server-side via funciones SQL
+
+Patrón aplicado en mayo 2026 para centralizar los thresholds que antes
+vivían en el config local del device (y por ende drifteaban entre devices
+de la flota): el device persiste sólo la **medición cruda** (`height_m`,
+`rssi_max`), y la categorización se aplica en las vistas vía funciones
+SQL `IMMUTABLE`.
+
+| Función | Input | Output | Thresholds |
+|---|---|---|---|
+| `height_class(REAL)` | metros | `'adult'` / `'child'` / `'unknown'` | `< 1.55` → child, NULL → unknown, else adult |
+| `rssi_class(INT)` | dBm | `'shopper'` / `'passerby'` / `'weak'` / `'unknown'` | `>= -55` → shopper, `>= -75` → passerby, NULL → unknown, else weak |
+
+**Single source of truth**: modificar el threshold = `CREATE OR REPLACE
+FUNCTION` y se aplica retroactivo a todo el histórico + a todas las
+vistas downstream. What-if analysis directo en BI sin re-procesar el
+device. Granted EXECUTE a `lambda_query_reader` y `readonly_external`.
+
+**Invariante shoppers ⊆ passersby**: por convención el conteo de
+`passersby` en las vistas usa el filtro `rssi_class(rssi_max) IN
+('passerby', 'shopper')` — un shopper también cuenta como passerby. El
+funnel queda internamente consistente bucket-por-bucket.
 
 ## Modelo de joins
 
 **Las tablas de hechos no tienen foreign keys hacia las dimensiones** —
 `store_id` y `device_id` son `TEXT` libres en `count_events`,
-`wifi_ble_summary`, `telemetry`, `pos_transactions`. Es deliberado: la Lambda
+`wifi_ble_events`, `telemetry`, `pos_transactions`. Es deliberado: la Lambda
 escribe hechos y NO debe fallar si un site todavía no se registró; Grafana hace
 LEFT JOIN. Los joins de hechos son por **convención de naming**.
 
@@ -120,7 +154,7 @@ re-bootstrap). Los joins:
 - **`device_id`**: presente solo en las 3 tablas IoT (counter, wifi/ble,
   telemetry). El POS no tiene device_id (viene de sistema externo). Convención:
   `<store_id>-cam-<n>` — `store_id` se infiere en Lambda con `_infer_store_id()`.
-- **`bucket_15min`**: presente en `count_events`, `wifi_ble_summary` y
+- **`bucket_15min`**: presente en `count_events`, `wifi_ble_events` y
   `pos_transactions`. Mismo TIMESTAMPTZ alineado a múltiplos de 15 min del
   epoch UTC en todas las tablas → joins temporales sin `date_trunc`.
 
@@ -131,58 +165,72 @@ no necesiten `date_trunc`:
 
 | Columna | Tipo | Origen |
 |---|---|---|
-| `bucket_15min` | TIMESTAMPTZ | **Server-derived `GENERATED ALWAYS AS STORED`** desde `event_ts` (count_events, pos_transactions) o `period_start` (wifi_ble_summary). El device manda timestamps crudos — desacopla device ↔ schema. Migrar a bucket de otro tamaño = `ALTER COLUMN` en RDS, sin tocar device/MQTT/Lambda. |
+| `bucket_15min` | TIMESTAMPTZ | **Server-derived `GENERATED ALWAYS AS STORED`** desde `event_ts` (count_events, pos_transactions) o `last_seen_ts` (wifi_ble_events). El device manda timestamps crudos — desacopla device ↔ schema. Migrar a bucket de otro tamaño = `ALTER COLUMN` en RDS, sin tocar device/MQTT/Lambda. En `wifi_ble_events` el bucket se deriva de `last_seen_ts` (no `period_start`) para que un visitor presente en varias ventanas caiga naturalmente en el bucket más reciente al rollup; `COUNT(DISTINCT visitor_hash)` dedupa cross-window. |
 | `bucket_hour` | TIMESTAMPTZ | GENERATED ALWAYS AS STORED — `date_trunc('hour', event_ts)` en todas las tablas. |
 | `bucket_day` | DATE | GENERATED ALWAYS AS STORED — `date_trunc('day', event_ts)::date` en todas las tablas excepto telemetry (no aplica naturalmente a samples de 5min). |
 
 ## Vistas derivadas
 
+Producto cartesiano `<métrica>_by_bucket_<grano>` sobre 3 granularidades
+(`15min`, `hour`, `day`) y vistas unificadas consumidas por la Lambda
+`query_aggregates`. Detalle completo en
+[`infra/sql/migrations/2026-05-26-views-cartesian-product.sql`](../infra/sql/migrations/2026-05-26-views-cartesian-product.sql).
+
 ```
 counter (count_events)                  POS (pos_transactions)
-  |                                       |
-  +- counting_by_bucket   (15min)         +- (sin vista propia, agregado
-  +- counting_hourly                      |   directo en conversion_rate)
-  +- counting_daily       (+breakdown adult/child)
+  |  height_class(height_m) FILTER       |
+  +- counting_by_bucket_{15min,hour,day}  +- pos_by_bucket_{15min,hour,day}
+            |     (+ breakdown adult/child via SQL function)
             |
-            |       wifi_ble_summary
-            |         |
-            |         +- wifi_ble_store_traffic (MAX multi-cam dedup)
-            |              |
-            +--------------+-- turn_in_rate_by_bucket     -> US-04
+            |   wifi_ble (wifi_ble_events)
+            |     |  rssi_class(rssi_max) FILTER + COUNT(DISTINCT visitor_hash)
+            |     +- wifi_ble_by_bucket_{15min,hour,day}
+            |          |
+            +----------+-- turn_in_rate_by_bucket_{15min,hour,day}    -> US-04
             |
-            +------ pos_transactions ----- conversion_rate_by_store  (15min)  -> US-06
-                                           conversion_rate_hourly
-                                           conversion_rate_daily
+            +- conversion_by_bucket_{15min,hour,day}                  -> US-06
+            +- occupancy_by_bucket_{15min,hour,day} (cumsum por día)
+            +- visit_duration_by_bucket_{hour,day}  (Ley de Little)
+
+           ↓ COMBINADAS (Lambda query_aggregates consume estas)
+       metrics_unified_by_bucket_{15min,hour,day}  (FULL OUTER JOIN counting+wifi_ble+pos)
+       data_freshness_by_store                     (último received_at cross-fact)
 ```
 
 | Vista | Granularidad | Cierra | Notas |
 |---|---|---|---|
-| `counting_by_bucket` | 15min | --- | Ins/outs/net por store + bucket |
-| `counting_hourly` | 1h | --- | Rollup desde `bucket_hour` |
-| `counting_daily` | 1d | US-05 | Incluye breakdown `ins_adult` / `ins_child` |
-| `wifi_ble_store_traffic` | 15min | --- | MAX (no SUM) por store, multi-cam dedup |
-| `turn_in_rate_by_bucket` | 15min | US-04 | `ins / passersby` y `ins / shoppers` |
-| `conversion_rate_by_store` | 15min | US-06 | `sales / visits` + amounts net/gross |
-| `conversion_rate_hourly` | 1h | US-06 | Rollup |
-| `conversion_rate_daily` | 1d | US-06 | Rollup |
+| `counting_by_bucket_*` | 15min/1h/1d | US-05 | Ins/outs/net + breakdown `ins_adult` / `ins_child` / `ins_unknown` via `height_class(height_m)` |
+| `wifi_ble_by_bucket_*` | 15min/1h/1d | --- | `COUNT(DISTINCT visitor_hash)` + filter `rssi_class(rssi_max) IN ('passerby','shopper')` → dedupa cross-window |
+| `turn_in_rate_by_bucket_*` | 15min/1h/1d | US-04 | `ins / passersby` y `ins / shoppers` |
+| `conversion_by_bucket_*` | 15min/1h/1d | US-06 | `sales / visits` + amounts net/gross |
+| `occupancy_by_bucket_*` | 15min/1h/1d | --- | Cumsum `ins - outs` window-partitioned por día |
+| `visit_duration_by_bucket_{hour,day}` | 1h/1d | --- | Ley de Little: `avg_occupancy / arrivals` en minutos |
+| `metrics_unified_by_bucket_*` | 15min/1h/1d | US-09 | FULL OUTER JOIN counting + wifi_ble + pos. Consumida por Lambda `query_aggregates` |
+| `data_freshness_by_store` | --- | US-08 | Último `received_at` cross-fact por sucursal |
 
 ## Idempotencia (UNIQUE constraints)
 
 | Tabla | Constraint | Caso de uso |
 |---|---|---|
 | `count_events` | `(device_id, event_ts, track_id, direction)` | Replay del buffer SQLite del device cuando reconecta |
-| `wifi_ble_summary` | `(device_id, period_start, period_end)` | Retry del WifiBlePublisher cada 15min |
+| `wifi_ble_events` | `(device_id, visitor_hash, period_start)` | Retry del WifiBlePublisher cada 15min con `ON CONFLICT DO UPDATE` (GREATEST rssi_max + last_seen_ts) |
 | `telemetry` | `(device_id, event_ts)` | Retry de IoT Topic Rule |
 | `pos_transactions` | `(store_id, transaction_id)` | Retry del POS o re-envío del batch |
 
-Todas las Lambdas usan `INSERT ... ON CONFLICT DO NOTHING`.
+`count_events` / `telemetry` / `pos_transactions` usan `INSERT ... ON
+CONFLICT DO NOTHING`. `wifi_ble_events` usa `ON CONFLICT DO UPDATE`
+refinando `rssi_max` al MAX y `last_seen_ts` al MAX — un retry del mismo
+período sólo mejora la observación (cubre el caso "el publisher reintentó
+porque MQTT falló mid-batch y ahora rssi_max es más fuerte").
 
 ## Usuarios IAM auth (least privilege)
 
 | User Postgres | Lambda que lo usa | Grants |
 |---|---|---|
-| `lambda_writer` | `persist_event` (IoT → counter + wifi/ble + telemetry) | `INSERT, SELECT` sobre `count_events`, `wifi_ble_summary`, `telemetry` |
+| `lambda_writer` | `persist_event` (IoT → counter + wifi/ble + telemetry) | `INSERT, SELECT` sobre `count_events`, `wifi_ble_events`, `telemetry` |
 | `lambda_pos_writer` | `ingest_pos_transaction` (API Gateway → POS) | `INSERT, SELECT` sobre `pos_transactions` |
+| `lambda_query_reader` | `query_aggregates` (API GW → BI/partners) | `SELECT` sobre vistas `metrics_unified_*` + `data_freshness_by_store` + dimensiones; `EXECUTE` sobre `height_class(REAL)` y `rssi_class(INT)` |
+| `readonly_external` | Partners/analistas externos (SQL directo) | `SELECT` sobre todas las vistas `*_by_bucket_*` + dimensiones; `EXECUTE` sobre las funciones de categorización. Acceso vía password (Secrets Manager), no IAM |
 
 Ambos usuarios tienen `rds_iam` GRANT (auth IAM sin password). Los tokens
 duran ~15min, las Lambdas los regeneran transparentemente via
@@ -194,7 +242,7 @@ Por tabla, además de los PKs y UNIQUE constraints implícitos:
 
 - **count_events**: `(store_id, event_ts DESC)`, `(device_id, event_ts DESC)`,
   `(store_id, bucket_15min DESC)`, `(store_id, bucket_day DESC)`
-- **wifi_ble_summary**: `(store_id, bucket_15min DESC)`, `(store_id, bucket_day DESC)`
+- **wifi_ble_events**: `(store_id, bucket_15min DESC)`, `(store_id, bucket_hour DESC)`, `(store_id, bucket_day DESC)`, `(store_id, bucket_day, visitor_hash)` (último para queries DISTINCT visitor diario)
 - **telemetry**: `(device_id, event_ts DESC)`, `(device_id, bucket_hour DESC)`
 - **pos_transactions**: `(store_id, bucket_15min DESC)`, `(store_id, bucket_day DESC)`
 

@@ -92,6 +92,71 @@ _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS = 900
 logger = logging.getLogger(__name__)
 
 
+def _all_tracks_height_stable(tracks: dict, threshold: int) -> bool:
+    """¿Todos los tracks activos tienen al menos ``threshold`` samples de
+    head_height_mm en su detection_history?
+
+    Si no hay tracks, devuelve False — sin tracks no podemos asumir que la
+    escena está "calmada" (puede ser inicio, o que el tracker mató a todos
+    los activos). Mejor pedir SGBM fresca en esos casos.
+
+    Tracks LOST (disappeared >> pending_max_frames) se excluyen del check
+    porque ya no están siendo trackeados activamente — su altura no cambia.
+    """
+    if not tracks:
+        return False
+    for t in tracks.values():
+        # Excluir tracks pseudo-muertos (PENDING viejos sin re-match).
+        # Threshold 30 frames es generoso — sigue capturando PENDING reciente.
+        if getattr(t, "disappeared", 0) > 30:
+            continue
+        history = (t.meta or {}).get("detection_history", []) if hasattr(t, "meta") else []
+        n_height = sum(
+            1 for d in history
+            if d.get("head_height_mm") is not None
+        )
+        if n_height < threshold:
+            return False
+    return True
+
+
+def _any_detection_unmatched(
+    detections: list,
+    tracks: dict,
+    radius_px: float,
+) -> bool:
+    """¿Alguna detección está "lejos" de todo track existente?
+
+    Si SI → es candidato a track nuevo, necesitamos SGBM fresca para
+    poblar su altura inicial. Si TODAS las detecciones tienen un track
+    cercano (radio en pixels), todas son refresh de tracks existentes y
+    podemos usar el cache.
+
+    Excluye tracks LOST hace mucho del check (ver _all_tracks_height_stable).
+    """
+    if not detections:
+        return False
+    if not tracks:
+        return True  # cualquier detección sin tracks vivos es candidata nueva
+    radius_sq = radius_px * radius_px
+    for det in detections:
+        cx, cy = det.centroid
+        matched = False
+        for t in tracks.values():
+            if getattr(t, "disappeared", 0) > 30:
+                continue
+            positions = getattr(t, "positions", None)
+            if not positions:
+                continue
+            tx, ty = float(positions[-1][0]), float(positions[-1][1])
+            if (cx - tx) ** 2 + (cy - ty) ** 2 < radius_sq:
+                matched = True
+                break
+        if not matched:
+            return True
+    return False
+
+
 def sd_notify(message: str) -> None:
     """Manda una notificación a systemd vía NOTIFY_SOCKET.
 
@@ -640,6 +705,28 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     VIEWER_DEPTH_INTERVAL_S = 0.5  # refresh de panel a 2 fps cuando está idle
     last_viewer_depth_t: float = 0.0
 
+    # --- Cache de depth_map para skippear SGBM con tracks estables ---
+    # SGBM domina el costo per-frame (~50-70ms con WLS). Cuando todos los
+    # tracks activos ya tienen suficientes samples de altura (mediana
+    # estabilizada) Y todas las detecciones del frame actual coinciden con
+    # algún track existente (no hay candidatos nuevos), podemos reusar el
+    # último depth_map computado en vez de correr SGBM otra vez. TTL acota
+    # la staleness — superado el TTL se fuerza SGBM aunque los tracks estén
+    # estables (para que el panel del viewer no se quede congelado y para
+    # cubrir movimiento lateral del visitor entre buckets).
+    depth_skip_cfg = vision_cfg.get("depth_skip_stable_tracks", {}) or {}
+    depth_skip_enabled = bool(depth_skip_cfg.get("enabled", True))
+    depth_stable_height_samples = int(
+        depth_skip_cfg.get("height_samples_threshold", 20)
+    )
+    depth_skip_match_radius_px = float(
+        depth_skip_cfg.get("match_radius_px", 100.0)
+    )
+    depth_cache_ttl_s = float(depth_skip_cfg.get("cache_ttl_seconds", 1.0))
+    last_depth_map: "np.ndarray | None" = None
+    last_depth_map_t: float = 0.0
+    prev_tracks: dict = {}
+
     # --- Cargar calibración ---
     # Un ``null`` explícito para calibration_file en config deshabilita la
     # calibración entera (usado por tests / runs pre-calibración). El .npz
@@ -1181,6 +1268,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     within_hours = True  # asumimos abierto hasta el primer check
     profile_enabled = bool(getattr(args, "profile", False))
     profile_every_n = max(1, int(getattr(args, "profile_every_n", 30)))
+    # Si > 0, loggea PROFILE en CADA frame cuyo total_ms supere el threshold,
+    # además de los samples periódicos. Útil para cazar FPS drops sporadicos
+    # sin inundar el log con frames sanos.
+    profile_slow_threshold_ms = float(getattr(args, "profile_slow_threshold_ms", 0))
     profile_frame_idx = 0
 
     # --- Estado de observability (ventanas sliding) ---
@@ -1604,15 +1695,54 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # reusa last_depth_panel del frame anterior. Gateado por
             # ``has_subscribers``: si nadie está mirando, no se paga el
             # costo de SGBM solo por el viewer.
+            #
+            # Optimización extra: skip SGBM cuando todos los tracks activos
+            # ya tienen suficientes samples de altura (mediana ya estabilizada
+            # por la `detection_history`) Y ninguna detección del frame actual
+            # corresponde a un track candidato nuevo. En ese caso reusamos
+            # ``last_depth_map`` (cacheado del último SGBM). TTL acota la
+            # staleness — ver `vision.depth_skip_stable_tracks` en config.
             viewer_depth_due = (
                 viewer is not None
                 and viewer.has_subscribers()
                 and (t_iter_start - last_viewer_depth_t) >= VIEWER_DEPTH_INTERVAL_S
             )
+            has_dets_to_query = bool(detections or low_conf_detections)
+            cache_age_s = t_iter_start - last_depth_map_t
+            cache_fresh = (
+                last_depth_map is not None and cache_age_s < depth_cache_ttl_s
+            )
+            # Casos donde el cache es suficiente (no hace falta SGBM fresco):
+            #  (a) no hay detecciones este frame — sólo viewer pide depth para
+            #      el panel; el cache es válido para diagnostic display.
+            #  (b) hay detecciones pero TODAS corresponden a tracks con altura
+            #      ya estabilizada (mediana settled vía detection_history) Y
+            #      ninguna es candidato nuevo (sin track cercano).
+            # En ambos casos, SGBM fresco no aporta info que mueva el counting.
+            # Cuando el TTL expira (default 1s) se fuerza fresh sí o sí.
+            can_use_cache = (
+                depth_skip_enabled
+                and cache_fresh
+                and (
+                    not has_dets_to_query
+                    or (
+                        _all_tracks_height_stable(
+                            prev_tracks, depth_stable_height_samples
+                        )
+                        and not _any_detection_unmatched(
+                            list(detections) + list(low_conf_detections),
+                            prev_tracks,
+                            depth_skip_match_radius_px,
+                        )
+                    )
+                )
+            )
+            can_skip_sgbm = can_use_cache  # alias para el PROFILE log
             if (
                 calibration is not None
                 and focal_length_px is not None
-                and (detections or low_conf_detections or viewer_depth_due)
+                and (has_dets_to_query or viewer_depth_due)
+                and not can_use_cache
             ):
                 # CLAHE off — el histograma indoor del IMX708 se comporta bien
                 # para el matching SGBM y el costo de CLAHE de ~10ms no vale.
@@ -1627,6 +1757,15 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     wls_sigma=wls_sigma,
                 )
                 depth_map = disparity_to_depth(disparity, focal_length_px, baseline_mm)
+                last_depth_map = depth_map
+                last_depth_map_t = t_iter_start
+                if viewer_depth_due:
+                    last_viewer_depth_t = t_iter_start
+            elif can_use_cache and (has_dets_to_query or viewer_depth_due):
+                # Reusar cache: cubre tanto el viewer-only como el detection
+                # con tracks estables. El depth_map del cache se pasa a
+                # _build_positions_metas() y depth_at_bbox lee normal.
+                depth_map = last_depth_map
                 if viewer_depth_due:
                     last_viewer_depth_t = t_iter_start
             else:
@@ -1826,6 +1965,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 events = []
             t_track_end = time.perf_counter()
 
+            # Snapshot de tracks para el gating del SGBM-skip del próximo frame.
+            # Lo hacemos acá (post-update + post-count) así prev_tracks refleja
+            # el state completo después de matching, no las posiciones intermedias.
+            prev_tracks = tracks
+
             # --- Log de profiling ---
             # Cuando --profile está seteado, loggea un breakdown per-stage cada
             # PROFILE_EVERY_N frames. Ayuda a identificar el bottleneck real
@@ -1833,24 +1977,40 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # desde los FPS totales.
             if profile_enabled:
                 profile_frame_idx += 1
-                if profile_frame_idx % profile_every_n == 0:
-                    cap_ms = (t_capture_end - t_capture_start) * 1000
-                    rect_ms = (t_rectify_end - t_capture_end) * 1000
-                    detect_ms = (t_detect_end - t_rectify_end) * 1000
-                    depth_ms = (t_depth_end - t_detect_end) * 1000
-                    track_ms = (t_track_end - t_depth_end) * 1000
-                    total_ms = (t_track_end - t_iter_start) * 1000
+                # Stage breakdown (calculado siempre — el cómputo es trivial,
+                # los timestamps ya existen). Logueamos cuando: (a) toca un
+                # sample periódico, o (b) el frame fue "slow" (total >
+                # threshold) y slow-logging está habilitado.
+                cap_ms = (t_capture_end - t_capture_start) * 1000
+                rect_ms = (t_rectify_end - t_capture_end) * 1000
+                detect_ms = (t_detect_end - t_rectify_end) * 1000
+                depth_ms = (t_depth_end - t_detect_end) * 1000
+                track_ms = (t_track_end - t_depth_end) * 1000
+                total_ms = (t_track_end - t_iter_start) * 1000
+                is_periodic = profile_frame_idx % profile_every_n == 0
+                is_slow = (
+                    profile_slow_threshold_ms > 0
+                    and total_ms > profile_slow_threshold_ms
+                )
+                if is_periodic or is_slow:
                     has_dets = "Y" if depth_map is not None else "N"
+                    depth_mode = "cache" if can_skip_sgbm else ("fresh" if depth_map is not None else "none")
+                    tag = "SLOW" if (is_slow and not is_periodic) else ""
                     logger.info(
-                        "PROFILE frame=%d cap=%.0fms rect=%.0fms detect=%.0fms "
-                        "depth=%.0fms (det=%s) track=%.0fms TOTAL=%.0fms (%.1f FPS)",
+                        "PROFILE%s frame=%d cap=%.0fms rect=%.0fms detect=%.0fms "
+                        "depth=%.0fms (det=%s mode=%s) track=%.0fms n_tracks=%d "
+                        "n_dets=%d TOTAL=%.0fms (%.1f FPS)",
+                        f"_{tag}" if tag else "",
                         profile_frame_idx,
                         cap_ms,
                         rect_ms,
                         detect_ms,
                         depth_ms,
                         has_dets,
+                        depth_mode,
                         track_ms,
+                        len(tracks) if isinstance(tracks, dict) else 0,
+                        len(detections) if detections else 0,
                         total_ms,
                         1000.0 / total_ms if total_ms > 0 else 0.0,
                     )
@@ -2293,6 +2453,15 @@ def main() -> None:
         default=30,
         help="Cuando --profile está seteado, emite un log PROFILE cada N frames "
         "(default 30 — alrededor de cada 6 segundos a 5 FPS).",
+    )
+    parser.add_argument(
+        "--profile-slow-threshold-ms",
+        type=float,
+        default=0.0,
+        help="Cuando --profile está seteado Y este threshold > 0, loggea un "
+        "PROFILE_SLOW EXTRA por CADA frame cuyo total_ms supere el threshold. "
+        "Útil para cazar FPS drops sporadicos (ej. 80ms = todo frame que cayó "
+        "por debajo de 12.5 FPS). 0 = off (default).",
     )
     parser.add_argument(
         "--web-viewer-port",
