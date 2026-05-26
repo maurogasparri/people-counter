@@ -469,6 +469,98 @@
         "cellHeight": "sm",
         "footer": {"show": false}
       }
+    },
+    {
+      "id": 60,
+      "type": "timeseries",
+      "title": "Visitantes únicos por día (WiFi/BLE)",
+      "description": "Cantidad de dispositivos distintos detectados por día tras stitching local del device (un dispositivo con N rotaciones de MAC cuenta como 1). Capacidad nueva post per-device events — antes el resumen pre-agregado no permitía DISTINCT cross-bucket.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 0, "y": 52, "w": 8, "h": 8},
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawSql": "SELECT bucket_day AS time, COUNT(DISTINCT visitor_hash) AS \"Visitantes únicos\" FROM wifi_ble_events WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "axisLabel": "Visitantes"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {"mode": "single"},
+        "legend": {"showLegend": false}
+      }
+    },
+    {
+      "id": 61,
+      "type": "stat",
+      "title": "Tasa de promoción a shopper",
+      "description": "De los visitantes únicos del período, qué porcentaje llegaron a clasificarse como shopper (RSSI máximo ≥ -55 dBm en alguna ventana) — proxy de intención de entrada. Calculado per-visitor: lifetime max RSSI del día.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 8, "y": 52, "w": 8, "h": 8},
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawSql": "SELECT bucket_day AS time, COUNT(*) FILTER (WHERE lifetime_max_rssi >= -55)::float / NULLIF(COUNT(*), 0) AS \"Promoción\" FROM (SELECT bucket_day, visitor_hash, MAX(rssi_max) AS lifetime_max_rssi FROM wifi_ble_events WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day, visitor_hash) v GROUP BY bucket_day ORDER BY time"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red",    "value": null},
+              {"color": "orange", "value": 0.05},
+              {"color": "green",  "value": 0.15}
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["mean"], "fields": "", "values": false},
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 62,
+      "type": "barchart",
+      "title": "Repetición intra-día (engagement)",
+      "description": "Distribución de visitantes según cuántas ventanas de 15 min los observaron. Visitantes en 1 ventana = pasaron rápido. Visitantes en 3+ ventanas = rondaron o se quedaron cerca — proxy de engagement.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 16, "y": 52, "w": 8, "h": 8},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "WITH visitor_windows AS (SELECT visitor_hash, COUNT(DISTINCT period_start) AS n_windows FROM wifi_ble_events WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY visitor_hash) SELECT CASE WHEN n_windows = 1 THEN '1 ventana' WHEN n_windows = 2 THEN '2 ventanas' WHEN n_windows BETWEEN 3 AND 5 THEN '3-5 ventanas' ELSE '6+ ventanas' END AS \"Ventanas\", COUNT(*) AS \"Visitantes\" FROM visitor_windows GROUP BY 1 ORDER BY MIN(n_windows)"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {"mode": "palette-classic"}
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xField": "Ventanas",
+        "showValue": "always",
+        "legend": {"showLegend": false},
+        "tooltip": {"mode": "single"}
+      }
     }
   ]
 }
