@@ -967,7 +967,7 @@ class EuclideanTracker:
         if track.state == PENDING and track.disappeared > self.pending_max_frames:
             track.state = LOST
             self._enghost(track)
-            logger.info(  # TRACKDBG [REVERT]
+            logger.debug(  # TRACKDBG [REVERT]
                 "TRACKDBG death tid=%d reason=pending_max_frames disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
                 track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
             )
@@ -977,7 +977,7 @@ class EuclideanTracker:
         if track.disappeared > self.max_disappeared:
             track.state = LOST
             self._enghost(track)
-            logger.info(  # TRACKDBG [REVERT]
+            logger.debug(  # TRACKDBG [REVERT]
                 "TRACKDBG death tid=%d reason=max_disappeared disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
                 track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
             )
@@ -1043,7 +1043,7 @@ class EuclideanTracker:
         ghost = self._ghosts.pop(best_tid)
         self._resurrect_ghost(ghost, centroid)
         self._adoption_count += 1
-        logger.info(  # TRACKDBG [REVERT]
+        logger.debug(  # TRACKDBG [REVERT]
             "TRACKDBG ghost_adopted tid=%d dist=%.1f iou=%.3f age=%d",
             best_tid, best_dist, best_iou, ghost.age,
         )
@@ -1081,7 +1081,7 @@ class EuclideanTracker:
                         + (oy - float(centroid[1])) ** 2) ** 0.5
                 if dist > self.ghost_outside_invalidate_px:
                     meta["last_outside_pos"] = None
-                    logger.info(  # TRACKDBG [REVERT]
+                    logger.debug(  # TRACKDBG [REVERT]
                         "TRACKDBG ghost_outside_invalidated tid=%d dist=%.1f",
                         ghost.track_id, dist,
                     )
