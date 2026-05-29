@@ -25,10 +25,29 @@ def test_mark_sent():
     buf = MessageBuffer(db_path)
 
     msg_id = buf.enqueue("test/topic", {"count": 1})
-    buf.mark_sent(msg_id)
+    assert buf.mark_sent(msg_id) is True
 
     pending = buf.get_pending()
     assert len(pending) == 0
+
+
+def test_mark_sent_swallows_sqlite_errors(monkeypatch):
+    """mark_sent se llama desde el callback de paho (_on_publish). Un fallo de
+    SQLite NO debe burbujear al loop de paho — se loguea y devuelve False; el
+    mensaje queda sent=0 y se re-publica en el próximo replay (QoS 1)."""
+    import sqlite3
+
+    tmpdir = tempfile.mkdtemp()
+    db_path = str(Path(tmpdir) / "test.db")
+    buf = MessageBuffer(db_path)
+    msg_id = buf.enqueue("test/topic", {"count": 1})
+
+    def _boom(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(sqlite3, "connect", _boom)
+    # No debe levantar — devuelve False.
+    assert buf.mark_sent(msg_id) is False
 
 
 def test_count_unsent_reports_backlog():

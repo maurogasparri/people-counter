@@ -131,6 +131,44 @@ def test_internet_probe_is_cached(all_probes_ok, monkeypatch):
     assert call_count["n"] == 1  # only the first tick probed
 
 
+def test_hailo_probe_is_cached():
+    """El probe de Hailo (subprocess hailortcli, hasta 5s) NO debe correr en
+    cada tick — se cachea en su propia cadencia. Sin esto clavaria el thread
+    monitor y la cadencia del probe de internet."""
+    led = _NullLed()
+    signals = HealthSignals(last_loop_ts=time.time(), mqtt_connected=True)
+    monitor = HealthMonitor(
+        led=led, signals=signals, hailo_probe_interval_s=60.0,
+    )
+    call_count = {"n": 0}
+
+    def _counting_hailo():
+        call_count["n"] += 1
+        return True
+
+    with patch("src.status.monitor.check_cpu_temp_ok", return_value=True), \
+         patch("src.status.monitor.check_disk_ok", return_value=True), \
+         patch("src.status.monitor.check_calibration_loadable", return_value=True), \
+         patch("src.status.monitor.check_internet", return_value=True), \
+         patch("src.status.monitor.check_hailo_temp_ok", side_effect=_counting_hailo):
+        for _ in range(5):
+            monitor.evaluate_once()
+    assert call_count["n"] == 1  # solo el primer tick probó el subprocess
+
+
+def test_hailo_fault_surfaces_via_cache():
+    """Un Hailo sobre-temperatura cacheado igual dispara HARDWARE_FAULT."""
+    led = _NullLed()
+    signals = HealthSignals(last_loop_ts=time.time(), mqtt_connected=True)
+    monitor = HealthMonitor(led=led, signals=signals)
+    with patch("src.status.monitor.check_cpu_temp_ok", return_value=True), \
+         patch("src.status.monitor.check_disk_ok", return_value=True), \
+         patch("src.status.monitor.check_calibration_loadable", return_value=True), \
+         patch("src.status.monitor.check_internet", return_value=True), \
+         patch("src.status.monitor.check_hailo_temp_ok", return_value=False):
+        assert monitor.evaluate_once() is LedState.HARDWARE_FAULT
+
+
 def test_start_stop_runs_at_least_one_tick(all_probes_ok):
     led = _NullLed()
     signals = HealthSignals(

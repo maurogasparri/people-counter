@@ -129,6 +129,33 @@ def _as_tuple_2(v: Any, fallback: tuple[int, int]) -> tuple[int, int]:
     return fallback
 
 
+def _as_float(v: Any, fallback: float) -> float:
+    """Coerce a float; fallback ante None / no-numérico (ej. ``"140mm"``).
+
+    Un scalar inválido en el config (typo del operador) no debe crashear los
+    setup tools con un traceback crudo — el contrato documentado es fallback
+    lenient. ``0`` se preserva (es válido para algunos campos como el índice
+    CSI); los call sites que quieren tratar 0 como "ausente" lo hacen con un
+    ``or`` previo.
+    """
+    if v is None:
+        return fallback
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _as_int(v: Any, fallback: int) -> int:
+    """Coerce a int; fallback ante None / no-numérico. Ver ``_as_float``."""
+    if v is None:
+        return fallback
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def load_hardware_params(
     config_path: str | Path = DEFAULT_DEVICE_CONFIG_PATH,
 ) -> HardwareParams:
@@ -162,44 +189,44 @@ def load_hardware_params(
         default_res=_as_tuple_2(
             sensor.get("default_res"), FLEET_DEFAULTS.default_res
         ),
-        nominal_focal_full_px=float(
+        nominal_focal_full_px=_as_float(
             sensor.get("nominal_focal_full_px")
-            or FLEET_DEFAULTS.nominal_focal_full_px
+            or FLEET_DEFAULTS.nominal_focal_full_px,
+            FLEET_DEFAULTS.nominal_focal_full_px,
         ),
-        hfov_deg=float(lens.get("hfov_deg") or FLEET_DEFAULTS.hfov_deg),
+        hfov_deg=_as_float(
+            lens.get("hfov_deg") or FLEET_DEFAULTS.hfov_deg,
+            FLEET_DEFAULTS.hfov_deg,
+        ),
         lens_type=str(lens.get("type") or FLEET_DEFAULTS.lens_type),
-        baseline_mm=float(
-            bracket.get("baseline_mm") or FLEET_DEFAULTS.baseline_mm
+        baseline_mm=_as_float(
+            bracket.get("baseline_mm") or FLEET_DEFAULTS.baseline_mm,
+            FLEET_DEFAULTS.baseline_mm,
         ),
-        camera_left_csi=int(
-            bracket.get("camera_left_csi", FLEET_DEFAULTS.camera_left_csi)
+        camera_left_csi=_as_int(
+            bracket.get("camera_left_csi"), FLEET_DEFAULTS.camera_left_csi
         ),
-        camera_right_csi=int(
-            bracket.get("camera_right_csi", FLEET_DEFAULTS.camera_right_csi)
+        camera_right_csi=_as_int(
+            bracket.get("camera_right_csi"), FLEET_DEFAULTS.camera_right_csi
         ),
-        board_cols=int(charuco.get("board_cols", FLEET_DEFAULTS.board_cols)),
-        board_rows=int(charuco.get("board_rows", FLEET_DEFAULTS.board_rows)),
-        square_mm=float(charuco.get("square_mm", FLEET_DEFAULTS.square_mm)),
-        marker_mm=float(charuco.get("marker_mm", FLEET_DEFAULTS.marker_mm)),
+        board_cols=_as_int(charuco.get("board_cols"), FLEET_DEFAULTS.board_cols),
+        board_rows=_as_int(charuco.get("board_rows"), FLEET_DEFAULTS.board_rows),
+        square_mm=_as_float(charuco.get("square_mm"), FLEET_DEFAULTS.square_mm),
+        marker_mm=_as_float(charuco.get("marker_mm"), FLEET_DEFAULTS.marker_mm),
         aruco_dict=str(charuco.get("dict") or FLEET_DEFAULTS.aruco_dict),
         legacy_pattern=bool(
             charuco.get("legacy_pattern", FLEET_DEFAULTS.legacy_pattern)
         ),
-        dual_pass_accept_threshold=int(
-            charuco.get(
-                "dual_pass_accept_threshold",
-                FLEET_DEFAULTS.dual_pass_accept_threshold,
-            )
+        dual_pass_accept_threshold=_as_int(
+            charuco.get("dual_pass_accept_threshold"),
+            FLEET_DEFAULTS.dual_pass_accept_threshold,
         ),
-        ae_initial_settle_seconds=float(
-            ae_lock.get(
-                "initial_settle_seconds",
-                FLEET_DEFAULTS.ae_initial_settle_seconds,
-            )
+        ae_initial_settle_seconds=_as_float(
+            ae_lock.get("initial_settle_seconds"),
+            FLEET_DEFAULTS.ae_initial_settle_seconds,
         ),
-        ae_resettle_seconds=float(
-            ae_lock.get(
-                "resettle_seconds", FLEET_DEFAULTS.ae_resettle_seconds
-            )
+        ae_resettle_seconds=_as_float(
+            ae_lock.get("resettle_seconds"),
+            FLEET_DEFAULTS.ae_resettle_seconds,
         ),
     )

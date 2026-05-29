@@ -37,7 +37,9 @@ device/sucursal.
 from __future__ import annotations
 
 import logging
+import secrets
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -125,7 +127,22 @@ class DedupEngine:
         # la MAC, pero el fingerprint de IEs/manufacturer-data es estable.
         self.fingerprint_stitch_enabled = fingerprint_stitch_enabled
         self.fingerprint_stitch_window = fingerprint_stitch_window_seconds
+        # Serializa process_detection: los dos productores corren en threads
+        # distintos (WiFi en el thread de scapy.sniff, BLE en el loop asyncio
+        # de bleak) y comparten el mismo SQLite. Sin esto, dos detecciones de
+        # un device nuevo casi-simultáneas hacen SELECT-luego-INSERT
+        # entrelazado → no se ven entre sí (dos group_id = sobre-conteo) o
+        # colisionan en la PK (IntegrityError tragado = detección perdida). El
+        # rate de eventos es bajísimo, el costo del lock es despreciable.
+        self._lock = threading.Lock()
         self._ensure_db()
+        # Salt local para el hashing de MACs at-rest. Persistido en el DB
+        # (no en el código) y rotado en reset_daily. Sin sal, los hashes de
+        # MAC truncados a 16 bytes son brute-forceables sobre el espacio OUI
+        # si alguien lee el .sqlite. El group_id publicado es un UUID random
+        # aparte (opaco, no derivado del hash), así que esto protege SOLO el
+        # estado local — el payload MQTT nunca expone hashes pre-stitching.
+        self._salt = self._load_or_create_salt()
 
     def _ensure_db(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +184,35 @@ class DedupEngine:
                 "CREATE INDEX IF NOT EXISTS idx_hash_groups_fp "
                 "ON hash_groups(protocol, fingerprint)"
             )
+            # Metadata local (key/value). Hoy solo guarda el salt del hashing.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dedup_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+
+    def _load_or_create_salt(self) -> str:
+        """Lee el salt persistido o crea uno random la primera vez.
+
+        Estable durante la vida del DB (así el mismo MAC hashea igual y el
+        stitching funciona); se rota en ``reset_daily``. Cacheado en memoria
+        para no pegarle al DB en cada ``process_detection``.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM dedup_meta WHERE key = 'salt'"
+            ).fetchone()
+            if row is not None:
+                return row[0]
+            salt = secrets.token_hex(16)
+            conn.execute(
+                "INSERT INTO dedup_meta (key, value) VALUES ('salt', ?)",
+                (salt,),
+            )
+            return salt
 
     # ----- API publica -----
 
@@ -185,7 +231,8 @@ class DedupEngine:
             mac: MAC observada (formato AA:BB:CC:DD:EE:FF, mayusculas o no).
             protocol: ``"wifi"`` o ``"ble"``.
             rssi: signal strength en dBm (negativo, e.g. -60).
-            salt: salt opcional para el hash (se usa rotacion diaria).
+            salt: override del salt del hash. Si es "" (default) se usa el
+                salt local persistido del engine (``self._salt``).
             seqnum: seqnum 802.11 (0..4095). None si no aplica.
 
         Returns:
@@ -197,10 +244,12 @@ class DedupEngine:
               existente (ya sea recien creado en esta call o pre-existente).
             - group_id: UUID del grupo final.
         """
-        mac_hash = hash_mac(mac, salt)
+        mac_hash = hash_mac(mac, salt or self._salt)
         now = time.time()
 
-        with sqlite3.connect(self.db_path) as conn:
+        # Lock + transacción: serializa los dos productores (WiFi/BLE) que
+        # comparten este DB desde threads distintos.
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             # 1. Hash ya conocido para este protocolo? -> update y volver.
             existing = conn.execute(
                 "SELECT group_id FROM hash_groups WHERE hash = ? AND protocol = ?",
@@ -619,7 +668,20 @@ class DedupEngine:
             return groups / hashes
 
     def reset_daily(self) -> None:
-        """Limpia todos los grupos para un nuevo dia comercial."""
-        with sqlite3.connect(self.db_path) as conn:
+        """Limpia todos los grupos para un nuevo dia comercial y rota el salt.
+
+        Rotar el salt hace que las MACs del nuevo día hasheen distinto a las
+        del día anterior — defensa extra contra linkability cross-día sobre
+        backups del .sqlite. Refresca el cache en memoria así el mismo proceso
+        que llama reset_daily sigue hasheando consistente después del reset.
+        """
+        new_salt = secrets.token_hex(16)
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM hash_groups")
+            conn.execute(
+                "INSERT INTO dedup_meta (key, value) VALUES ('salt', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (new_salt,),
+            )
+        self._salt = new_salt
         logger.info("dedup_daily_reset")

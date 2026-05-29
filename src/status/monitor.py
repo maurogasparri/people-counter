@@ -4,10 +4,12 @@ El monitor lee señales pipeline-side de un dataclass :class:`HealthSignals`
 compartido (escrito por main.py durante el loop) más probes OS/red de
 ``health.py``, y mapea la agregación a un :class:`LedState` vía ``decide_state``.
 
-El monitor corre en su propio thread porque el probe de internet es I/O
-blocking (``socket.create_connection`` con timeout de 3 segundos) — no queremos
-eso en el hot path del pipeline. Los probes de internet también corren con
-cadencia más lenta que el tick de update del LED para evitar saturar la red.
+El monitor corre en su propio thread porque dos de sus probes son blocking:
+el de internet (``socket.create_connection`` con timeout de 3 s) y el de
+temperatura del Hailo (``hailortcli`` como subprocess, hasta 5 s). No queremos
+eso en el hot path del pipeline. Ambos probes blocking corren además con
+cadencia más lenta que el tick de update del LED (cacheados entre probes), así
+un subprocess lento no clava las actualizaciones del LED ni satura la red.
 """
 from __future__ import annotations
 
@@ -58,6 +60,10 @@ class HealthMonitor:
         poll_interval_s: Cada cuánto re-evaluar el estado (default 2 s).
         internet_probe_interval_s: Cada cuánto correr el probe de internet
             blocking (default 30 s; cacheado entre probes).
+        hailo_probe_interval_s: Cada cuánto correr el probe de temperatura del
+            Hailo vía ``hailortcli`` subprocess (default 30 s; cacheado). No
+            necesita resolución de 2 s — el die térmico cambia lento — y a 5 s
+            de timeout cada tick clavaría el thread monitor.
     """
 
     def __init__(
@@ -66,15 +72,19 @@ class HealthMonitor:
         signals: HealthSignals,
         poll_interval_s: float = 2.0,
         internet_probe_interval_s: float = 30.0,
+        hailo_probe_interval_s: float = 30.0,
     ) -> None:
         self._led = led
         self._signals = signals
         self._poll_interval_s = float(poll_interval_s)
         self._internet_probe_interval_s = float(internet_probe_interval_s)
+        self._hailo_probe_interval_s = float(hailo_probe_interval_s)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_internet_probe = 0.0
         self._cached_internet_ok = True
+        self._last_hailo_probe = 0.0
+        self._cached_hailo_ok = True
 
     def start(self) -> None:
         """Arranca el thread monitor. Idempotente."""
@@ -108,11 +118,20 @@ class HealthMonitor:
         s = self._signals
         now = time.time()
 
+        # Probe de Hailo cacheado en su propia cadencia: el subprocess
+        # hailortcli puede tardar hasta 5 s y NO debe correr en cada tick
+        # (clavaría el LED y la cadencia del probe de internet). Se computa
+        # fuera del short-circuit de hw_ok para que la cadencia sea estable.
+        if now - self._last_hailo_probe >= self._hailo_probe_interval_s:
+            self._cached_hailo_ok = check_hailo_temp_ok()
+            self._last_hailo_probe = now
+        hailo_ok = self._cached_hailo_ok
+
         hw_ok = (
             s.capture_ok
             and s.detect_ok
             and check_cpu_temp_ok()
-            and check_hailo_temp_ok()
+            and hailo_ok
             and check_disk_ok()
             and check_calibration_loadable(s.calibration_path)
         )

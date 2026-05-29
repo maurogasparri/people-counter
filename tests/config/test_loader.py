@@ -1,6 +1,5 @@
 """Tests para el loader del config strict + el merge del cloud shadow."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -414,6 +413,34 @@ class TestShadowDeltaValidation:
         assert any(
             r.message == "shadow_delta_rejected_invalid" for r in caplog.records
         )
+
+    def test_invalid_counting_enabled_rejected(self, complete_config_yaml, caplog):
+        """Un toggle bool con un valor no-bool (ej. string ``"false"``) se
+        rechaza ANTES de persistir. Sin esto, ``bool("false")`` es truthy y el
+        conteo quedaría encendido cuando el operador quiso apagarlo."""
+        cfg = load_config(complete_config_yaml)
+        original = cfg["cloud_defaults"].get("counting_enabled")
+        delta = {"counting_enabled": "false"}  # string, no bool
+        with caplog.at_level("WARNING", logger="src.config.loader"):
+            new_cfg, applied = apply_shadow_delta(cfg, delta)
+        assert applied == []
+        assert new_cfg["cloud_defaults"].get("counting_enabled") == original
+        assert any(
+            r.message == "shadow_delta_rejected_invalid" for r in caplog.records
+        )
+
+    def test_invalid_external_traffic_enabled_rejected(self, complete_config_yaml):
+        """Un entero (0/1) tampoco pasa el contrato estricto bool."""
+        cfg = load_config(complete_config_yaml)
+        new_cfg, applied = apply_shadow_delta(cfg, {"external_traffic_enabled": 1})
+        assert applied == []
+
+    def test_valid_counting_enabled_toggle_applies(self, complete_config_yaml):
+        """Un bool legítimo sí se aplica y persiste."""
+        cfg = load_config(complete_config_yaml)
+        new_cfg, applied = apply_shadow_delta(cfg, {"counting_enabled": False})
+        assert applied == ["cloud_defaults.counting_enabled"]
+        assert new_cfg["cloud_defaults"]["counting_enabled"] is False
 
 
 class TestBuildReportedState:

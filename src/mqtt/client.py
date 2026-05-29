@@ -350,10 +350,20 @@ class MQTTClient:
             if not pending:
                 return 0
 
+            # Saltear los msg_ids que ya están in-flight (publicados, esperando
+            # PUBACK). En un reconnect rápido un mensaje recién publicado sigue
+            # con sent=0 hasta que llega su PUBACK; sin este filtro se re-
+            # publica (duplicado — QoS 1 lo tolera pero ensucia el tráfico y el
+            # mapeo de _pending_acks). El PUBACK pendiente lo marcará sent.
+            with self._pending_lock:
+                in_flight = set(self._pending_acks.values())
+
             count = 0
             for msg_id, topic, payload in pending:
                 if self._stop_event.is_set() or not self._connected:
                     break
+                if msg_id in in_flight:
+                    continue
                 self._send_buffered_message(msg_id, topic, payload, qos=1)
                 count += 1
 

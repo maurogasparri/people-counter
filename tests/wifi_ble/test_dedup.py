@@ -519,3 +519,89 @@ def test_traffic_counts_uses_max_rssi_not_latest():
     engine.process_detection("AA:00:00:00:00:01", "wifi", -80.0, fingerprint="fp1")
     counts = engine.get_traffic_counts(rssi_passerby=-75.0, rssi_shopper=-55.0)
     assert counts["shoppers"] == 1  # estable: cuenta por max_rssi (-50), no -80
+
+
+# ---------------------------------------------------------------------------
+# Salt local at-rest (privacidad) + thread-safety
+# ---------------------------------------------------------------------------
+
+
+def test_mac_hashes_stored_with_nonempty_salt():
+    """Las MACs at-rest se hashean con el salt local, NO con salt vacio.
+
+    Sin sal, el hash truncado de 16 bytes es brute-forceable sobre el espacio
+    OUI por quien lea el .sqlite. Verificamos que la fila guardada NO matchea
+    el hash sin-sal y SI matchea el hash con el salt del engine."""
+    import sqlite3 as _sqlite3
+
+    from src.wifi_ble.hasher import hash_mac
+
+    engine, _ = _make_engine()
+    mac = "AA:BB:CC:DD:EE:FF"
+    engine.process_detection(mac, "wifi", -60.0)
+
+    assert engine._salt  # no vacio
+    with _sqlite3.connect(engine.db_path) as conn:
+        stored = {
+            row[0]
+            for row in conn.execute("SELECT hash FROM hash_groups")
+        }
+    assert hash_mac(mac, "") not in stored  # NO se guardo sin sal
+    assert hash_mac(mac, engine._salt) in stored  # SI con el salt del engine
+
+
+def test_salt_persists_across_reopen():
+    """El salt se persiste en el DB: reabrir el mismo path da el mismo salt
+    (asi un restart del proceso no rompe la continuidad del stitching)."""
+    engine, tmpdir = _make_engine()
+    salt1 = engine._salt
+    reopened = DedupEngine(
+        engine.db_path,
+        cross_window_seconds=2.0,
+        cross_rssi_delta=5.0,
+        seqnum_stitch_enabled=True,
+        seqnum_stitch_window_seconds=30.0,
+        seqnum_max_delta=100,
+        seqnum_rssi_delta=5.0,
+        ble_anchor_enabled=True,
+        ble_anchor_window_seconds=900.0,
+    )
+    assert reopened._salt == salt1
+
+
+def test_reset_daily_rotates_salt():
+    """reset_daily rota el salt (defensa extra contra linkability cross-dia)."""
+    engine, _ = _make_engine()
+    salt_before = engine._salt
+    engine.reset_daily()
+    assert engine._salt != salt_before
+    assert engine._salt  # sigue siendo no vacio
+
+
+def test_concurrent_process_detection_same_mac_no_race():
+    """Dos productores (WiFi/BLE en threads distintos) comparten el DB. El lock
+    serializa el SELECT-then-INSERT: procesar la MISMA MAC nueva desde N threads
+    a la vez NO debe tirar IntegrityError ni crear filas duplicadas."""
+    import threading
+
+    engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
+    mac = "AA:BB:CC:DD:EE:FF"
+    errors: list[Exception] = []
+    barrier = threading.Barrier(20)
+
+    def _worker() -> None:
+        barrier.wait()  # arrancan todos juntos para maximizar el solape
+        try:
+            engine.process_detection(mac, "wifi", -60.0)
+        except Exception as e:  # noqa: BLE001 — el test reporta cualquier fallo
+            errors.append(e)
+
+    threads = [threading.Thread(target=_worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    # Una sola fila para (hash, protocol) pese a las 20 calls concurrentes.
+    assert engine.get_unique_count() == 1

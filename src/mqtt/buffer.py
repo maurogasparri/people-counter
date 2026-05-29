@@ -65,10 +65,25 @@ class MessageBuffer:
             )
             return cursor.lastrowid
 
-    def mark_sent(self, message_id: int) -> None:
-        """Marca el mensaje como enviado con éxito."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("UPDATE messages SET sent = 1 WHERE id = ?", (message_id,))
+    def mark_sent(self, message_id: int) -> bool:
+        """Marca el mensaje como enviado con éxito. Devuelve True si se marcó.
+
+        Se llama desde ``_on_publish`` (thread de red de paho) al recibir el
+        PUBACK. Defensivo ante errores de SQLite: si el write falla (DB locked,
+        read-only) NO dejamos que la excepción burbujee al loop de paho —
+        logueamos y devolvemos False. El peor caso es que la fila quede
+        ``sent=0`` y se re-publique en el próximo replay (QoS 1 = el broker
+        dedupe), mucho mejor que romper el dispatch de callbacks de paho.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE messages SET sent = 1 WHERE id = ?", (message_id,)
+                )
+            return True
+        except sqlite3.Error:
+            logger.exception("mark_sent failed", extra={"message_id": message_id})
+            return False
 
     def get_pending(self, limit: int = 100) -> list[tuple[int, str, dict]]:
         """Devuelve los mensajes no enviados, los más viejos primero."""

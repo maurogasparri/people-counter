@@ -19,7 +19,6 @@ hot path).
 from __future__ import annotations
 
 import copy
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -648,6 +647,20 @@ def validate_operating_hours(hours: Any) -> str | None:
     return None
 
 
+def validate_bool_toggle(value: Any) -> str | None:
+    """Valida un feature toggle booleano del Device Shadow.
+
+    Devuelve None si es válido, o un string describiendo el problema. Rechaza
+    explícitamente strings (``"false"`` es truthy en ``bool(...)`` → un delta
+    malformado encendería el toggle que el operador quiso apagar) y enteros
+    (``0``/``1`` se toleran en muchos sitios pero acá queremos un contrato
+    estricto bool para que ``build_reported_state`` no eche basura al shadow).
+    """
+    if not isinstance(value, bool):
+        return f"must be a boolean (true/false), got {type(value).__name__}"
+    return None
+
+
 def _parse_hhmm(value: str) -> tuple[int, int] | None:
     """Parsea un string HH:MM. Devuelve (hour, minute) o None si es inválido."""
     if ":" not in value:
@@ -761,12 +774,6 @@ def _set_dotted(config: dict[str, Any], path: str, value: Any) -> None:
     target[parts[-1]] = value
 
 
-def _shadow_cache_path(config_path: str | Path) -> Path:
-    """Devuelve el path sibling ``.shadow.json`` para un archivo YAML de config."""
-    p = Path(config_path)
-    return p.with_suffix(SHADOW_CACHE_SUFFIX)
-
-
 def apply_shadow_delta(
     current_config: dict[str, Any],
     delta: dict[str, Any],
@@ -793,6 +800,8 @@ def apply_shadow_delta(
     # del shadow se escribiría al config.yaml y rompería el próximo boot.
     validators: dict[str, Any] = {
         "cloud_defaults.operating_hours": validate_operating_hours,
+        "cloud_defaults.counting_enabled": validate_bool_toggle,
+        "cloud_defaults.external_traffic_enabled": validate_bool_toggle,
     }
 
     for path, value in _flatten_delta(delta):

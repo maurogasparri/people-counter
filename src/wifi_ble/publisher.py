@@ -88,11 +88,21 @@ class WifiBlePublisher:
         dedup: _DedupRecords,
         period_seconds: float = 900.0,
         now_fn=time.time,
+        max_query_failures: int = 20,
     ) -> None:
         self._mqtt = mqtt_client
         self._dedup = dedup
         self._period = float(period_seconds)
         self._now = now_fn
+        # Fallos consecutivos de get_window_records sobre la MISMA ventana.
+        # No avanzamos la ventana al primer fallo (un lock transitorio de
+        # SQLite haría perder 15min de tráfico sin recuperación, a diferencia
+        # del counting que tiene outbox). Reintentamos en los próximos ticks;
+        # recién después de ``max_query_failures`` fallos seguidos damos la
+        # ventana por perdida y avanzamos, así un DB realmente roto no clava
+        # el publisher para siempre ni hace crecer la ventana sin límite.
+        self._max_query_failures = int(max_query_failures)
+        self._consecutive_query_failures = 0
         # Alineamos las ventanas a múltiplos de ``period_seconds`` desde el
         # epoch (Unix 0). Con period=900s (15min) los boundaries quedan
         # exactamente en :00, :15, :30, :45 UTC. Esto sincroniza el bucket
@@ -139,14 +149,28 @@ class WifiBlePublisher:
                 until_ts=period_end,
             )
         except Exception:
+            self._consecutive_query_failures += 1
+            give_up = self._consecutive_query_failures >= self._max_query_failures
             logger.exception(
                 "wifi_ble_publisher_dedup_query_failed",
-                extra={"period_start": period_start, "period_end": period_end},
+                extra={
+                    "period_start": period_start,
+                    "period_end": period_end,
+                    "consecutive_failures": self._consecutive_query_failures,
+                    "giving_up": give_up,
+                },
             )
-            # Igual avanzamos la ventana — sino quedamos pegados en un período
-            # roto y la próxima query incluiría una ventana cada vez más larga.
-            self._last_period_end = period_end
+            if give_up:
+                # DB roto de forma persistente: damos la ventana por perdida
+                # y avanzamos para no quedar pegados ni crecer sin límite.
+                self._last_period_end = period_end
+                self._consecutive_query_failures = 0
+            # Si no, NO avanzamos: reintentamos esta misma ventana en el
+            # próximo tick (cubre locks transitorios de SQLite).
             return 0
+
+        # Query exitosa — reseteamos el contador de fallos.
+        self._consecutive_query_failures = 0
 
         if not devices:
             logger.debug(

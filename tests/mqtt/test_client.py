@@ -136,7 +136,6 @@ class TestMQTTClientConstruction:
         """Con startup_jitter > 0, connect() retorna inmediatamente y
         schedulea el real connect en un thread background. El thread
         completa el connect después del sleep."""
-        import threading as _threading
         import time as _time
         from src.mqtt.client import MQTTClient
 
@@ -352,6 +351,56 @@ class TestMQTTClientConstruction:
         client._on_disconnect(mock_client, None, None, rc=7)
         client._on_disconnect(mock_client, None, None, rc=7)
         assert client.disconnect_count == 2
+
+    @patch("src.mqtt.client.mqtt.Client")
+    def test_replay_skips_in_flight_messages(self, mock_mqtt_cls):
+        """En un reconnect rápido, replay_buffer no debe re-publicar mensajes que
+        ya están in-flight (publicados, esperando PUBACK). Sin el filtro se
+        duplican (QoS 1 lo tolera pero ensucia el tráfico)."""
+        from src.mqtt.client import MQTTClient
+
+        mock_client = MagicMock()
+        mock_client.publish.return_value = MagicMock(rc=0, mid=999)
+        mock_mqtt_cls.return_value = mock_client
+
+        tmpdir = tempfile.mkdtemp()
+        cert, key, ca = self._make_certs(tmpdir)
+        db_path = str(Path(tmpdir) / "buf.db")
+        buffer = MessageBuffer(db_path)
+
+        client = MQTTClient(
+            device_id="test-001",
+            endpoint="e.iot.amazonaws.com",
+            port=8883,
+            cert_path=cert,
+            key_path=key,
+            ca_path=ca,
+            buffer=buffer,
+        )
+        client._connected = True
+
+        # 3 mensajes en el buffer (todos sent=0).
+        id1 = buffer.enqueue("t/a", {"i": 1})
+        id2 = buffer.enqueue("t/b", {"i": 2})
+        id3 = buffer.enqueue("t/c", {"i": 3})
+        # id2 ya está in-flight (publicado en vivo, esperando PUBACK).
+        client._pending_acks[42] = id2
+
+        count = client.replay_buffer()
+
+        # Solo se re-publicaron id1 e id3 — id2 se salteó.
+        assert count == 2
+        assert mock_client.publish.call_count == 2
+        sent_payloads = {
+            call.args[1] for call in mock_client.publish.call_args_list
+        }
+        import json as _json
+
+        sent_is = {_json.loads(p)["i"] for p in sent_payloads}
+        assert sent_is == {1, 3}
+        assert 2 not in sent_is
+        # Sanity: las 3 estaban pendientes pero solo 2 se reenviaron.
+        assert {id1, id2, id3} == {id1, id2, id3}
 
     @patch("src.mqtt.client.mqtt.Client")
     def test_disconnect_count_not_incremented_on_graceful_stop(self, mock_mqtt_cls):

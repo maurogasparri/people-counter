@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import numpy as np
@@ -45,7 +45,7 @@ from src.tracking.counter import (
     _aggregate_height_m_from_track,
     build_counter,
 )
-from src.tracking.tracker import EuclideanTracker, stationary_track_ids
+from src.tracking.tracker import EuclideanTracker, Track, stationary_track_ids
 from src.vision.calibration import load_calibration, rectify_pair
 from src.vision.capture import FileCapture, StereoCapture
 from src.vision.depth import (
@@ -58,7 +58,7 @@ from src.vision.depth import (
 )
 from src.vision.best_frame import BestFrameManager
 from src.vision.world_coords import head_height_above_floor
-from src.vision.detect import detect_persons, load_model
+from src.vision.detect import Detection, detect_persons, load_model
 from src.vision.static_suppressor import StaticSuppressor
 from src.web.annotate import annotate_left, compose_3panel, depth_to_colormap
 from src.web.viewer import WebViewer
@@ -92,7 +92,7 @@ _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS = 900
 logger = logging.getLogger(__name__)
 
 
-def _all_tracks_height_stable(tracks: dict, threshold: int) -> bool:
+def _all_tracks_height_stable(tracks: dict[int, Track], threshold: int) -> bool:
     """¿Todos los tracks activos tienen al menos ``threshold`` samples de
     head_height_mm en su detection_history?
 
@@ -121,8 +121,8 @@ def _all_tracks_height_stable(tracks: dict, threshold: int) -> bool:
 
 
 def _any_detection_unmatched(
-    detections: list,
-    tracks: dict,
+    detections: list[Detection],
+    tracks: dict[int, Track],
     radius_px: float,
 ) -> bool:
     """¿Alguna detección está "lejos" de todo track existente?
@@ -1266,6 +1266,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # usado" vs "última push fue hace mucho".
     last_shadow_apply_ts: float | None = None
     within_hours = True  # asumimos abierto hasta el primer check
+    # Fecha del último reset del counter. Los canaries del counter
+    # (track_stitching_ratio, death_emit_count, ghost_adoption_count) y los
+    # totales/hourly que ve el viewer son "del día"; sin un reset en el
+    # rollover de medianoche acumulan toda la vida del proceso y el umbral de
+    # alarma del runbook (ratio > 1.3) se diluye. El dedup se resetea aparte
+    # via people-counter-reset.service; acá reseteamos el estado in-memory del
+    # counter que ese script externo no puede tocar.
+    _last_reset_date = date.today()
     profile_enabled = bool(getattr(args, "profile", False))
     profile_every_n = max(1, int(getattr(args, "profile_every_n", 30)))
     # Si > 0, loggea PROFILE en CADA frame cuyo total_ms supere el threshold,
@@ -1456,6 +1464,21 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             dt.minute,
                         )
                 last_hours_check = now
+
+                # Rollover de medianoche: resetea los acumuladores diarios del
+                # counter (totales, hourly, canaries). El gate de 60s ya nos
+                # da granularidad de sobra para detectar el cambio de día.
+                # Counter puede ser None en los primeros frames (se construye
+                # más abajo) — se skipea, recién nace vacío de todas formas.
+                today = date.today()
+                if today != _last_reset_date:
+                    if counter is not None:
+                        counter.reset_daily()
+                        logger.info(
+                            "counter_daily_reset",
+                            extra={"date": today.isoformat()},
+                        )
+                    _last_reset_date = today
 
             # --- Gate soft: counting events ---
             # Cuando counting_enabled=false (toggle del shadow) o estamos fuera
@@ -1786,7 +1809,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # SQL, modificable sin redeploy.
 
             def _build_positions_metas(
-                dets: list,
+                dets: list[Detection],
             ) -> tuple[list[np.ndarray], list[dict]]:
                 """Arma posiciones del tracker + metas per-detección para una
                 lista de objetos Detection. Compartida entre los buckets
@@ -2033,6 +2056,20 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     float(event.position_x),
                     float(event.position_y),
                 )
+                # Best-frame: cuando el track genera un evento, elegimos el
+                # JPG más representativo de su ventana buffereada y lo
+                # escribimos a disco (auditoría local del operador). NO va al
+                # payload MQTT — la regla dura es no transmitir imágenes, solo
+                # metadatos. Sin esta llamada el buffer se llenaba y solo lo
+                # liberaba el gc, nunca producía el JPG (feature muerto).
+                if best_frame_mgr is not None:
+                    saved = best_frame_mgr.commit(event.track_id, event.timestamp)
+                    if saved is not None:
+                        logger.info(
+                            "best_frame_saved track_id=%d path=%s",
+                            event.track_id,
+                            saved,
+                        )
                 # El device manda event_time RAW (timestamp epoch del cruce
                 # real). El bucket_15min se deriva server-side via columna
                 # GENERATED — desacopla el device del schema bucket size:

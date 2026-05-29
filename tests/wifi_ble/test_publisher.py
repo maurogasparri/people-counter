@@ -143,11 +143,14 @@ def test_period_boundaries_are_disjoint():
     assert second_publish[0]["data"]["period_end"] == 20
 
 
-def test_dedup_query_failure_advances_window():
-    """Si get_window_records raisea, loguea pero la ventana avanza igual.
+def test_dedup_query_failure_does_not_advance_window_immediately():
+    """Un fallo transitorio de get_window_records NO debe perder la ventana.
 
-    Si no avanzara la ventana, la próxima consulta cubriría un período cada
-    vez más largo — eventualmente la query timeout y nunca publicamos nada.
+    A diferencia del counting (que tiene outbox), un fallo acá perdería ~15min
+    de tráfico irrecuperable. No avanzamos al primer fallo: reintentamos la
+    misma ventana en el próximo tick. Recién tras ``max_query_failures`` fallos
+    consecutivos la damos por perdida y avanzamos (para no quedar pegados ni
+    crecer la ventana sin límite si el DB está realmente roto).
     """
 
     class _RaisingDedup:
@@ -160,13 +163,56 @@ def test_dedup_query_failure_advances_window():
         dedup=_RaisingDedup(),
         period_seconds=10.0,
         now_fn=_clock([0, 11]),
+        max_query_failures=3,
     )
 
-    sent = pub.maybe_publish()
-
-    assert sent == 0
-    assert mqtt.sent == []
+    # Primeros 2 fallos: la ventana NO avanza (retry de la misma ventana).
+    for _ in range(2):
+        assert pub.maybe_publish() == 0
+        assert pub.last_period_end == 0
+    # Tercer fallo consecutivo: se da por perdida y se avanza.
+    assert pub.maybe_publish() == 0
     assert pub.last_period_end == 10
+    assert mqtt.sent == []
+
+
+def test_dedup_query_recovers_after_transient_failure():
+    """Fallo transitorio seguido de éxito publica la MISMA ventana (no perdida)."""
+
+    calls = {"n": 0}
+
+    class _FlakyDedup:
+        def get_window_records(self, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient lock")
+            return [
+                {
+                    "visitor_hash": "abc",
+                    "protocol": "wifi",
+                    "rssi_max": -50,
+                    "first_seen_ts": 1,
+                    "last_seen_ts": 2,
+                }
+            ]
+
+    mqtt = _FakeMQTT()
+    pub = WifiBlePublisher(
+        mqtt_client=mqtt,
+        dedup=_FlakyDedup(),
+        period_seconds=10.0,
+        now_fn=_clock([0, 11]),
+    )
+
+    # Fallo transitorio: no avanza.
+    assert pub.maybe_publish() == 0
+    assert pub.last_period_end == 0
+    # Retry exitoso: publica la ventana original [0, 10).
+    assert pub.maybe_publish() == 1
+    assert pub.last_period_end == 10
+    assert len(mqtt.sent) == 1
+    assert mqtt.sent[0]["data"]["period_start"] == 0
+    assert mqtt.sent[0]["data"]["period_end"] == 10
 
 
 def test_mqtt_publish_failure_advances_window():

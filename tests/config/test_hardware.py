@@ -36,7 +36,9 @@ class TestFleetDefaults:
     def test_hardware_params_is_frozen(self) -> None:
         """HardwareParams es un dataclass inmutable — los setup tools lo
         comparten como singleton; mutarlo sería un bug."""
-        with pytest.raises(Exception):  # dataclass frozen levanta FrozenInstanceError
+        import dataclasses
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
             FLEET_DEFAULTS.full_res = (1920, 1080)  # type: ignore[misc]
 
 
@@ -262,3 +264,34 @@ class TestLoadHardwareParamsEdgeCases:
         hw = load_hardware_params(cfg)
         assert hw.ae_initial_settle_seconds == FLEET_DEFAULTS.ae_initial_settle_seconds
         assert hw.ae_resettle_seconds == FLEET_DEFAULTS.ae_resettle_seconds
+
+    def test_non_numeric_scalar_falls_back_without_crash(
+        self, tmp_path: Path,
+    ) -> None:
+        """Un scalar no-numérico (typo del operador, ej. ``"140mm"``) NO debe
+        crashear el setup tool con un traceback — cae al fleet default. Antes
+        el ``float(...)`` directo levantaba ValueError sin captura."""
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            yaml.safe_dump({
+                "bracket": {"baseline_mm": "140mm"},  # string con unidad
+                "lens": {"hfov_deg": "wide"},
+                "vision": {"charuco": {"board_cols": "nine"}},
+            }),
+            encoding="utf-8",
+        )
+        hw = load_hardware_params(cfg)  # no debe levantar
+        assert hw.baseline_mm == FLEET_DEFAULTS.baseline_mm
+        assert hw.hfov_deg == FLEET_DEFAULTS.hfov_deg
+        assert hw.board_cols == FLEET_DEFAULTS.board_cols
+
+    def test_numeric_string_is_coerced(self, tmp_path: Path) -> None:
+        """Un string numérico ('160.0') sí se coerce — tolerante con YAML que
+        quoteó un número."""
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            yaml.safe_dump({"bracket": {"baseline_mm": "160.0"}}),
+            encoding="utf-8",
+        )
+        hw = load_hardware_params(cfg)
+        assert hw.baseline_mm == 160.0
