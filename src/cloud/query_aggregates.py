@@ -28,7 +28,7 @@ Caps de rango por bucket (defense contra full table scans):
     * 1d:    max 365 días
 
 Auth a RDS: IAM database authentication contra el user ``lambda_query_reader``
-(SELECT-only sobre count_events, wifi_ble_summary, pos_transactions, sites,
+(SELECT-only sobre count_events, wifi_ble_events, pos_transactions, sites,
 devices). Separado del ``lambda_writer`` y ``lambda_pos_writer`` por least
 privilege.
 
@@ -65,8 +65,8 @@ _BUCKET_COLS = {
     "1h": "bucket_hour",
     "1d": "bucket_day",
 }
-# Mapeo bucket → vista unificada (post migración 2026-05-26-views-cartesian-product).
-# La Lambda ahora consume estas vistas en lugar de tablas raw, simétrico con
+# Mapeo bucket → vista unificada (producto cartesiano, definido en bootstrap.sql).
+# La Lambda consume estas vistas en lugar de tablas raw, simétrico con
 # el rol readonly_external. La vista hace los FULL OUTER JOINs internamente.
 _BUCKET_UNIFIED_VIEWS = {
     "15min": "metrics_unified_by_bucket_15min",
@@ -358,8 +358,8 @@ def _query_aggregates(
     ``has_more`` = True si el LIMIT N+1 trajo N+1 filas (hay próxima página).
     Las filas en el output son el primer N (sin la N+1 sentinel).
 
-    Post migración 2026-05-26-views-cartesian-product: la query consume la
-    vista ``metrics_unified_by_bucket_<grano>`` que ya hace el FULL OUTER
+    La query consume la vista ``metrics_unified_by_bucket_<grano>``
+    (definida en bootstrap.sql) que ya hace el FULL OUTER
     JOIN de counting + wifi_ble + pos internamente. El Lambda mantiene el
     grid (generate_series × sites) para devolver filas con ceros donde la
     vista no tiene data y la paginación por cursor.
@@ -462,9 +462,9 @@ def _query_aggregates(
 def _query_data_freshness(conn, sites: list[str]) -> dict[str, str]:
     """Último timestamp de ingesta por sucursal. Devuelve dict con ISO strings UTC.
 
-    Post migración 2026-05-26-views-cartesian-product: consume la vista
-    ``data_freshness_by_store`` que ya hace el UNION ALL + MAX por sucursal
-    sobre las 3 facts (count_events, wifi_ble_summary, pos_transactions).
+    Consume la vista ``data_freshness_by_store`` (definida en bootstrap.sql)
+    que ya hace el UNION ALL + MAX por sucursal
+    sobre las 3 facts (count_events, wifi_ble_events, pos_transactions).
     """
     if not sites:
         return {}

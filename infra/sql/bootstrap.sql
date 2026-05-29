@@ -7,6 +7,13 @@
 --   3. Revisar que todas las sentencias hayan corrido OK
 --
 -- Idempotente: usa IF NOT EXISTS / OR REPLACE donde aplica.
+--
+-- Este archivo es el SCHEMA CANÓNICO consolidado: incorpora el end-state de
+-- todas las migraciones de `migrations/` hasta 2026-05-28 inclusive (ya
+-- aplicadas a la DB del piloto y squasheadas acá). Un deploy fresco desde este
+-- bootstrap produce el mismo estado que correr todas esas migraciones en orden.
+-- `migrations/` solo conserva las migraciones PENDIENTES de aplicar a la DB
+-- viva (hoy ninguna; ver migrations/README.md).
 -- =============================================================================
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -50,7 +57,6 @@ CREATE TABLE IF NOT EXISTS count_events (
     -- Altura cruda en metros (medición geométrica del par estéreo). La
     -- categorización adulto/niño/desconocido se aplica server-side via la
     -- función SQL height_class(height_m) — single source of truth del threshold.
-    -- Ver migración infra/sql/migrations/2026-05-26-drop-height-class.sql.
     height_m        REAL,
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- Idempotencia para reintentos del Lambda / replay del buffer del device.
@@ -72,14 +78,15 @@ CREATE INDEX IF NOT EXISTS idx_count_events_day
 -- (group_id post-stitching local del device) por ventana de emisión.
 -- La categorización shopper/passerby se aplica server-side via la función
 -- SQL rssi_class(rssi_max) — el device solo persiste el RSSI crudo.
--- Ver migración infra/sql/migrations/2026-05-26-wifi-ble-events.sql.
 CREATE TABLE IF NOT EXISTS wifi_ble_events (
     event_id        UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id       TEXT         NOT NULL,
     store_id        TEXT         NOT NULL,
     -- Identidad post-stitching local del device (group_id del DedupEngine).
-    -- 16 bytes: derivado de SHA-256 truncado + salt diaria local. Opaco,
-    -- no invertible a MAC. Se renueva cada día (people-counter-reset).
+    -- 16 bytes: un UUID random (uuid.uuid4().hex), NO derivado de la MAC ni
+    -- del hash → opaco e inlinkeable. (La MAC se hashea con SHA-256+salt local
+    -- aparte, pero ese hash nunca sale del device.) Se renueva cada día
+    -- (people-counter-reset rota el salt y resetea los grupos).
     visitor_hash    BYTEA        NOT NULL,
     protocol        TEXT         NOT NULL CHECK (protocol IN ('wifi', 'ble')),
     -- RSSI máximo observado durante la ventana, en dBm (entero negativo
@@ -316,9 +323,8 @@ COMMENT ON FUNCTION rssi_class(INT) IS
 -- por la Lambda query_aggregates. Y data_freshness_by_store con el último
 -- timestamp de ingesta cruzando las tres fuentes por sucursal.
 --
--- Detalle de la implementación + COMMENTs por columna en la migración
--- infra/sql/migrations/2026-05-26-views-cartesian-product.sql. Este bloque
--- es la versión idempotente (CREATE OR REPLACE) que aplica a deploys nuevos.
+-- Vistas idempotentes (CREATE OR REPLACE). Los COMMENT ON por columna/vista
+-- están más abajo en este mismo archivo.
 
 -- --- counting: ingresos y egresos con desglose demográfico ---
 -- Categorización adulto/niño/desconocido aplicada via la función SQL
@@ -686,7 +692,7 @@ FROM (
         FROM count_events GROUP BY store_id
     UNION ALL
     SELECT store_id, MAX(received_at)
-        FROM wifi_ble_summary GROUP BY store_id
+        FROM wifi_ble_events GROUP BY store_id
     UNION ALL
     SELECT store_id, MAX(received_at)
         FROM pos_transactions GROUP BY store_id
@@ -757,9 +763,8 @@ END $$;
 CREATE USER lambda_query_reader;
 GRANT rds_iam TO lambda_query_reader;
 GRANT USAGE ON SCHEMA public TO lambda_query_reader;
--- Post migración 2026-05-26-views-cartesian-product: la Lambda consume las
--- vistas unificadas + data_freshness, NO las tablas crudas. Simétrico con
--- readonly_external (acceso solo via la capa de vistas).
+-- La Lambda query_aggregates consume las vistas unificadas + data_freshness,
+-- NO las tablas crudas. Simétrico con readonly_external (solo via vistas).
 GRANT SELECT ON
     metrics_unified_by_bucket_15min,
     metrics_unified_by_bucket_hour,

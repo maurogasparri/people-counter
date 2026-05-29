@@ -49,8 +49,8 @@ def head_height_above_floor(
 
 
 # NOTA: las funciones `classify_height` y `aggregate_height_class` se
-# eliminaron en la migración 2026-05-26-drop-height-class. La
-# categorización adulto/niño ahora vive centralizada en la función SQL
+# eliminaron cuando la categorización adulto/niño se movió server-side. La
+# categorización ahora vive centralizada en la función SQL
 # `height_class(height_m)` que se aplica server-side sobre
 # `count_events.height_m` (mediana ya estabilizada del detection_history
 # del track). El device solo persiste la medición cruda — ni el live
