@@ -21,9 +21,15 @@ captura opcional de frames "best-frame" para data de active learning.
 - Profundidad estimada de la cabeza (m), altura aproximada (m) y
   clasificación adulto/niño binaria. Métrica derivada por persona,
   *no* identificadora.
-- Hashes SHA-256 truncados (16 bytes) de direcciones MAC observadas en
-  probes WiFi y advertising BLE. Nunca se almacenan ni transmiten MACs
-  crudas.
+- Identificador opaco de visitante (`visitor_hash`): un **UUID aleatorio**
+  (`uuid.uuid4()`) que el dispositivo asigna a cada grupo de identidad
+  post-stitching. **No deriva de la MAC ni es invertible.** La MAC se hashea
+  con SHA-256 + salt local truncado a 16 bytes **solo en el estado local del
+  dispositivo** (`wifi_ble_dedup.sqlite`, salt rotada a diario); ese hash
+  **nunca se transmite**. Nunca se almacenan ni transmiten MACs crudas.
+- RSSI máximo crudo (`rssi_max`) por visitor/ventana. La categorización
+  shopper/passerby/weak se aplica **server-side** (función SQL `rssi_class`),
+  no en el dispositivo.
 - Telemetría del dispositivo (temperaturas, FPS, uptime, cola del
   buffer MQTT) — no incluye datos del titular.
 
@@ -35,9 +41,11 @@ captura opcional de frames "best-frame" para data de active learning.
 - Se purga automáticamente a los `retention_days` días (default 7)
   mediante un timer de systemd (`people-counter-purge-best-frames.timer`)
   que invoca `scripts/purge_best_frames.py` diariamente a las 03:30.
-- **Nunca** se transmite por MQTT ni se sube a AWS. El payload del
-  evento MQTT incluye el path local (`best_frame_path`) como referencia
-  para acceso autorizado vía SSH al dispositivo, no la imagen.
+- **Nunca** se transmite por MQTT ni se sube a AWS — ni la imagen ni el
+  path. El payload del evento MQTT solo lleva metadatos de conteo
+  (`direction`, `track_id`, `event_time`, `height_m`, `confidence`). El
+  path del JPG aparece únicamente en los logs locales del dispositivo
+  (`best_frame_saved ... path=...`), para acceso autorizado vía SSH.
 
 ## DPIA mini (Evaluación de Impacto)
 
@@ -62,10 +70,11 @@ captura opcional de frames "best-frame" para data de active learning.
    `/etc/people-counter/config.yaml` y el validador en
    `src/config/loader.py` chequea el tipo bool. No es accionable por
    error humano remoto.
-2. **Local-only.** El cliente MQTT nunca recibe los bytes del JPG; solo
-   el path. Auditoría: revisar `src/main.py` en la sección "Publish
-   counting events" — el campo `best_frame_path` es un string, no un
-   blob.
+2. **Local-only.** El cliente MQTT nunca recibe ni los bytes del JPG ni
+   el path. Auditoría: revisar `src/main.py` en el loop "Publicar eventos
+   de conteo" — el payload no contiene `best_frame_path`; el path solo se
+   loguea localmente (`best_frame_saved`). `best_frame_mgr.commit()`
+   escribe el JPG a disco y devuelve el path, que nunca entra al payload.
 3. **Retención corta.** El timer corre todos los días, y el script
    borra cualquier archivo con `mtime` mayor a `retention_days`.
    `Persistent=true` en el timer recupera ejecuciones perdidas si el

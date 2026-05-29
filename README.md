@@ -48,7 +48,7 @@ El dispositivo corre tres servicios systemd independientes:
 |---------|---------|----------|
 | `people-counter.service` | `src/main.py` | Pipeline de visión: capture → rectify → depth → detect → track → count → MQTT |
 | `wifi-monitor.service` | `rfkill unblock` + `airmon-ng check kill` | Libera wlan0 al boot (destraba rfkill + mata NM/wpa); el pipeline lo pasa a monitor mode (`iw` + `nexutil -m2`) |
-| `people-counter-reset.timer` | Diario a las 04:00 | Resetea contadores de dedup y totales de conteo para el nuevo día comercial |
+| `people-counter-reset.timer` | Diario a las 04:00 | Resetea el estado de dedup + rota el salt local. Los totales/canaries del counter se resetean in-process en el rollover de medianoche (`main.py`) |
 
 El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT. La dedup L3 inter-cámara queda reservada para deploys multi-cam future work (no aplica al PoC con 1 device/sucursal).
 
@@ -119,7 +119,7 @@ En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suf
 El sistema usa **defaults canónicos + override per-device + cloud channel**:
 
 - **Defaults** ([`config/config.example.yaml`](config/config.example.yaml)): el config canónico de la flota — bracket geometry, sensor mode, vision pipeline (SGBM, rectify), detection, tracking, counter, MQTT topics, buffer paths, status LED, etc. Todos los devices heredan estos valores.
-- **Per-device** (`/etc/people-counter/config.yaml`): override mínimo con lo que cambia por unidad — `device.id`, `mounting_height_m`, counting zone/lines, MQTT endpoint + certs. Cualquier key ausente cae al default. El loader hace deep-merge al boot.
+- **Per-device** (`/etc/people-counter/config.yaml`): **única fuente de verdad en runtime**. El loader (`load_config`) lee SOLO este archivo — **no** mergea con el template. Tiene que estar completo (todas las keys requeridas, validadas en `_validate`). `config.example.yaml` es el TEMPLATE de provisioning: el operator lo copia, edita lo que cambia por unidad (`device.id`, `mounting_height_m`, counting zone/lines, MQTT endpoint + certs) y lo deja como config del device.
 - **Cloud** (AWS IoT Device Shadow): settings de negocio — horarios operativos, factor de escala, toggles de habilitación. Se aplican vía `RUNTIME_SAFE_KEYS` sin reinicio.
 
 `mounting_height_m` (per-device) alimenta el SGBM auto-tune (`num_disparities: auto` deriva el rango de disparidad por sitio) y el head-height gating del clasificador adulto/niño. La calibración estéreo es mount-independent (un único `.npz` factory sirve para mount 2.0–3.5m).

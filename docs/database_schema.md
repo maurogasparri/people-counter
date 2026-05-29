@@ -18,10 +18,11 @@ Snapshot del 2026-05-26 post-refactor de categorización server-side:
   por ventana, con `visitor_hash` post-stitching local y RSSI crudo).
   Categorización passerby/shopper en función SQL `rssi_class(INT)`.
 
-Migraciones:
-- [`infra/sql/migrations/2026-05-26-drop-height-class.sql`](../infra/sql/migrations/2026-05-26-drop-height-class.sql)
-- [`infra/sql/migrations/2026-05-26-wifi-ble-events.sql`](../infra/sql/migrations/2026-05-26-wifi-ble-events.sql)
-- [`infra/sql/migrations/2026-05-26-restore-cascade-dropped-views.sql`](../infra/sql/migrations/2026-05-26-restore-cascade-dropped-views.sql)
+Estos cambios (drop de `height_class`, `wifi_ble_events`, restore de vistas
+post-CASCADE) ya están consolidados en
+[`infra/sql/bootstrap.sql`](../infra/sql/bootstrap.sql) — las migraciones
+incrementales 2026-05-2x que los introdujeron se squashearon ahí (ver el
+header de bootstrap.sql).
 
 ---
 
@@ -173,8 +174,8 @@ no necesiten `date_trunc`:
 
 Producto cartesiano `<métrica>_by_bucket_<grano>` sobre 3 granularidades
 (`15min`, `hour`, `day`) y vistas unificadas consumidas por la Lambda
-`query_aggregates`. Detalle completo en
-[`infra/sql/migrations/2026-05-26-views-cartesian-product.sql`](../infra/sql/migrations/2026-05-26-views-cartesian-product.sql).
+`query_aggregates`. Definiciones completas en
+[`infra/sql/bootstrap.sql`](../infra/sql/bootstrap.sql) (sección de vistas).
 
 ```
 counter (count_events)                  POS (pos_transactions)

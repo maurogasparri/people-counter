@@ -25,7 +25,11 @@ El device publica cada 5 minutos en `telemetry`:
 | `ghost_adoption_count` | Adopciones de ID exitosas (capa 1, acumulativo) | depende | — |
 
 Las tres se persisten en RDS (`telemetry.track_stitching_ratio`,
-`death_emit_count`, etc.). Reset diario en el device.
+`death_emit_count`, etc.). `track_stitching_ratio` y `death_emit_count` se
+resetean a diario en el device (rollover de medianoche en `main.py`, que llama
+`counter.reset_daily()`); `ghost_adoption_count` es **acumulativo desde el boot
+del proceso** (el tracker no tiene `reset_daily`) — leelo como contador
+monotónico, no como total del día.
 
 **Lookup table del árbol diagnóstico**:
 

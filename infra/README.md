@@ -33,10 +33,13 @@ RPi5 ──MQTT/TLS──► IoT Core ──┬─► Rule "counting"   ─┐
   endpoints). La Lambda usa `rds.generate_db_auth_token` para autenticar como
   el DB user `lambda_writer` (sin password almacenado).
 - **Sin Lambda dedup L3** — innecesaria con 1 device/sucursal. El stitching
-  local del device (hash groups con 3 reglas: seqnum continuity + cross-protocol
-  L2 + BLE anchoring) cubre monocam. Reintroducir cuando haya 2+ cams por store.
-- **Payload WiFi/BLE reducido** — el device manda `{passersby, shoppers}` post
-  stitching, no hashes individuales. Privacidad + payload chico.
+  local del device (hash groups con 4 reglas: seqnum continuity + cross-protocol
+  L2 + BLE anchoring + fingerprint continuity) cubre monocam. Reintroducir
+  cuando haya 2+ cams por store.
+- **Payload WiFi/BLE per-device** — el device manda un array `devices[]` (un
+  evento por visitor post-stitching) con `rssi_max` crudo + `visitor_hash`
+  opaco (UUID random); la categorización passerby/shopper se aplica server-side
+  via la función SQL `rssi_class(rssi_max)`. Nunca hashes pre-stitching ni MACs.
 
 ---
 
@@ -50,7 +53,7 @@ Lambda; el `type` dentro del envelope discrimina la tabla destino.
 |---|---|---|
 | `store/{store_id}/counting`  | Tiempo real (por cruce de linea)        | `count_events`     |
 | `store/{store_id}/telemetry` | `telemetry.interval_seconds` (300s def) | `telemetry`        |
-| `store/{store_id}/wifi_ble`  | `wifi_ble.summary_interval_seconds` (15min def, rango [30, 900]) | `wifi_ble_summary` |
+| `store/{store_id}/wifi_ble`  | `wifi_ble.summary_interval_seconds` (15min def, rango [30, 900]) | `wifi_ble_events` |
 
 Shape del envelope (de `src.mqtt.client.MQTTClient.publish_event`):
 
@@ -69,8 +72,8 @@ mapea field por field) y en [`sql/bootstrap.sql`](sql/bootstrap.sql) (columnas
 de cada tabla).
 
 **Reglas duras**:
-- Nunca MACs crudas — hashing local en el device antes de bufferear.
-- Hashes nunca salen del device — solo agregados `{passersby, shoppers}`.
+- Nunca MACs crudas — hashing local (SHA-256 + salt) en el device antes de bufferear.
+- Los hashes de MAC nunca salen del device — solo el `visitor_hash` opaco (UUID random) + `rssi_max` crudo por visitor.
 
 ### Shadow — `$aws/things/{device_id}/shadow/update`
 
@@ -80,8 +83,10 @@ Pusheable desde la nube (whitelist en `src/config/loader.py → CLOUD_OVERRIDABL
 { "state": { "desired": { "counting_enabled": false, "operating_hours": { ... } } } }
 ```
 
-Solo `counting_enabled` + `operating_hours`. El resto (thresholds, geometria,
-modelo) se cambia editando `/etc/people-counter/config.yaml` per-device.
+Solo `counting_enabled`, `operating_hours` y `external_traffic_enabled`
+(whitelist `CLOUD_OVERRIDABLE`). El resto (thresholds, geometria, modelo) se
+cambia editando `/etc/people-counter/config.yaml` per-device. Los deltas con
+valores inválidos se rechazan antes de persistir.
 
 ---
 
@@ -98,7 +103,9 @@ Definidos en [`cloudformation/people-counter.yaml`](cloudformation/people-counte
 | `IoTDevicePolicy`                | Connect, publish a los 3 topics, subscribe al shadow propio. |
 | `IoTThingType`                   | `people-counter-${env}` con atributos `store_id`, `firmware_version`. |
 | `IoTTopicRule` x3                | Routing MQTT → Lambda. Error action → CloudWatch Logs. |
-| `PersistEventLambda`             | Python 3.13, 256MB, IAM auth a RDS. Code: `src/cloud/persist_event.py`. |
+| `PersistEventLambda`             | Python 3.13, 256MB, IAM auth a RDS (user `lambda_writer`). Code: `src/cloud/persist_event.py`. Persiste counting/telemetry/wifi_ble. |
+| `IngestPosLambda`                | Ingesta de transacciones POS (API Gateway). IAM auth como `lambda_pos_writer`. Code: `src/cloud/ingest_pos_transaction.py`. |
+| `QueryAggregatesLambda`          | API de agregados read-only (API Gateway). IAM auth como `lambda_query_reader`. Code: `src/cloud/query_aggregates.py`. |
 | `GrafanaEcrRepo`                 | `:latest` pushed por `deploy.ps1`. `EmptyOnDelete: true` para teardown limpio. |
 | `GrafanaCluster` (ECS)           | Capacity provider FARGATE. |
 | `GrafanaTaskDefinition`          | Cpu/Memory parametrizados, env vars + secret de RDS bakeados, log driver `awslogs`. |
@@ -113,14 +120,20 @@ Definidos en [`cloudformation/people-counter.yaml`](cloudformation/people-counte
 
 ## 3) Schema de Postgres
 
-Definido en [`sql/bootstrap.sql`](sql/bootstrap.sql). 4 tablas + 6 views.
+Definido en [`sql/bootstrap.sql`](sql/bootstrap.sql) — fuente canónica. Tablas
+de hechos + dimensiones (`sites`, `devices`) + vistas del producto cartesiano.
 
 | Tabla | Granularidad | Idempotencia |
 |---|---|---|
 | `count_events`     | 1 row por cruce de linea          | `UNIQUE (device_id, event_ts, track_id, direction)` |
 | `telemetry`        | 1 row por sample (5min def)       | sin constraint — duplicados aceptables |
-| `wifi_ble_summary` | 1 row por ventana (15min def)     | `UNIQUE (device_id, period_start, period_end)` |
-| `sales`            | 1 row por venta (futuro POS API)  | `UNIQUE (store_id, external_id)` |
+| `wifi_ble_events`  | 1 row por visitor por ventana     | `UNIQUE (device_id, visitor_hash, period_start)` — `ON CONFLICT DO UPDATE` refina `rssi_max` al máx |
+| `pos_transactions` | 1 row por transacción (POS API)   | `UNIQUE (store_id, transaction_id)` |
+
+Categorización single-source-of-truth en funciones SQL: `height_class(REAL)`
+(adult/child/unknown desde `height_m` crudo) y `rssi_class(INT)`
+(shopper/passerby/weak desde `rssi_max` crudo). Modificables con
+`CREATE OR REPLACE FUNCTION` retroactivo a todos los rows históricos.
 
 **Columnas notables de `telemetry`**: ademas de OS metrics (`cpu_temp_c`,
 `hailo_temp_c`, `disk_free_mb`, etc) y pipeline metrics (`fps`,
@@ -130,19 +143,22 @@ ningun stitch efectivo. Canary para detectar si la flota corre con OS que
 defeatean el stitching (Apple H1+ con seqnum reset, BLE off, etc). Query:
 `SELECT device_id, AVG(wifi_ble_stitching_ratio) FROM telemetry WHERE event_ts > now() - interval '1 day' GROUP BY device_id;`
 
-Views (todas en `bootstrap.sql`):
+Views (todas en `bootstrap.sql` — ver el archivo para la lista completa y las
+definiciones). El patrón es un **producto cartesiano** de las facts agregadas a
+3 buckets (`_15min` / `_hour` / `_day`):
 
-- **`wifi_ble_store_traffic`** — agrega `wifi_ble_summary` por `(store_id, period_bucket)` con `MAX(passersby)` y `MAX(shoppers)`. Multi-cam dedup read-time: cuando un store tiene 2+ cams, las ventanas de WiFi/BLE solapan (~30-50m vs ~3-5m de vision), tomar el MAX usa la cam que mejor lo vio como estimador. Con 1 cam/store, MAX == el row de esa cam.
-- **`counting_by_bucket`** — `ins / outs / net` por `(store_id, event_bucket)`. `event_bucket` es la columna que el device alinea a múltiplos de 900s (15min) — constante de diseño `COUNTING_BUCKET_SECONDS`, NO configurable. La columna RDS es regular (no GENERATED) así rows viejos preservan su bucket original.
-- **`turn_in_rate_by_bucket`** — `counting_by_bucket` ⨝ `wifi_ble_store_traffic` por bucket, calcula `turn_in_rate = ins / passersby` y `conversion_rate = ins / shoppers`. FULL OUTER JOIN preserva buckets donde solo una fuente reporto.
-- **`counting_hourly`** / **`turn_in_rate_hourly`** — rollups por hora encima de las dos anteriores. Para reportes diarios donde 15min es demasiado fino.
-- **`store_hourly_summary`** — counting + sales por hora por store. Conversion rate = ventas / personas. Util cuando `sales` empiece a tener datos via API Gateway.
+- **`counting_by_bucket_*`** — `ins / outs / net` + desglose demográfico (vía `height_class()`) por `(store_id, bucket)`. Buckets server-derived (`GENERATED` desde `event_ts`).
+- **`wifi_ble_by_bucket_*`** — `passersby / shoppers / weak` (vía `rssi_class()`) + `COUNT(DISTINCT visitor_hash)` por bucket. El `DISTINCT` dedupa un visitor presente en N ventanas.
+- **`pos_by_bucket_*`** — ventas/devoluciones/items/montos por bucket.
+- **`turn_in_rate_by_bucket_*`** / **`conversion_by_bucket_*`** — `turn_in_rate = ins / passersby`, `conversion = ins / shoppers` (FULL OUTER JOIN preserva buckets de una sola fuente).
+- **`occupancy_by_bucket_*`**, **`visit_duration_by_bucket_*`**, **`metrics_unified_by_bucket_*`** (uso interno de la Lambda), **`data_freshness_by_store`** (último `received_at` cross-fact por sucursal).
 
 ### DB users + auth
 
 - `people_counter` (master) — desde DBeaver, password en Secrets Manager.
-- `lambda_writer` — sin password, `GRANT rds_iam` para auth via IAM token. La Lambda role tiene `rds-db:connect` sobre este user.
-- DB separada `grafana` — owner `people_counter`, solo para state interno de Grafana (users, dashboards, sessions).
+- `lambda_writer` / `lambda_pos_writer` / `lambda_query_reader` — sin password, `GRANT rds_iam` para auth via IAM token (least privilege: writer escribe facts, pos_writer solo POS, query_reader es SELECT-only sobre las vistas). Cada Lambda role tiene `rds-db:connect` sobre su user.
+- `readonly_external` — partner externo, SELECT solo sobre las vistas `*_by_bucket_*` + `sites`/`devices` + `EXECUTE` de las 2 funciones de categorización.
+- DB separada `grafana` — owner `people_counter`, solo para state interno de Grafana.
 
 ---
 

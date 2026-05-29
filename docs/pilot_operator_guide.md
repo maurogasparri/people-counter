@@ -62,7 +62,7 @@ par de access key con política read-only sobre:
 
 - `logs:FilterLogEvents` en el log group del Lambda de dedup.
 - `iot:Publish` solamente en el topic de test (`store/<store_id>/debug`).
-- `timestream:Select` sobre la DB del piloto (opcional, para queries manuales).
+- Acceso read-only a la RDS Postgres del piloto (opcional, para queries manuales vía `readonly_external` / psql). El datastore es RDS Postgres 16, no Timestream.
 
 Configurar en la laptop:
 
@@ -315,9 +315,11 @@ cloud_defaults:
 
 Formato: `"HH:MM-HH:MM"` (24h). Para día cerrado, usar `null`.
 
-**`on_invalid_schedule`** — comportamiento si el horario está mal formateado.
-Default `fail_open` (sigue contando). No cambiar en campo sin autorización
-de ingeniería.
+**Validación de `operating_hours`**: si un valor está mal formado (ej. `end <=
+start`, o un string que no es `HH:MM-HH:MM`), el delta del shadow se **rechaza
+antes de aplicarse** y el último valor válido sigue operando. No hay toggle de
+comportamiento (`on_invalid_schedule`/`fail_open` ya no existe) — la validación
+es única y fail-fast. Ver `docs/shadow_operator_guide.md`.
 
 Validar el YAML antes de guardar:
 

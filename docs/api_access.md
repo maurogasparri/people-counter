@@ -203,25 +203,30 @@ consumir las vistas de agregados del sistema vía SQL.
 
 ## Rol y permisos
 
-El rol **`readonly_external`** (creado por `bootstrap.sql` y la migración
-`infra/sql/migrations/2026-05-23-readonly-external-role.sql`) tiene
+El rol **`readonly_external`** (creado por `bootstrap.sql`) tiene
 `SELECT` exclusivamente sobre las **vistas de agregados**, no sobre las
 tablas crudas. Esto es deliberado: los analistas externos no necesitan
 `device_id` ni timestamps fine-grained — necesitan métricas por store/hora/día.
 
 ### Vistas expuestas
 
-| Vista | Granularidad | Métricas |
+Todas las vistas siguen el patrón `<fact>_by_bucket_{15min,hour,day}` (producto
+cartesiano de granularidades). Lista completa de grants en
+`bootstrap.sql` (`GRANT SELECT ON ... TO readonly_external`):
+
+| Familia de vistas | Granularidades | Métricas |
 |---|---|---|
-| `counting_by_bucket` | 15min | `ingress`, `egress`, neto |
-| `counting_hourly` | hora | `ingress`, `egress` por hora |
-| `counting_daily` | día | `ingress`, `egress` por día |
-| `turn_in_rate_by_bucket` | 15min | `passersby`, `shoppers`, `turn_in_rate` |
-| `wifi_ble_store_traffic` | 15min | passersby/shoppers post-stitching |
-| `conversion_rate_by_store` | acumulado | `visitors`, `transactions`, `conversion_rate` |
-| `conversion_rate_hourly` | hora | conversion_rate por hora |
-| `conversion_rate_daily` | día | conversion_rate por día |
+| `counting_by_bucket_*` | 15min / hora / día | `ins`, `outs`, `net` + desglose demográfico (`ins_adult`/`ins_child`/`ins_unknown`) |
+| `wifi_ble_by_bucket_*` | 15min / hora / día | `passersby`, `shoppers`, `weak` (categorizado server-side por `rssi_class`) |
+| `pos_by_bucket_*` | 15min / hora / día | `transactions`, `sales`, `returns`, montos |
+| `turn_in_rate_by_bucket_*` | 15min / hora / día | `turn_in_rate = ins / passersby` |
+| `conversion_by_bucket_*` | 15min / hora / día | `conversion = ins / shoppers` |
+| `occupancy_by_bucket_*`, `visit_duration_by_bucket_*` | 15min‡ / hora / día | ocupación estimada, duración de visita |
+| `data_freshness_by_store` | — | último `received_at` cross-fact por sucursal |
 | `sites`, `devices` | dimensión | catálogo (lat/long, nombres) |
+
+‡ `visit_duration` y `occupancy` solo exponen `_hour` y `_day`. Las funciones
+`height_class(REAL)` y `rssi_class(INT)` también tienen `GRANT EXECUTE`.
 
 Si un partner necesita granularidad mayor (per-device, per-evento), se le
 crea un rol específico con grants adicionales — el rol genérico se
@@ -299,8 +304,8 @@ conn = psycopg.connect(
 
 with conn.cursor() as cur:
     cur.execute("""
-        SELECT store_id, bucket_hour, ingress, egress
-        FROM counting_hourly
+        SELECT store_id, bucket_hour, ins, outs
+        FROM counting_by_bucket_hour
         WHERE bucket_hour >= NOW() - INTERVAL '7 days'
         ORDER BY bucket_hour DESC
         LIMIT 100
@@ -321,8 +326,8 @@ Connection type: PostgreSQL.
 ### Footfall diario por store
 
 ```sql
-SELECT s.store_name, c.bucket_day, c.ingress, c.egress
-FROM counting_daily c
+SELECT s.store_name, c.bucket_day, c.ins, c.outs, c.net
+FROM counting_by_bucket_day c
 JOIN sites s ON c.store_id = s.store_id
 WHERE c.bucket_day >= CURRENT_DATE - INTERVAL '30 days'
 ORDER BY s.store_name, c.bucket_day;
@@ -332,18 +337,19 @@ ORDER BY s.store_name, c.bucket_day;
 
 ```sql
 SELECT store_id, bucket_15min, passersby, shoppers, turn_in_rate
-FROM turn_in_rate_by_bucket
+FROM turn_in_rate_by_bucket_15min
 WHERE bucket_15min >= NOW() - INTERVAL '7 days'
   AND store_id = '<store-id>'
 ORDER BY bucket_15min;
 ```
 
-### Conversion rate por store (acumulado)
+### Conversion rate diario por store
 
 ```sql
-SELECT store_id, visitors, transactions, conversion_rate
-FROM conversion_rate_by_store
-ORDER BY conversion_rate DESC NULLS LAST;
+SELECT store_id, bucket_day, visits, sales, conversion_rate
+FROM conversion_by_bucket_day
+WHERE bucket_day >= CURRENT_DATE - INTERVAL '30 days'
+ORDER BY bucket_day DESC, conversion_rate DESC NULLS LAST;
 ```
 
 ### Mapa de stores (lat/long)

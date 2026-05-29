@@ -10,7 +10,7 @@ cartesiano. Sirve para:
 - **Onboarding**: el próximo dev ve el shape del comportamiento + cómo lo
   ejercita la suite.
 - **Trazabilidad regulatoria**: "demostrá que el counter es correcto" se
-  responde con la matriz + 854 tests verde + canaries en flota.
+  responde con la matriz + ~920 tests verde + canaries en flota.
 
 > **NO es exhaustivo combinatorio.** El producto teórico es ~86.000 celdas;
 > la mayoría son trivially equivalent (simetrías horizontal/vertical,
@@ -34,8 +34,8 @@ cartesiano. Sirve para:
 | **H — Labels** | H1 two-way / H2 one-way (sticky) | `Line.crossing_label` retorna `None` para dirección sin label |
 | **I — Orientación** | I1 horizontal / I2 vertical | `Line.__post_init__`, `side_of`, `within_segment` |
 | **J — Track state** | J1 CONFIRMED / J2 PENDING / J3 CANDIDATE (rechazo) | Primera línea de `_process_track` |
-| **K — Identity** | K1 same-id / K2 ghost-adopted (capa 1 rescue) / K3 new-id | `EuclideanTracker._resurrect_ghost` |
-| **L — Keep-alive** | L1 active (track PENDING extrapolando inside) / L2 not | `_should_promote_to_lost` |
+| **K — Identity** | K1 same-id / K2 ghost-adopted (capa 1 rescue) / K3 new-id | `EuclideanTracker._try_adopt_ghost` (decisión IoU/dist) + `_resurrect_ghost` (aplica meta) |
+| **L — Keep-alive** | L1 active (track PENDING extrapolando inside) / L2 not | `_inside_keepalive_counting_zone` + guard de promoción LOST en `_record_miss` |
 | **M — Ghost outside_pos inherit** | M1 preserved (dist ≤ threshold) / M2 invalidated (dist > threshold) | `_resurrect_ghost` con `ghost_outside_invalidate_px` |
 
 Ejes ortogonales del counter en sí: **A × B × C × D × E × F × G × H × I × J**.

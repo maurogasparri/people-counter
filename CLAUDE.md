@@ -47,7 +47,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ## Hardware por unidad
 
-- Raspberry Pi 5 2GB + Active Cooler (RAM dimensionada empíricamente — working set ~270 MB sostenido, peak 281 MB bajo stress brutal con balloon de 6GB simulando ambiente 2GB; ver `docs/hardware_sizing.md`)
+- Raspberry Pi 5 2GB + Active Cooler (RAM dimensionada empíricamente — working set ~270 MB sostenido, peak 281 MB; ver `docs/hardware_sizing.md`)
 - Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — único HAT stackeado
 - 2× Arducam IMX708 12MP HDR M12 120° HFOV (B0310) vía CSI — par estéreo, baseline 14cm
 - Waveshare PoE HAT (H) 25.5W — alimentación, conectado por dupont (no stackeado)
@@ -58,59 +58,59 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Pipeline de visión
 
-- **Calibración estéreo**: ChArUco A3 (9×6 / 45mm / 33mm / DICT_4X4_100), modelo fisheye Kannala-Brandt (`cv2.fisheye.calibrate`). Lab universal (mount 2.0-3.5m): foco a 1.5m, calibración a 1.0/2.0/3.0m. Validar con `scripts/diagnose_depth.py` (error centro <5% a 2m, <10% a 3m). `detect_charuco_dual_pass` (en `src/vision/calibration.py`) intenta primero el frame original y, si quedó por debajo de 8 corners, retry con sharpen 3×3 — recovery transparente para feedback live y gates de captura del wizard. QC de ensamble del bracket: `scripts/diagnose_bracket.py` mide pitch/yaw/roll/offset entre L y R sin requerir calibración previa.
+- **Calibración estéreo**: ChArUco A3 (9×6 / 45mm / 33mm / DICT_4X4_100), modelo fisheye Kannala-Brandt (`cv2.fisheye.calibrate`). Lab universal (mount 2.0-3.5m): foco a 1.5m, calibración a 1.0/2.0/3.0m. Validar con `scripts/diagnose_depth.py` (error centro <5% a 2m, <10% a 3m). `detect_charuco_dual_pass` reintenta con sharpen 3×3 si quedó <8 corners. QC de ensamble del bracket sin calib previa: `scripts/diagnose_bracket.py` (pitch/yaw/roll/offset L↔R).
 - **Óptica**: Arducam B0310 fisheye real, no rectilíneo. Focal pinhole-equivalente `f_px = 2050` a full-res 4608×2592. La fórmula `f = (W/2)/tan(HFOV/2)` NO aplica.
-- **Sensor mode canónico**: 2304×1296 binned 2×2, full FOV, 16:9, hasta 56 fps. Runtime puede usar rescale lineal (ej. 1152×648 vía `scripts/rescale_calibration.py`) — K-B es resolución-independiente en intrínsecos angulares. **CRITICAL**: en TODO call site de picamera2 hay que pasar `raw={"size": CANONICAL_RAW_SIZE}` (importar desde `src.vision.capture`) para seleccionar Mode 1 (2304×1296, HFOV 120°); sin ese hint picamera2 elige Mode 0 (1536×864 cropeado, HFOV ~80°) que reduce la cobertura a la mitad. Overrideable per-device vía `vision.sensor_raw_size` del config.
+- **Sensor mode canónico**: 2304×1296 binned 2×2, full FOV, 16:9, hasta 56 fps. Runtime puede usar rescale lineal (ej. 1152×648 vía `scripts/rescale_calibration.py`) — K-B es resolución-independiente en intrínsecos angulares. **CRITICAL**: en TODO call site de picamera2 pasar `raw={"size": CANONICAL_RAW_SIZE}` (importar de `src.vision.capture`) para seleccionar Mode 1 (2304×1296, HFOV 120°); sin ese hint picamera2 elige Mode 0 (1536×864 cropeado, HFOV ~80°) que reduce la cobertura a la mitad. Overrideable per-device vía `vision.sensor_raw_size`.
 - **Rectificación**: `cv2.fisheye.initUndistortRectifyMap` (balance=0.0) + `cv2.remap`.
 - **Profundidad**: SGBM + matcher derecho + WLS filter. `vision.num_disparities: auto` deriva el rango desde `mounting_height_m`.
-- **Detección**: YOLOv8n fine-tuneado (cenital), HEF para Hailo-8L. NMS on-chip. VStream API con scheduler ROUND_ROBIN. Modelo activo: `people-counter-detector`. Pipeline detallado en `scripts/training/README.md`.
+- **Detección**: YOLOv8n fine-tuneado (cenital), HEF para Hailo-8L. NMS on-chip. VStream API con scheduler ROUND_ROBIN. Modelo activo: `people-counter-detector`. Pipeline en `scripts/training/README.md`.
 - **Tracking**: euclidiano 3D (x, y, profundidad) con Kalman per-track + state machine corta (CANDIDATE → CONFIRMED → PENDING → LOST).
-- **Conteo**: línea virtual + counting zone rectangular. Track entra a la counting zone → cruza línea → sale de la counting zone = evento `direction='in'` o `'out'` (terminología canónica fleet-wide, schema y MQTT). Publicación inmediata vía MQTT.
+- **Conteo**: línea virtual + counting zone rectangular. Track entra a la counting zone → cruza línea → sale = evento `direction='in'`/`'out'` (terminología canónica fleet-wide, schema y MQTT). Publicación inmediata vía MQTT.
 
 ### Captura WiFi/BLE
 
-- **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**. Monitor mode requiere `nexutil -m2` (radiotap en el firmware) — sin eso el netdev entrega frames Ethernet (DLT EN10MB) y scapy no ve 802.11; el capture loop re-parsea los bytes crudos como `RadioTap()`. nexutil se compila aparte (ver `setup_device.sh`). El pipeline corre como `User=pi`: `/dev/rfkill` necesita estar en grupo `netdev` (udev rule) para que el unblock funcione.
+- **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**. Monitor mode requiere `nexutil -m2` (radiotap en el firmware) — sin eso el netdev entrega frames Ethernet (DLT EN10MB) y scapy no ve 802.11; el capture loop re-parsea los bytes crudos como `RadioTap()`. nexutil se compila aparte (`setup_device.sh`). El pipeline corre como `User=pi`: `/dev/rfkill` necesita estar en grupo `netdev` (udev rule) para que el unblock funcione.
 - **BLE**: bleak (D-Bus de BlueZ), escaneo pasivo.
-- **Solo dispositivos "humanos"** (`wifi_ble.randomized_only`, default true): se cuentan solo MACs WiFi randomizadas (locally-administered bit 0x02) y BLE con `AddressType=random` (RPA iOS / aleatoria Android). Las MAC globales WiFi y los BLE `public` (OUI real) son infra/IoT fijo (APs-como-cliente, smart-TVs, beacons, parlantes) y se descartan antes de hashear. Apagable per-site. Nota: las rotaciones de RPA BLE de un mismo teléfono son todas `random` — eso lo resuelve el stitching, no este filtro.
-- **Hashing**: SHA-256 truncado a 16 bytes. **Nunca MACs crudas**.
-- **Dedup → hash groups con stitching** (`src/wifi_ble/dedup.py`): los hashes se asocian a un `group_id` por identidad del dispositivo. Cada call de `process_detection` aplica 4 reglas y joina al grupo más reciente que matchee:
-  1. **Seqnum continuity (WiFi-only)** — el seqnum 802.11 (12 bits, del header `dot11.SC >> 4`) es contador del chip y tiende a ser continuo cross-MAC-rotation. Match: Δseqnum ≤ `max_delta` (default 100, considerando wrap mod 4096) + ΔRSSI ≤ 5dBm + Δt ≤ 30s. Defeated por Apple H1+ (iPhone 12+) que resetea seqnum on MAC change; sigue funcionando en Android.
-  2. **Cross-protocol L2 (short window)** — WiFi MAC y BLE addr observados dentro de `cross_protocol_window_seconds` (default 2s) con ΔRSSI ≤ 5dBm = mismo dispositivo. Es el L2 histórico.
-  3. **BLE anchoring (long window)** — durante la vida de un BLE RPA (~15min iOS), nuevas WiFi MACs con RSSI compatible se mergean al grupo del BLE existente. Cubre el caso "WiFi rota cada 2min, BLE cada 15min" donde la regla 2 (2s) no alcanza.
-  4. **Fingerprint continuity (mismo protocolo)** — fingerprint estable (orden de IEs + HT/VHT/HE caps en WiFi; company ID + subtipos Continuity de Apple + service UUIDs + TX power en BLE; ver `src/wifi_ble/fingerprint.py`) que sobrevive la rotación de MAC/RPA. Mismo fingerprint + RSSI compatible + ventana = mismo aparato. Cubre lo que el seqnum NO agarra: **Apple H1+ resetea el seqnum al rotar la MAC** pero el fingerprint es estable. Además actúa de **filtro duro** en la regla 1 (seqnums que coinciden por azar pero con fingerprint distinto = dispositivos distintos). Caveat: dos devices idénticos co-presentes pueden mergearse (leve subconteo); el gate de RSSI lo acota.
-  L3 inter-cámara queda reservado para deploys multi-cam (no aplica al PoC con 1 device/sucursal).
-- **Privacy del stitching**: el seqnum y los timestamps quedan SOLO en `wifi_ble_dedup.sqlite` local (rotado diario via `reset_daily`). El MQTT publish manda solo el `group_id` opaco (16 bytes derivados de SHA-256 + salt diaria local) — nunca hashes pre-stitching, nunca seqnums, nunca MACs crudas.
-- **Stitching canary**: `dedup.get_stitching_ratio()` = `groups / hashes` del día. 1.0 = ningún stitch (cada hash es su propio "visitor"), 0.5 = mitad de los hashes se mergearon. Va en el payload de telemetry (`wifi_ble_stitching_ratio`) y la columna homónima de la tabla `telemetry` — canary para detectar si la flota corre con OS que defeatean las reglas.
-- **Publish per-window events** (`src/wifi_ble/publisher.py`): el `WifiBlePublisher` emite cada ventana (default 15 min) UN array `devices[]` con UN evento por cada group observado en la ventana, con shape `{ visitor_hash, protocol, rssi_max, first_seen_ts, last_seen_ts }`. RSSI crudo (no categorizado) — la cloud aplica `rssi_class(rssi_max)` server-side para clasificar shopper/passerby/weak/unknown. Single source of truth de los thresholds (modificable con `CREATE OR REPLACE FUNCTION` retroactivo). Filtro `MAX(last_seen) IN window`: un visitor presente en N ventanas seguidas emite N rows con su lifetime max RSSI — captura promociones passerby→shopper cross-window. `COUNT(DISTINCT visitor_hash)` al day-level dedupa.
+- **Solo dispositivos "humanos"** (`wifi_ble.randomized_only`, default true): se cuentan solo MACs WiFi randomizadas (locally-administered bit 0x02) y BLE `AddressType=random` (RPA iOS / aleatoria Android). Las MAC globales WiFi y los BLE `public` (OUI real) son infra/IoT fijo (APs, smart-TVs, beacons, parlantes) y se descartan antes de hashear. Apagable per-site. Nota: las rotaciones de RPA BLE de un mismo teléfono son todas `random` — eso lo resuelve el stitching, no este filtro.
+- **Hashing**: SHA-256 truncado a 16 bytes, con **salt local persistido** (`dedup_meta` del SQLite, rotado en `reset_daily`) — **nunca MACs crudas**, nunca hash sin sal at-rest. `process_detection` corre bajo un `threading.Lock` (los dos productores —WiFi en el thread de scapy, BLE en el de bleak— comparten el mismo SQLite).
+- **Dedup → hash groups con stitching** (`src/wifi_ble/dedup.py`): los hashes se asocian a un `group_id` por identidad del dispositivo. Cada `process_detection` aplica 4 reglas y joina al grupo más reciente que matchee:
+  1. **Seqnum continuity (WiFi-only)** — el seqnum 802.11 (12 bits, `dot11.SC >> 4`) es contador del chip, continuo cross-MAC-rotation. Match: Δseqnum ≤ `max_delta` (100, wrap mod 4096) + ΔRSSI ≤ 5dBm + Δt ≤ 30s. Defeated por Apple H1+ (iPhone 12+) que resetea seqnum on MAC change; OK en Android.
+  2. **Cross-protocol L2 (short window)** — WiFi MAC y BLE addr dentro de `cross_protocol_window_seconds` (2s) con ΔRSSI ≤ 5dBm = mismo dispositivo.
+  3. **BLE anchoring (long window)** — durante la vida de un BLE RPA (~15min iOS), nuevas WiFi MACs con RSSI compatible se mergean al grupo del BLE. Cubre "WiFi rota cada 2min, BLE cada 15min" donde la regla 2 no alcanza.
+  4. **Fingerprint continuity (mismo protocolo)** — fingerprint estable (orden de IEs + HT/VHT/HE caps WiFi; company ID + subtipos Continuity de Apple + service UUIDs + TX power BLE; ver `fingerprint.py`) que sobrevive la rotación. Cubre lo que el seqnum NO agarra (Apple H1+ resetea seqnum pero el fingerprint es estable). Además es **filtro duro** en la regla 1 (seqnums que coinciden por azar pero con fingerprint distinto = devices distintos). Caveat: dos devices idénticos co-presentes pueden mergearse (leve subconteo); el gate de RSSI lo acota.
+  L3 inter-cámara queda reservado para deploys multi-cam (no aplica al PoC monocam).
+- **Privacy del stitching**: seqnum y timestamps quedan SOLO en `wifi_ble_dedup.sqlite` local (rotado diario). El MQTT publish manda solo el `group_id` opaco — un **UUID random** (`uuid.uuid4().hex`, NO derivado del hash → inlinkeable) — nunca hashes pre-stitching, seqnums ni MACs crudas.
+- **Stitching canary**: `get_stitching_ratio()` = `groups / hashes` del día. 1.0 = ningún stitch, 0.5 = mitad mergeada. Va en telemetry (`wifi_ble_stitching_ratio`) — detecta si la flota corre con OS que defeatean las reglas.
+- **Publish per-window events** (`publisher.py`): cada ventana (15 min) emite UN array `devices[]` con UN evento por group, shape `{ visitor_hash, protocol, rssi_max, first_seen_ts, last_seen_ts }`. RSSI crudo — la cloud aplica `rssi_class(rssi_max)` server-side (single source of truth de los thresholds, modificable con `CREATE OR REPLACE FUNCTION` retroactivo). Si la query del dedup falla NO avanza la ventana (reintenta; recién tras N fallos consecutivos la da por perdida) — sin esto un lock transitorio perdía 15min de tráfico irrecuperable.
 
 ### Comunicación
 
 - **MQTT** 3.1.1 sobre AWS IoT Core, X.509, QoS 1.
 - Eventos de conteo en tiempo real, resúmenes WiFi/BLE cada 15min, telemetría cada 5min.
-- **Buffer SQLite local**: replay al reconectar, marca enviado solo tras PUBACK.
+- **Buffer SQLite local** (outbox): replay al reconectar, marca enviado SOLO tras PUBACK. El replay saltea mensajes ya in-flight (anti-duplicado en reconnect). `mark_sent` es defensivo — un fallo de SQLite no burbujea al callback de paho.
 
 ### Status LED
 
 - 8 estados (apagado / rojo / amarillo / amarillo blink / verde blink / verde / azul / azul blink) en cascada worst-first: HW > pipeline > internet > cloud > OK.
 - Health probes: CPU/Hailo temp, disco, calibración, captura/inferencia, watchdog (`last_loop_ts` <5s), internet TCP a 1.1.1.1:53, MQTT connected.
-- Monitor en thread separado (probes blocking no estresan el hot path). Fail-safe: sin GPIO → no-op + log INFO.
+- Monitor en thread separado (probes blocking no estresan el hot path). Los dos probes lentos —internet (socket 3s) y Hailo temp (subprocess `hailortcli` hasta 5s)— corren con cadencia propia cacheada, NO en cada tick. Fail-safe: sin GPIO → no-op + log INFO.
 - LEDs onboard ACT/power/Ethernet/audio apagados via dtparam — el RGB externo es la única fuente visual.
 
 ### Cloud (AWS)
 
-- **PoC actual (1 device, deployado)**: IoT Core (broker + 3 Topic Rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`, fuera de VPC, IAM auth a RDS via `rds.generate_db_auth_token`) → RDS Postgres 16 (db.t4g.micro, single-AZ, IAM auth + `rds.force_ssl=1`, `AutoMinorVersionUpgrade=true`). Grafana 13 en ECS Fargate detrás de ALB con ACM cert custom (image desde ECR, custom domain `grafana.tfg.gasparri.com.ar`) lee el mismo RDS como datasource. Orquestado por CloudFormation (`infra/cloudformation/people-counter.yaml`) + `infra/deploy.ps1` (5 fases con `-StartFromPhase`). El cert ACM se crea fuera de CFN para que el deploy no bloquee esperando validación DNS — el ARN entra al stack como parámetro. Schema en `infra/sql/bootstrap.sql`. Lambda dedup L3 no aplica con 1 device/sucursal (el stitching local del device cubre el caso).
-- **Producción (rollout de flota)**: RDS single-AZ → Multi-AZ ($26/mo en vez de $13). Considerar Amazon Managed Grafana (SSO + IAM-integrated, $9/user) en vez de OSS si se integra a auth corporativa. Migrar DNS a Route53 delegated subdomain para que CFN gestione DNS records (ALIAS al ALB) y el deploy sea 100% sin pause — hoy hay 2 steps manuales: agregar CNAMEs de validación ACM (permanentes) y el CNAME final al ALB en el DNS provider externo.
-- **Costos PoC ~$35/mo**: RDS db.t4g.micro $13 + Fargate task 0.5vCPU/1GB $18 + ALB $16 + ACM cert free + IoT/Lambda/SecretsManager/CloudWatch <$2. Al sumar 2+ services en el futuro (sales API, auth), se puede compartir el ALB via listener rules y amortizar el costo fijo del LB.
-- **Multi-cam por sucursal**: cuando se agregue 2+ cámaras por local, reintroducir L3 (Lambda + DynamoDB de hashes). El stitching local del device cubre monocam pero no inter-cam.
+- **PoC actual (1 device, deployado)**: IoT Core (broker + 3 Topic Rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`, fuera de VPC, IAM auth a RDS via `rds.generate_db_auth_token`) → RDS Postgres 16 (db.t4g.micro, single-AZ, IAM auth + `rds.force_ssl=1`, `AutoMinorVersionUpgrade=true`). Grafana 13 en ECS Fargate detrás de ALB con ACM cert custom (image desde ECR, `grafana.tfg.gasparri.com.ar`) lee el mismo RDS. Orquestado por CloudFormation (`infra/cloudformation/people-counter.yaml`) + `infra/deploy.ps1` (5 fases, `-StartFromPhase`). El cert ACM se crea fuera de CFN para que el deploy no bloquee esperando validación DNS (el ARN entra como parámetro). Schema en `infra/sql/bootstrap.sql`.
+- **Producción (rollout de flota)**: RDS single-AZ → Multi-AZ ($26/mo vs $13). Considerar Amazon Managed Grafana (SSO + IAM, $9/user) si se integra a auth corporativa. Migrar DNS a Route53 delegated subdomain para que CFN gestione los records (ALIAS al ALB) y el deploy sea 100% sin pause — hoy hay 2 steps manuales (CNAMEs de validación ACM + CNAME final al ALB en el DNS externo).
+- **Costos PoC ~$35/mo**: RDS $13 + Fargate 0.5vCPU/1GB $18 + ALB $16 + ACM free + IoT/Lambda/SecretsManager/CloudWatch <$2. Al sumar 2+ services (sales API, auth) se comparte el ALB via listener rules.
+- **Multi-cam por sucursal**: al agregar 2+ cámaras por local, reintroducir L3 (Lambda + DynamoDB de hashes). El stitching local cubre monocam pero no inter-cam.
 
 ## Convenciones de código
 
 - **Lenguaje**: Python 3.13 (RPi OS Trixie). Black 88 chars, Ruff, type hints obligatorios.
 - **Logging**: módulo `logging` JSON estructurado. DEBUG dev / INFO prod.
 - **Config**: archivo único per-device.
-  - `/etc/people-counter/config.yaml` (per-device): fuente única de verdad en runtime. `load_config()` lee SOLO este archivo, sin merge con el example. Tiene que contener todas las keys requeridas (validadas en `_validate`).
-  - `config/config.example.yaml` (en repo): TEMPLATE documentado de la flota. NO se mergea en runtime — sirve para provisionar un device nuevo (operator copia → `/etc/people-counter/config.yaml` y edita) y para auditar qué keys son válidas. Cambios fleet-wide se shippean editando el template + redeployando el config a cada device. Una whitelist chica de feature toggles end-user (`CLOUD_OVERRIDABLE`: `operating_hours`, `counting_enabled`, `external_traffic_enabled`) puede pushearse vía AWS IoT Device Shadow sin restart — workflow del operator en `docs/shadow_operator_guide.md`. Los deltas se persisten al MISMO `config.yaml` (single source of truth: el operator SSH ve lo que el device tiene corriendo). Deltas con valores inválidos se rechazan en `apply_shadow_delta` ANTES de escribir — no hay fail_open/fail_closed porque no hay separación local-válido vs cloud-inválido.
-  - **Hardware-agnostic**: los parámetros que dependen del hardware/setup del device (sensor, lens, bracket, board ChArUco, AE timings) están consolidados en `src/config/hardware.py` (dataclass `HardwareParams` + `load_hardware_params()`). Cambiar de sensor / bracket / lens / board se hace editando keys del config; ningún script tiene constantes hardware hardcodeadas. Los setup tools (focus_assist, calibrate, preview, counting_zone_picker, diagnose_bracket, diagnose_depth) leen `HardwareParams` al startup; el runtime también plumb-ea los mismos valores a `StereoCapture`.
+  - `/etc/people-counter/config.yaml` (per-device): fuente única de verdad en runtime. `load_config()` lee SOLO este archivo (sin merge con el example) y valida todas las keys requeridas en `_validate`.
+  - `config/config.example.yaml` (repo): TEMPLATE documentado de la flota. NO se mergea en runtime — sirve para provisionar un device nuevo (operator copia → edita) y auditar qué keys son válidas. Cambios fleet-wide = editar el template + redeployar a cada device. Una whitelist chica de toggles end-user (`CLOUD_OVERRIDABLE`: `operating_hours`, `counting_enabled`, `external_traffic_enabled`) se pushea vía AWS IoT Device Shadow sin restart (workflow en `docs/shadow_operator_guide.md`). Los deltas se persisten al MISMO `config.yaml` (el operator SSH ve lo que corre). Deltas inválidos se rechazan en `apply_shadow_delta` ANTES de escribir — cada toggle tiene su validador (los bool exigen bool real; `"false"` string se rechaza porque sería truthy).
+  - **Hardware-agnostic**: los parámetros que dependen del hardware/setup (sensor, lens, bracket, board ChArUco, AE timings) están en `src/config/hardware.py` (`HardwareParams` + `load_hardware_params()`). Cambiar de hardware = editar keys del config; ningún script tiene constantes hardware hardcodeadas. Coerción lenient (scalar no-numérico → fleet default, no crash). Los setup tools y el runtime leen los mismos valores.
 - **Secrets**: certificados X.509 en `/etc/people-counter/certs/`. **Nunca commitear**.
 - **Tests**: pytest, estructura espejo de src.
 - **No usar clases salvo que haya estado.** Tracker, MQTTClient justifican clases. Resto = funciones.
@@ -126,35 +126,26 @@ people-counter/
 │   ├── tracking/       <- tracker (Kalman + state machine), counter (counting zone + line crossings)
 │   ├── wifi_ble/       <- wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher
 │   ├── mqtt/           <- client (AWS IoT), buffer (SQLite outbox)
-│   ├── cloud/          <- persist_event Lambda (IoT Rules → Postgres)
+│   ├── cloud/          <- persist_event / ingest_pos_transaction / query_aggregates (Lambdas)
 │   ├── status/         <- led, health, monitor (background thread)
-│   ├── config/         <- loader (strict, lee solo /etc/people-counter/config.yaml) + hardware (HardwareParams dataclass)
+│   ├── config/         <- loader (strict) + hardware (HardwareParams dataclass)
 │   └── main.py         <- orquestador del pipeline
-├── tests/              <- 765 tests, estructura espejo de src
+├── tests/              <- ~920 tests, estructura espejo de src
 ├── scripts/
-│   ├── calibrate.py    <- CLI con wizard end-to-end (browser-driven, ChArUco, ground-truth check)
+│   ├── calibrate.py    <- wizard end-to-end (browser-driven, ChArUco, ground-truth check)
 │   ├── focus_assist.py <- asistente de foco guiado (browser-driven)
 │   ├── diagnose_depth.py <- valida calibración (5 zonas, error centro <5% a 2m)
 │   ├── diagnose_bracket.py <- QC de ensamble del bracket (pitch/yaw/roll/offset L↔R sin calib previa)
 │   ├── preview.py      <- preview live MJPEG L|R (browser-driven)
 │   ├── download_model.py, capture_baseline_frames.py, rescale_calibration.py
-│   ├── provision.py    <- create/deploy/harvest/reprovision/list (disaster recovery) + seed sites/devices en RDS (psycopg+boto3)
-│   ├── reset_dedup.py  <- reset diario del dedup (config-aware, lo llama people-counter-reset.service)
+│   ├── provision.py    <- create/deploy/harvest/reprovision/list + seed sites/devices en RDS (psycopg+boto3)
+│   ├── reset_dedup.py  <- reset diario del dedup + rotación de salt (lo llama people-counter-reset.service). El estado in-memory del Counter lo resetea main.py en el rollover de fecha (el script externo no puede tocarlo).
 │   ├── verify_hardware.py, setup_device.sh
-│   └── training/       <- pipeline X-AnyLabeling + active learning + Kaggle:
-│                          sample_for_labeling.py (estratificado), mine_active_learning.py
-│                          (v_next minado), labelme_to_yolo.py (export → dataset YOLO),
-│                          train_head_detector.ipynb (Kaggle T4 ~20min sobre dataset privado),
-│                          capture_mjpeg.py, record_clips.py, sample_for_calib.py,
-│                          bench_detector.py, compare_detectors.py, analyze_eval_summary.py,
-│                          eval_yolo.py + label_guide.md (convención cabeza+hombros).
-├── training_data/      <- gitignoreado salvo README + sites.yaml.example. Workspace local:
-│                          sites.yaml inline (matrices + IPs), captures rectificadas, batches
-│                          de labeling para X-AnyLabeling (`label_train_*`, `label_val_*`,
-│                          `label_v_next_*`) con manifests anti-leak train/val.
+│   └── training/       <- pipeline X-AnyLabeling + active learning + Kaggle (ver scripts/training/README.md)
+├── training_data/      <- gitignoreado salvo README + sites.yaml.example. Workspace local.
 ├── calibration/        <- board ChArUco A3 PDF (calib.io)
-├── infra/cloudformation/ <- people-counter.yaml (stack completo)
-├── docs/               <- setup_guide, lab_calibration_guide, pilot_operator_guide
+├── infra/              <- cloudformation/ + sql/ (bootstrap + migrations) + deploy.ps1
+├── docs/               <- setup_guide, lab_calibration_guide, pilot_operator_guide, tracker_tuning, counter_test_matrix
 └── config/             <- config.example.yaml + people-counter.service (systemd)
 ```
 
@@ -165,20 +156,20 @@ people-counter/
 | S1 | Análisis y diseño inicial | **DONE** — repo, dependencias, arquitectura base |
 | S2 | Captura estéreo y servicios | **DONE** — picamera2, dual cam, servicios systemd |
 | S3 | Calibración estéreo | **DONE** — fisheye K-B (ChArUco A3), `diagnose_depth`, wizard browser-driven |
-| S4 | Profundidad y región de interés | **DONE** — SGBM + WLS, counting zone rect, num_disparities auto desde mounting_height |
-| S5 | Detección neuronal de personas | **DONE** — YOLOv8n cenital fine-tuneado, HEF Hailo-8L, modelo `people-counter-detector` (~945 imgs, hard negatives) |
-| S6 | Seguimiento y conteo | **DONE** — tracker Kalman + state machine + ghost pool/ID adoption + counter counting zone/línea con net-balance + death-emit con guards (rescue-with-guardrails philosophy) |
-| S7 | Captura WiFi y BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos (randomized), hashing + dedup 4 reglas (incl. fingerprint), MAX-RSSI para shoppers |
-| S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`, `wifi_ble_stitching_ratio`, `last_shadow_apply_ts`) + Device Shadow activado con 3 toggles overridables (`operating_hours`, `counting_enabled`, `external_traffic_enabled`) — workflow operator en `docs/shadow_operator_guide.md` |
-| S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambda `persist_event` + Lambda `ingest_pos_transaction` + Lambda `query_aggregates` + RDS Postgres 16 (bucket server-derived via GENERATED) + funciones SQL `height_class(REAL)` y `rssi_class(INT)` (categorización single-source-of-truth) + tabla `wifi_ble_events` (per-device post-stitching, RSSI crudo, `visitor_hash` opaco) reemplaza `wifi_ble_summary` + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con custom domain HTTPS |
-| S10 | Visualización analítica | EN CURSO — Grafana 13 deployado + dashboard 1 Footfall Overview con 6 KPIs + ingresos diarios + funnel + demografía (vía función SQL) + top sucursales + heatmap día×hora + tabla resumen + 3 paneles per-device WiFi/BLE (visitantes únicos / promoción a shopper / repetición intra-día). Pendiente: dashboards 2-4, tiles de canaries y alert rules. |
-| S11 | Validación y documentación | EN CURSO — rename `counter.roi` → `counter.counting_zone` + rename `pre_filter` → `tracking_zone` (alineación con FFC) + 4 guards nuevos anti-FP (`min_count_height_m`, `min_real_inside_frames`, `height_confidence_gate`, `tracking_zone` polygon filter pre-tracker) + keepalive condicional a entry real + fix doble-conteo por `last_outside_pos` stale + auto-reload del MJPEG preview vía `/health` polling + blur del preview fuera de la tracking_zone + TRACKDBG INFO → DEBUG (fix de FPS drop por log flood en clutter) + SGBM depth cache cuando los tracks tienen height estable (`vision.depth_skip_stable_tracks`) + flag `--profile-slow-threshold-ms` para diagnóstico de bottlenecks por stage. Runbook `docs/tracker_tuning.md` con 6 patrones síntoma→fix. Matriz `docs/counter_test_matrix.md` con 14 dimensiones. 906 tests verde. |
-| S12 | Cierre del prototipo | PENDIENTE — hardening final + entregables + cleanup completo TRACKDBG temporal |
+| S4 | Profundidad y región de interés | **DONE** — SGBM + WLS, counting zone rect, num_disparities auto |
+| S5 | Detección neuronal | **DONE** — YOLOv8n cenital fine-tuneado, HEF Hailo-8L, `people-counter-detector` (~945 imgs) |
+| S6 | Seguimiento y conteo | **DONE** — tracker Kalman + state machine + ghost pool/ID adoption + counter net-balance + death-emit con guards (rescue-with-guardrails) |
+| S7 | Captura WiFi y BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos, hashing + dedup 4 reglas, MAX-RSSI para shoppers |
+| S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`, `wifi_ble_stitching_ratio`, `last_shadow_apply_ts`) + Device Shadow con 3 toggles overridables |
+| S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambdas `persist_event`/`ingest_pos_transaction`/`query_aggregates` + RDS Postgres 16 (bucket server-derived via GENERATED) + funciones SQL `height_class(REAL)` y `rssi_class(INT)` + tabla `wifi_ble_events` (per-device post-stitching, RSSI crudo, `visitor_hash` opaco) + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con HTTPS |
+| S10 | Visualización analítica | EN CURSO — Grafana 13 + dashboard 1 Footfall Overview (6 KPIs + ingresos + funnel + demografía + top sucursales + heatmap día×hora + 3 paneles per-device WiFi/BLE). Pendiente: dashboards 2-4, tiles de canaries, alert rules. |
+| S11 | Validación y documentación | EN CURSO — rename `counter.roi`→`counting_zone` + `pre_filter`→`tracking_zone` + 4 guards anti-FP (`min_count_height_m`, `min_real_inside_frames`, `height_confidence_gate`, `tracking_zone` polygon) + keepalive condicional a entry real + SGBM depth cache (`vision.depth_skip_stable_tracks`) + `--profile-slow-threshold-ms`. Runbook `docs/tracker_tuning.md` (6 patrones) + matriz `docs/counter_test_matrix.md` (14 dimensiones). Pasada de hardening (review-driven): reset diario del Counter en rollover de fecha (los canaries eran lifetime, no daily), salt local rotado + lock en dedup, validación de toggles bool del shadow, Hailo temp probe cacheado fuera del tick del LED, publisher con retry de ventana, fix de `data_freshness_by_store` (referenciaba `wifi_ble_summary` dropeada). 920 tests verde. |
+| S12 | Cierre del prototipo | PENDIENTE — hardening final + entregables + cleanup completo del TRACKDBG temporal |
 
 ## Reglas duras
 
-- **No transmitir video/imágenes.** Solo metadatos.
-- **No almacenar MACs crudas.** Hashear primero, siempre.
+- **No transmitir video/imágenes.** Solo metadatos. (El `best_frame` opcional escribe JPGs SOLO a disco local para auditoría del operador — nunca al MQTT.)
+- **No almacenar MACs crudas.** Hashear primero (con sal), siempre.
 - **WiFi = solo probing.** Red = Ethernet.
 - **Stack de HATs**: AI HAT+ es el único stackeado. PoE HAT por dupont.
 - **No hardcodear config.** Todo en YAML.
@@ -187,224 +178,98 @@ people-counter/
 ## Entorno
 
 - Raspberry Pi OS Trixie 64-bit, Python 3.13
-- Hailo SDK 4.23+ (`hailo_platform`)
-- Picamera2 (rpicam-* CLI tools)
-- OpenCV 4.10+ (contrib para ArUco/ChArUco)
+- Hailo SDK 4.23+ (`hailo_platform`), Picamera2 (rpicam-* CLI), OpenCV 4.10+ (contrib para ArUco/ChArUco)
 - paho-mqtt 2.1+, SciPy 1.13+, sqlite3 (stdlib)
 
 ## Pipeline runtime — knobs
 
-`src/main.py` orquestra capture → rectify → SGBM → detect (Hailo) → track → count → MQTT.
+`src/main.py` orquestra capture → rectify → SGBM → detect (Hailo) → track → count → MQTT. La lista exhaustiva de knobs con defaults vive comentada en `config/config.example.yaml`; acá van solo los que tienen gotchas no obvios.
 
 - `vision.num_disparities: auto` — deriva rango SGBM desde `mounting_height_m`. Override con int múltiplo de 16.
-- `vision.sgbm.downscale: 4` — SGBM a resolución reducida (1=full, 2=half, 4=quarter), upscale del disparity post-match. 4 default (~4× costo de 8 pero remueve speckle que infla head-height); 1 solo para diagnósticos.
-- `--no-mqtt` (CLI) — reemplaza MQTT con no-op que loguea a stdout. Para testing local sin AWS.
-- `detection.confidence_threshold` (0.20) / `new_track_threshold` (0.35) / `low_confidence_threshold` (0.10) — banda triple del detector: <low descartado, [low, conf) re-asocia tracks existentes (ByteTrack-style), [conf, new_track) re-asocia + display, ≥new_track spawnea tracks nuevos. Tuneado para `people-counter-detector` (YOLOv8n fine-tuneado).
+- `vision.sgbm.downscale: 4` — SGBM a resolución reducida (1=full, 4=quarter). 4 default (remueve speckle que infla head-height); 1 solo para diagnósticos.
+- `vision.sgbm.wls.{enabled, lambda, sigma}` — WLS post-filter (opencv-contrib ximgproc): suaviza speckle + rellena agujeros usando el matcher derecho como confidence. Defaults `true / 4000 / 1.0`.
+- `vision.depth_skip_stable_tracks` — cachea el depth_map cuando todos los tracks tienen height estable (≥`height_samples_threshold` samples) Y todas las detecciones matchean tracks existentes Y no hay candidatos nuevos. SGBM (~50-70ms) domina el budget; el cache subió el piloto de 8-12 FPS a 28-30. TTL `cache_ttl_seconds` (1s) acota staleness. Trade-off: el bbox puede moverse 10-20px entre frames (la mediana de `detection_history` lo absorbe). Default `enabled: true`.
+- `--profile`, `--profile-every-n` (30), `--profile-slow-threshold-ms` (0=off) — diagnóstico de bottleneck por stage. `--profile` loguea `PROFILE frame=N cap/rect/detect/depth/track ... mode=fresh/cache/none`. Con slow-threshold>0 emite `PROFILE_SLOW` por cada frame que supere el umbral (caza FPS drops sporadicos sin inundar).
+- `--no-mqtt` (CLI) — reemplaza MQTT con un no-op que loguea a stdout. Testing local sin AWS.
+- `detection.{confidence_threshold 0.20, new_track_threshold 0.35, low_confidence_threshold 0.10}` — banda triple: <low descartado, [low,conf) re-asocia tracks existentes (ByteTrack-style), [conf,new) re-asocia + display, ≥new spawnea track nuevo.
 - `detection.cluster_distance_px: 150` — mergea bboxes post-NMS por centroide. 150px en 1152×648 deja cabezas de 50-80px holgadas; dos personas adyacentes (~150-180px) NO se mergean.
-- `detection.static_suppressor` — defense-in-depth contra clutter estructural (FPs persistentes en mismas celdas). Ventana medida en segundos reales con timestamps internos (independiente del FPS instantáneo). Configurable cell/window/threshold/min_samples.
-- `vision.max_exposure_us: 16000` — shutter cap 16ms para reducir motion blur a ~5cm a 3 m/s. AE compensa con AnalogueGain. Default 16000us si la key falta del config. Mismo cap en TODOS los setup tools (`focus_assist`, `calibrate`, `preview`, `diagnose_depth`, `diagnose_bracket`).
-- `vision.ae_lock.{initial_settle_seconds, resettle_seconds}` — timings del AE lock pattern canónico, compartido por todos los setup tools browser-driven (settle → lock provisional → re-settle on Comenzar → re-lock final). Subir en sites con luz fluctuante donde AE necesita más tiempo para converger.
-- `vision.sgbm.wls.{enabled, lambda, sigma}` — WLS post-filter del disparity (opencv-contrib ximgproc). Suaviza el speckle de SGBM y rellena agujeros del WTA usando el matcher derecho como confidence map. Defaults `enabled: true, lambda: 4000, sigma: 1.0`. Apagar solo para comparar contra disparity raw.
-- `vision.depth_skip_stable_tracks` — cache del depth_map cuando los tracks tienen height ya estabilizada. SGBM (~50-70ms con WLS) domina el budget per-frame. Skip cuando: (a) todos los tracks activos tienen ≥`height_samples_threshold` (default 20) samples válidos de `head_height_mm` en su `detection_history`, (b) todas las detecciones del frame corresponden a tracks existentes (≤`match_radius_px`, default 100), (c) no hay candidatos nuevos sin track. Cache TTL `cache_ttl_seconds` (default 1s) acota staleness — superado fuerza SGBM aunque tracks estén estables. Medido en piloto: PROFILE_SLOW (8-12 FPS) → PROFILE_NORMAL (28-30 FPS) con cache hits. Trade-off: bbox del visitor puede moverse 10-20px entre frames; mediana de detection_history absorbe el ruido. Configurable per-site, default `enabled: true`.
-- `--profile`, `--profile-every-n` (default 30), `--profile-slow-threshold-ms` (default 0=off) — flags CLI para diagnóstico de bottlenecks por stage del main loop. `--profile` activa logs `PROFILE frame=N cap=X rect=X detect=X depth=X (det=Y/N mode=fresh/cache/none) track=X n_tracks=N n_dets=N TOTAL=X (FPS)` cada N frames. Con `--profile-slow-threshold-ms > 0`, emite además un `PROFILE_SLOW` por CADA frame cuyo TOTAL supere el threshold (útil para cazar FPS drops sporadicos sin inundar el log). El campo `mode` indica si el depth fue computado fresh o reusado del cache (ver `depth_skip_stable_tracks`).
-- `vision.charuco.*` — board ChArUco + dual-pass detection. Si cambia el board de calibración (kit distinto, tamaño distinto), se edita acá y los setup tools lo recogen.
-- `tracking.state_machine.confirm_frames: 2` — frames hasta promover CANDIDATE→CONFIRMED. 2 balancea filtrar FPs efímeros con responsividad para pasadas rápidas; el detector fine-tuneado es estable enough para no necesitar 3.
-- `tracking.state_machine.reid_gate_px: 200` — gate de distancia para re-id en PENDING. Pareado con `pending_velocity_decay: 0.85` que reduce el predict del Kalman cerca de la última observación, así el gate cubre gaps de ~1s a velocidad de caminata sin necesidad de ser más ancho.
-- `tracking.state_machine.pending_grace_frames: 3` — frames iniciales de PENDING en los que el predict del Kalman se mantiene full velocity antes de aplicar `pending_velocity_decay`. Cubre gaps cortos del detector (1-3 frames) preservando la trayectoria; después de la gracia el decay arranca para evitar drift del predictor.
-- `tracking.ambiguous_match_ratio: 0.8` — ratio test estilo Lowe post-Hungarian. Si el segundo mejor candidato de una asignación está dentro del 80% del mejor, la match se rechaza por ambigua. Filtra el caso "dos detecciones cerca, dos tracks cerca, Hungarian arma un cruce arbitrario".
-- **Tracking point del counter = centroide del bbox.** El montaje es cenital sobre el umbral de la puerta a medir, así que el cruce ocurre cerca del nadir donde el paralaje es ~cero (cabeza y pies proyectan al mismo pixel) — el centroide es el foot-point efectivo. La corrección de paralaje image-space que existía (`counter.foot_projection_enabled` + `world_coords.project_to_floor`) se retiró: comprimía la trayectoria hacia el principal point y rompía los INs en puerta central, sin aportar en la zona del cruce. La altura 3D de SGBM se sigue usando, pero solo para clasificar adult/child (`vision/depth.py`), no para la posición del cruce. Una corrección de paralaje en world-space (counter en mm sobre el plano del piso) queda como opción futura — bajo counting zone para geometría de puerta central.
-- **Conteo = entrar a la counting zone → cruzar la línea → SALIR de la counting zone** (semántica de gate, en `Counter._process_track`). Ruta principal: emit en el frame de salida de la counting zone con verdict del balance neto de cruces de la visita. Fallback ("death-emit-if-crossed", ver design philosophy abajo): track que cruzó y muere ADENTRO de la counting zone sin alcanzar el borde igual emite, sujeto a dos guards anti-FP (`had_outside_pos` + `MIN_VISIT_RANGE_FOR_DEATH_EMIT`). No hay U-turn cancellation: un round-trip real (entrar+cruzar+salir, luego re-entrar+cruzar+salir por el otro lado) cuenta 1 IN + 1 OUT — la cancelación previa se removió porque cancelaba tráfico legítimo, no solo dudas en la puerta. Una "duda" sin segundo cruce completo produce un único evento al salir, así que igual no se sobre-cuenta.
-- **Cancelación neta dentro de la counting zone**: durante una visita a la counting zone el counter acumula un balance NETO de cruces por línea (cada cruce in-segment con label hacia un lado suma, hacia el opuesto resta). Al salir emite según el SIGNO del neto: ±1 = sentido contado, 0 = la persona "fue y vino" (cruzó y re-cruzó dentro de la counting zone) y NO cuenta. Reemplaza el viejo "gana el último cruce". Gate one-way = sticky (el cruce de vuelta sin label no resta).
-- **Keep-alive del tracker dentro de la counting zone**: `EuclideanTracker.keepalive_counting_zone` (lo setea `main` desde `counter.counting_zone`) — un track PENDING cuya última posición predicha cae dentro de la counting zone NO muere por timeout (`pending_max_frames`/`max_disappeared`); se mantiene vivo (extrapolando con el Kalman, NO congelado) hasta re-matchear o hasta que su predicción salga de la counting zone. Cubre "cruzó la línea y el detector lo pierde adentro": el track sigue a la persona y SALE de la counting zone por extrapolación → emite el cruce (sin keep-alive moría adentro y se perdía el conteo). Complementa la exención del `static_suppressor` (que ya no suprime detecciones dentro de la counting zone vía `exempt_counting_zone`). Salvaguardas: (1) **anti-doble-conteo en el counter, no en el tracker** — `Counter._process_track` registra un cruce de línea SOLO con detección real (`track.disappeared == 0`), nunca en un frame de pura predicción Kalman; así el drift de un track perdido que extrapola "cruzando" la línea no cuenta, pero el cruce real ya registrado SÍ se emite cuando el track sale de la counting zone (aunque la salida sea por extrapolación). (Esto reemplazó un "freeze" del track que tenía el efecto colateral de clavar a los crossers reales perdidos mid-counting-zone y perder su conteo.) (2) **cap `keepalive_max_frames`** (default 600 ≈ 24s) — misses consecutivos máximos; garbage-collectea huérfanos (re-id falló, persona ya no está). Como `disappeared` se resetea con cualquier hit, el lingering real nunca llega al cap. (3) el preview esconde los fantasmas de larga ausencia (PENDING con `disappeared > pending_max_frames`) además del clutter estático. El historial `positions` se capa a 512.
+- `detection.static_suppressor` — defense-in-depth contra clutter estructural (FPs persistentes en mismas celdas). Ventana en segundos reales (independiente del FPS). Exenta la counting zone (`exempt_counting_zone`).
+- `vision.max_exposure_us: 16000` — shutter cap 16ms para limitar motion blur (~5cm a 3 m/s). Mismo cap en TODOS los setup tools.
+- `vision.ae_lock.{initial_settle_seconds, resettle_seconds}` — timings del AE lock canónico (settle → lock provisional → re-settle on Comenzar → re-lock final). Subir en sites con luz fluctuante.
+- `tracking.state_machine.confirm_frames: 2` — CANDIDATE→CONFIRMED. 2 balancea filtrar FPs efímeros vs responsividad; el detector fine-tuneado no necesita 3.
+- `tracking.state_machine.reid_gate_px: 200` + `pending_velocity_decay: 0.85` — gate de re-id en PENDING; el decay reduce el predict del Kalman cerca de la última observación, así el gate cubre gaps de ~1s a velocidad de caminata.
+- `tracking.state_machine.pending_grace_frames: 3` — frames iniciales de PENDING con predict full-velocity antes de aplicar el decay. Cubre gaps cortos del detector preservando la trayectoria.
+- `tracking.ambiguous_match_ratio: 0.8` — ratio test estilo Lowe post-Hungarian: si el 2do mejor candidato está dentro del 80% del mejor, la match se rechaza por ambigua. Filtra cruces arbitrarios cuando dos detecciones y dos tracks están cerca.
+- **Tracking point del counter = centroide del bbox.** Montaje cenital sobre el umbral de la puerta → el cruce ocurre cerca del nadir donde el paralaje es ~cero (el centroide es el foot-point efectivo). **La corrección de paralaje image-space (`foot_projection`) se retiró — NO re-agregarla**: comprimía la trayectoria hacia el principal point y rompía los INs en puerta central. La altura 3D de SGBM se sigue usando, pero solo para clasificar adult/child, no para la posición del cruce. Una corrección world-space queda como opción futura.
 
 ## Design philosophy del counter: rescue con guardrails
 
-El counter pierde counts en dos modos. Filosóficamente hay un spectrum de
-respuestas a cada uno; nuestra elección está hacia el lado "rescue agresivo
-con guardrails", no hacia "solo contar lo observado directamente". El
-trade-off es explícito y tuneable per-site.
+El counter pierde counts en dos modos: (1) **crosser perdido en la zona de la línea** (el detector lo dropea justo al atravesar); (2) **crosser parqueado adentro de la counting zone** (cruza con detección real, se pierde, el `pending_velocity_decay` frena el Kalman antes del borde → la salida nunca dispara). La elección de diseño es **rescue agresivo con guardrails**, no "solo contar lo observado directo"; el trade-off es explícito y tuneable per-site. **Detalle completo + runbook operacional en `docs/tracker_tuning.md`** (6 patrones síntoma→fix con comandos exactos).
 
-**Modos de falla del conteo "ingenuo" (contar solo crosses observados con
-detección real seguidos de exit observado de la counting zone):**
+**Tres capas de rescue, en cascada** (de la primera a la última que dispara):
 
-1. **Crosser perdido en la zona de la línea** — el detector dropea a la
-   persona justo cuando está atravesando la línea. Sin rescue, la trayectoria
-   nunca registra el cross con detección real → conteo perdido.
-2. **Crosser parqueado adentro de la counting zone** — la persona cruza con detección
-   real, después se pierde, el Kalman extrapola pero el `pending_velocity_decay`
-   la frena dentro de la counting zone antes de alcanzar el borde → la salida de la counting zone
-   nunca dispara → conteo perdido.
+1. **Ghost pool / ID adoption** (`EuclideanTracker._try_adopt_ghost`): un track LOST deja `track_id`+`meta` en `_ghosts` por `adoption_window_frames` (~30 ≈ 1.5s); un track nuevo con `IoU ≥ adoption_iou_min` (0.3) Y `dist ≤ adoption_max_dist_px` (100) lo adopta → el counter ve continuidad y emite natural en el exit. **Guardrail**: si `last_outside_pos` del ghost está a >`GHOST_OUTSIDE_INVALIDATE_PX` (150) del nuevo centroide, ese campo NO se hereda (un outside_pos alucinado produciría `had_outside_pos` espurio + cross artificial). El resto del meta sí se hereda.
+2. **Decisive Kalman cross at exit** (`Counter._decisive_kalman_cross`): si el exit es pura extrapolación Kalman, se acepta el cruce solo si `disappeared ≤ MAX_KALMAN_CROSS_FRAMES` (15) Y desplazamiento real `≥ MIN_KALMAN_CROSS_DISPLACEMENT_PX` (30) Y `had_outside_pos`. **El gate inside-was-inside se mantiene estricto: NINGÚN cross registra en frames de predicción adentro de la counting zone** — la relajación es SOLO en la transición de exit (sin esto vuelve el sitter cuyo Kalman alucina un exit lateral; ver `test_kalman_exit_skipped_when_track_born_inside_counting_zone`).
+3. **Death-emit-if-crossed** (`Counter._emit_on_death`): track que muere adentro con cruce registrado (`net≠0`) emite si pasa DOS guards: `had_outside_pos` (filtra sitters/clutter/re-id que nacen adentro) y `visit_range ≥ MIN_VISIT_RANGE_FOR_DEATH_EMIT` (80px). Diferido `death_emit_grace_frames` (= `adoption_window+2`) — si la capa 1 resucita el track dentro del grace, se cancela (no double-count).
 
-**Nuestras tres capas de rescue, en cascada (de la primera a la última que
-dispara):**
+**Guardrails que NO hay que re-romper** (cada uno fixeó un bug de piloto; los detalles + fechas viven en comentarios de código y tests nombrados):
 
-1. **Ghost pool / ID adoption** (`EuclideanTracker._try_adopt_ghost`): cuando
-   un track muere LOST, su `track_id` + `meta` quedan en `_ghosts` por
-   `adoption_window_frames` (default 30 ≈ 1.5s @ 20fps). Si en esa ventana un
-   track nuevo spawnea con `IoU(bbox) >= adoption_iou_min` (0.3) Y
-   `distance(pos) <= adoption_max_dist_px` (100), adopta el ID + meta → el
-   counter ve continuidad de identidad y emite naturalmente en el exit
-   observado. Cubre "persona pierde detección y reaparece poco después en
-   posición similar". Más estricto geométricamente que un overlap booleano
-   (filtra ID-swaps entre personas adyacentes). **Caveat anti-FP del
-   meta heredado**: si `last_outside_pos` del ghost está a más de
-   `GHOST_OUTSIDE_INVALIDATE_PX` (150) del centroide del nuevo track, se
-   invalida (no se hereda al nuevo track). Sin esto, un ghost que murió
-   por Kalman extrapolation alucinada (outside_pos lejos del lugar real
-   del centroide) le pasa al nuevo track un snap absurdo que produce (a)
-   `had_outside_pos=True` espurio bypaseando el guard del exit-by-Kalman,
-   y (b) un cross artificial en el primer frame post-entry (sides[] flipea
-   solo porque el snap está en zona geométricamente distinta). El resto
-   del meta sí se hereda — el fix es selectivo a `last_outside_pos`.
-2. **Decisive Kalman cross at exit** (`Counter._decisive_kalman_cross`): si
-   la salida de la counting zone es un frame de pura extrapolación Kalman (`disappeared
-   > 0`), se acepta el cruce SI `disappeared <= MAX_KALMAN_CROSS_FRAMES`
-   (15) Y el desplazamiento desde la última posición REAL en la dirección
-   del cruce es `>= MIN_KALMAN_CROSS_DISPLACEMENT_PX` (30 px) Y el track
-   tiene `had_outside_pos=True` (estuvo afuera de la counting zone alguna vez en su
-   vida — mismo guard que capa 3). El gate del inside-was-inside se mantiene
-   estricto: ningún cross registra en frames de predicción adentro de la counting zone.
-   La relajación es SOLO en la transición de exit. Cubre
-   "walked-then-lost-mid-line" sin re-introducir el doble-conteo del drift
-   estacionario ni el caso del sitter pegado a la línea cuyo Kalman alucina
-   un exit lateral al moverse (bug observado en piloto 2026-05-23 17:45,
-   ver `test_kalman_exit_skipped_when_track_born_inside_counting_zone`).
-3. **Death-emit-if-crossed** (`Counter._emit_on_death`): track muere
-   adentro de la counting zone (`inside=True`) con cruce registrado (`net != 0`) y
-   pasa DOS guards anti-FP: (a) `had_outside_pos` — el track DEBE haber sido
-   visto fuera de la counting zone alguna vez en su vida (filtra sitters / clutter / re-id
-   failures que spawnean directo adentro de la counting zone); (b) `visit_range >=
-   MIN_VISIT_RANGE_FOR_DEATH_EMIT` (80 px, max de x_range y y_range durante
-   la visita; filtra el edge case de track con outside_pos válido pero que
-   después solo jittereó). Diferido por `death_emit_grace_frames` (sincronizado
-   con `adoption_window_frames + 2`) — si la ghost adoption resucita el track
-   dentro del grace, el death-emit se cancela (no double-count).
+- **Cross solo con detección real** (`disappeared==0`), nunca en frame de pura predicción Kalman — pero el cruce real ya registrado SÍ se emite aunque la salida sea por extrapolación. (Reemplazó un "freeze" del track que clavaba a los crossers reales perdidos mid-zone.)
+- **Entry-fresca solo con detección real**: si el primer frame inside es Kalman (`is_real=False`), NO se inicia ciclo de visita (sin esto: zigzag + COUNT espurio; log `TRACKDBG entry_kalman_skipped`).
+- **No U-turn cancellation**: un round-trip real cuenta 1 IN + 1 OUT. La cancelación previa se removió (cancelaba tráfico legítimo). Una "duda" sin segundo cruce completo produce un solo evento al salir igual.
+- **Cancelación NETA dentro de la counting zone**: el balance neto de cruces por línea decide el signo al salir (±1 cuenta, 0 = fue-y-vino → no cuenta). Reemplaza "gana el último cruce". Gate one-way = sticky.
+- **Keep-alive dentro de la counting zone** (`tracker.keepalive_counting_zone`): un PENDING cuya predicción cae dentro NO muere por timeout (extrapola con Kalman, no se congela) hasta re-matchear o salir. Cap `keepalive_max_frames` (600 ≈ 24s) garbage-collectea huérfanos. El preview esconde los fantasmas de larga ausencia (`disappeared > pending_max_frames`).
 
-**Guard adicional anti-entry-Kalman alucinada** (`Counter._process_track`,
-entry-fresca): si el PRIMER frame inside del track es pura extrapolación
-Kalman (`is_real=False`), la entry-fresca NO se dispara — `was_inside`
-permanece False, no se snapshotean `sides[]`, no se registra el track
-en `_seen_track_ids`, no hay ciclo de visita iniciado. El detector emitió
-una FP outside counting zone y Kalman la proyectó adentro; sin este guard el ciclo
-arrancaría con sides[] alucinado, el detector después "encontraría"
-ruido sobre la línea y se generaría el zigzag clásico + exit por Kalman
-con un COUNT espurio. Si la persona realmente está adentro, el próximo
-frame con detección real (1-3 ticks) dispara la entry-fresca con la
-misma información geométrica (`last_outside_pos` sigue válido). Bug
-observado en piloto 2026-05-24 09:47-09:54 (tid=35 — 9 crosses zigzag
-+ COUNT IN falso); log de skip = `TRACKDBG entry_kalman_skipped`.
-
-**Knobs para mover el balance "agresivo → conservador" per-site:**
+**Knobs para mover el balance "agresivo → conservador" per-site** (config-driven, sin redeploy):
 
 | Knob | Default | Efecto al subirlo |
 |---|---|---|
-| `MIN_KALMAN_CROSS_DISPLACEMENT_PX` | 30 | Capa 2 más estricta — más Kalman crosses descartados. ∞ = no rescue de Kalman crosses. |
-| `min_visit_range_for_death_emit` (`counter`) | 80 | Capa 3 más estricta — más death-emits filtrados. Bajarlo (ej. 50) en sites con detector flakey donde el síntoma `death_emit_count = 0 + ratio > 1.3` indica que el guard rechaza crossers reales con poca observación. |
-| `min_count_height_m` (`counter`) | 0.0 (off) | Filtro anti-FP no-humanos por altura mediana del track. 1.0 filtra perros + objetos < 1m sin perder niños de 4+ años. Track sin medición SGBM (None) NUNCA se filtra. Caso piloto 2026-05-24: perro caminando + campera en silla. |
-| `min_real_inside_frames` (`counter`) | 0 (off) | Mínimo de frames con detección real inside antes de emitir. 2 filtra single-frame entries al borde del counting_zone (detector flickea 1 vez + Kalman extrapola la "visita"). Caso piloto tid=67: 1 frame al borde + 247 px Kalman → IN espurio. |
-| `height_confidence_gate` (`counter`) | 0.5 | Umbral de median(conf) del track para reportar demografía en el CountEvent. NO afecta el conteo, solo `height_m`/`head_depth_m`. Si la confianza media del track cae por debajo, esos campos van como NULL al cloud y la función SQL `height_class()` los mapea a `'unknown'` en las vistas. |
-| `tracking.tracking_zone` polygon | disabled | Filtro pre-tracker por polígono ("modo estricto"). Descarta detecciones cuyo centroide cae fuera de la tracking_zone ANTES del tracker. Tres modos: `polygon` manual (control fino), `frame_margin_px` (predecible/simétrico, recomendado), `auto_margin_px` (expand desde counting_zone). Análogo a TrackingZone del incumbent FFC. |
-| `adoption_window_frames` (`tracking.state_machine`) | 30 | ↑ = más chance de adopción ID, ↓ = más fragmentación. 0 = sin ghost pool. |
-| `adoption_iou_min` (`tracking.state_machine`) | 0.3 | ↑ = adopción más conservadora (anti ID-swap). |
+| `MIN_KALMAN_CROSS_DISPLACEMENT_PX` | 30 | Capa 2 más estricta. ∞ = no rescue de Kalman crosses. |
+| `min_visit_range_for_death_emit` | 80 | Capa 3 más estricta. Bajarlo (~50) si `death_emit_count=0 + ratio>1.3` (guard rechaza crossers reales con poca observación). |
+| `min_count_height_m` | 0.0 (off) | Filtro anti-FP no-humanos por altura mediana. 1.0 filtra perros/objetos <1m sin perder niños de 4+. Track sin SGBM (None) NUNCA se filtra. |
+| `min_real_inside_frames` | 0 (off) | Frames con detección real inside antes de emitir. 2 filtra single-frame entries al borde (flicker + Kalman). |
+| `height_confidence_gate` | 0.5 | Umbral de median(conf) para reportar demografía. NO afecta el conteo, solo `height_m`/`head_depth_m` (van NULL si cae debajo → `height_class()` los mapea a `unknown`). |
+| `tracking.tracking_zone` | disabled | Filtro pre-tracker por polígono ("modo estricto"): descarta detecciones fuera del polígono ANTES del tracker. Modos: `polygon` manual, `frame_margin_px` (recomendado), `auto_margin_px`. Debe ser más amplia que counting_zone (preserva lead-in). El preview blurea lo de afuera. Para sites con clutter (perchero, mostrador, vidriera con tráfico exterior). |
+| `adoption_window_frames` | 30 | ↑ = más adopción ID, ↓ = más fragmentación. 0 = sin ghost pool. |
+| `adoption_iou_min` | 0.3 | ↑ = adopción más conservadora (anti ID-swap). |
 
-Los tres al máximo + adoption en 0 = el modelo "puro observacional" (contar
-SOLO con detecciones reales en exit observado). Defaults actuales = híbrido
-agresivo en sites con detección flakey, conservador frente a sitters/clutter.
+Los tres primeros al máximo + adoption en 0 = modelo "puro observacional". Defaults = híbrido agresivo en sites flakey, conservador frente a sitters/clutter.
 
-**Telemetría para observar el balance en producción (árbol diagnóstico de 3 métricas):**
+**Telemetría — árbol diagnóstico de 3 métricas** (todas reset diario):
 
-- `track_stitching_ratio` (`Counter.stitching_ratio`) = `unique_track_ids /
-  total_counts`. Ideal ≈ 1.0 (1 persona = 1 ID = 1 evento). >1.3 indica
-  fragmentación de identidad.
-- `ghost_adoption_count` (`EuclideanTracker.adoption_count`) = capa 1 del
-  rescue: cuántas veces un track nuevo adoptó el ID de un ghost.
-  Acumulativo desde el boot del proceso.
-- `death_emit_count` (`Counter.death_emit_count`) = capa 3 del rescue:
-  cantidad de death-emits disparados.
-
-**Cómo leerlo en flota** (lookup table para el operador):
+- `track_stitching_ratio` = `unique_track_ids / total_counts`. Ideal ≈ 1.0. >1.3 = fragmentación de identidad.
+- `ghost_adoption_count` = capa 1 (adopciones). `death_emit_count` = capa 3 (death-emits). Acumulativos del día.
 
 | `stitching_ratio` | `adoption` | `death_emit` | Diagnóstico |
 |---|---|---|---|
 | ≈ 1.0 | 0 | 0 | Tracker perfecto |
-| ≈ 1.0 | > 0 | 0 | Fragmentación silenciosa **rescatada por capa 1** (adopción) |
-| ≈ 1.0 | 0 | > 0 | Crossers **rescatados por capa 3** (death-emit) |
+| ≈ 1.0 | > 0 | 0 | Fragmentación rescatada por capa 1 |
+| ≈ 1.0 | 0 | > 0 | Crossers rescatados por capa 3 |
 | > 1.3 | 0 | 0 | 🚨 FRAGMENTACIÓN SIN RESCATE (alarma) |
-| > 1.3 | > 0 | > 0 | Tracker flakey, dependés de ambas capas (todavía OK pero recall del detector flojo) |
+| > 1.3 | > 0 | > 0 | Tracker flakey, dependés de ambas capas (recall del detector flojo) |
 
-**Trade-off conocido del guard `MIN_VISIT_RANGE_FOR_DEATH_EMIT`**: la
-métrica `visit_range` se actualiza solo con detecciones REALES (no Kalman
-pushes). En sites con detector muy flakey, un crosser real puede tener
-`visit_range < 80` porque la mayoría de sus frames adentro de la counting zone fueron
-extrapolación. En ese caso el guard 2 rechaza death-emit → si capas 1 y 2
-no agarraron, conteo perdido. Síntoma: `death_emit_count = 0` con
-`track_stitching_ratio > 1.3` sostenido. Fix: bajar el threshold del
-guard 2 pasando ``min_visit_range_for_death_emit`` (ej. 50) al constructor
-del `Counter` per-site. No es bug — es trade-off explícito entre filtrar
-sitters/jitter y rescatar crossers con muy poca observación.
-
-- Logs TRACKDBG (cuando habilitados): `ghost_adopted`, `death_emit_skipped`
-  con `reason=no_outside_history|small_visit_range`, etc.
-
-**Runbook operacional**: `docs/tracker_tuning.md` documenta los 6 patrones
-síntoma→fix más comunes con comandos exactos (queries SQL a `telemetry`,
-`journalctl | grep TRACKDBG`) + lookup table del árbol diagnóstico. Es la
-referencia que usa el operador del piloto cuando la telemetría dispara
-una alerta. Todos los knobs del rescue cascade
-(`adoption_window_frames`, `adoption_iou_min`, `adoption_max_dist_px`,
-`ghost_outside_invalidate_px`, `min_visit_range_for_death_emit`,
-`min_count_height_m`, `min_real_inside_frames`, `height_confidence_gate`,
-`tracking_zone.{frame_margin_px,auto_margin_px,polygon}`) son
-config-driven y tuneables per-site sin redeploy de código.
-
-**Modo estricto / tracking_zone** (`tracking.tracking_zone`): filtro
-pre-tracker por polígono opt-in para sites con clutter estructural
-(tiendas de ropa con perchero, mostradores, vidrieras con tráfico
-exterior visible). Descarta detecciones fuera del polígono ANTES de
-cualquier procesamiento downstream, reduciendo FPs sin afectar el
-rescue cascade del counter (la tracking_zone debe ser más amplia que
-counting_zone para preservar lead-in del approach). El live preview
-renderea blureado/oscurecido lo que cae fuera de la tracking_zone para
-feedback visual al operador. Ver patrón 6 de `tracker_tuning.md`.
-
-**Matriz de cobertura discriminante**: `docs/counter_test_matrix.md` mapea
-las ~14 dimensiones que el counter + tracker bifurcan a los tests que
-cubren cada celda significativa. Documenta también las celdas
-"structurally void" con justificación (CANDIDATE, B4×C1, A2 short-circuit,
-etc.). Sirve para auditoría de cobertura, onboarding y trazabilidad
-regulatoria. Mantener vivo: cuando se agrega una bifurcación nueva al
-código, agregar la celda al matrix antes de commitear.
+**Matriz de cobertura** (`docs/counter_test_matrix.md`): mapea las ~14 dimensiones que el counter+tracker bifurcan a los tests, con justificación de las celdas "structurally void". Mantener viva: agregar la celda al matrix al introducir una bifurcación nueva, antes de commitear.
 
 ## Pipeline del detector
 
 YOLOv8n fine-tuneado para detección cenital de cabezas. Pipeline ONNX → HEF compilado para Hailo-8L.
 
-### Decisiones del pipeline
-
-- **Bench tooling**:
-  - `bench_detector.py` para modelos locales `.pt`/`.onnx`
-  - `compare_detectors.py` para side-by-side de dos modelos (anti regresión v_actual → v_next)
-  - `analyze_eval_summary.py` para análisis estadístico del eval (distribución conf, breakdown por site)
-- **Capturador de validation set**: `capture_mjpeg.py` multi-site con motion-trigger + background sampling. Filenames `_motion_` / `_bg_`.
-- **Postproceso geométrico** post-NMS: cluster por centroide (`cluster_distance_px`), containment filter (bbox chico contenido en otro grande), static suppressor (celdas hot).
-- **Compilación HEF**: `hailomz compile` en WSL2/Docker (x86 only, Hailo no soporta Windows nativo). Calibration set = 200 imgs representativas.
-- **Labeling**: local en **X-AnyLabeling** (no más Roboflow). Convención canónica: bbox cabeza+hombros, single-class `person` — ver `scripts/training/label_guide.md`. Sampleo via `sample_for_labeling.py` (estratificado por site + motion/bg) o `mine_active_learning.py` (informativo para v_next). Conversión a dataset YOLO via `labelme_to_yolo.py`. Upload a Kaggle dataset privado vía CLI.
-- **Training**: notebook `scripts/training/train_head_detector.ipynb` en Kaggle T4 (~20 min). Iteración: actualizar slug del Kaggle dataset + name del run. v1→v2 con active learning subió mAP50 de 0.805 → 0.956 (deployed; eval contra val held-out 245 imgs / 174 cajas). La 2da ronda de AL (v3) bajó a 0.939 — sweet spot detectado en v2.
-
-### Boundary fuerte
-
-- **Compilación**: WSL2/Linux x86 only.
-- **Inferencia**: en la Pi. HEF en `/usr/src/people-counter/models/`, `detection.model_path` en config.
+- **Bench tooling**: `bench_detector.py` (modelos locales `.pt`/`.onnx`), `compare_detectors.py` (side-by-side anti-regresión v_actual→v_next), `analyze_eval_summary.py` (distribución conf + breakdown por site).
+- **Validation set**: `capture_mjpeg.py` multi-site con motion-trigger + background sampling (filenames `_motion_`/`_bg_`).
+- **Postproceso geométrico** post-NMS: cluster por centroide, containment filter (bbox chico contenido en grande), static suppressor (celdas hot).
+- **Labeling**: local en **X-AnyLabeling** (no Roboflow). Convención: bbox cabeza+hombros, single-class `person` (ver `scripts/training/label_guide.md`). Sampleo via `sample_for_labeling.py` (estratificado) o `mine_active_learning.py` (informativo para v_next). Conversión a YOLO via `labelme_to_yolo.py`. Upload a Kaggle dataset privado vía CLI.
+- **Training**: notebook `scripts/training/train_head_detector.ipynb` en Kaggle T4 (~20 min). v1→v2 con active learning subió mAP50 0.805→0.956 (deployed; eval contra val held-out 245 imgs / 174 cajas). La 2da ronda de AL (v3) bajó a 0.939 — sweet spot en v2.
+- **Boundary fuerte**: compilación HEF (`hailomz compile`, calibration set 200 imgs) SOLO en WSL2/Linux x86 (Hailo no soporta Windows). Inferencia en la Pi: HEF en `/usr/src/people-counter/models/`, `detection.model_path` en config.
 
 ## Convenciones de tools de visión
 
-- **Config reading**: `focus_assist`, `calibrate`, `preview`, `diagnose_depth` leen `/etc/people-counter/config.yaml` para resolver `vision.resolution` (todos) y `vision.mounting_height_m` (focus_assist deriva el target distance de ahí). Pasar `--resolution` explícito solo en dev workstation sin config per-device. `diagnose_bracket` corre sin config porque hace QC de ensamble pre-calibración.
-- **Browser-driven**: nada de `input()` blocking. Pantalla "Comenzar", AudioContext unlocked on click, beeps cortos diferenciados (start / pose / captura / undo / fin) en lugar de TTS, reporte HTML auto-open al finalizar + cierre del servidor.
-- **AE flags compartidos**: `--meter matrix|centre|spot` (default matrix; centre/spot para periferia brillante), `--lock-ae` (uniforme en todos los setup tools). Patrón canónico: settle 2s → lock provisional → re-settle 1.5s on click → re-lock final con la escena real de medición.
-- **Exposure cap uniforme**: `--max-exposure-us 16000` default en todos los setup tools, mismo cap que el runtime — freezea micro-vibración del bracket que rompe ArUco asimétricamente entre L/R. Pasar 0 para deshabilitar.
-- **Dual-pass ChArUco**: `detect_charuco_dual_pass` (en `src/vision/calibration.py`) intenta primero el frame original; si quedó <8 corners reintenta con sharpen y se queda con el mejor. Aplicado en los live loops de calibrate, focus_assist y diagnose_bracket. El fit downstream (`_detect_all_pairs` → `calibrate_stereo`) sigue single-pass para no introducir sub-pixel noise en el solve.
-- **CLI args homogéneos**: `--board-cols/--board-rows/--square-mm/--marker-mm` son los nombres canónicos en todos los scripts. `calibrate.py` también acepta `--columns/--rows/--square-length/--marker-length` como alias para back-compat con docs viejas.
-- **Wizard guardrails**: pre-calibration sanity gate (re-detección de pares capturados), coverage critical block (banda/grupo faltante), L/R asymmetric alert, `--resume` valida resolución, `reset --yes` para restart limpio.
-- **Lens locking**: holder M12 sin set screw → fijado con esmalte de uñas transparente aplicado al seam barrel↔holder después del foco (touch-dry 15min, cura full 30-60min). Llave dedicada al barrel durante el foco, se retira antes de pintar. Suficiente para PoC; para producción/flota evaluar Trabasil AM3 + activador anaeróbico. Ver `docs/lab_calibration_guide.md`.
+- **Config reading**: `focus_assist`, `calibrate`, `preview`, `diagnose_depth` leen `/etc/people-counter/config.yaml` para resolver `vision.resolution` (todos) y `vision.mounting_height_m` (focus_assist deriva el target distance). Pasar `--resolution` explícito solo en dev workstation sin config. `diagnose_bracket` corre sin config (QC pre-calibración).
+- **Browser-driven**: nada de `input()` blocking. Pantalla "Comenzar", AudioContext unlocked on click, beeps cortos diferenciados (start/pose/captura/undo/fin) en lugar de TTS, reporte HTML auto-open al finalizar + cierre del servidor.
+- **AE flags compartidos**: `--meter matrix|centre|spot` (default matrix), `--lock-ae`. Patrón canónico: settle 2s → lock provisional → re-settle 1.5s on click → re-lock final con la escena real.
+- **Exposure cap uniforme**: `--max-exposure-us 16000` default en todos los setup tools (mismo cap que el runtime — freezea micro-vibración del bracket que rompe ArUco asimétricamente L/R). Pasar 0 para deshabilitar.
+- **Dual-pass ChArUco**: `detect_charuco_dual_pass` intenta el frame original; si <8 corners reintenta con sharpen y se queda con el mejor. Aplicado en los live loops; el fit downstream (`calibrate_stereo`) sigue single-pass (no introducir sub-pixel noise en el solve).
+- **CLI args homogéneos**: `--board-cols/--board-rows/--square-mm/--marker-mm` canónicos en todos los scripts (`calibrate.py` acepta `--columns/--rows/--square-length/--marker-length` como alias).
+- **Wizard guardrails**: pre-calibration sanity gate (re-detección de pares capturados), coverage critical block, L/R asymmetric alert, `--resume` valida resolución, `reset --yes` para restart limpio.
+- **Lens locking**: holder M12 sin set screw → fijado con esmalte de uñas transparente al seam barrel↔holder después del foco (touch-dry 15min, cura full 30-60min). Suficiente para PoC; para flota evaluar Trabasil AM3 + activador anaeróbico. Ver `docs/lab_calibration_guide.md`.
 - **Interpretación reporte calibración**: RMS estéreo <0.5px es necesario pero no suficiente. **El verdict depende del ground-truth en centro** (cinta/láser). Baseline estimada debe caer ±1-2mm del diseño 140mm con 20 poses diversas; ratio borde/centro es informativo, no gate.
 - `debug/` está gitignoreado — para reportes, screenshots, logs de tests.

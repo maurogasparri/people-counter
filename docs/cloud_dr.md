@@ -11,9 +11,9 @@ PoC y la transición a producción multi-sucursal.
 
 | Recurso | Tipo de data | Riesgo si se pierde | Backup |
 |---|---|---|---|
-| **RDS Postgres (`people_counter`)** | Histórico de count_events, telemetry, wifi_ble, pos_transactions | Pérdida de meses/años de analytics | Snapshots automáticos + PITR |
+| **RDS Postgres (`people_counter`)** | Histórico de count_events, telemetry, wifi_ble_events, pos_transactions | Pérdida de meses/años de analytics | Snapshots automáticos + PITR |
 | **RDS Postgres (`grafana`)** | Dashboards, users, datasources de Grafana | Re-armar dashboards a mano | Mismo snapshot que arriba (es la misma instancia) |
-| **Lambda code** | persist_event, ingest_pos_transaction | Cero — se redeploya desde el repo | Repo Git (source of truth) |
+| **Lambda code** | persist_event, ingest_pos_transaction, query_aggregates | Cero — se redeploya desde el repo | Repo Git (source of truth) |
 | **CloudFormation stack** | IaC del sistema entero | Cero — IaC en repo | Repo Git |
 | **AWS IoT certs (per-device)** | X.509 certs de cada RPi | Re-emisión de cert + re-provisioning del device | `scripts/provision.py harvest` ya guarda copia local; opcional re-issue via AWS IoT |
 | **ECR image (Grafana)** | Snapshot de la imagen | Cero — se re-pullea de docker hub | docker hub |

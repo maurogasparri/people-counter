@@ -49,7 +49,7 @@ Todos los topics comparten el mismo envelope (construido por
 
 ## Topic: `counting` — eventos de cruce de línea
 
-**Topic MQTT**: `people-counter/${Environment}/counting`
+**Topic MQTT**: `store/{store_id}/counting`
 **Frecuencia**: por evento (sub-segundo durante traffic alto, idle el resto)
 **Tabla destino**: `count_events`
 
@@ -81,7 +81,7 @@ con esos campos silenciosamente ignorados.
 
 ## Topic: `telemetry` — health metrics del device
 
-**Topic MQTT**: `people-counter/${Environment}/telemetry`
+**Topic MQTT**: `store/{store_id}/telemetry`
 **Frecuencia**: cada 5 minutos (configurable via `telemetry.interval_seconds`)
 **Tabla destino**: `telemetry`
 
@@ -137,7 +137,7 @@ sample timestamp no duplican.
 
 ## Topic: `wifi_ble` — eventos per-device post-stitching
 
-**Topic MQTT**: `people-counter/${Environment}/wifi_ble`
+**Topic MQTT**: `store/{store_id}/wifi_ble`
 **Frecuencia**: cada 15 minutos (configurable via `wifi_ble.summary_interval_seconds`)
 **Tabla destino**: `wifi_ble_events`
 
