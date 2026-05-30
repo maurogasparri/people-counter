@@ -181,12 +181,19 @@ vision:
   # estabilizada por mediana).
   depth_skip_stable_tracks:
     enabled: true                   # Master toggle. Default ON.
-    height_samples_threshold: 20    # Mínimo de samples válidos de
+    height_samples_threshold: 8     # Mínimo de samples válidos de
                                     # head_height_mm en detection_history
                                     # del track antes de considerarlo
-                                    # "estable" y skippeable. 20 ≈ 1s @
-                                    # 20 FPS — suficiente para que la
-                                    # mediana absorba ruido de SGBM.
+                                    # "estable" y skippeable. 8 ≈ 0.4s @
+                                    # 20 FPS — la mediana ya absorbe el
+                                    # ruido de SGBM con 8 samples. Medido
+                                    # en piloto (A/B 2026-05-30): bajar
+                                    # 20→8 sube el cache hit durante
+                                    # cruces de ~55% a ~79% (el track se
+                                    # estabiliza antes de cruzar la línea)
+                                    # sin tocar precisión de depth (SGBM
+                                    # sigue a downscale=4) — count-neutral,
+                                    # solo demografía un toque más noisy.
                                     # Subir si la altura sigue noisy.
     match_radius_px: 100.0          # Distancia 2D máxima entre el
                                     # centroide de una detección y el
