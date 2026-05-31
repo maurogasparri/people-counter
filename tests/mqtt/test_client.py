@@ -107,8 +107,8 @@ class TestMQTTClientConstruction:
 
     @patch("src.mqtt.client.mqtt.Client")
     def test_connect_immediate_when_no_jitter(self, mock_mqtt_cls):
-        """Sin startup_jitter, connect() llama a paho client inmediatamente
-        en el thread del caller (back-compat)."""
+        """Sin startup_jitter, connect() arranca el connect inmediatamente en el
+        thread del caller, vía connect_async (no el connect sync)."""
         from src.mqtt.client import MQTTClient
 
         mock_client = MagicMock()
@@ -128,8 +128,38 @@ class TestMQTTClientConstruction:
         )
 
         client.connect()  # default jitter=0
-        mock_client.connect.assert_called_once()
+        mock_client.connect_async.assert_called_once()
         mock_client.loop_start.assert_called_once()
+
+    @patch("src.mqtt.client.mqtt.Client")
+    def test_connect_uses_async_so_boot_dns_race_retries(self, mock_mqtt_cls):
+        """Regresión piloto 2026-05-31: el connect inicial debe usar
+        connect_async (no el sync connect), así una race de DNS al bootear la
+        reintenta el loop de paho con backoff en vez de matar el thread y dejar
+        MQTT caído. Además connect_async NO debe re-levantar si tira por red."""
+        from src.mqtt.client import MQTTClient
+
+        mock_client = MagicMock()
+        # Aunque connect_async fallara, connect() no debe propagar la excepción.
+        mock_client.connect_async.side_effect = OSError("getaddrinfo failed")
+        mock_mqtt_cls.return_value = mock_client
+
+        tmpdir = tempfile.mkdtemp()
+        cert, key, ca = self._make_certs(tmpdir)
+        buffer = MessageBuffer(str(Path(tmpdir) / "buf.db"))
+        client = MQTTClient(
+            device_id="test-001",
+            endpoint="test.iot.us-east-1.amazonaws.com",
+            port=8883,
+            cert_path=cert,
+            key_path=key,
+            ca_path=ca,
+            buffer=buffer,
+        )
+
+        client.connect()  # no debe levantar
+        mock_client.connect_async.assert_called_once()
+        mock_client.connect.assert_not_called()  # nunca el sync que tiraba
 
     @patch("src.mqtt.client.mqtt.Client")
     def test_connect_with_jitter_uses_background_thread(self, mock_mqtt_cls):
@@ -165,15 +195,15 @@ class TestMQTTClientConstruction:
                 f"connect() debió retornar inmediato, tardó {elapsed_sync:.2f}s"
             )
 
-            # Esperar a que el thread bg complete (poll hasta que connect
+            # Esperar a que el thread bg complete (poll hasta que connect_async
             # del client mock se haya llamado).
             deadline = _time.time() + 2.0
             while _time.time() < deadline:
-                if mock_client.connect.called:
+                if mock_client.connect_async.called:
                     break
                 _time.sleep(0.05)
 
-        mock_client.connect.assert_called_once()
+        mock_client.connect_async.assert_called_once()
         mock_client.loop_start.assert_called_once()
 
     @patch("src.mqtt.client.mqtt.Client")

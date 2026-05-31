@@ -153,7 +153,17 @@ class MQTTClient:
     def connect(self, startup_jitter_seconds: float = 0.0) -> None:
         """Conecta al broker MQTT.
 
-        No-bloqueante: arranca el network loop en un thread background.
+        No-bloqueante: el connect lo establece el network loop de paho en
+        background vía connect_async() + loop_start(). connect_async NO resuelve
+        DNS sincrónicamente ni levanta excepción si la red/DNS no está lista
+        todavía (típico apenas bootea el device) — encola la conexión y el loop
+        la establece y la reintenta con el backoff de reconnect_delay_set.
+
+        Esto evita el modo de falla observado en piloto (2026-05-31): una race de
+        DNS al arrancar hacía que el connect() sync tirara getaddrinfo y matara el
+        thread de conexión, dejando MQTT caído sin reconexión hasta un restart
+        manual mientras el outbox se llenaba (el auto-reconnect de paho sólo actúa
+        DESPUÉS de un connect inicial exitoso con el loop corriendo).
 
         Args:
             startup_jitter_seconds: Si >0, esperá entre 0 y este valor de
@@ -171,19 +181,7 @@ class MQTTClient:
 
             def _delayed_connect() -> None:
                 time.sleep(delay)
-                try:
-                    self._client.connect(self.endpoint, self.port, keepalive=60)
-                    self._client.loop_start()
-                    logger.info(
-                        "MQTT connecting to %s:%d (after %.1fs startup jitter)",
-                        self.endpoint,
-                        self.port,
-                        delay,
-                    )
-                except Exception:
-                    logger.exception(
-                        "MQTT connect failed after %.1fs jitter", delay
-                    )
+                self._start_async_connect(jitter=delay)
 
             threading.Thread(
                 target=_delayed_connect, daemon=True, name="mqtt-connect"
@@ -195,13 +193,36 @@ class MQTTClient:
             )
             return
 
+        self._start_async_connect()
+
+    def _start_async_connect(self, jitter: float = 0.0) -> None:
+        """Arranca el connect vía connect_async() + loop_start().
+
+        Delega el connect inicial Y los reintentos al network loop de paho (con
+        el backoff de reconnect_delay_set). A diferencia del connect() sync, no
+        levanta por fallos de red/DNS transitorios: el loop reintenta solo. No
+        re-levanta — el pipeline corre y bufferea local hasta que conecte.
+        """
         try:
-            self._client.connect(self.endpoint, self.port, keepalive=60)
+            self._client.connect_async(self.endpoint, self.port, keepalive=60)
             self._client.loop_start()
-            logger.info("MQTT connecting to %s:%d", self.endpoint, self.port)
         except Exception:
-            logger.exception("MQTT connect failed")
-            raise
+            # connect_async sólo debería tirar por errores de programación (args
+            # inválidos), no por red. Logueamos sin re-levantar para no voltear el
+            # pipeline; el buffer local cubre la indisponibilidad.
+            logger.exception("MQTT connect_async failed")
+            return
+        if jitter > 0:
+            logger.info(
+                "MQTT connecting (async) to %s:%d (after %.1fs startup jitter)",
+                self.endpoint,
+                self.port,
+                jitter,
+            )
+        else:
+            logger.info(
+                "MQTT connecting (async) to %s:%d", self.endpoint, self.port
+            )
 
     def disconnect(self) -> None:
         """Desconecta de manera limpia."""
