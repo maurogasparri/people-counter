@@ -366,13 +366,18 @@ Resources:
     Type: AWS::RDS::DBParameterGroup
     Properties:
       Family: postgres16
-      Description: "Postgres 16 - TLS forzado + logging para debug"
+      Description: "Postgres 16 - TLS forzado + logging para debug + pg_cron"
       Parameters:
         rds.force_ssl: "1"
         log_min_duration_statement: "1000"
         log_connections: "1"
         log_disconnections: "1"
         log_lock_waits: "1"
+        # pg_cron: agenda el refresh incremental de los rollups (CALL refresh_rollups()).
+        # shared_preload_libraries es estático → cambiarlo requiere reboot del instance.
+        # cron.database_name apunta pg_cron a la DB de la app (no a 'postgres').
+        shared_preload_libraries: "pg_cron"
+        cron.database_name: "people_counter"
       Tags:
         - {Key: Project, Value: people-counter}
         - {Key: Environment, Value: !Ref Environment}
@@ -1026,6 +1031,15 @@ Resources:
             - {Name: GF_ANALYTICS_CHECK_FOR_UPDATES,  Value: "false"}
             - {Name: GF_AUTH_ANONYMOUS_ENABLED,       Value: "false"}
             - {Name: GF_USERS_ALLOW_SIGN_UP,          Value: "false"}
+            # Formato de fecha/hora uniforme en todos los tableros (es-AR):
+            # fechas dd/mm, horas hh:mm. Es config de sistema (no por dashboard).
+            - {Name: GF_DATE_FORMATS_FULL_DATE,       Value: "DD/MM/YYYY HH:mm:ss"}
+            - {Name: GF_DATE_FORMATS_INTERVAL_SECOND, Value: "HH:mm:ss"}
+            - {Name: GF_DATE_FORMATS_INTERVAL_MINUTE, Value: "HH:mm"}
+            - {Name: GF_DATE_FORMATS_INTERVAL_HOUR,   Value: "DD/MM HH:mm"}
+            - {Name: GF_DATE_FORMATS_INTERVAL_DAY,    Value: "DD/MM"}
+            - {Name: GF_DATE_FORMATS_INTERVAL_MONTH,  Value: "MM/YYYY"}
+            - {Name: GF_DATE_FORMATS_INTERVAL_YEAR,   Value: "YYYY"}
             # Cap del pool de conexiones a RDS — sin esto Grafana abre 1 conn
             # por request y un burst (ej. scanner pegando /login concurrente)
             # agota los slots de la t4g.micro (~85 conn, con reserva

@@ -1,8 +1,8 @@
 {
   "uid": "footfall-overview",
-  "title": "Footfall — Vista compañía",
-  "tags": ["people-counter", "footfall", "comercial"],
-  "timezone": "browser",
+  "title": "Afluencia y conversión — comparativa de sucursales",
+  "tags": [],
+  "timezone": "America/Argentina/Buenos_Aires",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "5m",
@@ -30,14 +30,14 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Total de ingresos",
-      "description": "Suma de personas que ingresaron al local en el período seleccionado, sumando todas las sucursales filtradas.",
+      "title": "Visitantes",
+      "description": "Suma de personas que entraron al local en el período seleccionado, sumando todas las sucursales filtradas.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 0, "y": 0, "w": 4, "h": 6},
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT bucket_day AS time, SUM(ins) AS \"Ingresos\" FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        "rawSql": "SELECT bucket_day AS time, SUM(ins) AS \"Visitantes\" FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
       }],
       "fieldConfig": {
         "defaults": {
@@ -59,13 +59,13 @@
       "id": 2,
       "type": "stat",
       "title": "Tasa de captación",
-      "description": "Promedio ponderado del cociente ingresos / passersby (tráfico exterior detectado por WiFi/BLE).",
+      "description": "Promedio ponderado del cociente visitantes / tráfico cercano (de los que se acercaron al local, qué porcentaje entró).",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 4, "y": 0, "w": 4, "h": 6},
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT bucket_day AS time, SUM(ins)::float / NULLIF(SUM(passersby), 0) AS \"Captación\" FROM turn_in_rate_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        "rawSql": "SELECT bucket_day AS time, SUM(ins)::float / NULLIF(SUM(shoppers), 0) AS \"Captación\" FROM turn_in_rate_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
       }],
       "fieldConfig": {
         "defaults": {
@@ -86,7 +86,7 @@
       "id": 3,
       "type": "stat",
       "title": "Tasa de conversión",
-      "description": "Promedio ponderado del cociente ventas / ingresos. Requiere que la sucursal envíe transacciones POS.",
+      "description": "Promedio ponderado del cociente compradores / visitantes. Requiere que la sucursal envíe transacciones POS.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 8, "y": 0, "w": 4, "h": 6},
       "targets": [{
@@ -123,7 +123,7 @@
       }],
       "fieldConfig": {
         "defaults": {
-          "unit": "currency:ARS ",
+          "unit": "currency:ARS ",
           "decimals": 0,
           "color": {"mode": "thresholds"},
           "thresholds": {"steps": [{"color": "orange", "value": null}]}
@@ -140,7 +140,7 @@
       "id": 5,
       "type": "stat",
       "title": "Ticket promedio",
-      "description": "Facturación neta dividida por la cantidad de ventas (excluye devoluciones del denominador).",
+      "description": "Facturación neta dividida por la cantidad de compradores (excluye devoluciones del denominador).",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 16, "y": 0, "w": 4, "h": 6},
       "targets": [{
@@ -150,7 +150,7 @@
       }],
       "fieldConfig": {
         "defaults": {
-          "unit": "currency:ARS ",
+          "unit": "currency:ARS ",
           "decimals": 0,
           "color": {"mode": "thresholds"},
           "thresholds": {"steps": [{"color": "orange", "value": null}]}
@@ -193,14 +193,14 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Ingresos diarios y tráfico exterior",
-      "description": "Barras: ingresos al local por día. Líneas (eje derecho): tráfico exterior detectado por WiFi/BLE.",
+      "title": "Visitantes diarios y tráfico externo",
+      "description": "Barras: visitantes al local por día. Líneas (eje derecho): tráfico externo y cercano detectado por WiFi/BLE.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 0, "y": 6, "w": 24, "h": 10},
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT COALESCE(c.bucket_day, w.bucket_day) AS time, SUM(c.ins) AS \"Ingresos\", SUM(w.passersby) AS \"Tráfico exterior\", SUM(w.shoppers) AS \"Tráfico cercano\" FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id = w.store_id AND c.bucket_day = w.bucket_day WHERE COALESCE(c.store_id, w.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day, w.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY COALESCE(c.bucket_day, w.bucket_day) ORDER BY time"
+        "rawSql": "SELECT (COALESCE(c.bucket_day, w.bucket_day)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AS time, SUM(c.ins) AS \"Visitantes\", SUM(w.passersby) AS \"Tráfico externo\", SUM(w.shoppers) AS \"Tráfico cercano\" FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id = w.store_id AND c.bucket_day = w.bucket_day WHERE COALESCE(c.store_id, w.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day, w.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY COALESCE(c.bucket_day, w.bucket_day) ORDER BY time"
       }],
       "fieldConfig": {
         "defaults": {
@@ -208,20 +208,20 @@
             "drawStyle": "bars",
             "lineWidth": 1,
             "fillOpacity": 80,
-            "axisLabel": "Ingresos",
+            "axisLabel": "Visitantes",
             "axisPlacement": "left"
           },
           "color": {"mode": "palette-classic"}
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Tráfico exterior"},
+            "matcher": {"id": "byName", "options": "Tráfico externo"},
             "properties": [
               {"id": "custom.drawStyle", "value": "line"},
               {"id": "custom.lineWidth", "value": 2},
               {"id": "custom.fillOpacity", "value": 0},
               {"id": "custom.axisPlacement", "value": "right"},
-              {"id": "custom.axisLabel", "value": "Tráfico exterior"},
+              {"id": "custom.axisLabel", "value": "Tráfico externo"},
               {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}
             ]
           },
@@ -236,7 +236,7 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Ingresos"},
+            "matcher": {"id": "byName", "options": "Visitantes"},
             "properties": [
               {"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}
             ]
@@ -252,34 +252,43 @@
       "id": 20,
       "type": "bargauge",
       "title": "Embudo de conversión",
-      "description": "Cascada de tráfico exterior → tráfico cercano → ingresos al local → ventas. Cada barra muestra el conteo absoluto del período.",
+      "description": "Embudo: tráfico externo → tráfico cercano → visitantes → compradores. Cada barra es proporcional al tope (tráfico externo); el área sin llenar = la caída respecto de la etapa anterior. Color por etapa.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "WITH totals AS (SELECT SUM(w.passersby) AS passersby, SUM(w.shoppers) AS shoppers, SUM(c.ins) AS ingresos, SUM(p.sales) AS ventas FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id = w.store_id AND c.bucket_day = w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id, w.store_id) = p.store_id AND COALESCE(c.bucket_day, w.bucket_day) = p.bucket_day WHERE COALESCE(c.store_id, w.store_id, p.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day, w.bucket_day, p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date) SELECT passersby AS \"Tráfico exterior\", shoppers AS \"Tráfico cercano\", ingresos AS \"Ingresos\", ventas AS \"Ventas\" FROM totals"
+        "rawSql": "WITH totals AS (SELECT SUM(w.passersby) AS passersby, SUM(w.shoppers) AS shoppers, SUM(c.ins) AS visitantes, SUM(p.sales) AS compradores FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id = w.store_id AND c.bucket_day = w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id, w.store_id) = p.store_id AND COALESCE(c.bucket_day, w.bucket_day) = p.bucket_day WHERE COALESCE(c.store_id, w.store_id, p.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day, w.bucket_day, p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date) SELECT passersby AS \"Tráfico externo\", shoppers AS \"Tráfico cercano\", visitantes AS \"Visitantes\", compradores AS \"Compradores\" FROM totals"
       }],
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "continuous-BlPu"},
           "unit": "short",
-          "decimals": 0
-        }
+          "decimals": 0,
+          "min": 0,
+          "color": {"mode": "fixed"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Tráfico externo"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byName", "options": "Tráfico cercano"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "light-blue"}}]},
+          {"matcher": {"id": "byName", "options": "Visitantes"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "Compradores"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]}
+        ]
       },
       "options": {
         "orientation": "horizontal",
         "displayMode": "gradient",
         "showUnfilled": true,
-        "valueMode": "color",
+        "valueMode": "text",
+        "namePlacement": "top",
+        "minVizWidth": 0,
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
       }
     },
     {
       "id": 21,
       "type": "piechart",
-      "title": "Composición demográfica de los ingresos",
-      "description": "Distribución de los ingresos por categoría etaria estimada (basada en altura medida por estéreo).",
+      "title": "Composición demográfica de los visitantes",
+      "description": "Distribución de los visitantes por categoría etaria estimada (basada en altura medida por estéreo).",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
       "targets": [{
@@ -303,14 +312,14 @@
     {
       "id": 30,
       "type": "barchart",
-      "title": "Top 5 sucursales por ingresos",
+      "title": "Top 5 sucursales por visitantes",
       "description": "Las cinco sucursales que más personas recibieron en el período seleccionado.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "SELECT s.store_name AS \"Sucursal\", SUM(c.ins) AS \"Ingresos\" FROM counting_by_bucket_day c JOIN sites s USING (store_id) WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY s.store_name ORDER BY 2 DESC LIMIT 5"
+        "rawSql": "SELECT s.store_name AS \"Sucursal\", SUM(c.ins) AS \"Visitantes\" FROM counting_by_bucket_day c JOIN sites s USING (store_id) WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY s.store_name ORDER BY 2 DESC LIMIT 5"
       }],
       "fieldConfig": {
         "defaults": {
@@ -332,7 +341,7 @@
       "id": 31,
       "type": "barchart",
       "title": "5 sucursales con menor conversión",
-      "description": "Sucursales con menor cociente ventas / ingresos en el período. Excluye sucursales sin tráfico.",
+      "description": "Sucursales con menor cociente compradores / visitantes en el período. Excluye sucursales sin tráfico.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
       "targets": [{
@@ -358,32 +367,39 @@
     },
     {
       "id": 40,
-      "type": "heatmap",
-      "title": "Mapa de calor — día de la semana × hora del día",
-      "description": "Promedio de ingresos por día de la semana y hora del día, sobre los últimos 30 días. Independiente del filtro de tiempo del dashboard para mantener significancia estadística.",
+      "type": "table",
+      "title": "Visitantes por día de la semana × hora",
+      "description": "Visitantes por día de la semana (filas) y hora del día (columnas), promediados sobre el rango seleccionado (con 7 días = el valor de cada día; con rangos más largos = el patrón típico). Celdas coloreadas por intensidad.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 0, "y": 32, "w": 24, "h": 10},
       "targets": [{
         "refId": "A",
-        "format": "time_series",
-        "rawSql": "SELECT bucket_hour AS time, SUM(ins) AS \"Ingresos\" FROM counting_by_bucket_hour WHERE store_id IN (${sites:sqlstring}) AND bucket_hour > NOW() - INTERVAL '30 days' GROUP BY bucket_hour ORDER BY time"
+        "format": "table",
+        "rawSql": "WITH d AS (SELECT (bucket_hour AT TIME ZONE 'UTC')::date AS dd, extract(isodow FROM bucket_hour AT TIME ZONE 'UTC')::int AS dow, extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int AS hr, SUM(ins) AS tot FROM counting_by_bucket_hour WHERE store_id IN (${sites:sqlstring}) AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo() GROUP BY 1, 2, 3) SELECT CASE dow WHEN 1 THEN 'Lun' WHEN 2 THEN 'Mar' WHEN 3 THEN 'Mié' WHEN 4 THEN 'Jue' WHEN 5 THEN 'Vie' WHEN 6 THEN 'Sáb' WHEN 7 THEN 'Dom' END AS \"Día\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=0)),0) AS \"00:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=1)),0) AS \"01:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=2)),0) AS \"02:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=3)),0) AS \"03:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=4)),0) AS \"04:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=5)),0) AS \"05:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=6)),0) AS \"06:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=7)),0) AS \"07:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=8)),0) AS \"08:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=9)),0) AS \"09:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=10)),0) AS \"10:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=11)),0) AS \"11:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=12)),0) AS \"12:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=13)),0) AS \"13:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=14)),0) AS \"14:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=15)),0) AS \"15:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=16)),0) AS \"16:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=17)),0) AS \"17:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=18)),0) AS \"18:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=19)),0) AS \"19:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=20)),0) AS \"20:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=21)),0) AS \"21:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=22)),0) AS \"22:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=23)),0) AS \"23:00\" FROM d GROUP BY dow ORDER BY dow"
       }],
       "fieldConfig": {
         "defaults": {
-          "custom": {"hideFrom": {"tooltip": false, "viz": false, "legend": false}},
-          "color": {"mode": "thresholds"}
-        }
+          "custom": {"align": "center", "cellOptions": {"type": "color-background", "mode": "gradient"}, "minWidth": 38},
+          "color": {"mode": "continuous-GrYlRd"},
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Día"},
+            "properties": [
+              {"id": "custom.cellOptions", "value": {"type": "auto"}},
+              {"id": "custom.align", "value": "left"},
+              {"id": "custom.minWidth", "value": 56},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "transparent"}}
+            ]
+          }
+        ]
       },
       "options": {
-        "calculate": true,
-        "calculation": {"xBuckets": {"mode": "size", "value": "1h"}, "yBuckets": {"mode": "count", "value": "24"}},
-        "cellGap": 2,
-        "cellValues": {"unit": "short", "decimals": 0},
-        "showValue": "auto",
-        "color": {"mode": "scheme", "scheme": "Turbo", "steps": 64, "exponent": 0.5, "reverse": false},
-        "tooltip": {"show": true, "yHistogram": false},
-        "legend": {"show": true},
-        "exemplars": {"color": "rgba(255,0,255,0.7)"}
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {"show": false}
       }
     },
     {
@@ -396,7 +412,7 @@
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "WITH actual AS (SELECT c.store_id, s.store_name, SUM(c.ins) AS ingresos, SUM(p.sales)::float / NULLIF(SUM(c.ins), 0) AS conversion, SUM(t.ins)::float / NULLIF(SUM(t.passersby), 0) AS turn_in, (COALESCE(SUM(p.amount_minor_sale), 0) - COALESCE(SUM(p.amount_minor_return), 0))::float / 100 AS facturacion FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id = p.store_id AND c.bucket_day = p.bucket_day LEFT JOIN turn_in_rate_by_bucket_day t ON c.store_id = t.store_id AND c.bucket_day = t.bucket_day WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY c.store_id, s.store_name), previo AS (SELECT store_id, SUM(ins) AS ingresos_prev FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN ($__timeFrom()::timestamptz - INTERVAL '7 days')::date AND ($__timeTo()::timestamptz - INTERVAL '7 days')::date GROUP BY store_id) SELECT a.store_id AS \"ID\", a.store_name AS \"Sucursal\", a.ingresos AS \"Ingresos\", (a.ingresos - COALESCE(pr.ingresos_prev, 0))::float / NULLIF(pr.ingresos_prev, 0) AS \"Δ vs semana anterior\", a.turn_in AS \"Captación\", a.conversion AS \"Conversión\", a.facturacion AS \"Facturación\" FROM actual a LEFT JOIN previo pr USING (store_id) ORDER BY a.ingresos DESC"
+        "rawSql": "WITH actual AS (SELECT c.store_id, s.store_name, SUM(c.ins) AS visitantes, SUM(p.sales)::float / NULLIF(SUM(c.ins), 0) AS conversion, SUM(t.ins)::float / NULLIF(SUM(t.shoppers), 0) AS captacion, (COALESCE(SUM(p.amount_minor_sale), 0) - COALESCE(SUM(p.amount_minor_return), 0))::float / 100 AS facturacion FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id = p.store_id AND c.bucket_day = p.bucket_day LEFT JOIN turn_in_rate_by_bucket_day t ON c.store_id = t.store_id AND c.bucket_day = t.bucket_day WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY c.store_id, s.store_name), previo AS (SELECT store_id, SUM(ins) AS visitantes_prev FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN ($__timeFrom()::timestamptz - INTERVAL '7 days')::date AND ($__timeTo()::timestamptz - INTERVAL '7 days')::date GROUP BY store_id) SELECT a.store_id AS \"ID\", a.store_name AS \"Sucursal\", a.visitantes AS \"Visitantes\", (a.visitantes - COALESCE(pr.visitantes_prev, 0))::float / NULLIF(pr.visitantes_prev, 0) AS \"Δ vs semana anterior\", a.captacion AS \"Captación\", a.conversion AS \"Conversión\", a.facturacion AS \"Facturación\" FROM actual a LEFT JOIN previo pr USING (store_id) ORDER BY a.visitantes DESC"
       }],
       "fieldConfig": {
         "defaults": {
@@ -424,7 +440,7 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Ingresos"},
+            "matcher": {"id": "byName", "options": "Visitantes"},
             "properties": [
               {"id": "unit", "value": "short"},
               {"id": "decimals", "value": 0},
@@ -460,7 +476,7 @@
           },
           {
             "matcher": {"id": "byName", "options": "Facturación"},
-            "properties": [{"id": "unit", "value": "currency:ARS "}, {"id": "decimals", "value": 0}]
+            "properties": [{"id": "unit", "value": "currency:ARS "}, {"id": "decimals", "value": 0}]
           }
         ]
       },
@@ -473,14 +489,14 @@
     {
       "id": 60,
       "type": "timeseries",
-      "title": "Visitantes únicos por día (WiFi/BLE)",
-      "description": "Cantidad de dispositivos distintos detectados por día tras stitching local del device (un dispositivo con N rotaciones de MAC cuenta como 1). Capacidad nueva post per-device events — antes el resumen pre-agregado no permitía DISTINCT cross-bucket.",
+      "title": "Dispositivos únicos por día (WiFi/BLE)",
+      "description": "Cantidad de dispositivos distintos detectados por día tras stitching local del device (un dispositivo con N rotaciones de MAC cuenta como 1).",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 0, "y": 52, "w": 8, "h": 8},
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT bucket_day AS time, COUNT(DISTINCT visitor_hash) AS \"Visitantes únicos\" FROM wifi_ble_events WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        "rawSql": "SELECT (bucket_day::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AS time, SUM(visitors) AS \"Dispositivos únicos\" FROM wifi_ble_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
       }],
       "fieldConfig": {
         "defaults": {
@@ -491,7 +507,7 @@
             "drawStyle": "bars",
             "fillOpacity": 70,
             "lineWidth": 1,
-            "axisLabel": "Visitantes"
+            "axisLabel": "Dispositivos"
           }
         }
       },
@@ -503,14 +519,14 @@
     {
       "id": 61,
       "type": "stat",
-      "title": "Tasa de promoción a shopper",
-      "description": "De los visitantes únicos del período, qué porcentaje llegaron a clasificarse como shopper (RSSI máximo ≥ -55 dBm en alguna ventana) — proxy de intención de entrada. Calculado per-visitor: lifetime max RSSI del día.",
+      "title": "Tasa de atracción",
+      "description": "De los transeúntes del período (tráfico externo), qué porcentaje se acercaron al local (tráfico cercano, RSSI ≥ -55 dBm) — proxy de atracción de la vidriera.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 8, "y": 52, "w": 8, "h": 8},
       "targets": [{
         "refId": "A",
         "format": "time_series",
-        "rawSql": "SELECT bucket_day AS time, COUNT(*) FILTER (WHERE lifetime_max_rssi >= -55)::float / NULLIF(COUNT(*), 0) AS \"Promoción\" FROM (SELECT bucket_day, visitor_hash, MAX(rssi_max) AS lifetime_max_rssi FROM wifi_ble_events WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day, visitor_hash) v GROUP BY bucket_day ORDER BY time"
+        "rawSql": "SELECT (bucket_day::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AS time, SUM(shoppers)::float / NULLIF(SUM(passersby), 0) AS \"Atracción\" FROM wifi_ble_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
       }],
       "fieldConfig": {
         "defaults": {
@@ -521,8 +537,8 @@
             "mode": "absolute",
             "steps": [
               {"color": "red",    "value": null},
-              {"color": "orange", "value": 0.05},
-              {"color": "green",  "value": 0.15}
+              {"color": "orange", "value": 0.20},
+              {"color": "green",  "value": 0.40}
             ]
           }
         }
@@ -539,13 +555,13 @@
       "id": 62,
       "type": "barchart",
       "title": "Repetición intra-día (engagement)",
-      "description": "Distribución de visitantes según cuántas ventanas de 15 min los observaron. Visitantes en 1 ventana = pasaron rápido. Visitantes en 3+ ventanas = rondaron o se quedaron cerca — proxy de engagement.",
+      "description": "Distribución de dispositivos según cuántas ventanas de 15 min los observaron. 1 ventana = pasaron rápido; 3+ ventanas = rondaron o se quedaron cerca — proxy de engagement.",
       "datasource": {"type": "postgres", "uid": "__DS_UID__"},
       "gridPos": {"x": 16, "y": 52, "w": 8, "h": 8},
       "targets": [{
         "refId": "A",
         "format": "table",
-        "rawSql": "WITH visitor_windows AS (SELECT visitor_hash, COUNT(DISTINCT period_start) AS n_windows FROM wifi_ble_events WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY visitor_hash) SELECT CASE WHEN n_windows = 1 THEN '1 ventana' WHEN n_windows = 2 THEN '2 ventanas' WHEN n_windows BETWEEN 3 AND 5 THEN '3-5 ventanas' ELSE '6+ ventanas' END AS \"Ventanas\", COUNT(*) AS \"Visitantes\" FROM visitor_windows GROUP BY 1 ORDER BY MIN(n_windows)"
+        "rawSql": "SELECT CASE windows_bucket WHEN '1' THEN '1 ventana' WHEN '2' THEN '2 ventanas' WHEN '3-5' THEN '3-5 ventanas' ELSE '6+ ventanas' END AS \"Ventanas\", SUM(visitors) AS \"Dispositivos\" FROM wifi_engagement_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY windows_bucket ORDER BY MIN(CASE windows_bucket WHEN '1' THEN 1 WHEN '2' THEN 2 WHEN '3-5' THEN 3 ELSE 6 END)"
       }],
       "fieldConfig": {
         "defaults": {

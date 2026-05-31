@@ -1,0 +1,115 @@
+{
+  "uid": "commercial-performance",
+  "title": "Rendimiento comercial",
+  "tags": [],
+  "timezone": "America/Argentina/Buenos_Aires",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {"from": "now-30d/d", "to": "now/d"},
+  "timepicker": {"refresh_intervals": ["5m", "15m", "1h"]},
+  "templating": {
+    "list": [
+      {
+        "name": "sites", "label": "Sucursales", "type": "query",
+        "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+        "query": "SELECT store_name AS __text, store_id AS __value FROM sites ORDER BY store_name",
+        "multi": true, "includeAll": true,
+        "current": {"selected": false, "text": "All", "value": ["$__all"]}, "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Facturación",
+      "description": "Ventas menos devoluciones en el período (ARS).",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 0, "y": 0, "w": 5, "h": 5},
+      "targets": [{"refId": "A", "format": "time_series",
+        "rawSql": "SELECT bucket_day AS time, SUM(amount_minor_sale - amount_minor_return)/100.0 AS \"Facturación\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"}],
+      "fieldConfig": {"defaults": {"unit": "currency:ARS ", "decimals": 0, "color": {"mode": "fixed", "fixedColor": "orange"}}},
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "graphMode": "area", "colorMode": "value"}
+    },
+    {
+      "id": 2, "type": "stat", "title": "Tasa de conversión",
+      "description": "Compradores ÷ visitantes.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 5, "y": 0, "w": 5, "h": 5},
+      "targets": [{"refId": "A", "format": "time_series",
+        "rawSql": "SELECT bucket_day AS time, SUM(sales)::float / NULLIF(SUM(visits), 0) AS \"Conversión\" FROM conversion_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 1, "color": {"mode": "fixed", "fixedColor": "green"}}},
+      "options": {"reduceOptions": {"calcs": ["mean"]}, "graphMode": "area", "colorMode": "value"}
+    },
+    {
+      "id": 3, "type": "stat", "title": "Ticket promedio",
+      "description": "Facturación neta ÷ compradores.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 10, "y": 0, "w": 5, "h": 5},
+      "targets": [{"refId": "A", "format": "time_series",
+        "rawSql": "SELECT bucket_day AS time, (SUM(amount_minor_sale) - SUM(amount_minor_return))::float / NULLIF(SUM(sales), 0) / 100.0 AS \"Ticket\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"}],
+      "fieldConfig": {"defaults": {"unit": "currency:ARS ", "decimals": 0, "color": {"mode": "fixed", "fixedColor": "orange"}}},
+      "options": {"reduceOptions": {"calcs": ["mean"]}, "graphMode": "area", "colorMode": "value"}
+    },
+    {
+      "id": 4, "type": "stat", "title": "UPT (unidades/ticket)",
+      "description": "Unidades vendidas ÷ compradores.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 15, "y": 0, "w": 4, "h": 5},
+      "targets": [{"refId": "A", "format": "time_series",
+        "rawSql": "SELECT bucket_day AS time, SUM(items_sale)::float / NULLIF(SUM(sales), 0) AS \"UPT\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2, "color": {"mode": "fixed", "fixedColor": "blue"}}},
+      "options": {"reduceOptions": {"calcs": ["mean"]}, "graphMode": "area", "colorMode": "value"}
+    },
+    {
+      "id": 5, "type": "stat", "title": "Ventas por visitante (RPV)",
+      "description": "Facturación ÷ visitantes (= conversión × ticket).",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 19, "y": 0, "w": 5, "h": 5},
+      "targets": [{"refId": "A", "format": "time_series",
+        "rawSql": "SELECT bucket_day AS time, SUM(amount_minor_sale)/100.0 / NULLIF(SUM(ins), 0) AS \"RPV\" FROM revenue_per_visitor_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"}],
+      "fieldConfig": {"defaults": {"unit": "currency:ARS ", "decimals": 0, "color": {"mode": "fixed", "fixedColor": "purple"}}},
+      "options": {"reduceOptions": {"calcs": ["mean"]}, "graphMode": "area", "colorMode": "value"}
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Facturación por día",
+      "description": "Facturación neta diaria (ventas − devoluciones).",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 0, "y": 5, "w": 24, "h": 8},
+      "targets": [{"refId": "A", "format": "time_series",
+        "rawSql": "SELECT (bucket_day::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AS time, SUM(amount_minor_sale - amount_minor_return)/100.0 AS \"Facturación\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"}],
+      "fieldConfig": {"defaults": {"unit": "currency:ARS ", "decimals": 0, "custom": {"drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1}, "color": {"mode": "fixed", "fixedColor": "orange"}}},
+      "options": {"legend": {"showLegend": false}, "tooltip": {"mode": "single"}}
+    },
+    {
+      "id": 20, "type": "barchart", "title": "Tasa de conversión por sucursal",
+      "description": "Tasa de conversión (compradores ÷ visitantes) por sucursal en el período.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 0, "y": 13, "w": 12, "h": 9},
+      "targets": [{"refId": "A", "format": "table",
+        "rawSql": "SELECT s.store_name AS \"Sucursal\", SUM(p.sales)::float / NULLIF(SUM(c.ins), 0) AS \"Conversión\" FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id = p.store_id AND c.bucket_day = p.bucket_day WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY s.store_name HAVING SUM(c.ins) > 0 ORDER BY 2 DESC"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 1, "color": {"mode": "continuous-GrYlRd"}}},
+      "options": {"orientation": "horizontal", "xField": "Sucursal", "showValue": "always", "legend": {"showLegend": false}}
+    },
+    {
+      "id": 30, "type": "table", "title": "Rendimiento comercial por sucursal",
+      "description": "Indicadores comerciales por sucursal en el período. Devoluciones = unidades devueltas ÷ vendidas.",
+      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
+      "gridPos": {"x": 12, "y": 13, "w": 12, "h": 9},
+      "targets": [{"refId": "A", "format": "table",
+        "rawSql": "WITH agg AS (SELECT c.store_id, s.store_name, s.sales_area_m2, SUM(c.ins) ins, SUM(p.sales) sales, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0 fact, SUM(p.items_sale) it_s, SUM(p.items_return) it_r FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY c.store_id, s.store_name, s.sales_area_m2) SELECT store_name AS \"Sucursal\", fact AS \"Facturación\", sales::float/NULLIF(ins,0) AS \"Tasa de conversión\", fact/NULLIF(sales,0) AS \"Ticket promedio\", it_s::float/NULLIF(sales,0) AS \"UPT\", fact/NULLIF(sales_area_m2,0) AS \"Ventas/m²\", it_r::float/NULLIF(it_s,0) AS \"Tasa de devoluciones\" FROM agg ORDER BY fact DESC"}],
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "right"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Sucursal"}, "properties": [{"id": "custom.align", "value": "left"}]},
+          {"matcher": {"id": "byName", "options": "Facturación"}, "properties": [{"id": "unit", "value": "currency:ARS "}, {"id": "decimals", "value": 0}, {"id": "custom.displayMode", "value": "color-background-solid"}, {"id": "color", "value": {"mode": "continuous-BlPu"}}]},
+          {"matcher": {"id": "byName", "options": "Tasa de conversión"}, "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "Ticket promedio"}, "properties": [{"id": "unit", "value": "currency:ARS "}, {"id": "decimals", "value": 0}]},
+          {"matcher": {"id": "byName", "options": "UPT"}, "properties": [{"id": "unit", "value": "short"}, {"id": "decimals", "value": 2}]},
+          {"matcher": {"id": "byName", "options": "Ventas/m²"}, "properties": [{"id": "unit", "value": "currency:ARS "}, {"id": "decimals", "value": 0}]},
+          {"matcher": {"id": "byName", "options": "Tasa de devoluciones"}, "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}, {"id": "custom.displayMode", "value": "color-text"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.04}, {"color": "red", "value": 0.08}]}}]}
+        ]
+      },
+      "options": {"showHeader": true, "cellHeight": "sm", "footer": {"show": false}}
+    }
+  ]
+}
