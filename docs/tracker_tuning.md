@@ -239,6 +239,55 @@ sudo journalctl -u people-counter --since "10 min ago" \
     | grep -E "short_height_skipped"
 ```
 
+#### 5b. El FP no-humano NO tiene altura (perro que SGBM no mide)
+
+`min_count_height_m` solo filtra cuando la altura **existe** y es baja — tracks
+con altura desconocida (mediana = `None`) PASAN, para preservar recall cuando
+SGBM falla en una persona real (motion blur / oclusión). Pero muchos FPs
+no-humanos salen JUSTAMENTE sin altura: SGBM no le saca cabeza confiable a un
+perro (forma/altura atípica) ni a un track fantasma sobre clutter. Esos se
+cuelan por el agujero del guard de altura.
+
+**Síntoma diagnóstico**: counts en horarios sin clientes, todos con
+`height_m=?` (sin altura) y confianza baja. Caso real piloto (2026-06-01): de
+lunes a jueves 10:30-18:30 el único "tráfico" es un perro. Análisis de 831
+`count_events`: **todo** evento con altura medida tiene `conf >= 0.5` y es
+humano; el perro/fantasma sale **siempre sin altura y con `conf <= 0.56`**.
+
+```sql
+-- Crosstab confianza × ¿SGBM midió altura? — la firma del FP salta a la vista.
+SELECT width_bucket(confidence, 0, 1, 10) * 0.1 AS conf_bucket,
+       count(*) FILTER (WHERE height_m IS NULL)     AS sin_altura,
+       count(*) FILTER (WHERE height_m IS NOT NULL) AS con_altura
+FROM count_events WHERE store_id = '<store-id>'
+GROUP BY 1 ORDER BY 1;
+```
+
+Si todo lo de `conf < ~0.55` cae en `sin_altura` → es el patrón del perro/fantasma.
+
+**Fix** (complementa, no reemplaza, a `min_count_height_m`):
+
+```yaml
+counter:
+  min_count_confidence: 0.60   # default; sin altura + conf < esto → no cuenta
+```
+
+Sin altura medida Y `mediana(conf) < 0.60` → el counter rechaza el emit. Una
+persona real sin altura trae conf alta (>= 0.6) y **pasa** → recall preservado.
+Es un eje **ortogonal** a `height_confidence_gate` (ese solo decide si reportar
+demografía cuando HAY altura; el conteo se mantiene). Acá, sin altura, decide
+contar-o-no.
+
+**Knobs**:
+- `0.50` prioriza recall (deja pasar FPs de conf 0.50-0.60, ej. el perro tope ~0.56).
+- `0.0` desactiva el guard (back-compat: cualquier track sin altura cuenta).
+
+```bash
+# Agarra las dos ramas: "exit_lowconf_noheight_skipped" y "reason=lowconf_noheight".
+sudo journalctl -u people-counter --since "10 min ago" \
+    | grep -E "lowconf_noheight"
+```
+
 ### 6. Clutter estructural intenso (tiendas de ropa, sites con perchero/mostrador)
 
 **Lectura**: el frame tiene zonas con detecciones espurias persistentes —
@@ -366,6 +415,7 @@ tracking:
 | `ghost_outside_invalidate_px` | 150 | `tracking.state_machine` | rara vez | rara vez |
 | `min_visit_range_for_death_emit` | 80 | `counter` | counts fantasma | crossers perdidos |
 | `min_count_height_m` | 0.0 (off) | `counter` | FPs no-humanos cuentan | filtra niños chicos legítimos |
+| `min_count_confidence` | 0.60 | `counter` | FPs sin altura (perro/fantasma) cuentan | personas sin altura no cuentan (subir recall) |
 | `min_real_inside_frames` | 0 (off) | `counter` | FPs single-frame al borde del counting zone | caminantes muy rápidos (<150 ms inside) se pierden |
 | `tracking_zone.enabled` | false (off) | `tracking` | clutter estructural genera tracks ruidosos | counting_zone + margen pequeños podrían perder approach |
 | `tracking_zone.frame_margin_px` | 100 | `tracking` | filtrar más clutter periférico (subir) | menor margen es más permisivo (bajar si pierde approach) |

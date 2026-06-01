@@ -392,6 +392,21 @@ class Counter:
     # línea y disparaba IN; campera en silla con SGBM noise también.
     DEFAULT_MIN_COUNT_HEIGHT_M = 0.0
 
+    # Filtro anti-FP no-humanos SIN altura. Complementa min_count_height_m (que
+    # solo filtra alturas medidas y bajas): si SGBM NO le sacó altura al track
+    # (mediana None) Y la mediana de YOLO confidence cae por debajo de este
+    # threshold, el counter NO emite el conteo. Eje ortogonal al
+    # height_confidence_gate (ese gatea SOLO la demografía cuando HAY altura; el
+    # conteo se mantiene). Acá, sin altura, decide contar o no.
+    # Caso real piloto: de lunes a jueves 10:30-18:30 el único "tráfico" es un
+    # perro (+ tracks fantasma sobre clutter). Análisis de 831 count_events del
+    # piloto (2026-06-01): TODO evento con altura medida tiene conf >= 0.5 y es
+    # humano; el perro/fantasma sale SIEMPRE sin altura y con conf <= 0.56. Una
+    # persona real sin altura (SGBM falló por blur/oclusión) trae conf alta y
+    # pasa → recall preservado. Default 0.60 (cubre el perro tope ~0.56);
+    # bajar a 0.50 en sites donde se priorice recall sobre precisión. 0.0 = off.
+    DEFAULT_MIN_COUNT_CONFIDENCE = 0.60
+
     def __init__(
         self,
         lines: list[Line],
@@ -401,6 +416,7 @@ class Counter:
         death_emit_grace_frames: Optional[int] = None,
         min_visit_range_for_death_emit: Optional[float] = None,
         min_count_height_m: Optional[float] = None,
+        min_count_confidence: Optional[float] = None,
         height_confidence_gate: Optional[float] = None,
         min_real_inside_frames: Optional[int] = None,
     ) -> None:
@@ -448,7 +464,22 @@ class Counter:
                 carritos altos, objetos sobre sillas). 1.0 filtra perros y
                 objetos < 1m sin perder niños de 4+ años. 0.7 más conservador.
                 Tracks sin medición SGBM (median=None) pasan — recall sobre
-                precision en ambigüedad.
+                precision en ambigüedad. Para esos casos sin altura está el
+                guard complementario ``min_count_confidence``.
+            min_count_confidence: Threshold de mediana de YOLO confidence para
+                emitir el conteo **cuando el track NO tiene altura medida**
+                (mediana de head_height_mm = None). Si no hay altura Y la
+                mediana de confidence cae por debajo de este valor, el counter
+                rechaza el emit. Complementa ``min_count_height_m`` (que filtra
+                alturas medidas y bajas) cubriendo el caso del FP no-humano al
+                que SGBM no le saca altura (perro, track fantasma sobre
+                clutter). Eje ORTOGONAL a ``height_confidence_gate``: ese solo
+                afecta la demografía cuando HAY altura (el conteo se mantiene);
+                este decide contar-o-no cuando NO hay altura. ``None`` (default)
+                usa ``DEFAULT_MIN_COUNT_CONFIDENCE = 0.60``. ``0.0`` lo
+                desactiva (back-compat: cualquier track sin altura cuenta).
+                Bajar a 0.50 para priorizar recall. Validado contra 831
+                count_events del piloto (2026-06-01).
             height_confidence_gate: Threshold de mediana de YOLO confidence
                 del track para que los campos demográficos (height_class,
                 height_m, head_depth_m) se reporten en el CountEvent.
@@ -496,6 +527,11 @@ class Counter:
             float(min_count_height_m)
             if min_count_height_m is not None
             else self.DEFAULT_MIN_COUNT_HEIGHT_M
+        )
+        self.min_count_confidence: float = (
+            float(min_count_confidence)
+            if min_count_confidence is not None
+            else self.DEFAULT_MIN_COUNT_CONFIDENCE
         )
         self.height_confidence_gate: float = (
             float(height_confidence_gate)
@@ -758,6 +794,23 @@ class Counter:
                 "height_m=%.2f threshold=%.2f net=%s",
                 snap.get("track_id"), snap_height_m,
                 self.min_count_height_m, net,
+            )
+            return None
+
+        # Guard anti-FP no-humano SIN altura — mismo criterio que la rama de
+        # exit. Sin altura medida + conf baja = perro / fantasma sobre clutter.
+        snap_conf = snap.get("confidence")
+        if (
+            self.min_count_confidence > 0
+            and snap_height_m is None
+            and snap_conf is not None
+            and snap_conf < self.min_count_confidence
+        ):
+            logger.debug(  # TRACKDBG [REVERT]
+                "TRACKDBG death_emit_skipped tid=%d reason=lowconf_noheight "
+                "conf=%.2f threshold=%.2f net=%s",
+                snap.get("track_id"), snap_conf,
+                self.min_count_confidence, net,
             )
             return None
 
@@ -1242,6 +1295,28 @@ class Counter:
                         self.min_count_height_m, net_snapshot,
                     )
                     label = None
+            # Guard anti-FP no-humano SIN altura (perro / track fantasma sobre
+            # clutter). Complementa min_count_height_m: si SGBM NO le sacó altura
+            # al track (mediana None) Y la mediana de confidence cae bajo
+            # ``min_count_confidence``, el emit se rechaza. El perro real del
+            # piloto sale sin altura y con conf <=0.56; una persona sin altura
+            # (SGBM falló) trae conf alta y pasa. Usa la altura CRUDA de SGBM
+            # (no la anulada por height_confidence_gate, que es solo demografía).
+            if label and self.min_count_confidence > 0:
+                track_height_m = _aggregate_height_m_from_track(track)
+                conf_median = _aggregate_confidence_from_track(track)
+                if (
+                    track_height_m is None
+                    and conf_median is not None
+                    and conf_median < self.min_count_confidence
+                ):
+                    logger.debug(  # TRACKDBG [REVERT]
+                        "TRACKDBG exit_lowconf_noheight_skipped tid=%d "
+                        "conf=%.2f threshold=%.2f net=%s",
+                        track.track_id, conf_median,
+                        self.min_count_confidence, net_snapshot,
+                    )
+                    label = None
             if label:
                 now = time.time()
                 cross_x = float(crossing_pos[0])
@@ -1360,6 +1435,15 @@ def build_counter(config: dict[str, Any]) -> Counter:
         float(min_count_height_cfg) if min_count_height_cfg is not None else None
     )
 
+    # ``min_count_confidence`` per-site (filtro anti-FP no-humanos SIN altura:
+    # perro / track fantasma sobre clutter). None / ausente → DEFAULT 0.60. Sin
+    # altura medida + median(conf) < umbral → no se cuenta. 0.0 = OFF.
+    # Ver docs/tracker_tuning.md patrón 5.
+    min_count_conf_cfg = counter_cfg.get("min_count_confidence")
+    min_count_conf_kwarg = (
+        float(min_count_conf_cfg) if min_count_conf_cfg is not None else None
+    )
+
     # ``min_real_inside_frames`` per-site (filtro anti-flickering del detector).
     # None / ausente → DEFAULT 0 (filtro OFF). Activar en sites con FPs
     # single-frame al borde del counting zone. Piloto: 2.
@@ -1384,6 +1468,7 @@ def build_counter(config: dict[str, Any]) -> Counter:
         ),
         min_visit_range_for_death_emit=min_visit_range_kwarg,
         min_count_height_m=min_count_height_kwarg,
+        min_count_confidence=min_count_conf_kwarg,
         height_confidence_gate=height_conf_gate_kwarg,
         min_real_inside_frames=min_real_frames_kwarg,
     )

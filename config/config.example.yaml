@@ -425,6 +425,21 @@ counter:
   # también. Ver docs/tracker_tuning.md patrón 5.
   min_count_height_m: 0.0
 
+  # Filtro anti-FP no-humanos SIN altura (complementa min_count_height_m, que
+  # solo filtra alturas medidas y bajas). Si SGBM NO le sacó altura al track
+  # (mediana de head_height_mm = None) Y la mediana de confidence YOLO cae por
+  # debajo de este umbral, el counter NO emite el conteo. Eje ORTOGONAL a
+  # height_confidence_gate: ese gatea SOLO la demografía cuando HAY altura (el
+  # conteo se mantiene); este decide contar-o-no cuando NO hay altura.
+  # Caso real piloto: de lunes a jueves 10:30-18:30 el único "tráfico" es un
+  # perro (+ tracks fantasma sobre clutter). Análisis de 831 count_events
+  # (2026-06-01): todo evento con altura medida tiene conf >= 0.5 y es humano;
+  # el perro/fantasma sale SIEMPRE sin altura y con conf <= 0.56. Una persona
+  # real sin altura (SGBM falló por blur/oclusión) trae conf alta y pasa →
+  # recall preservado. 0.60 default (cubre el perro tope ~0.56); 0.50 prioriza
+  # recall; 0.0 = filtro desactivado (back-compat). Ver docs/tracker_tuning.md.
+  min_count_confidence: 0.60
+
   # Mínimo de frames con detección REAL inside la counting zone antes de
   # que el counter pueda emitir. Filtra tracks "fantasma" donde el detector
   # dispara un solo frame al borde y el Kalman extrapola toda la "visita"

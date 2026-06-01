@@ -1747,6 +1747,130 @@ def test_min_count_height_default_is_off():
     assert counter.min_count_height_m == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Guard min_count_confidence — anti-FP no-humano SIN altura (perro / fantasma)
+# Casos reales del piloto (2026-06-01): de lunes a jueves 10:30-18:30 el único
+# "tráfico" es un perro. Análisis de 831 count_events: TODO evento con altura
+# medida tiene conf >= 0.5 y es humano; el perro/fantasma sale SIEMPRE sin
+# altura y con conf <= 0.56. Default 0.60 los descarta sin tocar personas.
+# ---------------------------------------------------------------------------
+
+
+def _set_track_conf_history(track, confidence_values, head_height_mm=None):
+    """detection_history con confidence (y opcionalmente head_height_mm). Para
+    tests del guard ``min_count_confidence`` (caso sin altura medida)."""
+    track.meta["detection_history"] = [
+        {"confidence": c}
+        if head_height_mm is None
+        else {"confidence": c, "head_height_mm": head_height_mm}
+        for c in confidence_values
+    ]
+
+
+# Confidencias reales del perro/fantasma medidas en el piloto (todas sin altura).
+PILOT_DOG_CONFIDENCES = [0.29, 0.32, 0.36, 0.37, 0.38, 0.42, 0.56]
+
+
+@pytest.mark.parametrize("dog_conf", PILOT_DOG_CONFIDENCES)
+def test_min_count_confidence_blocks_dog_no_height(dog_conf):
+    """Caso real piloto: perro/fantasma sin altura medida + conf <= 0.56 cruza
+    la línea → con default 0.60 el counter NO emite."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    _set_track_conf_history(track, [dog_conf, dog_conf, dog_conf])  # sin altura
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is None, f"perro conf={dog_conf} sin altura no debe contar"
+    assert counter.total_in == 0
+
+
+def test_min_count_confidence_passes_no_height_high_conf():
+    """Persona real donde SGBM falló (sin altura) pero con conf alta (>= 0.60)
+    PASA — recall preservado. Es el caso ambiguo que NO queremos filtrar."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    _set_track_conf_history(track, [0.72, 0.78, 0.70])  # sin altura, conf alta
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is not None, "sin altura pero conf alta debe contar (recall)"
+    assert counter.total_in == 1
+
+
+def test_min_count_confidence_ignored_when_height_present():
+    """El guard SOLO aplica sin altura. Con altura medida, una conf baja NO
+    bloquea el conteo (la demografía la maneja height_confidence_gate, pero el
+    count se mantiene) — eje ortogonal."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    # Altura medida ~1.6m + conf baja 0.4: el guard sin-altura no aplica.
+    _set_track_conf_history(track, [0.4, 0.4, 0.4], head_height_mm=1600.0)
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is not None, "con altura medida el count se mantiene"
+    assert counter.total_in == 1
+
+
+def test_min_count_confidence_blocks_death_emit_dog():
+    """Death-emit también respeta el guard: perro sin altura + conf baja que
+    muere dentro de la counting zone con cruce registrado → no cuenta."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    _set_track_conf_history(track, [0.42, 0.38, 0.40])  # sin altura
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])  # cross, sin exit
+    counter.check_all({})  # el track desaparece
+    for _ in range(Counter.DEFAULT_DEATH_EMIT_GRACE_FRAMES + 1):
+        counter.check_all({})
+    assert counter.total_in == 0
+    assert counter.total_out == 0
+
+
+def test_min_count_confidence_off_when_zero():
+    """0.0 = guard desactivado: sin altura + conf baja igual cuenta (back-compat)."""
+    counter = Counter(
+        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        min_count_confidence=0.0,
+    )
+    track = _make_track(1, [[300, 150, 3000]])
+    counter.check_all({1: track})
+    _set_track_conf_history(track, [0.3, 0.3, 0.3])
+    _advance(counter, track, [300, 250, 3000])
+    _advance(counter, track, [300, 350, 3000])
+    ev = _advance(counter, track, [300, 450, 3000])
+    assert ev is not None
+    assert counter.total_in == 1
+
+
+def test_min_count_confidence_default_is_060():
+    """Sin override, usa DEFAULT_MIN_COUNT_CONFIDENCE = 0.60."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    assert counter.min_count_confidence == Counter.DEFAULT_MIN_COUNT_CONFIDENCE
+    assert counter.min_count_confidence == 0.60
+
+
+def test_build_counter_reads_min_count_confidence_from_config():
+    """``counter.min_count_confidence`` del YAML se propaga al Counter."""
+    cfg = {
+        "counter": {
+            "counting_zone": COUNTING_ZONE,
+            "min_count_confidence": 0.5,
+            "lines": [{
+                "from": [100, 300], "to": [500, 300],
+                "labels": {"top_to_bottom": "ingress"},
+            }],
+        },
+    }
+    c = build_counter(cfg)
+    assert c.min_count_confidence == 0.5
+
+
 def test_height_confidence_gate_default_from_class_constant():
     """Sin override, el counter usa DEFAULT_HEIGHT_CONFIDENCE_GATE."""
     counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
