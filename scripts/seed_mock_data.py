@@ -227,11 +227,20 @@ def _ticket_amount_minor(rng: random.Random) -> tuple[int, int]:
 def gen_pos_transactions(rng: random.Random, days, sites):
     """Ventas (+ ~2% devoluciones) durante el día, ponderadas por el perfil diario."""
     methods = ["cash", "card", "qr", "card", "card"]
+    # Factor de conversión MACRO compartido por día (±22%): clima, quincena,
+    # promo, etc. afectan a TODA la cadena junta → el agregado de la flota
+    # oscila día a día en vez de promediarse a una recta. Determinístico por
+    # fecha (random.Random(ordinal)) para que sea estable entre corridas.
+    day_factor = {d: random.Random(d.toordinal()).uniform(0.78, 1.22) for d in days}
     for (sid, _n, _la, _lo, base, conv, _ti, _dw, _area) in sites:
         seq = 0
         for day in days:
             daily_ins = _daily_ins(rng, base, day)
-            n_sales = int(daily_ins * conv)
+            # Conversión del día = base × factor macro (compartido) × jitter
+            # micro per-store (±8%). El macro mueve la cadena entera; el micro
+            # diferencia sucursales. Sin el macro, el agregado quedaba plano.
+            daily_conv = conv * day_factor[day] * rng.uniform(0.92, 1.08)
+            n_sales = int(daily_ins * daily_conv)
             n_returns = int(round(n_sales * RETURN_RATE))
             for kind, count in (("sale", n_sales), ("return", n_returns)):
                 for _ in range(count):

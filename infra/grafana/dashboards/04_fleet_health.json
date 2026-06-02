@@ -6,90 +6,537 @@
   "schemaVersion": 39,
   "version": 1,
   "refresh": "1m",
-  "time": {"from": "now-24h", "to": "now"},
-  "timepicker": {"refresh_intervals": ["30s", "1m", "5m", "15m"]},
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ]
+  },
   "templating": {
     "list": [
       {
-        "name": "sites", "label": "Sucursales", "type": "query",
-        "datasource": {"type": "postgres", "uid": "__DS_UID__"},
-        "query": "SELECT store_name AS __text, store_id AS __value FROM sites ORDER BY store_name",
-        "multi": true, "includeAll": true,
-        "current": {"selected": false, "text": "All", "value": ["$__all"]}, "refresh": 1
+        "name": "sites",
+        "label": "Sucursales",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "__DS_UID__"
+        },
+        "query": "SELECT store_name AS __text, store_id AS __value FROM sites WHERE status = 'operational' ORDER BY store_name",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "refresh": 1
       }
     ]
   },
   "panels": [
     {
-      "id": 1, "type": "table", "title": "Estado de dispositivos",
+      "id": 1,
+      "type": "table",
+      "title": "Estado de dispositivos",
       "description": "Última muestra de telemetría por dispositivo: FPS, temperaturas, disco, MQTT.",
-      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
-      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 9},
-      "targets": [{"refId": "A", "format": "table",
-        "rawSql": "SELECT DISTINCT ON (t.device_id) s.store_name AS \"Sucursal\", t.device_id AS \"Dispositivo\", round(t.fps::numeric,1) AS \"FPS\", t.cpu_temp_c AS \"CPU °C\", t.hailo_temp_c AS \"Hailo °C\", t.disk_free_mb AS \"Disco MB\", t.mqtt_connected AS \"MQTT\", t.event_ts AS \"Última muestra\" FROM telemetry t JOIN sites s USING (store_id) WHERE t.store_id IN (${sites:sqlstring}) ORDER BY t.device_id, t.event_ts DESC"}],
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT DISTINCT ON (t.device_id) s.store_name AS \"Sucursal\", t.device_id AS \"Dispositivo\", round(t.fps::numeric,1) AS \"FPS\", t.cpu_temp_c AS \"CPU °C\", t.hailo_temp_c AS \"Hailo °C\", t.disk_free_mb AS \"Disco MB\", t.mqtt_connected AS \"MQTT\", t.event_ts AS \"Última muestra\" FROM telemetry t JOIN sites s USING (store_id) WHERE t.store_id IN (${sites:sqlstring}) ORDER BY t.device_id, t.event_ts DESC"
+        }
+      ],
       "fieldConfig": {
-        "defaults": {"custom": {"align": "center"}},
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Sucursal"}, "properties": [{"id": "custom.align", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "Dispositivo"}, "properties": [{"id": "custom.align", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "FPS"}, "properties": [{"id": "custom.displayMode", "value": "color-text"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 15}, {"color": "green", "value": 22}]}}]},
-          {"matcher": {"id": "byName", "options": "CPU °C"}, "properties": [{"id": "unit", "value": "celsius"}, {"id": "custom.displayMode", "value": "color-text"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 70}, {"color": "red", "value": 80}]}}]},
-          {"matcher": {"id": "byName", "options": "Hailo °C"}, "properties": [{"id": "unit", "value": "celsius"}, {"id": "custom.displayMode", "value": "color-text"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 70}, {"color": "red", "value": 85}]}}]},
-          {"matcher": {"id": "byName", "options": "Disco MB"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
-          {"matcher": {"id": "byName", "options": "MQTT"}, "properties": [{"id": "custom.displayMode", "value": "color-background-solid"}, {"id": "mappings", "value": [{"type": "value", "options": {"true": {"text": "OK", "color": "green"}, "false": {"text": "OFF", "color": "red"}}}]}]},
-          {"matcher": {"id": "byName", "options": "Última muestra"}, "properties": [{"id": "unit", "value": "dateTimeFromNow"}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sucursal"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Dispositivo"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "FPS"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 15
+                    },
+                    {
+                      "color": "green",
+                      "value": 22
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU °C"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "celsius"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 70
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hailo °C"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "celsius"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 70
+                    },
+                    {
+                      "color": "red",
+                      "value": 85
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Disco MB"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "decmbytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "MQTT"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background-solid"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "true": {
+                        "text": "OK",
+                        "color": "green"
+                      },
+                      "false": {
+                        "text": "OFF",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Última muestra"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          }
         ]
       },
-      "options": {"showHeader": true, "cellHeight": "sm", "footer": {"show": false}}
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
     },
     {
-      "id": 2, "type": "table", "title": "Frescura de datos por sucursal",
+      "id": 2,
+      "type": "table",
+      "title": "Frescura de datos por sucursal",
       "description": "Tiempo desde la última ingesta de datos por sucursal. Detecta sucursales que dejaron de reportar.",
-      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
-      "gridPos": {"x": 0, "y": 9, "w": 8, "h": 9},
-      "targets": [{"refId": "A", "format": "table",
-        "rawSql": "SELECT s.store_name AS \"Sucursal\", round(EXTRACT(epoch FROM (now() - f.last_received_at))/60) AS \"Min sin datos\" FROM data_freshness_by_store f JOIN sites s USING (store_id) WHERE f.store_id IN (${sites:sqlstring}) ORDER BY 2 DESC"}],
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 8,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT s.store_name AS \"Sucursal\", round(EXTRACT(epoch FROM (now() - f.last_received_at))/60) AS \"Min sin datos\" FROM data_freshness_by_store f JOIN sites s USING (store_id) WHERE f.store_id IN (${sites:sqlstring}) ORDER BY 2 DESC"
+        }
+      ],
       "fieldConfig": {
-        "defaults": {"unit": "m", "custom": {"align": "right"}},
+        "defaults": {
+          "unit": "m",
+          "custom": {
+            "align": "right"
+          }
+        },
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Sucursal"}, "properties": [{"id": "custom.align", "value": "left"}]},
-          {"matcher": {"id": "byName", "options": "Min sin datos"}, "properties": [{"id": "custom.displayMode", "value": "color-background-solid"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 30}, {"color": "red", "value": 120}]}}]}
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sucursal"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Min sin datos"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background-solid"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 30
+                    },
+                    {
+                      "color": "red",
+                      "value": 120
+                    }
+                  ]
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": {"showHeader": true, "cellHeight": "sm", "footer": {"show": false}}
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
     },
     {
-      "id": 3, "type": "timeseries", "title": "Temperatura CPU por dispositivo",
+      "id": 3,
+      "type": "timeseries",
+      "title": "Temperatura CPU por dispositivo",
       "description": "Temperatura de CPU en el tiempo, una línea por dispositivo.",
-      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
-      "gridPos": {"x": 8, "y": 9, "w": 16, "h": 9},
-      "targets": [{"refId": "A", "format": "table",
-        "rawSql": "SELECT event_ts AS time, device_id, cpu_temp_c FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY time"}],
-      "transformations": [{"id": "partitionByValues", "options": {"fields": ["device_id"], "keepFields": false}}],
-      "fieldConfig": {"defaults": {"unit": "celsius", "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 0}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 80}]}}},
-      "options": {"legend": {"showLegend": true, "displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 9,
+        "w": 16,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT event_ts AS time, device_id, cpu_temp_c FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY time"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "device_id"
+            ],
+            "keepFields": false
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
-      "id": 4, "type": "timeseries", "title": "FPS del pipeline por dispositivo",
+      "id": 4,
+      "type": "timeseries",
+      "title": "FPS del pipeline por dispositivo",
       "description": "FPS de procesamiento en el tiempo, una línea por dispositivo.",
-      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
-      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 8},
-      "targets": [{"refId": "A", "format": "table",
-        "rawSql": "SELECT event_ts AS time, device_id, fps FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY time"}],
-      "transformations": [{"id": "partitionByValues", "options": {"fields": ["device_id"], "keepFields": false}}],
-      "fieldConfig": {"defaults": {"unit": "short", "decimals": 1, "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 0}}},
-      "options": {"legend": {"showLegend": true, "displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT event_ts AS time, device_id, fps FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY time"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "device_id"
+            ],
+            "keepFields": false
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
-      "id": 5, "type": "timeseries", "title": "Canaries de tracking (stitching ratio)",
+      "id": 5,
+      "type": "timeseries",
+      "title": "Canaries de tracking (stitching ratio)",
       "description": "track_stitching_ratio por dispositivo (ideal ≈ 1.0; > 1.3 = fragmentación de identidad sin rescate).",
-      "datasource": {"type": "postgres", "uid": "__DS_UID__"},
-      "gridPos": {"x": 12, "y": 18, "w": 12, "h": 8},
-      "targets": [{"refId": "A", "format": "table",
-        "rawSql": "SELECT event_ts AS time, device_id, track_stitching_ratio FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY time"}],
-      "transformations": [{"id": "partitionByValues", "options": {"fields": ["device_id"], "keepFields": false}}],
-      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2, "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 0}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1.3}]}}},
-      "options": {"legend": {"showLegend": true, "displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 18,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT event_ts AS time, device_id, track_stitching_ratio FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY time"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "device_id"
+            ],
+            "keepFields": false
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1.3
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ]
 }

@@ -261,6 +261,12 @@ CREATE TABLE IF NOT EXISTS sites (
     timezone    TEXT NOT NULL DEFAULT 'UTC',              -- IANA, ej. 'America/Argentina/Buenos_Aires'. Base del bucketing local (multi-país).
     address     TEXT,
     sales_area_m2 NUMERIC,                                 -- superficie de venta (m²) → métrica ventas/m²
+    -- Lifecycle de la tienda (NO afecta ingesta — Lambdas/MQTT/RDS guardan igual;
+    -- es solo un filtro de visualización). Grafana muestra SOLO 'operational'.
+    -- 'temp_closed' (reforma: contador desenchufado) y 'perm_closed' (cerrada)
+    -- quedan fuera de todos los tableros. Default operational.
+    status      TEXT NOT NULL DEFAULT 'operational'
+                CHECK (status IN ('operational', 'temp_closed', 'perm_closed')),
     created_at  TIMESTAMPTZ      NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ      NOT NULL DEFAULT now()
 );
