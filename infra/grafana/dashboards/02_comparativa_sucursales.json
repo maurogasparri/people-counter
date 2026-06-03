@@ -1,0 +1,626 @@
+{
+  "uid": "commercial-performance",
+  "title": "2 · Comparativa de sucursales",
+  "tags": [],
+  "timezone": "America/Argentina/Buenos_Aires",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5m",
+      "15m",
+      "1h"
+    ]
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "1 · Panorama general",
+      "url": "/d/footfall-overview",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "2 · Comparativa de sucursales",
+      "url": "/d/commercial-performance",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "3 · Detalle de sucursal",
+      "url": "/d/store-detail",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "4 · Patrones de afluencia",
+      "url": "/d/traffic-analysis",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "sites",
+        "label": "Sucursales",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "__DS_UID__"
+        },
+        "query": "SELECT store_name AS __text, store_id AS __value FROM sites WHERE status = 'operational' ORDER BY store_name",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "table",
+      "title": "Ranking de sucursales",
+      "description": "Indicadores clave por sucursal en el período. Click en una fila para abrir el detalle de esa sucursal. Ordenable por cualquier columna.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH agg AS (SELECT c.store_id, s.store_name, s.sales_area_m2, SUM(c.ins) ins, SUM(p.sales) sales, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0 fact, SUM(p.items_sale) it_s, SUM(p.items_return) it_r FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY c.store_id, s.store_name, s.sales_area_m2) SELECT store_id, store_name AS \"Sucursal\", sales::float/NULLIF(ins,0) AS \"Conversión\", it_s::float/NULLIF(sales,0) AS \"UPT\", fact/NULLIF(sales,0) AS \"Ticket promedio\", fact/NULLIF(sales_area_m2,0) AS \"Facturación/m²\", sales AS \"Transacciones\", it_s AS \"Unidades\", fact AS \"Facturación\", it_r::float/NULLIF(it_s,0) AS \"Tasa de devolución\" FROM agg ORDER BY store_name"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "store_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sucursal"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Ver detalle de la sucursal",
+                    "url": "/d/store-detail?var-site=${__data.fields.store_id}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conversión"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0.0495
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UPT"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1.35
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ticket promedio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currency:ARS "
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 164950
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Facturación/m²"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currency:ARS "
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 52950
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Transacciones"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Unidades"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Facturación"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currency:ARS "
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tasa de devolución"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.0205
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 10
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Comparativo vs período anterior",
+      "description": "Variación porcentual de cada KPI respecto al período inmediato anterior de igual duración. Verde = mejora, rojo = empeora.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 12,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH cur AS (SELECT c.store_id, s.sales_area_m2 area, SUM(c.ins) ins, SUM(p.sales) sales, SUM(p.items_sale) it_s, SUM(p.items_return) it_r, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0 fact FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY c.store_id, s.sales_area_m2), prev AS (SELECT c.store_id, s.sales_area_m2 area, SUM(c.ins) ins, SUM(p.sales) sales, SUM(p.items_sale) it_s, SUM(p.items_return) it_r, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0 fact FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.bucket_day BETWEEN ($__timeFrom()::date - (($__timeTo()::date - $__timeFrom()::date)+1)) AND ($__timeFrom()::date - 1) GROUP BY c.store_id, s.sales_area_m2) SELECT s.store_name AS \"Sucursal\", ((cur.sales::float/NULLIF(cur.ins,0)) - (prev.sales::float/NULLIF(prev.ins,0))) / NULLIF((prev.sales::float/NULLIF(prev.ins,0)),0) AS \"Conversión Δ%\", ((cur.it_s::float/NULLIF(cur.sales,0)) - (prev.it_s::float/NULLIF(prev.sales,0))) / NULLIF((prev.it_s::float/NULLIF(prev.sales,0)),0) AS \"UPT Δ%\", ((cur.fact/NULLIF(cur.sales,0)) - (prev.fact/NULLIF(prev.sales,0))) / NULLIF((prev.fact/NULLIF(prev.sales,0)),0) AS \"Ticket Δ%\" FROM cur JOIN sites s USING (store_id) LEFT JOIN prev USING (store_id) WHERE cur.store_id IN (${sites:sqlstring}) ORDER BY s.store_name"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sucursal"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conversión Δ%"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UPT Δ%"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ticket Δ%"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "xychart",
+      "title": "Posicionamiento de sucursales (conversión × ticket)",
+      "description": "Cada sucursal posicionada por tasa de conversión (eje X) y ticket promedio (eje Y). El cuadrante superior-derecho es el mejor: alta conversión y alto ticket. Cada color identifica una sucursal (ver leyenda).",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 11,
+        "w": 12,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH agg AS (SELECT s.store_name, SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS conv, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(SUM(p.sales),0) AS ticket FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY s.store_name HAVING SUM(c.ins)>0) SELECT conv AS \"Conversión\", CASE WHEN store_name='Abasto' THEN ticket END AS \"Abasto\", CASE WHEN store_name='Alto Avellaneda' THEN ticket END AS \"Alto Avellaneda\", CASE WHEN store_name='Alto Comahue' THEN ticket END AS \"Alto Comahue\", CASE WHEN store_name='Alto Palermo' THEN ticket END AS \"Alto Palermo\", CASE WHEN store_name='Córdoba Shopping' THEN ticket END AS \"Córdoba Shopping\", CASE WHEN store_name='Los Gallegos' THEN ticket END AS \"Los Gallegos\", CASE WHEN store_name='Mendoza Plaza' THEN ticket END AS \"Mendoza Plaza\", CASE WHEN store_name='Unicenter' THEN ticket END AS \"Unicenter\" FROM agg ORDER BY store_name"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "currency:ARS ",
+          "decimals": 1,
+          "custom": {
+            "pointSize": {
+              "fixed": 9
+            },
+            "axisLabel": "Ticket promedio"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conversión"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "Tasa de conversión"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "seriesMapping": "auto",
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "right"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    }
+  ]
+}

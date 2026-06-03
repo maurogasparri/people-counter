@@ -1,0 +1,493 @@
+{
+  "uid": "traffic-analysis",
+  "title": "4 · Patrones de afluencia",
+  "tags": [],
+  "timezone": "America/Argentina/Buenos_Aires",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5m",
+      "15m",
+      "1h"
+    ]
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "1 · Panorama general",
+      "url": "/d/footfall-overview",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "2 · Comparativa de sucursales",
+      "url": "/d/commercial-performance",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "3 · Detalle de sucursal",
+      "url": "/d/store-detail",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "4 · Patrones de afluencia",
+      "url": "/d/traffic-analysis",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "sites",
+        "label": "Sucursales",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "__DS_UID__"
+        },
+        "query": "SELECT store_name AS __text, store_id AS __value FROM sites WHERE status = 'operational' ORDER BY store_name",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 24,
+      "type": "table",
+      "title": "Tráfico por sucursal y día del mes",
+      "description": "Matriz: filas = sucursal, columnas = día del mes (01-31), valor = visitantes.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT s.store_name AS \"Sucursal\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=1) AS \"01\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=2) AS \"02\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=3) AS \"03\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=4) AS \"04\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=5) AS \"05\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=6) AS \"06\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=7) AS \"07\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=8) AS \"08\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=9) AS \"09\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=10) AS \"10\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=11) AS \"11\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=12) AS \"12\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=13) AS \"13\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=14) AS \"14\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=15) AS \"15\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=16) AS \"16\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=17) AS \"17\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=18) AS \"18\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=19) AS \"19\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=20) AS \"20\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=21) AS \"21\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=22) AS \"22\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=23) AS \"23\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=24) AS \"24\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=25) AS \"25\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=26) AS \"26\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=27) AS \"27\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=28) AS \"28\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=29) AS \"29\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=30) AS \"30\",\n         SUM(c.ins) FILTER (WHERE extract(day FROM c.bucket_day)=31) AS \"31\",\n         SUM(c.ins) AS \"Total\"\n  FROM counting_by_bucket_day c JOIN sites s USING (store_id)\n  WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date\n  GROUP BY s.store_name ORDER BY \"Total\" DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sucursal"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 25,
+      "type": "table",
+      "title": "Visitantes por día de la semana × hora",
+      "description": "Visitantes por día de la semana (filas) y hora del día (columnas), promediados sobre el rango seleccionado (con 7 días = el valor de cada día; con rangos más largos = el patrón típico). Celdas coloreadas por intensidad.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH d AS (SELECT (bucket_hour AT TIME ZONE 'UTC')::date AS dd, extract(isodow FROM bucket_hour AT TIME ZONE 'UTC')::int AS dow, extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int AS hr, SUM(ins) AS tot FROM counting_by_bucket_hour WHERE store_id IN (${sites:sqlstring}) AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo() GROUP BY 1, 2, 3) SELECT CASE dow WHEN 1 THEN 'Lun' WHEN 2 THEN 'Mar' WHEN 3 THEN 'Mié' WHEN 4 THEN 'Jue' WHEN 5 THEN 'Vie' WHEN 6 THEN 'Sáb' WHEN 7 THEN 'Dom' END AS \"Día\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=0)),0) AS \"00:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=1)),0) AS \"01:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=2)),0) AS \"02:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=3)),0) AS \"03:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=4)),0) AS \"04:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=5)),0) AS \"05:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=6)),0) AS \"06:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=7)),0) AS \"07:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=8)),0) AS \"08:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=9)),0) AS \"09:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=10)),0) AS \"10:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=11)),0) AS \"11:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=12)),0) AS \"12:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=13)),0) AS \"13:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=14)),0) AS \"14:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=15)),0) AS \"15:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=16)),0) AS \"16:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=17)),0) AS \"17:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=18)),0) AS \"18:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=19)),0) AS \"19:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=20)),0) AS \"20:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=21)),0) AS \"21:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=22)),0) AS \"22:00\", COALESCE(ROUND(AVG(tot) FILTER (WHERE hr=23)),0) AS \"23:00\" FROM d GROUP BY dow ORDER BY dow"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "color-background",
+              "mode": "gradient"
+            },
+            "minWidth": 38
+          },
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Día"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.minWidth",
+                "value": 56
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "transparent"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "trend",
+      "title": "Tráfico por hora según día de la semana",
+      "description": "Perfil horario (00-23) del tráfico promedio, una línea por día de la semana, agregado de las sucursales seleccionadas.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT g AS \"Hora\", round(AVG(h.ins) FILTER (WHERE h.dow=1),1) AS \"Lunes\", round(AVG(h.ins) FILTER (WHERE h.dow=2),1) AS \"Martes\", round(AVG(h.ins) FILTER (WHERE h.dow=3),1) AS \"Miércoles\", round(AVG(h.ins) FILTER (WHERE h.dow=4),1) AS \"Jueves\", round(AVG(h.ins) FILTER (WHERE h.dow=5),1) AS \"Viernes\", round(AVG(h.ins) FILTER (WHERE h.dow=6),1) AS \"Sábado\", round(AVG(h.ins) FILTER (WHERE h.dow=7),1) AS \"Domingo\" FROM generate_series(0,23) g LEFT JOIN ( SELECT extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int hr, extract(isodow FROM (bucket_hour AT TIME ZONE 'UTC'))::int dow, ins FROM counting_by_bucket_hour WHERE store_id IN (${sites:sqlstring}) AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo()) h ON h.hr=g GROUP BY g ORDER BY g"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "axisLabel": "Tráfico"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "xField": "Hora",
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Dispositivos únicos por día (WiFi/BLE)",
+      "description": "Cantidad de dispositivos distintos detectados por día tras stitching local del device (un dispositivo con N rotaciones de MAC cuenta como 1).",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT (bucket_day::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AS time, SUM(visitors) AS \"Dispositivos únicos\" FROM wifi_ble_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "super-light-blue"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "axisLabel": "Dispositivos"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "showLegend": false
+        }
+      }
+    },
+    {
+      "id": 28,
+      "type": "barchart",
+      "title": "Repetición intra-día (engagement)",
+      "description": "Distribución de dispositivos según cuántas ventanas de 15 min los observaron. 1 ventana = pasaron rápido; 3+ ventanas = rondaron o se quedaron cerca — proxy de engagement.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 17,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT CASE windows_bucket WHEN '1' THEN '1 ventana' WHEN '2' THEN '2 ventanas' WHEN '3-5' THEN '3-5 ventanas' ELSE '6+ ventanas' END AS \"Ventanas\", SUM(visitors) AS \"Dispositivos\" FROM wifi_engagement_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY windows_bucket ORDER BY MIN(CASE windows_bucket WHEN '1' THEN 1 WHEN '2' THEN 2 WHEN '3-5' THEN 3 ELSE 6 END)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xField": "Ventanas",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 29,
+      "type": "piechart",
+      "title": "Composición demográfica de los visitantes",
+      "description": "Distribución de los visitantes por categoría etaria estimada (altura medida por estéreo). Métrica anecdótica/de contexto, no accionable por la operación.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT SUM(ins_adult) AS \"Adultos\", SUM(ins_child) AS \"Niños\" FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "list",
+          "placement": "right",
+          "values": []
+        },
+        "displayLabels": [
+          "percent"
+        ],
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": true
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Duración promedio de visita por día",
+      "description": "Permanencia promedio estimada por la Ley de Little (ocupación ÷ arribos), del total seleccionado, por día. Métrica de contexto/experiencia.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 25,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT bucket_day AS time, SUM(visit_duration_minutes*arrivals)/NULLIF(SUM(arrivals),0) AS \"Duración (min)\" FROM visit_duration_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "axisLabel": "Minutos"
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "dark-blue"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0,211,255,1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Feriados",
+        "datasource": {
+          "type": "postgres",
+          "uid": "__DS_UID__"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "rgba(255,120,120,0.9)",
+        "target": {
+          "rawSql": "SELECT (holiday_date::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AS time, name AS text FROM holidays WHERE holiday_date BETWEEN $__timeFrom()::date AND $__timeTo()::date ORDER BY holiday_date",
+          "format": "table"
+        }
+      }
+    ]
+  }
+}

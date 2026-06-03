@@ -283,6 +283,36 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE INDEX IF NOT EXISTS idx_devices_store ON devices (store_id);
 
+-- Feriados (referencia, AR). Grafana los pinta como annotations sobre las
+-- series temporales (líneas verticales) para contextualizar picos/valles.
+-- 'nacional' = feriado; 'puente' = día no laborable con fines turísticos.
+CREATE TABLE IF NOT EXISTS holidays (
+    holiday_date DATE PRIMARY KEY,
+    name         TEXT NOT NULL,
+    tipo         TEXT NOT NULL DEFAULT 'nacional' CHECK (tipo IN ('nacional', 'puente'))
+);
+INSERT INTO holidays (holiday_date, name, tipo) VALUES
+    ('2026-01-01', 'Año Nuevo', 'nacional'),
+    ('2026-02-16', 'Carnaval', 'nacional'),
+    ('2026-02-17', 'Carnaval', 'nacional'),
+    ('2026-03-23', 'Puente turístico', 'puente'),
+    ('2026-03-24', 'Día de la Memoria por la Verdad y la Justicia', 'nacional'),
+    ('2026-04-02', 'Día del Veterano y de los Caídos en Malvinas', 'nacional'),
+    ('2026-04-03', 'Viernes Santo', 'nacional'),
+    ('2026-05-01', 'Día del Trabajador', 'nacional'),
+    ('2026-05-25', 'Día de la Revolución de Mayo', 'nacional'),
+    ('2026-06-15', 'Paso a la Inmortalidad del Gral. Güemes', 'nacional'),
+    ('2026-06-20', 'Paso a la Inmortalidad del Gral. Belgrano', 'nacional'),
+    ('2026-07-09', 'Día de la Independencia', 'nacional'),
+    ('2026-07-10', 'Puente turístico', 'puente'),
+    ('2026-08-17', 'Paso a la Inmortalidad del Gral. San Martín', 'nacional'),
+    ('2026-10-12', 'Día del Respeto a la Diversidad Cultural', 'nacional'),
+    ('2026-11-23', 'Día de la Soberanía Nacional', 'nacional'),
+    ('2026-12-07', 'Puente turístico', 'puente'),
+    ('2026-12-08', 'Inmaculada Concepción de María', 'nacional'),
+    ('2026-12-25', 'Navidad', 'nacional')
+    ON CONFLICT (holiday_date) DO UPDATE SET name = EXCLUDED.name, tipo = EXCLUDED.tipo;
+
 -- Grafana consulta como master user (people_counter), que es owner → ya puede
 -- leer estas tablas. El seed de provisioning corre como master (mismo path que
 -- este bootstrap). lambda_writer escribe hechos, no necesita las dimensiones.

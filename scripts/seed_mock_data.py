@@ -53,10 +53,12 @@ logger = logging.getLogger("seed_mock_data")
 # como atajo; se revirtió al hacer el bucketing tz-aware per-site.)
 EVENT_TZ = timezone(timedelta(hours=-3))
 
-# Período por default: marzo, abril y mayo de 2026 inclusive. Sin días futuros
-# (hoy = 31-may-2026) → el live-tail de las vistas no escanea data adelantada.
+# Período por default: desde 1-mar-2026 hasta HOY (dinámico) → demo "vivo" sin
+# días futuros. Sin futuro evita barras adelantadas en los tableros (y el techo
+# del live-tail ya blinda la perf si igual aparecieran). Re-seedear extiende
+# automáticamente hasta la fecha de corrida.
 DEFAULT_START = date(2026, 3, 1)
-DEFAULT_END = date(2026, 5, 31)
+DEFAULT_END = date.today()
 
 # --- Catálogo de sucursales demo ------------------------------------------------
 # base_ins:  ingresos/día de referencia (el promedio real tras modular por día de
@@ -69,14 +71,16 @@ DEFAULT_END = date(2026, 5, 31)
 # area_m2: superficie de venta (grandes 180-240, medianas 140-180) → ventas/m².
 SITES = [
     # store_id   nombre                         lat        lon      base  conv  turn  dwell_med  area_m2
-    ("demo-01", "Sucursal Florida",           -34.6037, -58.3816, 245, 0.052, 0.18, 6.5, 220),
-    ("demo-02", "Sucursal Alto Palermo",      -34.5885, -58.4106, 230, 0.046, 0.16, 7.0, 235),
-    ("demo-03", "Sucursal Córdoba Centro",    -31.4201, -64.1888, 218, 0.068, 0.21, 6.0, 195),
-    ("demo-04", "Sucursal Rosario",           -32.9442, -60.6505, 132, 0.058, 0.20, 6.0, 175),
-    ("demo-05", "Sucursal Mendoza",           -32.8895, -68.8458, 124, 0.049, 0.17, 5.5, 160),
-    ("demo-06", "Sucursal Mar del Plata",     -38.0055, -57.5426, 118, 0.075, 0.23, 6.5, 150),
-    ("demo-07", "Sucursal La Plata",          -34.9215, -57.9545, 112, 0.063, 0.22, 5.5, 145),
-    ("demo-08", "Sucursal Salta",             -24.7821, -65.4232, 106, 0.080, 0.25, 7.0, 165),
+    # grandes (área 195-235, tráfico alto)
+    ("demo-01", "Alto Palermo",               -34.5882, -58.4108, 245, 0.052, 0.18, 6.5, 220),
+    ("demo-02", "Unicenter",                  -34.5106, -58.5245, 230, 0.046, 0.16, 7.0, 235),
+    ("demo-03", "Córdoba Shopping",           -31.3795, -64.2200, 218, 0.068, 0.21, 6.0, 195),
+    # medianas (área 145-175, tráfico medio)
+    ("demo-04", "Abasto",                     -34.6037, -58.4109, 132, 0.058, 0.20, 6.0, 175),
+    ("demo-05", "Alto Avellaneda",            -34.6680, -58.3705, 124, 0.049, 0.17, 5.5, 160),
+    ("demo-06", "Alto Comahue",               -38.9489, -68.0668, 118, 0.075, 0.23, 6.5, 150),
+    ("demo-07", "Mendoza Plaza",              -32.8990, -68.8000, 112, 0.063, 0.22, 5.5, 145),
+    ("demo-08", "Los Gallegos",               -38.0008, -57.5540, 106, 0.080, 0.25, 7.0, 165),
 ]
 
 # Horario 10-22; peso relativo de tráfico por hora (forma del día).
@@ -241,7 +245,10 @@ def gen_pos_transactions(rng: random.Random, days, sites):
             # diferencia sucursales. Sin el macro, el agregado quedaba plano.
             daily_conv = conv * day_factor[day] * rng.uniform(0.92, 1.08)
             n_sales = int(daily_ins * daily_conv)
-            n_returns = int(round(n_sales * RETURN_RATE))
+            # Bernoulli por venta (no round del total): con n_sales diario chico
+            # por local (~6-20), int(round(n_sales*0.02)) caía a 0 casi siempre y
+            # las devoluciones desaparecían. Así la tasa ~2% emerge en agregado.
+            n_returns = sum(1 for _ in range(n_sales) if rng.random() < RETURN_RATE)
             for kind, count in (("sale", n_sales), ("return", n_returns)):
                 for _ in range(count):
                     seq += 1

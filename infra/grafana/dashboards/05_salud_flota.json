@@ -1,6 +1,6 @@
 {
   "uid": "fleet-health",
-  "title": "Salud de la flota",
+  "title": "5 · Salud de la flota",
   "tags": [],
   "timezone": "America/Argentina/Buenos_Aires",
   "schemaVersion": 39,
@@ -12,12 +12,45 @@
   },
   "timepicker": {
     "refresh_intervals": [
-      "30s",
-      "1m",
       "5m",
-      "15m"
+      "15m",
+      "1h"
     ]
   },
+  "links": [
+    {
+      "type": "link",
+      "title": "1 · Panorama general",
+      "url": "/d/footfall-overview",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "2 · Comparativa de sucursales",
+      "url": "/d/commercial-performance",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "3 · Detalle de sucursal",
+      "url": "/d/store-detail",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "4 · Patrones de afluencia",
+      "url": "/d/traffic-analysis",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    }
+  ],
   "templating": {
     "list": [
       {
@@ -451,7 +484,6 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "decimals": 1,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -506,7 +538,6 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "decimals": 2,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,

@@ -1,0 +1,959 @@
+{
+  "uid": "footfall-overview",
+  "title": "1 · Panorama general",
+  "tags": [],
+  "timezone": "America/Argentina/Buenos_Aires",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5m",
+      "15m",
+      "1h"
+    ]
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "1 · Panorama general",
+      "url": "/d/footfall-overview",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "2 · Comparativa de sucursales",
+      "url": "/d/commercial-performance",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "3 · Detalle de sucursal",
+      "url": "/d/store-detail",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "4 · Patrones de afluencia",
+      "url": "/d/traffic-analysis",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "keepTime": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "sites",
+        "label": "Sucursales",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "__DS_UID__"
+        },
+        "query": "SELECT store_name AS __text, store_id AS __value FROM sites WHERE status = 'operational' ORDER BY store_name",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Visitantes",
+      "description": "Suma de personas que entraron al local en el período seleccionado, sumando todas las sucursales filtradas.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT CASE WHEN bucket_day = min(bucket_day) OVER () THEN $__timeFrom()::timestamptz WHEN bucket_day = max(bucket_day) OVER () THEN $__timeTo()::timestamptz ELSE (bucket_day::timestamp + INTERVAL '12 hours') AT TIME ZONE 'America/Argentina/Buenos_Aires' END AS time, SUM(ins) AS \"Visitantes\" FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "text": {
+          "valueSize": 34,
+          "titleSize": 14
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Tasa de conversión",
+      "description": "Promedio ponderado del cociente compradores / visitantes. Requiere que la sucursal envíe transacciones POS.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT CASE WHEN bucket_day = min(bucket_day) OVER () THEN $__timeFrom()::timestamptz WHEN bucket_day = max(bucket_day) OVER () THEN $__timeTo()::timestamptz ELSE (bucket_day::timestamp + INTERVAL '12 hours') AT TIME ZONE 'America/Argentina/Buenos_Aires' END AS time, SUM(sales)::float / NULLIF(SUM(visits), 0) AS \"Conversión\" FROM conversion_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto",
+        "text": {
+          "valueSize": 34,
+          "titleSize": 14
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Facturación",
+      "description": "Suma de ventas menos devoluciones en el período. Expresado en pesos argentinos (la unidad menor de la moneda dividida por 100).",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT CASE WHEN bucket_day = min(bucket_day) OVER () THEN $__timeFrom()::timestamptz WHEN bucket_day = max(bucket_day) OVER () THEN $__timeTo()::timestamptz ELSE (bucket_day::timestamp + INTERVAL '12 hours') AT TIME ZONE 'America/Argentina/Buenos_Aires' END AS time, SUM(amount_minor_sale - amount_minor_return) / 100.0 AS \"Facturación\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currency:ARS ",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto",
+        "text": {
+          "valueSize": 34,
+          "titleSize": 14
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Ticket promedio",
+      "description": "Facturación neta dividida por la cantidad de compradores (excluye devoluciones del denominador).",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT CASE WHEN bucket_day = min(bucket_day) OVER () THEN $__timeFrom()::timestamptz WHEN bucket_day = max(bucket_day) OVER () THEN $__timeTo()::timestamptz ELSE (bucket_day::timestamp + INTERVAL '12 hours') AT TIME ZONE 'America/Argentina/Buenos_Aires' END AS time, (SUM(amount_minor_sale) - SUM(amount_minor_return))::float / NULLIF(SUM(sales), 0) / 100.0 AS \"Ticket promedio\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currency:ARS ",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "light-red"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto",
+        "text": {
+          "valueSize": 34,
+          "titleSize": 14
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Unidades por ticket",
+      "description": "Unidades vendidas ÷ compradores (UPT) del total de sucursales seleccionadas: cuántas prendas se lleva en promedio cada comprador.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT CASE WHEN bucket_day = min(bucket_day) OVER () THEN $__timeFrom()::timestamptz WHEN bucket_day = max(bucket_day) OVER () THEN $__timeTo()::timestamptz ELSE (bucket_day::timestamp + INTERVAL '12 hours') AT TIME ZONE 'America/Argentina/Buenos_Aires' END AS time, SUM(items_sale)::float/NULLIF(SUM(sales),0) AS \"UPT\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "light-purple"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ]
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "text": {
+          "valueSize": 34,
+          "titleSize": 14
+        }
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "Embudo de conversión",
+      "description": "Cada etapa como porcentaje del tráfico externo (tope = 100%): el arrastre acumulado del embudo. Cercano = atracción; Visitantes = atracción × captación; Compradores = … × conversión.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 8,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH t AS (SELECT SUM(w.passersby) ext, SUM(w.shoppers) cer, SUM(c.ins) vis, SUM(p.sales) comp FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id=w.store_id AND c.bucket_day=w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id,w.store_id)=p.store_id AND COALESCE(c.bucket_day,w.bucket_day)=p.bucket_day WHERE COALESCE(c.store_id,w.store_id,p.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day,w.bucket_day,p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date) SELECT ext::float/NULLIF(ext,0) AS \"Tráfico externo\", cer::float/NULLIF(ext,0) AS \"Tráfico cercano\", vis::float/NULLIF(ext,0) AS \"Visitantes\", comp::float/NULLIF(ext,0) AS \"Compradores\" FROM t"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "fixed"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tráfico externo"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tráfico cercano"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Visitantes"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Compradores"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "text",
+        "namePlacement": "top",
+        "minVizWidth": 0,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 6
+    },
+    {
+      "id": 7,
+      "type": "barchart",
+      "title": "Embudo por día (externo → compradores)",
+      "description": "Las 4 etapas del embudo por día: tráfico externo, tráfico cercano, visitantes y compradores. Mismos colores que el panel Embudo.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 4,
+        "w": 16,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT to_char(COALESCE(c.bucket_day, w.bucket_day, p.bucket_day), 'DD/MM') AS \"Día\", SUM(w.passersby) AS \"Tráfico externo\", SUM(w.shoppers) AS \"Tráfico cercano\", SUM(c.ins) AS \"Visitantes\", SUM(p.sales) AS \"Compradores\" FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id = w.store_id AND c.bucket_day = w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id, w.store_id) = p.store_id AND COALESCE(c.bucket_day, w.bucket_day) = p.bucket_day WHERE COALESCE(c.store_id, w.store_id, p.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day, w.bucket_day, p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY COALESCE(c.bucket_day, w.bucket_day, p.bucket_day) ORDER BY COALESCE(c.bucket_day, w.bucket_day, p.bucket_day)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "axisLabel": "Dispositivos / visitantes"
+          },
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tráfico externo"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tráfico cercano"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Visitantes"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Compradores"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "xField": "Día",
+        "orientation": "vertical",
+        "showValue": "always",
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      }
+    },
+    {
+      "id": 9,
+      "type": "barchart",
+      "title": "Top 5 sucursales por conversión",
+      "description": "Las 5 sucursales con mayor tasa de conversión (compradores ÷ visitantes) en el período.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT s.store_name AS \"Sucursal\", SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS \"Conversión\" FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY s.store_name HAVING SUM(c.ins)>0 ORDER BY 2 DESC LIMIT 5"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 1
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0,
+        "stacking": "none",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "barchart",
+      "title": "Facturación por día",
+      "description": "Facturación neta diaria (ventas − devoluciones) del total de sucursales seleccionadas.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT to_char(bucket_day, 'DD/MM') AS \"Día\", SUM(amount_minor_sale - amount_minor_return)/100.0 AS \"Facturación\" FROM pos_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY bucket_day ORDER BY bucket_day"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currency:ARS ",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "axisLabel": "Facturación"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "xField": "Día",
+        "orientation": "vertical",
+        "showValue": "never",
+        "stacking": "none",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Hora más ocupada",
+      "description": "La hora del día con mayor ocupación promedio (personas dentro del local), agregado de las sucursales seleccionadas. Útil para planificar staff.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT lpad(hora::text,2,'0')||':00' AS \"Hora\" FROM (SELECT extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int hora, AVG(avg_occupancy) occ FROM occupancy_by_bucket_hour WHERE store_id IN (${sites:sqlstring}) AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo() GROUP BY hora ORDER BY occ DESC LIMIT 1) t"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/",
+          "values": false
+        },
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "auto",
+        "text": {
+          "valueSize": 34,
+          "titleSize": 14
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "geomap",
+      "title": "Mapa de sucursales",
+      "description": "Ubicación de las sucursales seleccionadas. El tamaño y el color del punto representan la facturación del período (más grande y más verde = mayor facturación).",
+      "datasource": {
+        "type": "postgres",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT s.store_name AS \"Sucursal\", s.latitude, s.longitude, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0 AS \"Facturación\", CASE WHEN SUM(c.ins) >= 1000000 THEN to_char(SUM(c.ins)/1000000.0,'FM999990.0')||'M' WHEN SUM(c.ins) >= 1000 THEN to_char(SUM(c.ins)/1000.0,'FM999990.0')||'K' ELSE SUM(c.ins)::text END AS \"Visitantes\", SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS \"Conversión\", (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(SUM(p.sales),0) AS \"Ticket promedio\", SUM(p.items_sale)::float/NULLIF(SUM(p.sales),0) AS \"UPT\" FROM sites s JOIN counting_by_bucket_day c ON c.store_id=s.store_id LEFT JOIN pos_by_bucket_day p ON p.store_id=s.store_id AND p.bucket_day=c.bucket_day WHERE s.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY s.store_name, s.latitude, s.longitude"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "latitude"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": false,
+                  "legend": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "longitude"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": false,
+                  "legend": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Facturación"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currency:ARS "
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-RdYlGr"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conversión"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ticket promedio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currency:ARS "
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UPT"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "view": {
+          "id": "coords",
+          "lat": -36,
+          "lon": -63,
+          "zoom": 5
+        },
+        "controls": {
+          "showZoom": true,
+          "mouseWheelZoom": true,
+          "showAttribution": true,
+          "showScale": false,
+          "showMeasure": false,
+          "showDebug": false
+        },
+        "basemap": {
+          "type": "default",
+          "name": "Basemap"
+        },
+        "tooltip": {
+          "mode": "details"
+        },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Sucursales",
+            "location": {
+              "mode": "coords",
+              "latitude": "latitude",
+              "longitude": "longitude"
+            },
+            "tooltip": true,
+            "config": {
+              "showLegend": true,
+              "style": {
+                "size": {
+                  "field": "Facturación",
+                  "min": 8,
+                  "max": 32,
+                  "fixed": 12
+                },
+                "color": {
+                  "field": "Facturación",
+                  "fixed": "dark-green"
+                },
+                "opacity": 0.75,
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                },
+                "symbolAlign": {
+                  "horizontal": "center",
+                  "vertical": "center"
+                },
+                "textConfig": {
+                  "fontSize": 12,
+                  "textAlign": "center",
+                  "textBaseline": "middle",
+                  "offsetX": 0,
+                  "offsetY": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0,211,255,1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Feriados",
+        "datasource": {
+          "type": "postgres",
+          "uid": "__DS_UID__"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "rgba(255,120,120,0.9)",
+        "target": {
+          "rawSql": "SELECT (holiday_date::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AS time, name AS text FROM holidays WHERE holiday_date BETWEEN $__timeFrom()::date AND $__timeTo()::date ORDER BY holiday_date",
+          "format": "table"
+        }
+      }
+    ]
+  }
+}

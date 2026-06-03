@@ -87,9 +87,9 @@ Parameters:
 
   GrafanaMemory:
     Type: Number
-    Default: 1024
+    Default: 2048
     AllowedValues: [512, 1024, 2048, 3072, 4096, 5120, 6144, 7168, 8192]
-    Description: Memoria del task Fargate en MiB.
+    Description: Memoria del task Fargate en MiB (2048 = Grafana + sidecar image-renderer/Chromium).
 
   GrafanaCertArn:
     Type: String
@@ -963,6 +963,23 @@ Resources:
   # escribir CloudWatch Logs + inyectar secrets desde Secrets Manager al
   # container al startup (NO lo ve el codigo de Grafana — Grafana solo ve
   # la env var resuelta).
+  # Token compartido Grafana <-> image-renderer. El endpoint /render es
+  # interno (localhost:8081 dentro del task, sin PortMapping al ALB), pero el
+  # renderer exige token != '-' (CVE-2022-31176). Autogenerado → no hay secreto
+  # literal en el template. NOTA: el task-def vivo se actualizó a mano (2026-06)
+  # con un token plano por env; al próximo deploy de CFN pasa a este secret.
+  RendererTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: DeployGrafanaCondition
+    Properties:
+      Name: !Sub "people-counter-renderer-token-${Environment}"
+      Description: Token compartido Grafana <-> grafana-image-renderer (sidecar interno)
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: token
+        ExcludePunctuation: true
+        PasswordLength: 48
+
   GrafanaTaskExecutionRole:
     Type: AWS::IAM::Role
     Condition: DeployGrafanaCondition
@@ -986,6 +1003,7 @@ Resources:
                 Resource:
                   - !Ref RdsMasterSecret
                   - !Ref SesSmtpSecret
+                  - !Ref RendererTokenSecret
 
   # Task role: para llamadas AWS API en runtime desde Grafana. Vacio por
   # ahora — Grafana OSS no llama AWS APIs. Placeholder para datasources
@@ -1058,6 +1076,12 @@ Resources:
             - {Name: GF_SMTP_FROM_ADDRESS,    Value: !Sub "alerts@${DomainName}"}
             - {Name: GF_SMTP_FROM_NAME,       Value: "People Counter Alerts"}
             - {Name: GF_SMTP_SKIP_VERIFY,     Value: "false"}
+            # Image renderer (sidecar). Grafana lo invoca en localhost:8081 y el
+            # renderer vuelve a Grafana por el callback (localhost:3000, mismo
+            # task → awsvpc comparte la ENI). Habilita "Share -> Export image"
+            # (PNG del tablero/panel) e imágenes en notificaciones de alertas.
+            - {Name: GF_RENDERING_SERVER_URL,   Value: "http://localhost:8081/render"}
+            - {Name: GF_RENDERING_CALLBACK_URL, Value: "http://localhost:3000/"}
           Secrets:
             # Fargate inyecta el password del JSON del secret como env var
             # GF_DATABASE_PASSWORD. La sintaxis ${ARN}:password:: extrae la
@@ -1072,12 +1096,36 @@ Resources:
               ValueFrom: !Sub "${SesSmtpSecret}:smtpUser::"
             - Name: GF_SMTP_PASSWORD
               ValueFrom: !Sub "${SesSmtpSecret}:smtpPassword::"
+            # Mismo token que el renderer (abajo) — debe matchear.
+            - Name: GF_RENDERING_RENDERER_TOKEN
+              ValueFrom: !Sub "${RendererTokenSecret}:token::"
           LogConfiguration:
             LogDriver: awslogs
             Options:
               awslogs-group: !Ref GrafanaLogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: grafana
+        # Sidecar de rendering (Chromium headless). No esencial: si revienta, el
+        # task sigue vivo y solo se cae la función de export, no Grafana. Límite
+        # de memoria propio (1 GiB) para que un pico de Chromium no OOMee el task.
+        - Name: renderer
+          Image: grafana/grafana-image-renderer:latest
+          Essential: false
+          Memory: 1024
+          PortMappings:
+            - {ContainerPort: 8081, Protocol: tcp}
+          Environment:
+            - {Name: GOMEMLIMIT,     Value: "900MiB"}
+            - {Name: RENDERING_MODE, Value: "default"}
+          Secrets:
+            - Name: AUTH_TOKEN
+              ValueFrom: !Sub "${RendererTokenSecret}:token::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref GrafanaLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: renderer
       Tags:
         - {Key: Project, Value: people-counter}
         - {Key: Environment, Value: !Ref Environment}
