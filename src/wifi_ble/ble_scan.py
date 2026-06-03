@@ -132,6 +132,12 @@ class BLEScanner:
 
         self._stop_event.clear()
         self._advert_count = 0
+        # Heartbeat de arranque: evita el falso "wedged" en la ventana entre que
+        # el thread arranca y el loop async toma el control (``await
+        # scanner.start()`` puede tardar 1-3 s). El loop async lo sigue
+        # actualizando cada ~0.5 s; si nunca llega a venir, se vuelve stale a los
+        # 60 s y el watchdog restartea (comportamiento correcto).
+        self._last_heartbeat_ts = time.time()
 
         self._scan_thread = threading.Thread(
             target=self._scan_thread_main, daemon=True, name="ble-scan"

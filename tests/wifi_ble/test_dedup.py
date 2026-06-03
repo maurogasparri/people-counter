@@ -605,3 +605,42 @@ def test_concurrent_process_detection_same_mac_no_race():
     assert errors == []
     # Una sola fila para (hash, protocol) pese a las 20 calls concurrentes.
     assert engine.get_unique_count() == 1
+
+
+def test_wal_mode_enabled():
+    """El dedup abre en WAL: permite que el publisher LEA mientras un productor
+    ESCRIBE. Sin esto, los reads chocaban con writes → 'database is locked'."""
+    engine, _ = _make_engine()
+    conn = engine._connect()
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
+    assert mode.lower() == "wal"
+
+
+def test_read_during_open_write_does_not_lock():
+    """Regresión (FPS-killer del piloto): una lectura del publisher
+    (get_window_records) mientras un productor mantiene una transacción de
+    escritura abierta NO debe tirar 'database is locked'. WAL deja leer el
+    último snapshot commiteado sin bloqueo mutuo."""
+    import sqlite3
+
+    engine, _ = _make_engine()
+    engine.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
+
+    writer = engine._connect()
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "INSERT INTO hash_groups (hash, protocol, group_id, first_seen, last_seen) "
+            "VALUES ('deadbeef', 'wifi', 'g-test', 0.0, 0.0)"
+        )
+        try:
+            records = engine.get_window_records(since_ts=0.0, until_ts=time.time())
+        except sqlite3.OperationalError as e:
+            raise AssertionError(f"lectura bloqueada por un write abierto: {e}")
+        assert isinstance(records, list)
+    finally:
+        writer.rollback()
+        writer.close()

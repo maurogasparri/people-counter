@@ -144,9 +144,28 @@ class DedupEngine:
         # estado local — el payload MQTT nunca expone hashes pre-stitching.
         self._salt = self._load_or_create_salt()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Conexión SQLite en modo WAL con busy_timeout.
+
+        WAL permite que el publisher LEA (``get_window_records``) mientras un
+        productor (WiFi en el thread de scapy / BLE en el loop de bleak) ESCRIBE,
+        sin bloqueo mutuo. El ``busy_timeout`` hace que ante contención se espere
+        (hasta 5 s) en vez de tirar ``database is locked`` al instante. Sin esto,
+        un read del publisher que pegaba justo en un write entrelazado tiraba la
+        excepción, y peor: el ``on_advert`` de BLE quedaba bloqueado en el lock
+        → el event loop de bleak dejaba de tickear el heartbeat → el watchdog lo
+        declaraba *wedged* y lo restarteaba inline en el loop de visión (matando
+        el FPS). WAL+timeout corta esa cadena en la raíz.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
     def _ensure_db(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             # hash_groups: una fila por (hash, protocol). group_id es comun
             # entre miembros del mismo grupo. seqnum solo aplica a WiFi (None
             # para BLE).
@@ -201,7 +220,7 @@ class DedupEngine:
         stitching funciona); se rota en ``reset_daily``. Cacheado en memoria
         para no pegarle al DB en cada ``process_detection``.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT value FROM dedup_meta WHERE key = 'salt'"
             ).fetchone()
@@ -420,7 +439,7 @@ class DedupEngine:
         Cuenta DISTINCT group_id en hash_groups — un dispositivo con N MAC
         rotaciones stiched + 1 BLE addr cuenta como 1.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             return conn.execute(
                 "SELECT COUNT(DISTINCT group_id) FROM hash_groups"
             ).fetchone()[0]
@@ -447,7 +466,7 @@ class DedupEngine:
         Returns:
             {"passersby": int, "shoppers": int, "turn_in_rate": float}
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             def _count(threshold: float) -> int:
                 # COALESCE(max_rssi, rssi): cuenta sobre la RSSI MÁS FUERTE
                 # vista (no la última) → un device que estuvo cerca cuenta como
@@ -503,7 +522,7 @@ class DedupEngine:
             where += " AND protocol = ?"
             params.append(protocol)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 f"SELECT hash FROM hash_groups WHERE {where}", params
             ).fetchall()
@@ -524,7 +543,7 @@ class DedupEngine:
         (shopper >= ``rssi_shopper``, passerby >= ``rssi_passerby``, si no
         ``weak``; ``unknown`` sin RSSI).
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT hash, protocol, last_seen, rssi FROM hash_groups "
                 "ORDER BY last_seen DESC LIMIT ?",
@@ -600,7 +619,7 @@ class DedupEngine:
         if until_ts is None:
             until_ts = time.time()
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             # Filtramos por MAX(last_seen) del group EN la ventana — captura
             # tanto visitors nuevos como los "continuos" que siguen presentes.
             # last_seen del miembro se actualiza con cada observación, así que
@@ -658,7 +677,7 @@ class DedupEngine:
         contrarrestando la rotacion de MAC, o si la flota viene con OS que
         defeatean las reglas (Apple H1+ con seqnum reset, BLE off, etc).
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 """SELECT COUNT(*), COUNT(DISTINCT group_id) FROM hash_groups"""
             ).fetchone()
