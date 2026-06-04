@@ -89,7 +89,8 @@ HOUR_WEIGHTS = {
     16: 0.80, 17: 0.95, 18: 1.00, 19: 1.00, 20: 0.90, 21: 0.70, 22: 0.45,
 }
 OPEN_HOURS = sorted(HOUR_WEIGHTS)
-CLOSE_TIME = time(22, 30)  # los egresos se clampean al cierre
+CLOSE_TIME = time(22, 30)  # inicio del "apurón de cierre" (egresos rezagados)
+LAST_OUT_TIME = time(22, 59, 59)  # último egreso posible: fin de la hora 22, nunca pasa a las 23
 
 # Días de semana hay más demanda después de las 16 h: re-pondera (no infla) el
 # perfil diario hacia la tarde/noche en lun-vie.
@@ -165,6 +166,8 @@ def gen_count_events(rng: random.Random, days, sites):
         mu = math.log(dwell_med)
         for day in days:
             close_dt = datetime.combine(day, CLOSE_TIME, tzinfo=EVENT_TZ)
+            last_out_dt = datetime.combine(day, LAST_OUT_TIME, tzinfo=EVENT_TZ)
+            straggler_span = int((last_out_dt - close_dt).total_seconds())
             for hour, n in _bucket_ins_for_day(rng, base, day).items():
                 for _ in range(n):
                     track += 1
@@ -175,12 +178,14 @@ def gen_count_events(rng: random.Random, days, sites):
                     dmin = max(1.0, rng.lognormvariate(mu, DWELL_SIGMA))
                     t_out = t_in + timedelta(minutes=dmin)
                     if t_out > close_dt:
-                        t_out = close_dt + timedelta(seconds=rng.randint(0, 1800))
+                        # apurón de cierre acotado al fin de la hora 22 (nunca pasa a las 23)
+                        t_out = close_dt + timedelta(seconds=rng.randint(0, straggler_span))
                     # Garantiza egreso DESPUÉS del ingreso (un ingreso tardío,
                     # pasado el cierre, no debe egresar antes que él → rompería
-                    # el cumsum de ocupación con valores negativos).
+                    # el cumsum de ocupación con valores negativos). El min() evita
+                    # que un ingreso a las 22:59 empuje el egreso a la hora 23.
                     if t_out <= t_in:
-                        t_out = t_in + timedelta(seconds=rng.randint(30, 120))
+                        t_out = min(t_in + timedelta(seconds=rng.randint(30, 120)), last_out_dt)
                     yield (dev, sid, t_out, "out", track, conf, h)
 
 
@@ -347,6 +352,12 @@ def main() -> None:
             like = args.prefix + "%"
             if not args.no_purge or args.purge_only:
                 logger.info("Purgando data demo previa (store_id LIKE %r) — el piloto NO se toca…", like)
+                # Solo tablas crudas. Los rollups NO se purgan acá a propósito: en el
+                # t4g.micro, sumar el DELETE de los rollups (~3M filas) a la transacción de
+                # DELETE+COPY del crudo la hace demasiado pesada (la tabla se duplica hasta
+                # el commit) y se cuelga por presión de memoria. La limpieza de huérfanos en
+                # los rollups (cuando cambia la distribución horaria) se hace aparte, fuera de
+                # esta transacción. Ver docs/runbook de re-seed.
                 for tbl in ("count_events", "wifi_ble_events", "pos_transactions", "telemetry"):
                     cur.execute(f"DELETE FROM {tbl} WHERE store_id LIKE %s", (like,))
                 cur.execute("DELETE FROM devices WHERE store_id LIKE %s", (like,))
