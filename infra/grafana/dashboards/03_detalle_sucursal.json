@@ -73,8 +73,8 @@
     {
       "id": 20,
       "type": "barchart",
-      "title": "Comparativa con promedio general",
-      "description": "Cada indicador de esta sucursal como proporción del promedio general de sucursales (100% = igual al promedio). Verde = mejor, rojo = peor. En Tasa de devolución el valor está invertido (expresado como desempeño): por encima de 100% significa que devuelve menos que el promedio.",
+      "title": "Cumplimiento de objetivos",
+      "description": "Cumplimiento del objetivo de cada KPI (capeado al 100%): barra llena verde = cumple o supera el target; barra parcial roja = por debajo. Devoluciones usa 2 − valor/objetivo (menos devoluciones = más alto). Targets en metric_targets. El valor real va en el tooltip.",
       "datasource": {
         "type": "postgres",
         "uid": "__DS_UID__"
@@ -88,8 +88,8 @@
       "targets": [
         {
           "refId": "A",
-          "rawSql": "WITH per_store AS (SELECT c.store_id, SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS conv, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(SUM(p.sales),0) AS ticket, SUM(p.items_sale)::float/NULLIF(SUM(p.sales),0) AS upt, SUM(p.items_return)::float/NULLIF(SUM(p.items_sale),0) AS devol FROM counting_by_bucket_day c LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY c.store_id), prom AS (SELECT AVG(conv) cv, AVG(ticket) tk, AVG(upt) up, AVG(devol) dv FROM per_store), me AS (SELECT * FROM per_store WHERE store_id='$site') SELECT 'Tasa de conversión' AS \"Indicador\", me.conv/NULLIF(prom.cv,0) AS \"vs promedio general\", 1 ord FROM me, prom UNION ALL SELECT 'Ticket promedio', me.ticket/NULLIF(prom.tk,0), 2 FROM me, prom UNION ALL SELECT 'Unidades por ticket', me.upt/NULLIF(prom.up,0), 3 FROM me, prom UNION ALL SELECT 'Tasa de devolución', prom.dv/NULLIF(me.devol,0), 4 FROM me, prom ORDER BY ord",
-          "format": "table"
+          "format": "table",
+          "rawSql": "WITH me AS (SELECT SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS conv, SUM(p.items_sale)::float/NULLIF(SUM(p.sales),0) AS upt, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(SUM(p.sales),0) AS ticket, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(MAX(s.sales_area_m2),0) AS spm, SUM(p.items_return)::float/NULLIF(SUM(p.items_sale),0) AS devol FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.store_id='$site' AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date), t AS (SELECT MAX(target) FILTER (WHERE metric='conversion')::float tc, MAX(target) FILTER (WHERE metric='upt')::float tu, MAX(target) FILTER (WHERE metric='ticket')::float tt, MAX(target) FILTER (WHERE metric='sales_per_sqm')::float ts, MAX(target) FILTER (WHERE metric='return_rate')::float td FROM metric_targets) SELECT 'Tasa de conversión' AS \"Indicador\", LEAST(me.conv/NULLIF(t.tc,0),1.0) AS \"vs objetivo\", round((me.conv*100)::numeric,1)||'%' AS \"Valor\", round((t.tc*100)::numeric,1)||'%' AS \"Objetivo\", 1 ord FROM me,t UNION ALL SELECT 'Unidades por ticket', LEAST(me.upt/NULLIF(t.tu,0),1.0), round(me.upt::numeric,1)::text, round(t.tu::numeric,1)::text, 2 FROM me,t UNION ALL SELECT 'Ticket promedio', LEAST(me.ticket/NULLIF(t.tt,0),1.0), '$'||round(me.ticket)::bigint::text, '$'||round(t.tt)::bigint::text, 3 FROM me,t UNION ALL SELECT 'Facturación/m²', LEAST(me.spm/NULLIF(t.ts,0),1.0), '$'||round(me.spm)::bigint::text, '$'||round(t.ts)::bigint::text, 4 FROM me,t UNION ALL SELECT 'Tasa de devolución', LEAST(GREATEST(2 - COALESCE(me.devol,0)/NULLIF(t.td,0), 0), 1.0), round((COALESCE(me.devol,0)*100)::numeric,1)||'%', '≤'||round((t.td*100)::numeric,1)||'%', 5 FROM me,t ORDER BY ord"
         }
       ],
       "fieldConfig": {
@@ -111,7 +111,9 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "min": 0,
+          "max": 1.0
         },
         "overrides": []
       },
@@ -124,6 +126,9 @@
         },
         "tooltip": {
           "mode": "single"
+        },
+        "text": {
+          "valueSize": 11
         }
       },
       "transformations": [
@@ -234,7 +239,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH h AS (SELECT extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int hr, ins FROM counting_by_bucket_hour WHERE store_id = '$site' AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo() AND extract(isodow FROM bucket_hour AT TIME ZONE 'UTC') <= 5), b AS (SELECT min(hr) lo, max(hr) hi FROM h WHERE ins > 0) SELECT g AS \"Hora\", COALESCE(round(AVG(h.ins), 1), 0) AS \"Visitantes\" FROM b CROSS JOIN generate_series(b.lo, b.hi) g LEFT JOIN h ON h.hr = g GROUP BY g ORDER BY g"
+          "rawSql": "WITH h AS (SELECT extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int hr, ins FROM counting_by_bucket_hour WHERE store_id = '$site' AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo() AND extract(isodow FROM bucket_hour AT TIME ZONE 'UTC') <= 5), b AS (SELECT min(hr) lo, max(hr) hi FROM h WHERE ins > 0) SELECT g AS \"Hora\", COALESCE(round(AVG(h.ins), 0), 0) AS \"Visitantes\" FROM b CROSS JOIN generate_series(b.lo, b.hi) g LEFT JOIN h ON h.hr = g GROUP BY g ORDER BY g"
         }
       ],
       "fieldConfig": {
@@ -251,7 +256,8 @@
           "color": {
             "mode": "fixed",
             "fixedColor": "blue"
-          }
+          },
+          "decimals": 0
         },
         "overrides": [
           {
@@ -313,7 +319,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH h AS (SELECT extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int hr, ins FROM counting_by_bucket_hour WHERE store_id = '$site' AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo() AND extract(isodow FROM bucket_hour AT TIME ZONE 'UTC') >= 6), b AS (SELECT min(hr) lo, max(hr) hi FROM h WHERE ins > 0) SELECT g AS \"Hora\", COALESCE(round(AVG(h.ins), 1), 0) AS \"Visitantes\" FROM b CROSS JOIN generate_series(b.lo, b.hi) g LEFT JOIN h ON h.hr = g GROUP BY g ORDER BY g"
+          "rawSql": "WITH h AS (SELECT extract(hour FROM bucket_hour AT TIME ZONE 'UTC')::int hr, ins FROM counting_by_bucket_hour WHERE store_id = '$site' AND bucket_hour BETWEEN $__timeFrom() AND $__timeTo() AND extract(isodow FROM bucket_hour AT TIME ZONE 'UTC') >= 6), b AS (SELECT min(hr) lo, max(hr) hi FROM h WHERE ins > 0) SELECT g AS \"Hora\", COALESCE(round(AVG(h.ins), 0), 0) AS \"Visitantes\" FROM b CROSS JOIN generate_series(b.lo, b.hi) g LEFT JOIN h ON h.hr = g GROUP BY g ORDER BY g"
         }
       ],
       "fieldConfig": {
@@ -330,7 +336,8 @@
           "color": {
             "mode": "fixed",
             "fixedColor": "orange"
-          }
+          },
+          "decimals": 0
         },
         "overrides": [
           {
@@ -695,9 +702,9 @@
       }
     },
     {
-      "type": "bargauge",
+      "type": "barchart",
       "title": "Embudo de conversión",
-      "description": "Cada etapa como porcentaje del tráfico externo (tope = 100%) en esta sucursal: el arrastre acumulado del embudo. Cercano = atracción; Visitantes = atracción × captación; Compradores = … × conversión.",
+      "description": "Embudo: tráfico externo → cercano → visitantes → compradores, cada etapa como % del tope (tráfico externo = 100%). Pasá el mouse para ver la cantidad absoluta de cada etapa.",
       "datasource": {
         "type": "postgres",
         "uid": "__DS_UID__"
@@ -712,77 +719,37 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH t AS (SELECT SUM(w.passersby) ext, SUM(w.shoppers) cer, SUM(c.ins) vis, SUM(p.sales) comp FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id=w.store_id AND c.bucket_day=w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id,w.store_id)=p.store_id AND COALESCE(c.bucket_day,w.bucket_day)=p.bucket_day WHERE COALESCE(c.store_id,w.store_id,p.store_id) = '$site' AND COALESCE(c.bucket_day,w.bucket_day,p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date) SELECT ext::float/NULLIF(ext,0) AS \"Tráfico externo\", cer::float/NULLIF(ext,0) AS \"Tráfico cercano\", vis::float/NULLIF(ext,0) AS \"Visitantes\", comp::float/NULLIF(ext,0) AS \"Compradores\" FROM t"
+          "rawSql": "WITH t AS (SELECT SUM(w.passersby) ext, SUM(w.shoppers) cer, SUM(c.ins) vis, SUM(p.sales) comp FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id=w.store_id AND c.bucket_day=w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id,w.store_id)=p.store_id AND COALESCE(c.bucket_day,w.bucket_day)=p.bucket_day WHERE COALESCE(c.store_id,w.store_id,p.store_id) = '$site' AND COALESCE(c.bucket_day,w.bucket_day,p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date) SELECT 'Tráfico externo' AS \"Etapa\", ext::float/NULLIF(ext,0) AS \"% del tope\", to_char(ext,'FM999,999,999') AS \"Cantidad\", 1 ord FROM t UNION ALL SELECT 'Tráfico cercano', cer::float/NULLIF(ext,0), to_char(cer,'FM999,999,999'), 2 FROM t UNION ALL SELECT 'Visitantes', vis::float/NULLIF(ext,0), to_char(vis,'FM999,999,999'), 3 FROM t UNION ALL SELECT 'Compradores', comp::float/NULLIF(ext,0), to_char(comp,'FM999,999,999'), 4 FROM t ORDER BY ord"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "decimals": 1,
-          "min": 0,
-          "max": 1,
           "color": {
-            "mode": "fixed"
+            "mode": "palette-classic"
           }
         },
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Tráfico externo"
+              "options": "% del tope"
             },
             "properties": [
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "blue"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Tráfico cercano"
-            },
-            "properties": [
+                "id": "unit",
+                "value": "percentunit"
+              },
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "light-blue"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Visitantes"
-            },
-            "properties": [
+                "id": "decimals",
+                "value": 1
+              },
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "green"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Compradores"
-            },
-            "properties": [
+                "id": "min",
+                "value": 0
+              },
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "purple"
-                }
+                "id": "max",
+                "value": 1
               }
             ]
           }
@@ -790,20 +757,30 @@
       },
       "options": {
         "orientation": "horizontal",
-        "displayMode": "gradient",
-        "showUnfilled": true,
-        "valueMode": "text",
-        "namePlacement": "top",
-        "minVizWidth": 0,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "xField": "Etapa",
+        "colorByField": "Etapa",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        },
+        "text": {
+          "valueSize": 12
         }
       },
-      "id": 30
+      "id": 30,
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "ord": true
+            }
+          }
+        }
+      ]
     }
   ]
 }

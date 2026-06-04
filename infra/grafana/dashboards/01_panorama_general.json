@@ -351,9 +351,9 @@
       }
     },
     {
-      "type": "bargauge",
+      "type": "barchart",
       "title": "Embudo de conversión",
-      "description": "Cada etapa como porcentaje del tráfico externo (tope = 100%): el arrastre acumulado del embudo. Cercano = atracción; Visitantes = atracción × captación; Compradores = … × conversión.",
+      "description": "Embudo: tráfico externo → cercano → visitantes → compradores, cada etapa como % del tope (tráfico externo = 100%). Pasá el mouse para ver la cantidad absoluta de cada etapa.",
       "datasource": {
         "type": "postgres",
         "uid": "__DS_UID__"
@@ -368,77 +368,37 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH t AS (SELECT SUM(w.passersby) ext, SUM(w.shoppers) cer, SUM(c.ins) vis, SUM(p.sales) comp FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id=w.store_id AND c.bucket_day=w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id,w.store_id)=p.store_id AND COALESCE(c.bucket_day,w.bucket_day)=p.bucket_day WHERE COALESCE(c.store_id,w.store_id,p.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day,w.bucket_day,p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date) SELECT ext::float/NULLIF(ext,0) AS \"Tráfico externo\", cer::float/NULLIF(ext,0) AS \"Tráfico cercano\", vis::float/NULLIF(ext,0) AS \"Visitantes\", comp::float/NULLIF(ext,0) AS \"Compradores\" FROM t"
+          "rawSql": "WITH t AS (SELECT SUM(w.passersby) ext, SUM(w.shoppers) cer, SUM(c.ins) vis, SUM(p.sales) comp FROM counting_by_bucket_day c FULL OUTER JOIN wifi_ble_by_bucket_day w ON c.store_id=w.store_id AND c.bucket_day=w.bucket_day FULL OUTER JOIN pos_by_bucket_day p ON COALESCE(c.store_id,w.store_id)=p.store_id AND COALESCE(c.bucket_day,w.bucket_day)=p.bucket_day WHERE COALESCE(c.store_id,w.store_id,p.store_id) IN (${sites:sqlstring}) AND COALESCE(c.bucket_day,w.bucket_day,p.bucket_day) BETWEEN $__timeFrom()::date AND $__timeTo()::date) SELECT 'Tráfico externo' AS \"Etapa\", ext::float/NULLIF(ext,0) AS \"% del tope\", to_char(ext,'FM999,999,999') AS \"Cantidad\", 1 ord FROM t UNION ALL SELECT 'Tráfico cercano', cer::float/NULLIF(ext,0), to_char(cer,'FM999,999,999'), 2 FROM t UNION ALL SELECT 'Visitantes', vis::float/NULLIF(ext,0), to_char(vis,'FM999,999,999'), 3 FROM t UNION ALL SELECT 'Compradores', comp::float/NULLIF(ext,0), to_char(comp,'FM999,999,999'), 4 FROM t ORDER BY ord"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "decimals": 1,
-          "min": 0,
-          "max": 1,
           "color": {
-            "mode": "fixed"
+            "mode": "palette-classic"
           }
         },
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Tráfico externo"
+              "options": "% del tope"
             },
             "properties": [
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "blue"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Tráfico cercano"
-            },
-            "properties": [
+                "id": "unit",
+                "value": "percentunit"
+              },
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "light-blue"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Visitantes"
-            },
-            "properties": [
+                "id": "decimals",
+                "value": 1
+              },
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "green"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Compradores"
-            },
-            "properties": [
+                "id": "min",
+                "value": 0
+              },
               {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "purple"
-                }
+                "id": "max",
+                "value": 1
               }
             ]
           }
@@ -446,20 +406,30 @@
       },
       "options": {
         "orientation": "horizontal",
-        "displayMode": "gradient",
-        "showUnfilled": true,
-        "valueMode": "text",
-        "namePlacement": "top",
-        "minVizWidth": 0,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "xField": "Etapa",
+        "colorByField": "Etapa",
+        "showValue": "always",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        },
+        "text": {
+          "valueSize": 12
         }
       },
-      "id": 6
+      "id": 6,
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "ord": true
+            }
+          }
+        }
+      ]
     },
     {
       "id": 7,
@@ -727,202 +697,6 @@
           "valueSize": 34,
           "titleSize": 14
         }
-      }
-    },
-    {
-      "id": 12,
-      "type": "geomap",
-      "title": "Mapa de sucursales",
-      "description": "Ubicación de las sucursales seleccionadas. El tamaño y el color del punto representan la facturación del período (más grande y más verde = mayor facturación).",
-      "datasource": {
-        "type": "postgres",
-        "uid": "__DS_UID__"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 21,
-        "w": 24,
-        "h": 11
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT s.store_name AS \"Sucursal\", s.latitude, s.longitude, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0 AS \"Facturación\", CASE WHEN SUM(c.ins) >= 1000000 THEN to_char(SUM(c.ins)/1000000.0,'FM999990.0')||'M' WHEN SUM(c.ins) >= 1000 THEN to_char(SUM(c.ins)/1000.0,'FM999990.0')||'K' ELSE SUM(c.ins)::text END AS \"Visitantes\", SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS \"Conversión\", (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(SUM(p.sales),0) AS \"Ticket promedio\", SUM(p.items_sale)::float/NULLIF(SUM(p.sales),0) AS \"UPT\" FROM sites s JOIN counting_by_bucket_day c ON c.store_id=s.store_id LEFT JOIN pos_by_bucket_day p ON p.store_id=s.store_id AND p.bucket_day=c.bucket_day WHERE s.store_id IN (${sites:sqlstring}) AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY s.store_name, s.latitude, s.longitude"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "latitude"
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "tooltip": true,
-                  "viz": false,
-                  "legend": true
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "longitude"
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "tooltip": true,
-                  "viz": false,
-                  "legend": true
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Facturación"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "currency:ARS "
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "continuous-RdYlGr"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Conversión"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Ticket promedio"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "currency:ARS "
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "UPT"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "short"
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "view": {
-          "id": "coords",
-          "lat": -36,
-          "lon": -63,
-          "zoom": 5
-        },
-        "controls": {
-          "showZoom": true,
-          "mouseWheelZoom": true,
-          "showAttribution": true,
-          "showScale": false,
-          "showMeasure": false,
-          "showDebug": false
-        },
-        "basemap": {
-          "type": "default",
-          "name": "Basemap"
-        },
-        "tooltip": {
-          "mode": "details"
-        },
-        "layers": [
-          {
-            "type": "markers",
-            "name": "Sucursales",
-            "location": {
-              "mode": "coords",
-              "latitude": "latitude",
-              "longitude": "longitude"
-            },
-            "tooltip": true,
-            "config": {
-              "showLegend": true,
-              "style": {
-                "size": {
-                  "field": "Facturación",
-                  "min": 8,
-                  "max": 32,
-                  "fixed": 12
-                },
-                "color": {
-                  "field": "Facturación",
-                  "fixed": "dark-green"
-                },
-                "opacity": 0.75,
-                "symbol": {
-                  "fixed": "img/icons/marker/circle.svg",
-                  "mode": "fixed"
-                },
-                "symbolAlign": {
-                  "horizontal": "center",
-                  "vertical": "center"
-                },
-                "textConfig": {
-                  "fontSize": 12,
-                  "textAlign": "center",
-                  "textBaseline": "middle",
-                  "offsetX": 0,
-                  "offsetY": 0
-                }
-              }
-            }
-          }
-        ]
       }
     }
   ],

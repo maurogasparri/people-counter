@@ -154,28 +154,6 @@
               {
                 "id": "decimals",
                 "value": 1
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 0.0495
-                    }
-                  ]
-                }
               }
             ]
           },
@@ -192,28 +170,6 @@
               {
                 "id": "decimals",
                 "value": 1
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 1.35
-                    }
-                  ]
-                }
               }
             ]
           },
@@ -230,28 +186,6 @@
               {
                 "id": "decimals",
                 "value": 1
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 164950
-                    }
-                  ]
-                }
               }
             ]
           },
@@ -268,28 +202,6 @@
               {
                 "id": "decimals",
                 "value": 1
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 52950
-                    }
-                  ]
-                }
               }
             ]
           },
@@ -346,28 +258,6 @@
               {
                 "id": "decimals",
                 "value": 1
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": null
-                    },
-                    {
-                      "color": "red",
-                      "value": 0.0205
-                    }
-                  ]
-                }
               }
             ]
           }
@@ -554,8 +444,8 @@
     {
       "id": 12,
       "type": "xychart",
-      "title": "Posicionamiento de sucursales (conversión × ticket)",
-      "description": "Cada sucursal posicionada por tasa de conversión (eje X) y ticket promedio (eje Y). El cuadrante superior-derecho es el mejor: alta conversión y alto ticket. Cada color identifica una sucursal (ver leyenda).",
+      "title": "Posicionamiento de sucursales (conversión × ticket promedio)",
+      "description": "Cada sucursal posicionada por tasa de conversión (eje X) y ticket promedio (eje Y). Cuadrante superior-derecho = mejor. Cada color = una sucursal (leyenda).",
       "datasource": {
         "type": "postgres",
         "uid": "__DS_UID__"
@@ -578,8 +468,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "currency:ARS ",
-          "decimals": 1,
           "custom": {
             "pointSize": {
               "fixed": 9
@@ -620,7 +508,8 @@
         "tooltip": {
           "mode": "single"
         }
-      }
+      },
+      "pluginVersion": "13.0.1+security-01"
     }
   ]
 }
