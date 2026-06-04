@@ -72,7 +72,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 - **WiFi**: CYW43455 monitor mode vía nexmon. Captura probes en 2.4 + 5 GHz. **WiFi solo probing — red por Ethernet**. Monitor mode requiere `nexutil -m2` (radiotap en el firmware) — sin eso el netdev entrega frames Ethernet (DLT EN10MB) y scapy no ve 802.11; el capture loop re-parsea los bytes crudos como `RadioTap()`. nexutil se compila aparte (`setup_device.sh`). El pipeline corre como `User=pi`: `/dev/rfkill` necesita estar en grupo `netdev` (udev rule) para que el unblock funcione.
 - **BLE**: bleak (D-Bus de BlueZ), escaneo pasivo.
 - **Solo dispositivos "humanos"** (`wifi_ble.randomized_only`, default true): se cuentan solo MACs WiFi randomizadas (locally-administered bit 0x02) y BLE `AddressType=random` (RPA iOS / aleatoria Android). Las MAC globales WiFi y los BLE `public` (OUI real) son infra/IoT fijo (APs, smart-TVs, beacons, parlantes) y se descartan antes de hashear. Apagable per-site. Nota: las rotaciones de RPA BLE de un mismo teléfono son todas `random` — eso lo resuelve el stitching, no este filtro.
-- **Hashing**: SHA-256 truncado a 16 bytes, con **salt local persistido** (`dedup_meta` del SQLite, rotado en `reset_daily`) — **nunca MACs crudas**, nunca hash sin sal at-rest. `process_detection` corre bajo un `threading.Lock` (los dos productores —WiFi en el thread de scapy, BLE en el de bleak— comparten el mismo SQLite).
+- **Hashing**: SHA-256 truncado a 16 bytes, con **salt local persistido** (`dedup_meta` del SQLite, rotado en `reset_daily`) — **nunca MACs crudas**, nunca hash sin sal at-rest. `process_detection` corre bajo un `threading.Lock` (los dos productores —WiFi en el thread de scapy, BLE en el de bleak— comparten el mismo SQLite). El SQLite del dedup se abre vía el helper `_connect()` con `journal_mode=WAL` + `busy_timeout=5000` + `synchronous=NORMAL` (gotcha no obvio: sin WAL la contención del BLE bloqueaba el event loop de bleak y mataba el FPS de visión — readers y writer dejan de excluirse mutuamente).
 - **Dedup → hash groups con stitching** (`src/wifi_ble/dedup.py`): los hashes se asocian a un `group_id` por identidad del dispositivo. Cada `process_detection` aplica 4 reglas y joina al grupo más reciente que matchee:
   1. **Seqnum continuity (WiFi-only)** — el seqnum 802.11 (12 bits, `dot11.SC >> 4`) es contador del chip, continuo cross-MAC-rotation. Match: Δseqnum ≤ `max_delta` (100, wrap mod 4096) + ΔRSSI ≤ 5dBm + Δt ≤ 30s. Defeated por Apple H1+ (iPhone 12+) que resetea seqnum on MAC change; OK en Android.
   2. **Cross-protocol L2 (short window)** — WiFi MAC y BLE addr dentro de `cross_protocol_window_seconds` (2s) con ΔRSSI ≤ 5dBm = mismo dispositivo.
@@ -98,7 +98,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 
 ### Cloud (AWS)
 
-- **PoC actual (1 device, deployado)**: IoT Core (broker + 3 Topic Rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`, fuera de VPC, IAM auth a RDS via `rds.generate_db_auth_token`) → RDS Postgres 16 (db.t4g.micro, single-AZ, IAM auth + `rds.force_ssl=1`, `AutoMinorVersionUpgrade=true`). Grafana 13 en ECS Fargate detrás de ALB con ACM cert custom (image desde ECR, `grafana.tfg.gasparri.com.ar`) lee el mismo RDS. Orquestado por CloudFormation (`infra/cloudformation/people-counter.yaml`) + `infra/deploy.ps1` (5 fases, `-StartFromPhase`). El cert ACM se crea fuera de CFN para que el deploy no bloquee esperando validación DNS (el ARN entra como parámetro). Schema en `infra/sql/bootstrap.sql`.
+- **PoC actual (1 device, deployado)**: IoT Core (broker + 3 Topic Rules SQL) → Lambda `persist_event` (`src/cloud/persist_event.py`, fuera de VPC, IAM auth a RDS via `rds.generate_db_auth_token`) → RDS Postgres 16 (db.t4g.micro, single-AZ, IAM auth + `rds.force_ssl=1`, `AutoMinorVersionUpgrade=true`). Grafana 13 en ECS Fargate detrás de ALB con ACM cert custom (image desde ECR, `grafana.tfg.gasparri.com.ar`) lee el mismo RDS. Orquestado por CloudFormation (`infra/cloudformation/people-counter.yaml`) + `infra/deploy.ps1` (5 fases, `-StartFromPhase`). El cert ACM se crea fuera de CFN para que el deploy no bloquee esperando validación DNS (el ARN entra como parámetro). Schema en `infra/sql/bootstrap.sql`. **Caveat de sizing en bulk-load**: `db.t4g.micro` (1GB) OOM-ea en cargas masivas (~1.5M filas en una sola transacción — re-seed, migración de histórico) → escalar temporal a `db.t4g.small` (2GB) o batchear los commits (es lo que hace `scripts/migrate_historical.py`).
 - **Producción (rollout de flota)**: RDS single-AZ → Multi-AZ ($26/mo vs $13). Considerar Amazon Managed Grafana (SSO + IAM, $9/user) si se integra a auth corporativa. Migrar DNS a Route53 delegated subdomain para que CFN gestione los records (ALIAS al ALB) y el deploy sea 100% sin pause — hoy hay 2 steps manuales (CNAMEs de validación ACM + CNAME final al ALB en el DNS externo).
 - **Costos PoC ~$35/mo**: RDS $13 + Fargate 0.5vCPU/1GB $18 + ALB $16 + ACM free + IoT/Lambda/SecretsManager/CloudWatch <$2. Al sumar 2+ services (sales API, auth) se comparte el ALB via listener rules.
 - **Multi-cam por sucursal**: al agregar 2+ cámaras por local, reintroducir L3 (Lambda + DynamoDB de hashes). El stitching local cubre monocam pero no inter-cam.
@@ -130,7 +130,7 @@ people-counter/
 │   ├── status/         <- led, health, monitor (background thread)
 │   ├── config/         <- loader (strict) + hardware (HardwareParams dataclass)
 │   └── main.py         <- orquestador del pipeline
-├── tests/              <- ~920 tests, estructura espejo de src
+├── tests/              <- 922 tests, estructura espejo de src
 ├── scripts/
 │   ├── calibrate.py    <- wizard end-to-end (browser-driven, ChArUco, ground-truth check)
 │   ├── focus_assist.py <- asistente de foco guiado (browser-driven)
@@ -139,12 +139,13 @@ people-counter/
 │   ├── preview.py      <- preview live MJPEG L|R (browser-driven)
 │   ├── download_model.py, capture_baseline_frames.py, rescale_calibration.py
 │   ├── provision.py    <- create/deploy/harvest/reprovision/list + seed sites/devices en RDS (psycopg+boto3)
+│   ├── migrate_historical.py <- loader CSV→staging batcheado (commits incrementales) para histórico AGREGADO; doc en el header del archivo
 │   ├── reset_dedup.py  <- reset diario del dedup + rotación de salt (lo llama people-counter-reset.service). El estado in-memory del Counter lo resetea main.py en el rollover de fecha (el script externo no puede tocarlo).
 │   ├── verify_hardware.py, setup_device.sh
 │   └── training/       <- pipeline X-AnyLabeling + active learning + Kaggle (ver scripts/training/README.md)
 ├── training_data/      <- gitignoreado salvo README + sites.yaml.example. Workspace local.
 ├── calibration/        <- board ChArUco A3 PDF (calib.io)
-├── infra/              <- cloudformation/ + sql/ (bootstrap + migrations) + deploy.ps1
+├── infra/              <- cloudformation/ + sql/ (bootstrap + migrations + migrate_historical_rollups.example.sql, template staging→tablas base rollup_*) + deploy.ps1
 ├── docs/               <- setup_guide, lab_calibration_guide, pilot_operator_guide, tracker_tuning, counter_test_matrix
 └── config/             <- config.example.yaml + people-counter.service (systemd)
 ```
@@ -162,8 +163,8 @@ people-counter/
 | S7 | Captura WiFi y BLE | **DONE** — nexmon + nexutil/radiotap, hopping ponderado, bleak, filtro de humanos, hashing + dedup 4 reglas, MAX-RSSI para shoppers |
 | S8 | Mensajería y telemetría | **DONE** — IoT Core + buffer SQLite + replay + canaries (`track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count`, `wifi_ble_stitching_ratio`, `last_shadow_apply_ts`) + Device Shadow con 3 toggles overridables |
 | S9 | Servicios cloud y APIs | **DONE** — CloudFormation + Lambdas `persist_event`/`ingest_pos_transaction`/`query_aggregates` + RDS Postgres 16 (bucket server-derived via GENERATED) + funciones SQL `height_class(REAL)` y `rssi_class(INT)` + tabla `wifi_ble_events` (per-device post-stitching, RSSI crudo, `visitor_hash` opaco) + tablas `sites`/`devices` + Grafana 13 en ECS Fargate detrás de ALB con HTTPS |
-| S10 | Visualización analítica | EN CURSO — Grafana 13 + dashboard 1 Footfall Overview (6 KPIs + ingresos + funnel + demografía + top sucursales + heatmap día×hora + 3 paneles per-device WiFi/BLE). Pendiente: dashboards 2-4, tiles de canaries, alert rules. |
-| S11 | Validación y documentación | EN CURSO — rename `counter.roi`→`counting_zone` + `pre_filter`→`tracking_zone` + 4 guards anti-FP (`min_count_height_m`, `min_real_inside_frames`, `height_confidence_gate`, `tracking_zone` polygon) + keepalive condicional a entry real + SGBM depth cache (`vision.depth_skip_stable_tracks`) + `--profile-slow-threshold-ms`. Runbook `docs/tracker_tuning.md` (6 patrones) + matriz `docs/counter_test_matrix.md` (14 dimensiones). Pasada de hardening (review-driven): reset diario del Counter en rollover de fecha (los canaries eran lifetime, no daily), salt local rotado + lock en dedup, validación de toggles bool del shadow, Hailo temp probe cacheado fuera del tick del LED, publisher con retry de ventana, fix de `data_freshness_by_store` (referenciaba `wifi_ble_summary` dropeada). 920 tests verde. |
+| S10 | Visualización analítica | **DONE** (salvo alert rules) — Grafana 13 con 5 tableros por perfil (Panorama, Comparativa, Detalle, Patrones, Salud de flota) + mapa de sucursales + feriados + sidecar grafana-image-renderer (export PNG). Pendiente menor: alert rules de canaries. |
+| S11 | Validación y documentación | EN CURSO — rename `counter.roi`→`counting_zone` + `pre_filter`→`tracking_zone` + 4 guards anti-FP (`min_count_height_m`, `min_real_inside_frames`, `height_confidence_gate`, `tracking_zone` polygon) + keepalive condicional a entry real + SGBM depth cache (`vision.depth_skip_stable_tracks`) + `--profile-slow-threshold-ms`. Runbook `docs/tracker_tuning.md` (6 patrones) + matriz `docs/counter_test_matrix.md` (14 dimensiones). Pasada de hardening (review-driven): reset diario del Counter en rollover de fecha (los canaries eran lifetime, no daily), salt local rotado + lock en dedup, validación de toggles bool del shadow, Hailo temp probe cacheado fuera del tick del LED, publisher con retry de ventana, fix de `data_freshness_by_store` (referenciaba `wifi_ble_summary` dropeada). 922 tests verde. |
 | S12 | Cierre del prototipo | PENDIENTE — hardening final + entregables + cleanup completo del TRACKDBG temporal |
 
 ## Reglas duras

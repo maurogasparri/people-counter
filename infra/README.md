@@ -153,6 +153,14 @@ definiciones). El patrón es un **producto cartesiano** de las facts agregadas a
 - **`turn_in_rate_by_bucket_*`** / **`conversion_by_bucket_*`** — `turn_in_rate = ins / passersby`, `conversion = ins / shoppers` (FULL OUTER JOIN preserva buckets de una sola fuente).
 - **`occupancy_by_bucket_*`**, **`visit_duration_by_bucket_*`**, **`metrics_unified_by_bucket_*`** (uso interno de la Lambda), **`data_freshness_by_store`** (último `received_at` cross-fact por sucursal).
 
+**Capa de rollup** (migraciones en `sql/migrations/`): el crudo se agrega vía
+`refresh_rollups()` (incremental por watermark en `rollup_state`, disparada por
+`pg_cron` cada 5 min) a las tablas base `rollup_*`; las views `*_by_bucket_*` son
+un `UNION` del rollup (historia) + live-tail (el bucket abierto se calcula en
+vivo desde el raw, ≤5s de latencia). Las dos migraciones presentes —
+`2026-05-31_rollup_layer.sql` y `2026-05-31b_tz_aware_bucketing.sql` — todavía no
+están consolidadas en `bootstrap.sql`.
+
 ### DB users + auth
 
 - `people_counter` (master) — desde DBeaver, password en Secrets Manager.
@@ -251,6 +259,8 @@ docker run --rm -e PGPASSWORD=$($secret.password) -e PGSSLMODE=require postgres:
 - **ECS Fargate** — ECS scheduler reinicia el task si crashea. ALB health check (`/api/health` cada 30s) saca de rotacion targets unhealthy. Rolling deploy en cada CFN update (~30s downtime con MinimumHealthyPercent=0 en PoC single-instance; en prod subir a 100% + DesiredCount=2).
 - **Cert ACM** — auto-renewed por AWS si los CNAMEs de validacion siguen presentes en el DNS provider. Si los borrás, el cert muere a los 13 meses. Documentado en `deploy.ps1` Phase 3.
 - **Teardown / re-create** — `aws cloudformation delete-stack` borra todo el stack (ALB + listeners + target group + ECS service + SGs + cluster). El cert ACM NO se borra (vive fuera del stack); para limpieza full hay que correr `aws acm delete-certificate --certificate-arn <arn>` manualmente. ECR esta marcado `EmptyOnDelete: true` para no atascarse en imagenes pendientes.
+- **Migracion de histórico** — para subir data del sistema anterior hay dos caminos. (a) histórico a nivel EVENTO → insertarlo en las tablas crudas (`count_events` / `wifi_ble_events` / `pos_transactions`) y dejar que `refresh_rollups()` derive los rollups. (b) histórico YA AGREGADO (resúmenes por hora, sin eventos) → `scripts/migrate_historical.py` carga el CSV a una staging POR LOTES (commits incrementales) y corre el transform de `sql/migrate_historical_rollups.example.sql`, que inserta DIRECTO en las tablas base `rollup_*` (idempotente, `ON CONFLICT DO UPDATE`). Ese `.sql` es un template de carga, **no** una migración de schema.
+- **Sizing en bulk-load** — `db.t4g.micro` (1GB) OOM-ea en cargas masivas (~1.5M filas en una sola transacción: re-seed o migración de histórico). Mitigaciones: escalar temporal a `db.t4g.small` (2GB) durante la carga, o batchear los commits (`migrate_historical.py` ya lo hace, `--batch-size`).
 
 ---
 
@@ -279,10 +289,13 @@ via listener rules (host-header o path-based) en vez de provisionar otro
 
 ## 8) Proximos pasos
 
-- Construir dashboards en Grafana UI sobre las views (`counting_by_bucket`,
-  `turn_in_rate_hourly`, `store_hourly_summary`).
-- API Gateway para ingest de sales desde POS externo (tabla `sales` ya
-  preparada con `UNIQUE (store_id, external_id)` para idempotencia).
+- **Dashboards Grafana — DONE** (S10): 5 tableros por perfil (Panorama,
+  Comparativa, Detalle, Patrones, Salud de flota) sobre las views
+  `*_by_bucket_*`, con mapa de sucursales + feriados + sidecar
+  grafana-image-renderer (export PNG). Pendiente menor: alert rules de los
+  canaries del tracker.
+- **Ingest POS — DONE**: `IngestPosLambda` + API Gateway persisten a la tabla
+  `pos_transactions` (`UNIQUE (store_id, transaction_id)` para idempotencia).
 - Migracion a Route53 delegated subdomain (`tfg.gasparri.com.ar` NS → R53)
   para que CFN gestione DNS records (ALIAS record al ALB) y el deploy sea
   100% sin pausa.

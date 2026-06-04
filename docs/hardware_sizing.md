@@ -160,6 +160,26 @@ En un device sano, post-1h de uptime con tráfico normal:
 - `vmstat si=so`: ambos `0`
 - `free -h`: `used <1G` en una Pi 5 2GB
 
+## Nota — sizing del RDS cloud (no edge)
+
+Este documento es sobre el device edge. Un apunte aparte para el otro lado del
+pipeline: el **RDS Postgres del PoC es `db.t4g.micro` (1 GB RAM)**. Dimensiona
+bien para el **ingest streaming** del piloto (eventos de conteo en tiempo real
++ resúmenes WiFi/BLE cada 15 min + telemetría cada 5 min — carga baja y
+constante).
+
+**Lección operacional**: `db.t4g.micro` **OOM-ea en bulk-loads** — un INSERT
+masivo (~1.5M filas en una sola transacción, ej. re-seed de demo o backfill) lo
+tumba por falta de RAM. Mitigaciones:
+
+- **Escalar temporalmente** a `db.t4g.small` (2 GB) durante el bulk-load y
+  volver a `micro` después, o
+- **Batchear** el load en transacciones más chicas (ej. 50k filas por commit).
+
+El runbook detallado de este escenario (síntomas, comandos de scale-up/down,
+recovery) vive en `cloud_dr.md`. Acá solo el pointer: si un bulk-load tira el
+RDS, no es el sizing del edge — es esto.
+
 ## Histórico de la decisión
 
 - **2026-05-25 10:30 ART**: snapshot piloto, working set 290 MB sostenido,

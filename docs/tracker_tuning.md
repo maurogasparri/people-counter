@@ -54,7 +54,7 @@ SELECT device_id,
        MAX(death_emit_count)          AS death_emit,
        MAX(ghost_adoption_count)      AS adoption
 FROM   telemetry
-WHERE  ts > NOW() - INTERVAL '24 hours'
+WHERE  event_ts > NOW() - INTERVAL '24 hours'
 GROUP  BY device_id
 ORDER  BY ratio_max DESC NULLS LAST;
 ```
@@ -88,7 +88,7 @@ Eventos TRACKDBG típicos:
 
 ## Patrones síntoma → diagnóstico → fix
 
-Los 4 patrones más comunes. Cada uno: cómo detectarlo, qué evento TRACKDBG
+Los patrones más comunes. Cada uno: cómo detectarlo, qué evento TRACKDBG
 lo confirma, qué knob ajustar.
 
 ### 1. Fragmentación sin rescate (`stitching_ratio > 1.3` + `adoption ≈ 0`)
@@ -180,7 +180,7 @@ tracking:
     keepalive_max_frames: 300              # de 600 (~24 s) → ~12 s
 ```
 
-### 5. FP no-humano cuenta (perro, carrito, objeto sobre silla)
+### 4. FP no-humano cuenta (perro, carrito, objeto sobre silla)
 
 **Lectura**: el detector YOLO está disparando sobre algo que no es persona —
 perro caminando, carrito alto, mochila/campera sobre una silla. Si el objeto
@@ -239,7 +239,7 @@ sudo journalctl -u people-counter --since "10 min ago" \
     | grep -E "short_height_skipped"
 ```
 
-#### 5b. El FP no-humano NO tiene altura (perro que SGBM no mide)
+#### 4b. El FP no-humano NO tiene altura (perro que SGBM no mide)
 
 `min_count_height_m` solo filtra cuando la altura **existe** y es baja — tracks
 con altura desconocida (mediana = `None`) PASAN, para preservar recall cuando
@@ -288,7 +288,7 @@ sudo journalctl -u people-counter --since "10 min ago" \
     | grep -E "lowconf_noheight"
 ```
 
-### 6. Clutter estructural intenso (tiendas de ropa, sites con perchero/mostrador)
+### 5. Clutter estructural intenso (tiendas de ropa, sites con perchero/mostrador)
 
 **Lectura**: el frame tiene zonas con detecciones espurias persistentes —
 percheros con ropa que la gente mueve, mostradores con maniquíes, vidrieras
@@ -365,7 +365,55 @@ una persona caminando rápido que aparezca directamente en el counting_zone
 sin frame previo en la tracking_zone podría no tener `last_outside_pos`
 válido. Subir el margen (más amplio = más lead-in).
 
-### 4. ID swaps en cruces densos
+### 6. Counts espurios single-frame al borde del counting zone (flicker del detector)
+
+**Lectura**: el detector enciende UN frame sobre el borde del counting zone
+(flicker / FP efímero) y el track resultante alcanza a registrar un cruce con
+una sola detección real adentro — el resto de su "visita" la completa la
+extrapolación Kalman. Resultado: un COUNT que no corresponde a una pasada real.
+A diferencia del patrón 4 (objeto persistente con forma rara), acá el detector
+parpadea una vez en el lugar equivocado.
+
+**Síntoma diagnóstico**: counts aislados, sin antes/después de tráfico, con
+`real_inside_frames=1` en el log del exit. Confirmar:
+
+```bash
+# real_inside_frames bajo (1) en los exits que emitieron
+sudo journalctl -u people-counter --since "1 hour ago" \
+    | grep -E "TRACKDBG exit " | grep "real_inside_frames=1"
+```
+
+Si los exits que emiten tienen casi siempre `real_inside_frames=1` → es
+flicker single-frame, no pasadas reales.
+
+**Fix**:
+
+```yaml
+counter:
+  min_real_inside_frames: 2   # de 0 (off) → exige ≥2 frames con detección real adentro
+```
+
+Con 2, el counter rechaza el emit si el track tuvo menos de 2 frames con
+detección **real** (no Kalman) dentro del counting zone. Filtra el flicker de
+un frame sin tocar las pasadas reales (un caminante a velocidad normal deja
+varios frames inside). El gate aplica tanto en el exit como en el death-emit.
+
+**Trade-off**: un caminante MUY rápido (cruza el counting zone en <150 ms a la
+resolución/FPS del site) podría dejar solo 1 frame real adentro y perderse.
+En un counting zone dimensionado con lead-in razonable esto es raro; si el
+site tiene un counting zone muy angosto, dejar el gate en 0 o ampliar la zona.
+
+**Knobs**:
+- `1` desactiva de hecho el filtro (cualquier track con ≥1 frame real pasa = back-compat).
+- `3` más estricto (descarta pasadas de 2 frames; riesgo de perder cruces rápidos).
+
+```bash
+# Agarra las dos ramas: "exit_thin_evidence_skipped" y "reason=thin_evidence".
+sudo journalctl -u people-counter --since "10 min ago" \
+    | grep -E "thin_evidence"
+```
+
+### 7. ID swaps en cruces densos
 
 **Lectura**: dos personas adyacentes con tracks que se intercambian IDs
 durante un cruce. La capa 1 (ghost adoption) puede estar adoptando con un

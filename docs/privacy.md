@@ -21,12 +21,15 @@ captura opcional de frames "best-frame" para data de active learning.
 - Profundidad estimada de la cabeza (m), altura aproximada (m) y
   clasificación adulto/niño binaria. Métrica derivada por persona,
   *no* identificadora.
-- Identificador opaco de visitante (`visitor_hash`): un **UUID aleatorio**
-  (`uuid.uuid4()`) que el dispositivo asigna a cada grupo de identidad
-  post-stitching. **No deriva de la MAC ni es invertible.** La MAC se hashea
-  con SHA-256 + salt local truncado a 16 bytes **solo en el estado local del
-  dispositivo** (`wifi_ble_dedup.sqlite`, salt rotada a diario); ese hash
-  **nunca se transmite**. Nunca se almacenan ni transmiten MACs crudas.
+- Identificador opaco de visitante (`visitor_hash`): un valor aleatorio de
+  **16 bytes** (`BYTEA` en RDS), transmitido como los **32 caracteres hex de un
+  `uuid.uuid4().hex`**, que el dispositivo asigna a cada grupo de identidad
+  post-stitching. **No deriva de la MAC ni del hash de la MAC, no es
+  invertible**, y se renueva cada día (`reset_daily()` rota la salt y resetea
+  los grupos). La MAC se hashea aparte con SHA-256 + salt local truncado a 16
+  bytes **solo en el estado local del dispositivo** (`wifi_ble_dedup.sqlite`,
+  salt rotada a diario); ese hash **nunca se transmite**. Nunca se almacenan ni
+  transmiten MACs crudas.
 - RSSI máximo crudo (`rssi_max`) por visitor/ventana. La categorización
   shopper/passerby/weak se aplica **server-side** (función SQL `rssi_class`),
   no en el dispositivo.

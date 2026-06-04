@@ -221,11 +221,18 @@ cartesiano de granularidades). Lista completa de grants en
 | `pos_by_bucket_*` | 15min / hora / día | `transactions`, `sales`, `returns`, montos |
 | `turn_in_rate_by_bucket_*` | 15min / hora / día | `turn_in_rate = ins / passersby` |
 | `conversion_by_bucket_*` | 15min / hora / día | `conversion = ins / shoppers` |
-| `occupancy_by_bucket_*`, `visit_duration_by_bucket_*` | 15min‡ / hora / día | ocupación estimada, duración de visita |
+| `occupancy_by_bucket_*` | 15min / hora / día | ocupación estimada (cumsum `ins - outs`) |
+| `visit_duration_by_bucket_*` | hora / día‡ | duración de visita (Ley de Little) |
+| `wifi_engagement_by_bucket_day` | día‡ | visitors WiFi/BLE por nº de ventanas presentes (`'1'`/`'2'`/`'3-5'`/`'6+'`) |
+| `revenue_per_visitor_by_bucket_*` | hora / día‡ | `net_amount_minor / ins` (ticket por visitante) |
+| `sales_per_sqm_by_bucket_*` | hora / día‡ | `net_amount_minor / sales_area_m2` (ventas por m²) |
 | `data_freshness_by_store` | — | último `received_at` cross-fact por sucursal |
 | `sites`, `devices` | dimensión | catálogo (lat/long, nombres) |
 
-‡ `visit_duration` y `occupancy` solo exponen `_hour` y `_day`. Las funciones
+‡ `visit_duration`, `revenue_per_visitor` y `sales_per_sqm` solo exponen
+`_hour` y `_day`; `wifi_engagement` solo `_day`. Las vistas internas
+`metrics_unified_by_bucket_*` **NO** se conceden a `readonly_external` (uso de la
+Lambda — el partner prefiere las vistas individuales por fuente). Las funciones
 `height_class(REAL)` y `rssi_class(INT)` también tienen `GRANT EXECUTE`.
 
 Si un partner necesita granularidad mayor (per-device, per-evento), se le

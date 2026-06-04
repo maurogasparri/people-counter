@@ -65,3 +65,10 @@ repetición intra-día (engagement, que sí está).
   instantánea desde el rollup.
 - **Sin triggers** en el hot-path de ingesta; auto-reparable (cada refresh
   recomputa desde la verdad). Detalle en la migración y en `CLAUDE.md`.
+- **Dos fuentes para poblar los rollups**: (a) desde el raw, vía
+  `refresh_rollups()` (el camino del pipeline en vivo); o (b) directo desde
+  histórico YA AGREGADO del sistema anterior, vía
+  [`infra/sql/migrate_historical_rollups.example.sql`](../infra/sql/migrate_historical_rollups.example.sql)
+  (+ el loader `scripts/migrate_historical.py`), que inserta en las tablas base
+  `rollup_*` sin pasar por el crudo. `refresh_rollups()` nunca pisa esos buckets
+  (solo toca los que tienen eventos crudos nuevos).

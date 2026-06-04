@@ -15,7 +15,7 @@ cartesiano. Sirve para:
 > **NO es exhaustivo combinatorio.** El producto teórico es ~86.000 celdas;
 > la mayoría son trivially equivalent (simetrías horizontal/vertical,
 > ingress/egress) o structurally void (CANDIDATE nunca cuenta). El matrix
-> enumera ~40 celdas que el código **bifurca de forma única** y que un test
+> enumera ~70 celdas que el código **bifurca de forma única** y que un test
 > dedicado tiene valor distinto a los demás.
 
 ---
@@ -37,9 +37,14 @@ cartesiano. Sirve para:
 | **K — Identity** | K1 same-id / K2 ghost-adopted (capa 1 rescue) / K3 new-id | `EuclideanTracker._try_adopt_ghost` (decisión IoU/dist) + `_resurrect_ghost` (aplica meta) |
 | **L — Keep-alive** | L1 active (track PENDING extrapolando inside) / L2 not | `_inside_keepalive_counting_zone` + guard de promoción LOST en `_record_miss` |
 | **M — Ghost outside_pos inherit** | M1 preserved (dist ≤ threshold) / M2 invalidated (dist > threshold) | `_resurrect_ghost` con `ghost_outside_invalidate_px` |
+| **N — Gate de altura humana** | N1 altura ≥ `min_count_height_m` (o gate off) / N2 altura < umbral (rechaza) / N3 altura = None (pasa, no aplica) | Guard `min_count_height_m` en exit (`_process_track`) y death (`_emit_on_death`) |
+| **O — Gate conf sin altura** | O1 conf ≥ `min_count_confidence` (o gate off) / O2 conf < umbral con altura None (rechaza) / O3 altura presente (gate ignorado) | Guard `min_count_confidence` en exit y death |
+| **P — Gate demografía** | P1 conf ≥ `height_confidence_gate` (reporta demografía) / P2 conf < umbral (height_m/head_depth_m → None, demografía unknown; **NO afecta conteo**) | `height_confidence_gate` en emisión del payload |
+| **Q — Evidencia real inside** | Q1 `real_inside_frames` ≥ `min_real_inside_frames` (o gate off) / Q2 < umbral (rechaza, anti-flicker single-frame) | Guard `min_real_inside_frames` en exit y death |
 
 Ejes ortogonales del counter en sí: **A × B × C × D × E × F × G × H × I × J**.
 Ejes que cruzan al tracker pero afectan el counter: **K × L × M**.
+Ejes de los gates anti-FP (filtros de emisión, independientes entre sí): **N × O × P × Q**.
 
 ---
 
@@ -132,6 +137,38 @@ Notación: `✓` cubierto / `gap` requiere test / `void` structurally impossible
 | 43 | `reset_daily` limpia stitching state | `test_reset_daily_clears_stitching_state` |
 | 44 | `death_emit_count` incrementa solo en emit real | `test_death_emit_count_incremented_only_on_actual_emit` |
 | 45 | `reset_daily` limpia death_emit_count | `test_reset_daily_clears_death_emit_count` |
+
+### Gates anti-FP de emisión (ejes N × O × P × Q)
+
+Los cuatro gates son **filtros de emisión ortogonales**: actúan sobre un track
+que ya tiene cruce neto ≠ 0, decidiendo si el count se emite y/o si la
+demografía se reporta. N/O/Q gatean el **conteo**; P gatea **solo la
+demografía** (el count sale igual). Cada gate corre tanto en la rama de exit
+observado como en el death-emit.
+
+| # | Eje | Caso | Resultado | Test |
+|---|---|---|---|---|
+| 58 | N2 | altura mediana < `min_count_height_m` (exit) | no emit | `test_min_count_height_blocks_emit_for_short_track` |
+| 59 | N3 | altura = None → gate no aplica | emit (recall preservado) | `test_min_count_height_passes_when_height_unknown` |
+| 60 | N1 | altura ≥ umbral | emit | `test_min_count_height_passes_when_track_is_tall_enough` |
+| 61 | N2 | altura < umbral en death-emit | no emit | `test_min_count_height_blocks_death_emit_for_short_track` |
+| 62 | N off | default `0.0` desactiva el gate | emit | `test_min_count_height_default_is_off`, `test_build_counter_reads_min_count_height_m_from_config` |
+| 63 | O2 | sin altura + conf < `min_count_confidence` (perro) | no emit | `test_min_count_confidence_blocks_dog_no_height` (parametrizado) |
+| 64 | O1 | sin altura + conf alta (persona) | emit (recall preservado) | `test_min_count_confidence_passes_no_height_high_conf` |
+| 65 | O3 | altura presente → gate de conf ignorado | emit | `test_min_count_confidence_ignored_when_height_present` |
+| 66 | O2 | sin altura + conf baja en death-emit | no emit | `test_min_count_confidence_blocks_death_emit_dog` |
+| 67 | O off | `0.0` desactiva; default es `0.60` | emit / config | `test_min_count_confidence_off_when_zero`, `test_min_count_confidence_default_is_060`, `test_build_counter_reads_min_count_confidence_from_config` |
+| 68 | P2 | conf < `height_confidence_gate` → demografía unknown, **count sale** | emit sin demografía | `test_height_confidence_gate_below_threshold_marks_unknown` |
+| 69 | P1 | conf ≥ umbral → reporta demografía | emit con demografía | `test_height_confidence_gate_above_threshold_reports_demographics` |
+| 70 | P default/override | default = constante de clase; override por constructor | — | `test_height_confidence_gate_default_from_class_constant`, `test_height_confidence_gate_override_via_constructor`, `test_build_counter_reads_height_confidence_gate_from_config` |
+| 71 | Q2 | `real_inside_frames` < `min_real_inside_frames` (single-frame flicker, exit) | no emit | `test_min_real_inside_frames_blocks_single_frame_entry` |
+| 72 | Q1 | caminante con suficientes frames reales | emit | `test_min_real_inside_frames_passes_walker_with_enough_frames` |
+| 73 | Q2 | evidencia fina en death-emit | no emit | `test_min_real_inside_frames_blocks_death_emit_thin_evidence` |
+| 74 | Q off | default `0` desactiva el gate | emit / config | `test_min_real_inside_frames_default_is_off`, `test_build_counter_reads_min_real_inside_frames_from_config` |
+
+**Cobertura completa** — los 4 gates tienen tests para: rama exit, rama
+death-emit, default off/on, lectura desde config, y los casos de
+recall-preservado (N3 altura None, O1 conf alta sin altura). No quedan gaps.
 
 ### Cross-cutting con tracker
 

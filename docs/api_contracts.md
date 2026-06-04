@@ -350,13 +350,15 @@ sin recomputar nada en queries.
 
 ### Ejemplos de cliente
 
-**curl con SigV4** (requiere `awscli` para signing helper):
+**curl con SigV4** (`--aws-sigv4`, igual que el query de aggregates en
+[`api_access.md`](api_access.md)):
 
 ```bash
-aws --region us-east-1 \
-    apigatewayv2 \
-    --endpoint-url https://${ApiId}.execute-api.us-east-1.amazonaws.com \
-    invoke ... # awscli no soporta invoke a APIGW directamente; usar httpx con SigV4 helper
+curl --aws-sigv4 "aws:amz:us-east-1:execute-api" \
+     --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"transaction_id":"POS-RECOLETA-20260518-001234","store_id":"ar-recoleta","event_ts":"2026-05-18T14:32:15-03:00","type":"sale","items":2,"amount_minor":4500000,"currency":"ARS","payment_method":"credit_card"}' \
+     "https://api.tfg.gasparri.com.ar/pos/transactions"
 ```
 
 **Python con `requests-aws4auth`** (recomendado para integraciones):

@@ -159,7 +159,7 @@ Esto es transparente al operator: no requiere acción.
 | Push hecho desde CLI pero `last_shadow_apply_ts` sigue NULL | `mqtt.shadow_enabled=false` en config del device | SSH al device, editar `/etc/people-counter/config.yaml` para flippearlo a `true`, restart |
 | Push hecho pero el delta no aplica una key específica | Key fuera de `CLOUD_OVERRIDABLE` | Verificar log del device: `shadow_delta_requires_restart`. Las keys overridables están listadas arriba — el resto requiere SSH+restart |
 | Device no responde a pushes y está online | Conexión MQTT al broker está degradada | `aws iot-data publish` test directo + revisar `mqtt_disconnect_count` en telemetry |
-| Cambio fue rechazado por validación | Valor del shadow tiene formato inválido (ej. `operating_hours` con string mal formado) | Revisar log del device buscando `invalid_operating_hours_format`. Pushear un valor válido — el device queda con el last-known-good del config local mientras tanto |
+| Cambio fue rechazado por validación | Valor del shadow tiene formato inválido (ej. `operating_hours` con string mal formado) | Revisar log del device buscando `shadow_delta_rejected_invalid` (incluye `rejections=[{key, reason}]`). Pushear un valor válido — el device queda con el last-known-good del config local mientras tanto |
 
 ## Resumen de keys NO overridables
 

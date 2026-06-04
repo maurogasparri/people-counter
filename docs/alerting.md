@@ -94,6 +94,39 @@ tabla `telemetry`). Sugeridas como primeras alert rules en Grafana
 | `device-offline` | `SELECT NOW() - MAX(event_ts) FROM telemetry WHERE device_id = $device` | `> 15 min` | 15m | critical |
 | `shadow-apply-stale` | `SELECT NOW() - MAX(last_shadow_apply_ts) FROM telemetry WHERE device_id = $device AND last_shadow_apply_ts IS NOT NULL` | `> 24h` | 24h | warning |
 
+## Segundo canal: alarmas de infraestructura (CloudWatch → SNS → email)
+
+El canal Grafana→SES de arriba cubre las alertas de **negocio/dispositivo**
+(canaries del tracker, device offline, stitching) que se calculan con queries
+SQL sobre `telemetry`. En **paralelo y por separado**, el CloudFormation define
+10 **alarmas de CloudWatch** sobre las métricas de infraestructura AWS, que
+disparan a un **SNS topic dedicado** `people-counter-alerts-${Environment}`
+(subscripción por email al `AlertEmail` del stack). Es un canal **distinto** del
+Grafana→SES: no depende de que Grafana ni la RDS estén sanos para avisarte
+(justamente cubren cuando se caen).
+
+| Alarma (CFN) | Métrica | Umbral |
+|---|---|---|
+| `persist-event-errors` | Lambda `persist_event` Errors | `>= 3 / 5min` |
+| `ingest-pos-errors` | Lambda `ingest_pos_transaction` Errors | sostenido |
+| `query-aggregates-errors` | Lambda `query_aggregates` Errors | sostenido |
+| `query-aggregates-latency` | Lambda `query_aggregates` Duration | latencia alta |
+| `rds-cpu` | RDS CPUUtilization | `> 75%` sostenido (3×5min) |
+| `rds-storage` | RDS FreeStorageSpace | `< 2 GB` |
+| `rds-connections` | RDS DatabaseConnections | `> 60` (max ~85 en t4g.micro) |
+| `iot-errors` | IoT RuleMessageThrottled | `> 5 / 5min` |
+| `grafana-5xx` | ALB HTTPCode_Target_5XX | `> 5 / 5min` |
+| `grafana-tasks` | ALB HealthyHostCount del target group | `< 1` (Grafana caído) |
+
+Todas con `AlarmActions: [!Ref AlertTopic]`. Definidas en
+`infra/cloudformation/people-counter.yaml` (sección *SNS + CloudWatch alarms*).
+
+> **Falso positivo esperable durante un bulk-load**: un COPY/re-seed masivo o
+> una migración de histórico satura RDS y dispara transitoriamente
+> `persist-event-errors` por `ConnectionTimeout`. Es esperable durante el
+> mantenimiento y se resuelve solo al terminar — ver el runbook de carga masiva
+> en [`cloud_dr.md`](cloud_dr.md).
+
 ## Sandbox vs Producción
 
 SES en cuenta nueva arranca en **sandbox**:

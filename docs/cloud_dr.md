@@ -140,10 +140,52 @@ aws rds restore-db-instance-to-point-in-time \
 - [ ] Habilitar **cross-region snapshot copy** (Lambda+EventBridge o backup vault).
 - [ ] Cron de **restore drill trimestral** (puede ser un script en GitHub Actions
       que arma una instancia restored, valida row count, y la borra).
-- [ ] **Alarma CloudWatch** `RDS FreeStorageSpace < 1GB` (storage autoscale ya
-      está configurado en el CFN hasta `RdsMaxAllocatedStorage`).
+- [x] **Alarma CloudWatch** `RDS FreeStorageSpace` — **HECHA**: el CFN ya define
+      `RdsStorageAlarm` (`people-counter-rds-storage-<env>`, dispara con
+      `FreeStorageSpace < 2 GB` al SNS de alertas). Storage autoscale ya está
+      configurado en el CFN hasta `RdsMaxAllocatedStorage`.
 - [ ] Documentar **runbook de restore** con captures de pantalla y tiempos
       reales medidos en el drill.
+
+## Runbook: carga masiva / bulk-load (re-seed demo, migración histórica, restore grande)
+
+> ⚠️ **Lección operativa**: `db.t4g.micro` (1 GB de RAM) **NO aguanta un COPY
+> masivo (~1.5M filas) en una sola transacción** → el backend de Postgres se
+> queda sin memoria y crashea (evento RDS *"Recovery of the DB instance has
+> started"*). Aplica a re-seeds del demo, migración de histórico y restores
+> grandes.
+
+Dos estrategias (elegir según el caso):
+
+**A — Batchear commits (preferido para data nueva)**. El loader
+[`scripts/migrate_historical.py`](../scripts/migrate_historical.py) ya inserta
+CSV→staging **por lotes con commits incrementales**, así nunca mantiene ~1.5M
+filas en una sola transacción → no satura RDS. Mismo principio aplica a
+cualquier script de seed propio: commitear cada N mil filas.
+
+**B — Escalar la instancia temporalmente (para un COPY/restore atómico que no
+se puede batchear)**:
+
+```bash
+# 1. Escalar micro → small (2 GB). Reboot ~10 min.
+aws rds modify-db-instance \
+    --db-instance-identifier people-counter-rds-<env> \
+    --db-instance-class db.t4g.small --apply-immediately
+aws rds wait db-instance-available --db-instance-identifier people-counter-rds-<env>
+
+# 2. Correr el bulk-load (COPY, restore, re-seed).
+
+# 3. Volver a micro para no pagar de más.
+aws rds modify-db-instance \
+    --db-instance-identifier people-counter-rds-<env> \
+    --db-instance-class db.t4g.micro --apply-immediately
+```
+
+> **Falso positivo esperable durante el bulk-load**: la presión sobre RDS
+> dispara transitoriamente la alarma `people-counter-persist-event-errors-<env>`
+> por `ConnectionTimeout` mientras la DB está saturada/reiniciando. Es esperable
+> durante el mantenimiento — silenciar/ignorar mientras dure y verificar que se
+> resuelve sola al terminar. (Ver [`alerting.md`](alerting.md) §canal SNS.)
 
 ## Costo aproximado de DR (cuando se activa)
 

@@ -75,8 +75,8 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 
 | Área | Estado | Detalles |
 |------|--------|---------|
-| Código fuente | 31 módulos en 9 paquetes de `src/` | `vision/` (9: capture, calibration, depth, detect, world_coords, static_suppressor, pre_filter, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (2: persist_event, ingest_pos_transaction) + `config/` (2: loader, hardware) + `web/` (2: viewer, annotate) + `main.py` + `telemetry.py` |
-| Tests | 889 pasando (483 funciones, 43 archivos) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
+| Código fuente | 31 módulos en 9 paquetes de `src/` | `vision/` (9: capture, calibration, depth, detect, world_coords, static_suppressor, pre_filter, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (3: persist_event, ingest_pos_transaction, query_aggregates) + `config/` (2: loader, hardware) + `web/` (2: viewer, annotate) + `main.py` + `telemetry.py` |
+| Tests | 922 funciones de test en 43 archivos | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
 | Config | Defaults + Per-device + Cloud + Hardware-agnostic | `config/config.example.yaml` (defaults canónicos), `/etc/people-counter/config.yaml` (per-device override), AWS IoT Shadow (business cloud). Parámetros de hardware (sensor, lens, bracket, board ChArUco, AE timings) consolidados en `src/config/hardware.py` (HardwareParams) y leídos por el runtime + todos los setup tools — swap de sensor / bracket / board = solo editar config.yaml, ningún script tiene constantes hardware hardcodeadas |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
@@ -269,10 +269,11 @@ Pasos resumidos:
    arma un batch diverso por site (motion + bg balanceados) en una
    carpeta plana lista para X-AnyLabeling. `--exclude-manifest` saltea
    imgs ya usadas en otro batch (anti leak train/val).
-3. **Active learning** (a partir de v3): `mine_active_learning.py`
+3. **Active learning** (a partir de v2): `mine_active_learning.py`
    identifica frames informativos vía disagreement v1↔v_actual +
    uncertainty del modelo actual. Selecciona top-N en vez de muestrear
-   al azar. v3→v4 con esta técnica subió mAP50 de 0.80 → 0.96.
+   al azar. v1→v2 con esta técnica subió mAP50 de 0.805 → 0.956 (la 2da
+   ronda de AL —v3— bajó a 0.939; sweet spot en v2).
 4. **Labeling con X-AnyLabeling** (local, no SaaS): bbox cabeza+hombros
    (convención canónica en `scripts/training/label_guide.md`).
    Export YOLO format directo desde la app.
@@ -284,7 +285,7 @@ Pasos resumidos:
    `kaggle datasets version -p training_data/dataset_v_next ...`. El
    notebook consume desde ahí (no más signed URLs de Roboflow).
 7. **Training en Kaggle T4**: `train_head_detector.ipynb`. Para iterar
-   a v3/v4/... basta cambiar el slug del dataset + name del run.
+   a v2/v3/... basta cambiar el slug del dataset + name del run.
    ~20 min por iteración. Descarga del modelo entrenado vía Kaggle CLI.
 8. **Compilación HEF**: `hailomz compile` en Docker x86 Linux
    (WSL2 desde Windows). Receta exacta en
@@ -326,13 +327,13 @@ src/
 ├── tracking/        # Tracker euclidiano 3D (Kalman) + ghost pool / ID adoption + contador por línea virtual / counting zone con net-balance + rescue cascade de 3 capas (ghost adoption + decisive Kalman cross at exit + death-emit-if-crossed con guards anti-FP)
 ├── wifi_ble/        # Captura de probes WiFi (nexmon + radiotap, hopping ponderado 1/6/11), scan BLE (bleak), fingerprint (IEs/manufacturer-data), hashing, dedup a hash groups con stitching de 4 reglas (seqnum + cross-protocol L2 + BLE anchoring + fingerprint), publisher de summaries 15min
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
-├── cloud/           # Lambdas: persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC) + ingest_pos_transaction (POS API → tabla sales)
+├── cloud/           # Lambdas: persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC) + ingest_pos_transaction (POS API → tabla pos_transactions) + query_aggregates (API read-only de agregados sobre las vistas)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
 ├── config/          # Loader (deep-merge defaults + per-device + IoT Shadow) + hardware (HardwareParams dataclass — sensor/lens/bracket/charuco/ae_lock leídos del config, hardware-agnostic)
 ├── web/             # Live preview HTTP/MJPEG (viewer + annotate); gateado por has_subscribers — counting es sync-deterministic independiente del viewer
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime + canaries (track_stitching_ratio, ghost_adoption_count, death_emit_count, wifi_ble_stitching_ratio)
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
-tests/               # 889 tests (483 funciones en 43 archivos) espejando src/ + tests/scripts/ para el wizard
+tests/               # 922 funciones de test en 43 archivos espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven: start overlay,
@@ -356,6 +357,7 @@ scripts/
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── counting_zone_picker.py          # Seleccionador de counting zone + línea virtual
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list
+├── migrate_historical.py  # Loader CSV→staging batcheado (commits incrementales) para histórico AGREGADO; corre el transform de infra/sql/migrate_historical_rollups.example.sql
 ├── deploy_lambda.ps1      # Packaging del Lambda persist_event (psycopg binary + handler). Versión .sh tambien disponible.
 ├── download_model.py      # Descarga YOLOv8n HEF (Hailo Model Zoo) o ONNX (ultralytics) — usar el HEF fine-tuneado de scripts/training/, no el stock
 ├── capture_baseline_frames.py  # Captura frames rectificados de la Pi para validation bench (no training)
@@ -384,7 +386,9 @@ infra/
 ├── README.md                              # Walkthrough del deploy + costos + verificación E2E
 ├── cloudformation/people-counter.yaml     # Stack completo de AWS
 ├── deploy.ps1                             # Orquestador 5 fases (RDS + IoT + Lambda + ECR + cert ACM + ECS Fargate + ALB Grafana + CNAME). -StartFromPhase para resumir
-└── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_events / telemetry / pos_transactions + funciones SQL height_class() y rssi_class() + vistas cartesian + lambda_writer con rds_iam)
+├── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_events / telemetry / pos_transactions + funciones SQL height_class() y rssi_class() + vistas cartesian + lambda_writer con rds_iam)
+├── sql/migrations/                        # Migraciones incrementales data-preserving sobre la RDS viva (2026-05-31_rollup_layer.sql + 2026-05-31b_tz_aware_bucketing.sql)
+└── sql/migrate_historical_rollups.example.sql  # Template staging→tablas base rollup_* para histórico AGREGADO (no es migración de schema)
 docs/
 ├── setup_guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
 ├── lab_calibration_guide.md      # Protocolo de foco + calibración en lab (universal para la flota)

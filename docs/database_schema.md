@@ -2,7 +2,7 @@
 
 Modelo ER de las dos databases del sistema:
 
-1. **Postgres (RDS, cloud)** — 4 tablas raw + vistas derivadas
+1. **Postgres (RDS, cloud)** — 4 tablas raw + capa de rollup incremental + vistas derivadas
 2. **SQLite (device, local)** — 2 tablas para outbox MQTT y stitching state
 
 DDL fuente:
@@ -140,9 +140,20 @@ provisioning vía `scripts/provision.py` / `scripts/reset_dedup.py`... ver
 `provision.py create --latitude/--longitude`):
 
 - **`sites`** (PK `store_id`): `store_name`, `latitude`/`longitude` (DOUBLE
-  PRECISION, para el geomap de Grafana), `timezone`, `address`.
+  PRECISION, para el geomap de Grafana), `timezone` (IANA — base del bucketing
+  local de la capa de rollup, ver abajo), `address`, `sales_area_m2` (NUMERIC,
+  superficie de venta en m² → métrica ventas/m²), `status` (TEXT con `CHECK IN
+  ('operational', 'temp_closed', 'perm_closed')`, default `operational`; NO
+  afecta la ingesta —es solo un filtro de visualización: Grafana muestra solo
+  `operational`).
 - **`devices`** (PK `device_id`, FK → `sites.store_id`): `cam_label`,
   `firmware_version`, `installed_at`.
+
+También hay una tabla de referencia **`holidays`** (PK `holiday_date`):
+`name`, `tipo` (`CHECK IN ('nacional', 'puente')`). No se dropea en el reset
+(seedeada inline en `bootstrap.sql` con `ON CONFLICT DO UPDATE`). Grafana la
+pinta como annotations (líneas verticales) sobre las series temporales para
+contextualizar picos/valles.
 
 Sirven para el geomap, los dropdowns de filtro de Grafana (template vars desde
 una tabla chica en vez de `SELECT DISTINCT` sobre los hechos) y labels
@@ -170,12 +181,86 @@ no necesiten `date_trunc`:
 | `bucket_hour` | TIMESTAMPTZ | GENERATED ALWAYS AS STORED — `date_trunc('hour', event_ts)` en todas las tablas. |
 | `bucket_day` | DATE | GENERATED ALWAYS AS STORED — `date_trunc('day', event_ts)::date` en todas las tablas excepto telemetry (no aplica naturalmente a samples de 5min). |
 
+## Capa de rollup incremental (speed-layer + batch-layer)
+
+Las tablas **raw** (`count_events`, `wifi_ble_events`, `pos_transactions`) son
+la **fuente de verdad**. Sobre ellas hay una capa de rollup pre-computada que
+desacopla el costo de las queries de Grafana del volumen total acumulado:
+
+```
+raw (count_events / wifi_ble_events / pos_transactions)   ← fuente de verdad
+        │  refresh_rollups()  (plpgsql, INCREMENTAL por watermark, pg_cron c/5min)
+        ▼
+10 tablas base rollup_*  (buckets CERRADOS, pre-agregados)
+        │  UNION ALL
+        ▼  + live-tail del bucket ABIERTO (lectura directa del raw, ≤5s de lag)
+VISTAS  *_by_bucket_*  (lo que consumen Grafana / Lambda / readonly_external)
+```
+
+### Las 10 tablas base `rollup_*`
+
+Una tabla por `(fact × granularidad)`. Tipos `bigint`/`numeric` para que el
+`UNION ALL` con el live-tail no choque:
+
+| Tabla | Grano | Columnas de métrica |
+|---|---|---|
+| `rollup_counting_15min` / `_hour` / `_day` | 15min / 1h / 1d | `ins`, `outs`, `net` + breakdown `ins_adult`/`ins_child`/`ins_unknown` + `outs_*` |
+| `rollup_wifi_ble_15min` / `_hour` / `_day` | 15min / 1h / 1d | `passersby`, `shoppers`, `visitors` |
+| `rollup_wifi_engagement_day` | 1d | `windows_bucket` (`'1'`/`'2'`/`'3-5'`/`'6+'`) + `visitors` |
+| `rollup_pos_15min` / `_hour` / `_day` | 15min / 1h / 1d | `sales`, `returns`, `transactions`, `items_*`, `amount_minor_*`, `net_amount_minor`, `currency` |
+
+(10 tablas: 3 counting + 3 wifi_ble + 1 wifi_engagement_day + 3 pos.)
+
+### `refresh_rollups()` + watermark
+
+`refresh_rollups()` (PROCEDURE plpgsql) recomputa **incrementalmente**: lee el
+watermark (`received_at`) de la tabla `rollup_state` (1 fila por fuente:
+`counting`, `wifi_ble`, `pos`; arranca en `'-infinity'` → primer `CALL` hace
+backfill total), agrega SOLO los buckets con datos nuevos desde el watermark
+(`ON CONFLICT (store_id, bucket) DO UPDATE` upsertea el bucket recomputado) y
+avanza el watermark. → O(reciente), escala con la flota, sin tocar el hot-path
+de ingesta. Lo corre **pg_cron cada 5 min**. Tras un deploy fresco:
+`CALL refresh_rollups()` (backfill) + agendar el cron.
+
+### Bucketing local-as-UTC por tienda
+
+A diferencia de las columnas `GENERATED` de las tablas raw (que bucketean en
+**UTC**), la capa de rollup bucketea en la **zona horaria de cada tienda**
+(`sites.timezone`) vía los helpers SQL `lday(ts,tz)` / `lhour(ts,tz)` /
+`l15(ts,tz)` (`STABLE`, `AT TIME ZONE`). El `bucket_hour`/`bucket_15min` se
+guarda como **wall-clock-local representado como UTC** → cada tienda agrupa en
+su hora local (multi-país) sin necesitar una columna de offset.
+
+### Vistas = rollup (cerrado) UNION ALL live-tail (abierto)
+
+Cada vista base **NO lee el raw directo**: lee `rollup_*` (buckets ya cerrados,
+`r.bucket <> bucket-local-actual`) `UNION ALL` el raw **sólo para el bucket
+abierto** (live-tail, `event_ts`/`last_seen_ts` dentro del día local actual,
+acotado a `[now()-2d, now()+1d]` para que el índice prune). El lag del bucket
+abierto es ≤5s (lo que tarda el raw en estar consultable). Las vistas derivadas
+(turn_in, conversion, occupancy, visit_duration, etc.) leen estas por nombre →
+heredan el patrón rollup+live-tail y el bucketing tz-correcto sin cambios.
+
+### Migración de histórico agregado (direct-to-rollup)
+
+El histórico **agregado** (sin eventos individuales) de un sistema previo se
+inserta **directo en las tablas base `rollup_*`** (saltea el raw, que no existe
+para ese período). Entregables:
+[`infra/sql/migrate_historical_rollups.example.sql`](../infra/sql/migrate_historical_rollups.example.sql)
+(template staging→rollups: bucket local-as-UTC, demografía desconocida →
+`unknown`, `ON CONFLICT` idempotente) y
+[`scripts/migrate_historical.py`](../scripts/migrate_historical.py) (loader
+CSV→staging por **lotes con commits incrementales**, para no saturar RDS — ver
+[`cloud_dr.md`](cloud_dr.md) §carga masiva).
+
 ## Vistas derivadas
 
 Producto cartesiano `<métrica>_by_bucket_<grano>` sobre 3 granularidades
 (`15min`, `hour`, `day`) y vistas unificadas consumidas por la Lambda
-`query_aggregates`. Definiciones completas en
-[`infra/sql/bootstrap.sql`](../infra/sql/bootstrap.sql) (sección de vistas).
+`query_aggregates`. Cada vista = `rollup_*` (buckets cerrados) `UNION ALL`
+live-tail del raw (bucket abierto) — ver la capa de rollup arriba. Definiciones
+completas en [`infra/sql/bootstrap.sql`](../infra/sql/bootstrap.sql) (sección de
+vistas).
 
 ```
 counter (count_events)                  POS (pos_transactions)
@@ -192,6 +277,9 @@ counter (count_events)                  POS (pos_transactions)
             +- conversion_by_bucket_{15min,hour,day}                  -> US-06
             +- occupancy_by_bucket_{15min,hour,day} (cumsum por día)
             +- visit_duration_by_bucket_{hour,day}  (Ley de Little)
+            +- wifi_engagement_by_bucket_day        (visitors por #ventanas)
+            +- revenue_per_visitor_by_bucket_{hour,day}
+            +- sales_per_sqm_by_bucket_{hour,day}   (usa sites.sales_area_m2)
 
            ↓ COMBINADAS (Lambda query_aggregates consume estas)
        metrics_unified_by_bucket_{15min,hour,day}  (FULL OUTER JOIN counting+wifi_ble+pos)
@@ -206,6 +294,9 @@ counter (count_events)                  POS (pos_transactions)
 | `conversion_by_bucket_*` | 15min/1h/1d | US-06 | `sales / visits` + amounts net/gross |
 | `occupancy_by_bucket_*` | 15min/1h/1d | --- | Cumsum `ins - outs` window-partitioned por día |
 | `visit_duration_by_bucket_{hour,day}` | 1h/1d | --- | Ley de Little: `avg_occupancy / arrivals` en minutos |
+| `wifi_engagement_by_bucket_day` | 1d | --- | Visitors WiFi/BLE segmentados por nº de ventanas presentes (`'1'` / `'2'` / `'3-5'` / `'6+'`) → proxy de dwell time |
+| `revenue_per_visitor_by_bucket_{hour,day}` | 1h/1d | --- | `net_amount_minor / ins` (ticket promedio por visitante) |
+| `sales_per_sqm_by_bucket_{hour,day}` | 1h/1d | --- | `net_amount_minor / sites.sales_area_m2` (ventas por m² de superficie) |
 | `metrics_unified_by_bucket_*` | 15min/1h/1d | US-09 | FULL OUTER JOIN counting + wifi_ble + pos. Consumida por Lambda `query_aggregates` |
 | `data_freshness_by_store` | --- | US-08 | Último `received_at` cross-fact por sucursal |
 

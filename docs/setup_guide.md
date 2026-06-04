@@ -484,6 +484,15 @@ que necesitan persistir entre reinicios ya están en paths separados:
 - `/etc/people-counter/` — config y certificados
 - `/tmp/` — capturas temporales
 
+> **Nota (WAL)**: el SQLite del dedup se abre en modo WAL, así que en
+> `/var/lib/people-counter/` conviven archivos sidecar `*-wal` y `*-shm` junto
+> al `.sqlite`. Son parte de la DB (contienen escrituras todavía no
+> checkpointeadas) — **no excluirlos** del overlay ni de cualquier
+> snapshot/backup del directorio; copiar el `.sqlite` solo, sin su `-wal`,
+> deja la base inconsistente. Como el directorio entero persiste fuera del
+> overlay, no hay que hacer nada especial; el apunte es para no filtrarlos por
+> extensión si alguien arma un backup selectivo.
+
 > **Para desactivar** (ej: actualizar software o reconfigurar):
 > ```bash
 > sudo raspi-config nonint do_overlayroot 1

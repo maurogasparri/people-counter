@@ -458,7 +458,7 @@ Deberías ver un resumen con N hashes únicos.
 ## 5. Troubleshooting común
 
 > **Tracker/counter (counts perdidos o de más, fragmentación de IDs):** los
-> 4 patrones síntoma→fix más comunes están documentados en
+> patrones síntoma→fix más comunes están documentados en
 > [`docs/tracker_tuning.md`](tracker_tuning.md), con queries SQL exactas a
 > `telemetry` y comandos `journalctl | grep TRACKDBG`. Esta sección cubre
 > síntomas del bring-up; el tracker tuning es operación continua.
@@ -557,7 +557,60 @@ sudo journalctl -u people-counter --since '1 hour ago' | grep -Ei "error|excepti
   dispositivo (`sudo reboot`) y volver a verificar. Si persiste, escalar.
 - `ConnectionRefusedError` a MQTT: ver 5.1.
 
-### 5.6. Conteo se detiene fuera de horario
+### 5.6. FPS bajo / LED amarillo parpadeante / el BLE "se reinicia solo"
+
+El LED **amarillo parpadeante** indica `software_fault` (falla de software,
+prioridad sobre los estados de internet/cloud). El síntoma clásico de este
+problema era: **el FPS de visión caía de ~27 a ~0.2** y el LED quedaba amarillo
+parpadeando, todo disparado por el scanner BLE.
+
+**Qué pasaba (causa raíz, ya corregida)**: el SQLite del dedup WiFi/BLE se abría
+sin WAL ni `busy_timeout`. Cuando el publisher leía una ventana
+(`get_window_records`) justo mientras un productor escribía, saltaba `database
+is locked`; el callback de BLE (`on_advert`) quedaba bloqueado en el lock → el
+event loop de bleak dejaba de actualizar su heartbeat → un watchdog lo daba por
+*wedged* y lo reiniciaba. Ese restart corría inline y arrastraba el FPS de
+visión al piso.
+
+**Post-fix — qué es normal ahora**:
+
+- El dedup abre en modo WAL + `busy_timeout=5000`, así que lector y escritor ya
+  no se traban → la cadena que mataba el FPS está cortada de raíz.
+- El watchdog del BLE corre en el loop de buffer/telemetría (cadencia 30s),
+  **aislado del hot path de visión**. Si el BLE realmente se cuelga, el restart
+  **NO tira el FPS** — es recovery normal y autocontenido.
+- Por eso, ver de vez en cuando un restart del BLE en los logs **no es una
+  alarma** mientras el FPS de visión se mantenga y el LED no quede amarillo
+  parpadeando.
+
+**Cuándo SÍ escalar**: si el operador ve **FPS ~0.2 + LED amarillo
+parpadeante** sostenido, es posible que el device esté corriendo **código
+pre-fix** (dedup sin WAL). Capturar logs y escalar a ingeniería para que
+actualice la imagen.
+
+**Qué buscar en los logs**:
+
+```bash
+# Restart del BLE (recovery — normal si es esporádico y el FPS aguanta)
+sudo journalctl -u people-counter --since "1 hour ago" | grep "ble_scanner_wedged_restarting"
+
+# Arranque/actividad sana del scanner BLE
+sudo journalctl -u people-counter --since "1 hour ago" \
+    | grep -E "ble_scan_started|bleak_scanner_active"
+
+# Contención de SQLite (NO debería aparecer post-fix; si aparece → código pre-fix)
+sudo journalctl -u people-counter --since "1 hour ago" | grep "database is locked"
+```
+
+- `ble_scan_started` / `bleak_scanner_active`: el scanner arrancó y está
+  escaneando. Sano.
+- `ble_scanner_wedged_restarting` esporádico **con FPS estable**: recovery
+  normal, no escalar.
+- `database is locked` **presente** o `ble_scanner_wedged_restarting` en
+  ráfaga + FPS por el piso + LED amarillo parpadeante: **código pre-fix** →
+  escalar (sección 6).
+
+### 5.7. Conteo se detiene fuera de horario
 
 Esperado. El dispositivo respeta `operating_hours`.
 
@@ -573,7 +626,7 @@ grep -A 10 "operating_hours" /etc/people-counter/config.yaml
 - Si estás en horario y no cuenta, verificar que `counting_enabled: true`
   en `cloud_defaults`.
 
-### 5.7. `wlan0mon` no existe (`wifi_monitor: FAIL`)
+### 5.8. `wlan0mon` no existe (`wifi_monitor: FAIL`)
 
 ```bash
 sudo systemctl status wifi-monitor

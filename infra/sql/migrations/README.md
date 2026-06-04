@@ -15,8 +15,22 @@ REPLACE` / `ALTER`, no `DROP TABLE`.
   el git history preserva el archivo.
 
 Las migraciones hasta **2026-05-28 inclusive** ya fueron aplicadas al piloto y
-consolidadas en `bootstrap.sql` (ver el header de ese archivo). Por eso este
-directorio está vacío.
+consolidadas en `bootstrap.sql` (ver el header de ese archivo). Quedan
+**pendientes** (aplicadas a la DB viva pero todavía sin foldear a
+`bootstrap.sql`) la capa de rollup:
+
+- `2026-05-31_rollup_layer.sql` — tablas base `rollup_*` + `refresh_rollups()`
+  incremental (watermark en `rollup_state`) + las views `*_by_bucket_*` como
+  UNION rollup + live-tail.
+- `2026-05-31b_tz_aware_bucketing.sql` — bucketing tz-aware (local-as-UTC).
+
+## `migrate_historical_rollups.example.sql` NO es una migración
+
+El archivo `../migrate_historical_rollups.example.sql` (un nivel arriba, junto a
+`bootstrap.sql`) **no** es una migración de schema: es un **template de carga**
+de histórico AGREGADO (staging → tablas base `rollup_*`), pensado para correrse
+una sola vez al importar data del sistema anterior. No va en este directorio ni
+se foldea a `bootstrap.sql`.
 
 ## Cómo aplicar una migración pendiente
 
