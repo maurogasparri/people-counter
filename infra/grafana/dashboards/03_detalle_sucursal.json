@@ -73,8 +73,8 @@
     {
       "id": 20,
       "type": "barchart",
-      "title": "Cumplimiento de objetivos",
-      "description": "Cumplimiento del objetivo de cada KPI (capeado al 100%): barra llena verde = cumple o supera el target; barra parcial roja = por debajo. Devoluciones usa 2 − valor/objetivo (menos devoluciones = más alto). Targets en metric_targets. El valor real va en el tooltip.",
+      "title": "Comparativa vs promedio del grupo",
+      "description": "Variación de cada KPI de esta sucursal respecto al promedio del grupo (sucursales operativas) en el período. Verde = mejor que el promedio, rojo = peor. Devoluciones invertido (menos es mejor). Valor y promedio en el tooltip.",
       "datasource": {
         "type": "postgres",
         "uid": "__DS_UID__"
@@ -89,7 +89,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH me AS (SELECT SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS conv, SUM(p.items_sale)::float/NULLIF(SUM(p.sales),0) AS upt, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(SUM(p.sales),0) AS ticket, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(MAX(s.sales_area_m2),0) AS spm, SUM(p.items_return)::float/NULLIF(SUM(p.items_sale),0) AS devol FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE c.store_id='$site' AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date), t AS (SELECT MAX(target) FILTER (WHERE metric='conversion')::float tc, MAX(target) FILTER (WHERE metric='upt')::float tu, MAX(target) FILTER (WHERE metric='ticket')::float tt, MAX(target) FILTER (WHERE metric='sales_per_sqm')::float ts, MAX(target) FILTER (WHERE metric='return_rate')::float td FROM metric_targets) SELECT 'Tasa de conversión' AS \"Indicador\", LEAST(me.conv/NULLIF(t.tc,0),1.0) AS \"vs objetivo\", round((me.conv*100)::numeric,1)||'%' AS \"Valor\", round((t.tc*100)::numeric,1)||'%' AS \"Objetivo\", 1 ord FROM me,t UNION ALL SELECT 'Unidades por ticket', LEAST(me.upt/NULLIF(t.tu,0),1.0), round(me.upt::numeric,1)::text, round(t.tu::numeric,1)::text, 2 FROM me,t UNION ALL SELECT 'Ticket promedio', LEAST(me.ticket/NULLIF(t.tt,0),1.0), '$'||round(me.ticket)::bigint::text, '$'||round(t.tt)::bigint::text, 3 FROM me,t UNION ALL SELECT 'Facturación/m²', LEAST(me.spm/NULLIF(t.ts,0),1.0), '$'||round(me.spm)::bigint::text, '$'||round(t.ts)::bigint::text, 4 FROM me,t UNION ALL SELECT 'Tasa de devolución', LEAST(GREATEST(2 - COALESCE(me.devol,0)/NULLIF(t.td,0), 0), 1.0), round((COALESCE(me.devol,0)*100)::numeric,1)||'%', '≤'||round((t.td*100)::numeric,1)||'%', 5 FROM me,t ORDER BY ord"
+          "rawSql": "WITH per AS (SELECT c.store_id, SUM(p.sales)::float/NULLIF(SUM(c.ins),0) AS conv, SUM(p.items_sale)::float/NULLIF(SUM(p.sales),0) AS upt, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(SUM(p.sales),0) AS ticket, (COALESCE(SUM(p.amount_minor_sale),0)-COALESCE(SUM(p.amount_minor_return),0))/100.0/NULLIF(MAX(s.sales_area_m2),0) AS spm, SUM(p.items_return)::float/NULLIF(SUM(p.items_sale),0) AS devol FROM counting_by_bucket_day c JOIN sites s USING (store_id) LEFT JOIN pos_by_bucket_day p ON c.store_id=p.store_id AND c.bucket_day=p.bucket_day WHERE s.status='operational' AND c.bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date GROUP BY c.store_id), me AS (SELECT * FROM per WHERE store_id='$site'), a AS (SELECT AVG(conv) conv, AVG(upt) upt, AVG(ticket) ticket, AVG(spm) spm, AVG(devol) devol FROM per) SELECT 'Tasa de conversión' AS \"Indicador\", (me.conv-a.conv)/NULLIF(a.conv,0) AS \"Δ% vs promedio\", round((me.conv*100)::numeric,1)||'%' AS \"Valor\", round((a.conv*100)::numeric,1)||'%' AS \"Promedio\", 1 ord FROM me,a UNION ALL SELECT 'Unidades por ticket', (me.upt-a.upt)/NULLIF(a.upt,0), round(me.upt::numeric,2)::text, round(a.upt::numeric,2)::text, 2 FROM me,a UNION ALL SELECT 'Ticket promedio', (me.ticket-a.ticket)/NULLIF(a.ticket,0), '$'||round(me.ticket)::bigint::text, '$'||round(a.ticket)::bigint::text, 3 FROM me,a UNION ALL SELECT 'Facturación/m²', (me.spm-a.spm)/NULLIF(a.spm,0), '$'||round(me.spm)::bigint::text, '$'||round(a.spm)::bigint::text, 4 FROM me,a UNION ALL SELECT 'Tasa de devolución', (a.devol-COALESCE(me.devol,0))/NULLIF(a.devol,0), round((COALESCE(me.devol,0)*100)::numeric,1)||'%', round((a.devol*100)::numeric,1)||'%', 5 FROM me,a ORDER BY ord"
         }
       ],
       "fieldConfig": {
@@ -108,12 +108,12 @@
               },
               {
                 "color": "green",
-                "value": 1
+                "value": 0
               }
             ]
           },
-          "min": 0,
-          "max": 1.0
+          "min": -1,
+          "max": 1
         },
         "overrides": []
       },

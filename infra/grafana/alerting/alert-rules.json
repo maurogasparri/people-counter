@@ -334,6 +334,119 @@
           "record": null
         }
       ]
+    },
+    {
+      "name": "Negocio",
+      "interval": 60,
+      "rules": [
+        {
+          "uid": "pc-traffic-spike",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Negocio",
+          "title": "Pico de tráfico sobre umbral por franja (US-02)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "WITH cur AS (SELECT store_id, SUM(ins) AS ins FROM counting_by_bucket_hour WHERE bucket_hour = lhour(now(), 'America/Argentina/Buenos_Aires') GROUP BY store_id), thr(hour, max_ins) AS (VALUES (10,80),(11,100),(12,120),(13,120),(14,110),(15,120),(16,130),(17,150),(18,170),(19,180),(20,170),(21,140),(22,90)) SELECT s.store_name AS metric, cur.ins - thr.max_ins AS value FROM cur JOIN sites s ON s.store_id=cur.store_id AND s.status='operational' JOIN thr ON thr.hour = extract(hour FROM (now() AT TIME ZONE 'America/Argentina/Buenos_Aires'))::int",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: el tráfico de la hora supera el umbral configurado para la franja horaria. Revisar dotación/cajas. Umbrales (placeholder) editables en el rawSql de la regla."
+          },
+          "labels": {
+            "severity": "warning"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        }
+      ]
     }
   ]
 }
