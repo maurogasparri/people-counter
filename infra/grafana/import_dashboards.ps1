@@ -94,6 +94,45 @@ try {
 $dsUid = $ds.uid
 Write-Host "  UID: $dsUid" -ForegroundColor Green
 
+# --- Carpetas: agrupar los dashboards por público ---
+# Comercial (gerentes de tienda / negocio) vs Operación (técnico / flota).
+# Se usa un UID de carpeta FIJO por grupo y se chequea existencia por uid (GET
+# /api/folders/:uid) en vez de comparar por título: Invoke-RestMethod en PS 5.1
+# decodifica mal los acentos del título y el match fallaría, duplicando carpetas.
+# Los títulos se construyen con [char] (í=0xED, ó=0xF3) porque PS 5.1 lee este
+# .ps1 como ANSI y manglearía los acentos si fueran literales en el archivo.
+$F_COMERCIAL_UID = "pc-comercial"
+$F_OPERACION_UID = "pc-operacion"
+$folderTitles = @{
+    $F_COMERCIAL_UID = "Anal" + [char]0xED + "tica comercial"
+    $F_OPERACION_UID = "Operaci" + [char]0xF3 + "n y flota"
+}
+$folderMap = @{
+    "01_panorama_general.json"       = $F_COMERCIAL_UID
+    "02_comparativa_sucursales.json" = $F_COMERCIAL_UID
+    "03_detalle_sucursal.json"       = $F_COMERCIAL_UID
+    "04_patrones_afluencia.json"     = $F_COMERCIAL_UID
+    "05_salud_flota.json"            = $F_OPERACION_UID
+}
+
+function Ensure-Folder($uid, $title) {
+    # Match por uid (ASCII) en el listado: el GET /api/folders/:uid puede dar 403
+    # (folders:read) y comparar por título es frágil por el encoding de PS 5.1.
+    $folders = Invoke-RestMethod -Uri "$GrafanaUrl/api/folders" -Headers $authHeader -TimeoutSec 15
+    if ($folders | Where-Object { $_.uid -eq $uid }) { return }  # ya existe
+    $body = @{ uid = $uid; title = $title } | ConvertTo-Json -Compress
+    $tmp = Join-Path $env:TEMP "grafana-folder-$uid.json"
+    [IO.File]::WriteAllBytes($tmp, [Text.Encoding]::UTF8.GetBytes($body))
+    Invoke-RestMethod -Uri "$GrafanaUrl/api/folders" -Method Post -Headers $authHeader `
+        -ContentType "application/json; charset=utf-8" -InFile $tmp -TimeoutSec 15 | Out-Null
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+}
+
+foreach ($uid in $folderTitles.Keys) {
+    Ensure-Folder $uid $folderTitles[$uid]
+    Write-Host "  Carpeta '$($folderTitles[$uid])' -> uid=$uid" -ForegroundColor Green
+}
+
 # --- Paso 2: importar cada JSON ---
 Write-Host ""
 Write-Host "[2/3] Importando dashboards..." -ForegroundColor Cyan
@@ -119,11 +158,13 @@ foreach ($file in $jsonFiles) {
         # Wrappear en el envelope que espera la API + escribir a archivo temporal
         # (POST como string con caracteres no-ASCII se corrompe via Invoke-RestMethod
         # en PS 5.1; usar -InFile con UTF8 garantiza encoding correcto).
+        $fUid = $folderMap[$file.Name]
+        if (-not $fUid) { $fUid = "" }
         $envelope = @{
             dashboard = $dashObj
             overwrite = $true
             message   = "Import via import_dashboards.ps1"
-            folderUid = ""
+            folderUid = $fUid
         } | ConvertTo-Json -Depth 100 -Compress
 
         $tmpFile = Join-Path $env:TEMP "grafana-dash-$($file.BaseName).json"

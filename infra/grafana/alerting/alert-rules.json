@@ -1,0 +1,339 @@
+{
+  "folderUid": "alertas-pc",
+  "folderTitle": "Alertas",
+  "groups": [
+    {
+      "name": "Hardware",
+      "interval": 60,
+      "rules": [
+        {
+          "uid": "afnyphgr7di4gb",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "Temperatura de CPU alta (> 80 °C)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, cpu_temp_c AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        80
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: temperatura de CPU por encima de 80 °C."
+          },
+          "labels": {
+            "severity": "critical"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        }
+      ]
+    },
+    {
+      "name": "Operación",
+      "interval": 60,
+      "rules": [
+        {
+          "uid": "afnyphell13b4f",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Operación",
+          "title": "Sucursal sin datos (frescura)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT s.store_name AS metric, EXTRACT(epoch FROM (now()-f.last_received_at))/60.0 AS value FROM data_freshness_by_store f JOIN sites s USING (store_id) WHERE s.status='operational'",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        30
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }} no envía datos hace más de 30 minutos."
+          },
+          "labels": {
+            "severity": "warning"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        },
+        {
+          "uid": "ffnyphfqddekgd",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Operación",
+          "title": "Fragmentación de tracking (stitching ratio > 1.3)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, track_stitching_ratio AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        1.3
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: stitching ratio > 1.3 (fragmentación de identidad sin rescate)."
+          },
+          "labels": {
+            "severity": "warning"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        }
+      ]
+    }
+  ]
+}

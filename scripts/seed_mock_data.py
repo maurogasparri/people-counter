@@ -266,6 +266,17 @@ def gen_pos_transactions(rng: random.Random, days, sites):
                     yield (txid, sid, ts, kind, items, amount_minor, "ARS", rng.choice(methods))
 
 
+# Mensajes de error realistas para la tabla "Errores recientes" del tablero de
+# salud. Esporádicos (~0.4% de las muestras) y casi siempre auto-recuperables.
+ERROR_SAMPLES = (
+    "hailo: inference timeout (recuperado)",
+    "capture: frame perdido, reintento CSI-2",
+    "mqtt: PUBACK timeout, mensaje re-encolado",
+    "depth: SGBM stall, frame saltado",
+    "ble: scanner reiniciado (D-Bus)",
+)
+
+
 def gen_telemetry(rng: random.Random, tel_days, sites):
     """Salud de device cada 15 min, sobre los días dados (anclados al presente)."""
     for (sid, *_rest) in sites:
@@ -275,27 +286,42 @@ def gen_telemetry(rng: random.Random, tel_days, sites):
             # El device reporta salud 24/7 aunque la tienda esté cerrada; los
             # contadores acumulados sólo avanzan en horario de apertura (sin tráfico
             # fuera de OPEN_HOURS, pero CPU/Hailo/MQTT/disco se siguen enviando).
+            disconnects = 0  # mqtt_disconnect_count acumulado del día
             for hour in range(0, 24):
                 for minute in (0, 15, 30, 45):
                     ts = datetime.combine(day, time(hour, minute), tzinfo=EVENT_TZ)
                     if hour in HOUR_WEIGHTS:
                         cum_in += rng.randint(0, 6)
                         cum_out += rng.randint(0, 6)
+                    cpu = round(rng.uniform(48, 64), 1)
+                    hailo = round(rng.uniform(44, 58), 1)
+                    disk = rng.randint(38000, 52000)
+                    mem = rng.randint(900, 1400)
+                    fps = round(rng.gauss(27, 3), 1)
+                    mqtt_ok = rng.random() > 0.01
+                    wifi_ok = rng.random() > 0.02
+                    ble_ok = rng.random() > 0.02
+                    wbsr = round(rng.uniform(0.85, 1.0), 3)
+                    tsr = round(rng.uniform(1.0, 1.25), 3)
+                    de = rng.randint(0, 4)
+                    ga = rng.randint(0, 8)
+                    # Conectividad: cuando el MQTT cae, sube el backlog del outbox y
+                    # el contador de desconexiones del día; con MQTT OK el outbox drena.
+                    if not mqtt_ok:
+                        disconnects += 1
+                        backlog = rng.randint(5, 120)
+                    else:
+                        backlog = rng.randint(0, 3)
+                    err = rng.choice(ERROR_SAMPLES) if rng.random() < 0.004 else None
                     yield (
                         dev, sid, ts,
-                        round(rng.uniform(48, 64), 1),    # cpu_temp_c
-                        round(rng.uniform(44, 58), 1),    # hailo_temp_c
-                        rng.randint(38000, 52000),        # disk_free_mb
-                        rng.randint(900, 1400),           # mem_available_mb
-                        round(rng.gauss(27, 3), 1),       # fps
+                        cpu, hailo, disk, mem, fps,
                         cum_in, cum_out,                  # total_in, total_out
-                        rng.random() > 0.01,              # mqtt_connected
-                        rng.random() > 0.02,              # wifi_probe_ok
-                        rng.random() > 0.02,              # ble_scanner_ok
-                        round(rng.uniform(0.85, 1.0), 3), # wifi_ble_stitching_ratio
-                        round(rng.uniform(1.0, 1.25), 3), # track_stitching_ratio
-                        rng.randint(0, 4),                # death_emit_count
-                        rng.randint(0, 8),                # ghost_adoption_count
+                        mqtt_ok, wifi_ok, ble_ok,
+                        wbsr, tsr, de, ga,
+                        backlog,                          # buffer_backlog_messages
+                        disconnects,                      # mqtt_disconnect_count
+                        err,                              # error
                     )
 
 
@@ -408,11 +434,12 @@ def main() -> None:
             if tel_days:
                 logger.info("Insertando telemetry (%d días, %s..%s)…", len(tel_days), tel_days[0], tel_days[-1])
                 nt = _copy(cur, "telemetry",
-                           ("device_id", "store_id", "event_ts", "cpu_temp_c", "hailo_temp_c",
+                           ("device_id", "store_id", "event_ts", "cpu_temp_c", "hailo_temp_c",  # noqa: E128
                             "disk_free_mb", "mem_available_mb", "fps", "total_in", "total_out",
                             "mqtt_connected", "wifi_probe_ok", "ble_scanner_ok",
                             "wifi_ble_stitching_ratio", "track_stitching_ratio",
-                            "death_emit_count", "ghost_adoption_count"),
+                            "death_emit_count", "ghost_adoption_count",
+                            "buffer_backlog_messages", "mqtt_disconnect_count", "error"),
                            gen_telemetry(random.Random(args.seed), tel_days, sites))
                 logger.info("  telemetry: %d filas", nt)
 

@@ -24,7 +24,7 @@
       "url": "/d/footfall-overview",
       "icon": "dashboard",
       "targetBlank": false,
-      "keepTime": true
+      "keepTime": false
     },
     {
       "type": "link",
@@ -32,7 +32,7 @@
       "url": "/d/commercial-performance",
       "icon": "dashboard",
       "targetBlank": false,
-      "keepTime": true
+      "keepTime": false
     },
     {
       "type": "link",
@@ -40,7 +40,7 @@
       "url": "/d/store-detail",
       "icon": "dashboard",
       "targetBlank": false,
-      "keepTime": true
+      "keepTime": false
     },
     {
       "type": "link",
@@ -48,7 +48,7 @@
       "url": "/d/traffic-analysis",
       "icon": "dashboard",
       "targetBlank": false,
-      "keepTime": true
+      "keepTime": false
     }
   ],
   "templating": {
