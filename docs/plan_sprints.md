@@ -154,9 +154,9 @@
 | Diseño visual de los 4 dashboards | 1.5 | Wireframes y decisiones de UX |
 | **Vista 1 — Operaciones (PRIORIDAD)**: KPIs por sucursal (footfall, in/out, turn-in rate, conversion) | 1 | JSON del dashboard provisioning |
 | Vista 2 — Detalle de sucursal con drill-down | 1 | JSON del dashboard provisioning |
-| Vista 3 — Monitoreo de la flota (canaries del tracker + uptime devices) | 1 | JSON del dashboard provisioning. **Pendiente**: paneles para `track_stitching_ratio`, `death_emit_count`, `ghost_adoption_count` (canaries que ya están en RDS desde S8). |
+| Vista 3 — Monitoreo de la flota (canaries del tracker + uptime devices) | 1 | JSON del dashboard provisioning. **Hecho**: tablero ⑤ "Salud de la flota" (carpeta Operación y flota) con los 3 canaries (`track_stitching_ratio`, `ghost_adoption_count`, `death_emit_count`) + estado de devices, frescura, temperatura, FPS, backlog MQTT y errores. |
 | Vista 4 — Reportes exportables (CSV export nativo) | 1 | JSON del dashboard provisioning |
-| Alerting configurado para US-02 (umbrales por sucursal) | 1 | Reglas de Grafana alerting. **Pendiente**: alert rules para `track_stitching_ratio > 1.3` sostenido 1h y `death_emit_count / total > 0.3`. Requiere definir notification channel (Slack/email) con el cliente del piloto. Ver `docs/tracker_tuning.md` para los thresholds operacionales. |
+| Alerting configurado para US-02 (umbrales por sucursal) | 1 | Reglas de Grafana alerting versionadas en `infra/grafana/alerting/alert-rules.json` + `import_alerts.ps1`. **Hecho**: 3 reglas (Temperatura CPU > 80 °C, Sucursal sin datos por frescura, `track_stitching_ratio > 1.3`) en la carpeta "Alertas", con contact point email. Falta opcional: regla `death_emit_count / total > 0.3` y definir el canal final con el cliente. |
 | CloudWatch monitoring + dashboards básicos | 0.5 | Métricas y alarmas |
 | Integration tests de Lambda + bucket de eventos | 1 | `tests/cloud/test_persist_event.py` ampliado |
 
