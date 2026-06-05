@@ -152,25 +152,44 @@ def _get_connection():
                 pass
             _pg_conn = None
 
+    import time
+
     import psycopg
 
     sslmode = "verify-full" if _ssl_root_cert() else "require"
-    conn_kwargs: dict[str, Any] = {
+    base_kwargs: dict[str, Any] = {
         "host": os.environ["PG_HOST"],
         "port": int(os.environ.get("PG_PORT", "5432")),
         "dbname": os.environ.get("PG_DB", "people_counter"),
         "user": os.environ.get("PG_USER", "lambda_query_reader"),
-        "password": _generate_iam_token(),
         "sslmode": sslmode,
         "connect_timeout": 15,
         "autocommit": True,
     }
     root_cert = _ssl_root_cert()
     if root_cert:
-        conn_kwargs["sslrootcert"] = root_cert
+        base_kwargs["sslrootcert"] = root_cert
 
-    _pg_conn = psycopg.connect(**conn_kwargs)
-    return _pg_conn
+    # Retry de conexión: en cold-start la primera conexión a RDS con token IAM
+    # puede fallar transitoriamente (generación/validación del token, handshake
+    # SSL, RDS despertando) → el primer hit tras inactividad devolvía 500. Tres
+    # intentos con backoff corto lo absorben. El token IAM se regenera en cada
+    # intento (es la causa transitoria más común; expira a los 15 min).
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            _pg_conn = psycopg.connect(password=_generate_iam_token(), **base_kwargs)
+            return _pg_conn
+        except Exception as exc:  # OperationalError + fallos de token/SSL en cold-start
+            last_err = exc
+            logger.warning(
+                "pg_connect_retry",
+                extra={"attempt": attempt + 1, "max_attempts": 3, "error": str(exc)},
+            )
+            if attempt < 2:
+                time.sleep(0.4 * (attempt + 1))
+    assert last_err is not None
+    raise last_err
 
 
 # =============================================================================

@@ -1,7 +1,10 @@
-# Deploy de la Lambda persist_event (src/cloud/persist_event.py).
+# Deploy de las Lambdas de cloud (src/cloud/*.py).
 #
 # Usage:
-#   .\scripts\deploy_lambda.ps1 [-Environment dev]
+#   .\scripts\deploy_lambda.ps1 [-Environment dev] [-Function persist_event|query_aggregates|ingest_pos_transaction]
+#
+# Default -Function persist_event (back-compat). Cada CFN update resetea las 3
+# Lambdas al ZipFile placeholder → hay que redeployar las tres con este script.
 #
 # Equivalente PowerShell de scripts/deploy_lambda.sh. Empaqueta el .py +
 # psycopg binary (target manylinux2014_x86_64, no Windows) en un zip y
@@ -14,7 +17,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$Environment = "dev"
+    [string]$Environment = "dev",
+    [ValidateSet("persist_event", "query_aggregates", "ingest_pos_transaction")]
+    [string]$Function = "persist_event"
 )
 
 function Fail($msg) {
@@ -22,9 +27,16 @@ function Fail($msg) {
     exit 1
 }
 
-$functionName = "people-counter-persist-event-$Environment"
+# Mapa función → (nombre del Lambda en AWS, source file). El handler de cada
+# Lambda es <modulo>.handler, así que el .py se empaqueta con su nombre original.
+$lambdaMap = @{
+    persist_event          = @{ Fn = "people-counter-persist-event-$Environment";   Src = "src\cloud\persist_event.py" }
+    query_aggregates       = @{ Fn = "people-counter-query-aggregates-$Environment"; Src = "src\cloud\query_aggregates.py" }
+    ingest_pos_transaction = @{ Fn = "people-counter-ingest-pos-$Environment";       Src = "src\cloud\ingest_pos_transaction.py" }
+}
+$functionName = $lambdaMap[$Function].Fn
 $repoRoot = (Resolve-Path "$PSScriptRoot\..").Path
-$srcFile = Join-Path $repoRoot "src\cloud\persist_event.py"
+$srcFile = Join-Path $repoRoot $lambdaMap[$Function].Src
 
 if (-not (Test-Path $srcFile)) {
     Fail "$srcFile not found"
@@ -34,8 +46,8 @@ $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "lambda-deploy-$([System.G
 New-Item -ItemType Directory -Path $tmpDir -ErrorAction Stop | Out-Null
 
 try {
-    Write-Host "Copying source -> $tmpDir"
-    Copy-Item $srcFile (Join-Path $tmpDir "persist_event.py") -ErrorAction Stop
+    Write-Host "Copying source ($Function) -> $tmpDir"
+    Copy-Item $srcFile (Join-Path $tmpDir (Split-Path $srcFile -Leaf)) -ErrorAction Stop
 
     # Detectar el binary de Python (py, python3, python — primero el que responda).
     $pythonExe = $null
