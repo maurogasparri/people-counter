@@ -28,6 +28,38 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/people-counter /var/log/people-counter /etc/people-counter /usr/src/people-counter
 PrivateTmp=true
 
+# --- Sandboxing extra (systemd-analyze security) ---
+# Capa adicional de aislamiento. Ninguna toca el hot-path: el servicio lee la
+# hora pero no la setea, no carga módulos en runtime (nexmon se carga en el
+# setup, no acá), no escribe /proc/sys ni cgroups, y corre como `pi` sin tocar
+# /home. NO se agregan SystemCallFilter ni MemoryDenyWriteExecute a propósito:
+# romperían Hailo/numpy/scapy (JIT + W^X + syscalls de raw socket).
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+# CRÍTICO: tiene que listar TODAS las familias que usan el proceso y sus
+# subprocesos. AF_UNIX = sd_notify + D-Bus de BlueZ (BLE); AF_INET/INET6 = MQTT
+# a AWS IoT + web viewer; AF_NETLINK = iw/ip (config de la interface WiFi);
+# AF_PACKET = scapy sniffeando los probe requests 802.11. Si falta una, el
+# probing WiFi/BLE se rompe en silencio → es el primer sospechoso si algo falla.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+
+# SMOKE-TEST EN LA PI tras aplicar (no asumir que anda sin verificar):
+#   1. systemctl daemon-reload && systemctl restart people-counter
+#   2. systemctl status people-counter         → active (running), sin restart loop
+#   3. systemd-analyze security people-counter  → exposure bajó (era ~6-7, debería dar ~3-4)
+#   4. journalctl -u people-counter -f          → READY=1, FPS normal, sin EPERM/EACCES
+#   5. Confirmar WiFi probing (wifi_probe_ok) + BLE (ble_scanner_ok) + MQTT connected
+#      en la telemetría — son lo que rompería RestrictAddressFamilies si faltara una familia.
+#   Si algo falla: comentar RestrictAddressFamilies primero (el más probable).
+
 # Resource accounting — habilita las métricas que expone systemd vía
 # `systemctl show people-counter --property=MemoryCurrent,MemoryPeak,CPUUsageNSec`
 # y `systemd-cgtop`. Costo ~0 (solo lectura de cgroup counters que ya existen).
