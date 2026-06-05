@@ -728,7 +728,7 @@ class Counter:
         # nunca tuvo evidencia de "entrar desde afuera" — no es una pasada
         # real, no emitir.
         if not snap.get("had_outside_pos"):
-            logger.debug(  # TRACKDBG [REVERT]
+            logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=no_outside_history net=%s",
                 snap.get("track_id"), net,
             )
@@ -741,7 +741,7 @@ class Counter:
         x_range = float(snap.get("visit_x_range", 0.0))
         y_range = float(snap.get("visit_y_range", 0.0))
         if max(x_range, y_range) < self.min_visit_range_for_death_emit:
-            logger.debug(  # TRACKDBG [REVERT]
+            logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=small_visit_range "
                 "x_range=%.0f y_range=%.0f net=%s",
                 snap.get("track_id"), x_range, y_range, net,
@@ -770,7 +770,7 @@ class Counter:
         if self.min_real_inside_frames > 0:
             real_frames = int(snap.get("real_inside_frames", 0))
             if real_frames < self.min_real_inside_frames:
-                logger.debug(  # TRACKDBG [REVERT]
+                logger.debug(
                     "TRACKDBG death_emit_skipped tid=%d reason=thin_evidence "
                     "real_inside_frames=%d threshold=%d net=%s",
                     snap.get("track_id"), real_frames,
@@ -789,7 +789,7 @@ class Counter:
             and snap_height_m is not None
             and snap_height_m < self.min_count_height_m
         ):
-            logger.debug(  # TRACKDBG [REVERT]
+            logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=short_height "
                 "height_m=%.2f threshold=%.2f net=%s",
                 snap.get("track_id"), snap_height_m,
@@ -806,7 +806,7 @@ class Counter:
             and snap_conf is not None
             and snap_conf < self.min_count_confidence
         ):
-            logger.debug(  # TRACKDBG [REVERT]
+            logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=lowconf_noheight "
                 "conf=%.2f threshold=%.2f net=%s",
                 snap.get("track_id"), snap_conf,
@@ -1022,7 +1022,7 @@ class Counter:
             # la entry-fresca se dispara ahí con misma información
             # geométrica (last_outside_pos sigue válido).
             if not is_real:
-                logger.debug(  # TRACKDBG [REVERT]
+                logger.debug(
                     "TRACKDBG entry_kalman_skipped tid=%d pos=(%.0f,%.0f)",
                     track.track_id, cx, cy,
                 )
@@ -1065,7 +1065,7 @@ class Counter:
             # Registrar el track_id para la métrica de stitching. Set: cada
             # ID que entró a la counting zone hoy se registra una sola vez (idempotent).
             self._seen_track_ids.add(track.track_id)
-            logger.debug(  # TRACKDBG [REVERT]
+            logger.debug(
                 "TRACKDBG entry tid=%d pos=(%.0f,%.0f) snap=(%.0f,%.0f) sides=%s is_real=%s",
                 track.track_id, cx, cy, snap_x, snap_y, sides, is_real,
             )
@@ -1133,7 +1133,7 @@ class Counter:
                         # CountEvent (no la posición de salida, que está
                         # fuera de la counting zone por definición).
                         meta["last_crossing_pos"] = (cx, cy)
-                        logger.debug(  # TRACKDBG [REVERT]
+                        logger.debug(
                             "TRACKDBG cross tid=%d line=%d new_side=%+d net=%+d pos=(%.0f,%.0f) label=%s",
                             track.track_id, i, new_side, net[i], cx, cy, label,
                         )
@@ -1199,7 +1199,7 @@ class Counter:
                 if verdict is not None:
                     label = verdict
             crossing_pos = meta.get("last_crossing_pos") or (cx, cy)
-            logger.debug(  # TRACKDBG [REVERT]
+            logger.debug(
                 "TRACKDBG exit tid=%d is_real=%s net=%s verdict=%s exit_pos=(%.0f,%.0f) real_inside_frames=%d",
                 track.track_id, is_real, net, label, cx, cy,
                 int(meta.get("real_inside_frames", 0)),
@@ -1254,7 +1254,7 @@ class Counter:
                 and not is_real
                 and not bool(meta.get("had_outside_pos", False))
             ):
-                logger.debug(  # TRACKDBG [REVERT]
+                logger.debug(
                     "TRACKDBG exit_kalman_skipped tid=%d "
                     "reason=no_outside_history net=%s",
                     track.track_id, net_snapshot,
@@ -1268,7 +1268,7 @@ class Counter:
             if label and self.min_real_inside_frames > 0:
                 real_frames = int(meta.get("real_inside_frames", 0))
                 if real_frames < self.min_real_inside_frames:
-                    logger.debug(  # TRACKDBG [REVERT]
+                    logger.debug(
                         "TRACKDBG exit_thin_evidence_skipped tid=%d "
                         "real_inside_frames=%d threshold=%d net=%s",
                         track.track_id, real_frames,
@@ -1288,7 +1288,7 @@ class Counter:
                     track_height_m is not None
                     and track_height_m < self.min_count_height_m
                 ):
-                    logger.debug(  # TRACKDBG [REVERT]
+                    logger.debug(
                         "TRACKDBG exit_short_height_skipped tid=%d "
                         "height_m=%.2f threshold=%.2f net=%s",
                         track.track_id, track_height_m,
@@ -1310,7 +1310,7 @@ class Counter:
                     and conf_median is not None
                     and conf_median < self.min_count_confidence
                 ):
-                    logger.debug(  # TRACKDBG [REVERT]
+                    logger.debug(
                         "TRACKDBG exit_lowconf_noheight_skipped tid=%d "
                         "conf=%.2f threshold=%.2f net=%s",
                         track.track_id, conf_median,
