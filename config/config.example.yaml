@@ -608,10 +608,10 @@ logging:
   file: /var/log/people-counter/app.log
 
 telemetry:
-  interval_seconds: 3600            # Cadencia de reporting de telemetría.
-                                    # 3600s (1h) es razonable para PoC. Bajar
-                                    # a 300s (5min) si necesitás ver tendencias
-                                    # finas o detectar thermal throttle rápido.
+  interval_seconds: 300             # Cadencia de reporting de telemetría.
+                                    # 300s (5min) da tendencias finas y detección
+                                    # rápida de thermal throttle. Subir a 3600s
+                                    # (1h) si querés minimizar tráfico/mensajes.
 
 status_led:
   enabled: true                     # LED RGB de status por GPIO.
