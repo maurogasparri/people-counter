@@ -5,30 +5,31 @@
 **Modelo de trabajo:** Claude Code escribe el código bajo dirección humana; el humano dirige, decide arquitectura y valida con hardware
 **Duración:** 12 sprints semanales
 **Esfuerzo total estimado:** 119.5 horas
+**Extensión post-PoC** (fuera de este plan): rollout de flota (OTA + HA cloud) — ver el anexo al final.
 
 ---
 
 ## Resumen de los 12 sprints
 
-| Sprint | Épica | Foco | Horas |
-|:---:|:---:|---|---:|
-| S1 | EP-00 | Análisis y diseño inicial | 7 |
-| S2 | EP-01 | Captura estéreo y servicios | 8 |
-| S3 | EP-02 | Calibración estéreo | 15 |
-| S4 | EP-03 | Profundidad y región de interés | 6 |
-| S5 | EP-04 | Detección neuronal de personas | 14 |
-| S6 | EP-05 | Seguimiento y conteo | 10 |
-| S7 | EP-06 | Captura WiFi y BLE | 11 |
-| S8 | EP-07 | Mensajería y telemetría | 7 |
-| S9 | EP-08 | Servicios cloud y APIs | 13 |
-| S10 | EP-09 | Visualización analítica | 9 |
-| S11 | EP-10 | Validación y documentación | 11.5 |
-| S12 | EP-11 | Cierre del prototipo | 8 |
+| Sprint | Foco | Horas |
+|:---:|---|---:|
+| S1 | Análisis y diseño inicial | 7 |
+| S2 | Captura estéreo y servicios | 8 |
+| S3 | Calibración estéreo | 15 |
+| S4 | Profundidad y región de interés | 6 |
+| S5 | Detección neuronal de personas | 14 |
+| S6 | Seguimiento y conteo | 10 |
+| S7 | Captura WiFi y BLE | 11 |
+| S8 | Mensajería y telemetría | 7 |
+| S9 | Servicios cloud y APIs | 13 |
+| S10 | Visualización analítica | 9 |
+| S11 | Validación y documentación | 11.5 |
+| S12 | Cierre del prototipo | 8 |
 | | | **Total** | **119.5** |
 
 ---
 
-## S1 — EP-00 Análisis y diseño inicial (7h)
+## S1 — Análisis y diseño inicial (7h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -38,7 +39,7 @@
 | Setup del repositorio con CI básica | 1 | `pyproject.toml`, configuración ruff/pytest, `.gitignore`, README inicial |
 | Estructura inicial del proyecto | 1 | `src/`, `tests/`, `docs/`, `scripts/`, `infra/`, `config/` con `__init__.py` |
 
-## S2 — EP-01 Captura estéreo y servicios (8h)
+## S2 — Captura estéreo y servicios (8h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -51,7 +52,7 @@
 | Setup script del dispositivo | 0.5 | `scripts/setup_device.sh` |
 | Validación end-to-end de la captura sobre HW | 1 | Frames raw guardados correctamente |
 
-## S3 — EP-02 Calibración estéreo (15h)
+## S3 — Calibración estéreo (15h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -65,7 +66,7 @@
 | Viewer navegable con gating | 1 | `src/web/viewer.py` |
 | Iteración con tablero físico hasta convergencia | 3 | Calibración válida con reproj < 1 px |
 
-## S4 — EP-03 Profundidad y región de interés (6h)
+## S4 — Profundidad y región de interés (6h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -74,7 +75,7 @@
 | Wizard diagnose_bracket (verificación mecánica) | 1 | `scripts/diagnose_bracket.py` |
 | Validación con escena real de laboratorio | 2 | Mapas de profundidad calibrados |
 
-## S5 — EP-04 Detección neuronal de personas (14h)
+## S5 — Detección neuronal de personas (14h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -90,7 +91,7 @@
 | Integración runtime del detector | 2 | `src/vision/detect.py`, `src/vision/best_frame.py` |
 | Bench del detector en hardware | 1 | `scripts/training/bench_detector.py`, throughput validado |
 
-## S6 — EP-05 Seguimiento y conteo (10h)
+## S6 — Seguimiento y conteo (10h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -104,7 +105,7 @@
 | Pruebas integrales del pipeline visual | 1.5 | Conteo correcto sobre baseline frames |
 | Live preview HTTP/MJPEG para validación operativa | 1 | `src/web/viewer.py` + `src/web/annotate.py` + tests. Composite L\|R\|disparidad servido vía MJPEG; overlay de tracks (bbox fijo cuadrado, trayectoria 30-frames, id, height), reconexión robusta al restart del pipeline, panel de stats (counts, hourly, exterior). Usado por el operador durante el piloto |
 
-## S7 — EP-06 Captura WiFi y BLE (11h)
+## S7 — Captura WiFi y BLE (11h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -118,7 +119,7 @@
 | Exportador anonimizado para auditoría | 0.5 | `scripts/export_anonymized.py` |
 | Validación en hardware con tráfico real | 1.5 | Stitching ratio dentro de rango esperado |
 
-## S8 — EP-07 Mensajería y telemetría (7h)
+## S8 — Mensajería y telemetría (7h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -129,7 +130,7 @@
 | Integración con pipeline (orquestación en main) | 1 | `main.py` con telemetría |
 | Tests E2E del flujo MQTT con simulación de desconexión | 1 | Reentrega validada |
 
-## S9 — EP-08 Servicios cloud y APIs (13h)
+## S9 — Servicios cloud y APIs (13h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -146,7 +147,7 @@
 | Deploy scripts (sh + ps1) | 0.5 | `scripts/deploy_lambda.sh`, `.ps1`, `infra/deploy.ps1` |
 | Política documentada de backups y DR | 0.5 | Sección en `docs/` |
 
-## S10 — EP-09 Visualización analítica (9h)
+## S10 — Visualización analítica (9h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -160,7 +161,7 @@
 | CloudWatch monitoring + dashboards básicos | 0.5 | Métricas y alarmas |
 | Integration tests de Lambda + bucket de eventos | 1 | `tests/cloud/test_persist_event.py` ampliado |
 
-## S11 — EP-10 Validación y documentación (11.5h)
+## S11 — Validación y documentación (11.5h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -179,7 +180,7 @@
 | **Procedimiento de migración de datos históricos** | **0.5** | **`scripts/migrate_historical.py` (loader CSV→staging batcheado) + `infra/sql/migrate_historical_rollups.example.sql` (transform staging→tablas base rollup_*). La doc del procedimiento vive como comentario-cabecera en ambos archivos.** |
 | **Hardening anti-FP durante piloto (sesión 2026-05-24)** | **6** | **9 commits sobre `src/tracking/counter.py`, `src/tracking/tracker.py`, `src/vision/pre_filter.py` (NEW), `src/web/annotate.py`, `src/web/viewer.py`, config, runbook, matrix. Incluye: rename `counter.roi → counting_zone`; expone 5 knobs del rescue cascade config-driven; nuevos guards `min_count_height_m` / `min_real_inside_frames` / `height_confidence_gate`; filtro pre-tracker `tracking_zone` con modos `polygon` / `frame_margin_px` / `auto_margin_px`; keepalive condicional a entry real (opción E); fix doble-conteo `last_outside_pos` stale; blur del preview fuera de tracking_zone; `/health` endpoint + auto-reload del MJPEG. 922 tests verde.** |
 
-## S12 — EP-11 Cierre del prototipo (8h)
+## S12 — Cierre del prototipo (8h)
 
 | Tarea | Horas | Artefactos |
 |---|---:|---|
@@ -190,6 +191,26 @@
 | Demo en video | 1.5 | Screencast del sistema completo |
 | Capturas de pantalla para el TFG | 0.5 | Imágenes para anexo |
 | Entregables finales del TFG | 1 | Documento final entregado |
+
+## Anexo — Extensión post-PoC: Rollout de flota (OTA + HA cloud) (~58h)
+
+**Fuera del plan original de 12 sprints.** Iniciativa post-PoC: lo que vuelve el
+sistema operable a escala sin visitas a sitio. Diseño completo de OTA en
+[`docs/ota_design.md`](ota_design.md). OTA = AWS IoT Jobs + S3 (presigned URL) +
+firma Ed25519 + swap atómico A/B con rollback automático + canario observado en ⑤ +
+ventana de horario cerrado.
+
+| Tarea | Horas | Artefactos |
+|---|---:|---|
+| Diseño OTA (decisiones de arquitectura) | ✅ | `docs/ota_design.md` |
+| Infra AWS: S3 bucket + IoT Jobs + thing-groups + firma | 8–12 | CFN ampliado |
+| Build/CI: empaquetar + firmar + subir + crear Job | 4–6 | `scripts/ota_publish.*` |
+| Agente de Jobs en el device (paho): lifecycle + download + verify | 12–18 | `src/ota/agent.py` |
+| Swap atómico A/B + ventana + preservación de estado | 8–12 | layout `/opt/people-counter/`, `setup_device.sh` |
+| Health-check + rollback automático | 6–10 | integrado con health monitor |
+| Versión en telemetría (`app_version`/`model_version`/`last_ota_status`) + panel skew en ⑤ | 2–3 | schema telemetry + tablero |
+| Testing: harness de fallas + E2E en HW (canario, update malo) | 10–18 | tests + validación en Pi |
+| HA cloud (backlog): RDS Multi-AZ + Route53 delegated + Managed Grafana | — | ver `CLAUDE.md` |
 
 ---
 
@@ -205,22 +226,22 @@
 - El **labeling de dataset** y la **escritura de documentación técnica** tampoco se aceleran
 - Las decisiones de arquitectura (Fargate vs ECS, RDS vs Aurora, las 3 reglas de stitching) requieren tiempo humano de análisis
 
-## Mapeo épica → US habilitadas
+## Mapeo sprint → US habilitadas
 
-| Épica | US habilitadas | US que cierra |
+| Sprint | US habilitadas | US que cierra |
 |---|---|---|
-| EP-00 Análisis | --- | --- |
-| EP-01 HW + captura | US-10 (datos) | --- |
-| EP-02 Calibración | US-01, US-05 (precondición) | --- |
-| EP-03 Profundidad | US-05 (precondición) | --- |
-| EP-04 Detección | US-05 (datos) | --- |
-| EP-05 Tracking | US-01, US-05 (datos) | --- |
-| EP-06 WiFi/BLE | US-04 (datos) | --- |
-| EP-07 Mensajería | US-10 (datos), US-11, US-12 | **US-11, US-12** |
-| EP-08 Cloud + APIs | US-01, US-03, US-06, US-07, US-10 (precondición), US-08, US-09 | **US-06** (T9.11 ingest POS), **US-08** (T9.8 acceso SQL readonly), **US-09** (T9.12 API REST de consulta) |
-| EP-09 Visualización | --- | **US-01, US-02, US-03, US-04, US-05, US-07, US-10** |
-| EP-10 PoC + docs | (validación cruzada de todas) | --- |
-| EP-11 Cierre | --- | --- |
+| S1 — Análisis | --- | --- |
+| S2 — HW + captura | US-10 (datos) | --- |
+| S3 — Calibración | US-01, US-05 (precondición) | --- |
+| S4 — Profundidad | US-05 (precondición) | --- |
+| S5 — Detección | US-05 (datos) | --- |
+| S6 — Tracking | US-01, US-05 (datos) | --- |
+| S7 — WiFi/BLE | US-04 (datos) | --- |
+| S8 — Mensajería | US-10 (datos), US-11, US-12 | **US-11, US-12** |
+| S9 — Cloud + APIs | US-01, US-03, US-06, US-07, US-10 (precondición), US-08, US-09 | **US-06** (T9.11 ingest POS), **US-08** (T9.8 acceso SQL readonly), **US-09** (T9.12 API REST de consulta) |
+| S10 — Visualización | --- | **US-01, US-02, US-03, US-04, US-05, US-07, US-10** |
+| S11 — PoC + docs | (validación cruzada de todas) | --- |
+| S12 — Cierre | --- | --- |
 
 ---
 
