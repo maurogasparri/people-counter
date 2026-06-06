@@ -77,15 +77,25 @@ cajas) para todas las iteraciones — comparable apples-to-apples.
 |---|---:|---:|---|---:|---:|---:|---:|---:|---|
 | **v1** | 294 | 133 | (baseline) | 0.805 | 0.385 | 0.785 | 0.764 | — | Primera iter manual. Validó la convención cabeza+hombros y el flow X-AnyLabeling end-to-end. Recall bajo (gap en estáticos y personas marginales). |
 | **v2** | 544 (+250 AL) | 438 (+305) | + 250 imgs informativas mineadas con active learning | **0.956** | **0.567** | **0.919** | **0.907** | **26.8** | **Deployado producción** desde 2026-05-20. Δ mAP50 +0.151 confirmó el ROI del AL. Confirmado "detecta de maravilla" en hardware. |
-| v3 | 794 (+250 AL) | ~580 | + 250 imgs vía 2da iter de active learning | 0.939 | 0.538 | 0.884 | 0.902 | — | **Descartado**. Δ mAP50 −0.017, Δ mAP50-95 −0.029, Δ precision −0.035 vs v2 — peor en TODO excepto recall (similar). Rendimientos decrecientes después de la 1ra iter de AL. Lección: no insistir cuando el AL ya capturó las ganancias informativas. |
+| v3 | 740 (+196 AL) | 450 (+12) | + 196 imgs vía 2da iter de AL — **186 fueron backgrounds, solo +12 cajas** | 0.939 | 0.538 | 0.884 | 0.902 | — | **Descartado**. Δ mAP50 −0.017, mAP50-95 −0.029, precision −0.035 vs v2 — peor en TODO salvo recall. **Causa real** (verificada contando el dataset `people-counter-yolo-v5`): la 2da ronda de AL surfaceó casi solo frames vacíos (bg 224→410) sin señal positiva nueva → diluyó el set con negativos. El AL ya había agotado los frames informativos en la 1ra ronda. |
 
-**Total labelado**: 245 (val) + 294 (train v1) + 250 (AL v2) + 250 (AL
-v3 descartado) = **1039 imgs propias** con convención cabeza+hombros.
+**Total labelado**: 245 (val) + 294 (train v1) + 250 (AL v2) + 196 (AL
+v3 descartado) = **985 imgs propias** con convención cabeza+hombros.
 
 **Tamaño efectivo en producción** (v2 deployed): **544 imgs train + 245
-val = 789 imgs**. Las 250 del v3 quedaron labeladas pero no aportaron
+val = 789 imgs**. Las 196 del v3 quedaron labeladas pero no aportaron
 al modelo final — costo hundido pero confirmó empíricamente el sweet
 spot con datos concretos (no intuición).
+
+**Composición del dataset (background negatives)**: incluye a propósito
+muchos frames **vacíos** (sin personas) como hard negatives para suprimir
+falsos positivos sobre clutter fijo (perchero, mostrador, vidriera) — de ahí
+que haya **menos cajas que imágenes**, normal en este dominio cenital de una
+sola entrada (no es una escena de multitud). Vacías por versión: v1 190/294
+(65%), v2 224/544 (41%), v3 410/740 (55%); las imágenes con personas
+promedian ~1.3 cajas (máx 3). El salto v2→v3 fue +186 backgrounds y solo +12
+cajas — la raíz de por qué la 2da ronda de AL no aportó. (Conteos exactos de
+los datasets reales `people-counter-yolo-v{3,4,5}` en Kaggle.)
 
 **Fuente de las métricas**: `results.csv` + eval final del notebook
 Kaggle (`m.val(split="test")` sobre el val held-out). Logs originales
@@ -102,11 +112,12 @@ en `debug/kaggle_kernel/output/people-counter-v{3,4,5}-train.log`
   con muestreo random. Mejor **diversidad estratificada** (por site +
   motion/bg) + **active learning** para iteraciones.
 - **Active learning > random sampling** para iteraciones — v1→v2
-  agregó 250 imgs informativas y subió mAP50 de 0.80 → 0.96 (+0.16);
-  v3 con otra ronda al azar no movió la aguja.
-- **Detectar el sweet spot** — v3 mostró rendimientos decrecientes;
-  saber cuándo parar de iterar es parte de la metodología, no
-  desperdicio de horas.
+  agregó 250 imgs informativas (+305 cajas) y subió mAP50 de 0.80 → 0.96
+  (+0.16). La 2da ronda (v3) agregó +196 imgs pero **186 eran backgrounds
+  (solo +12 cajas)**: el AL ya había agotado los frames con señal positiva.
+- **Detectar el sweet spot** — v3 regresó no por overfitting sino porque el
+  incremento fue casi todo negativos (bg 224→410) que diluyeron el set.
+  Saber cuándo parar de iterar es parte de la metodología, no desperdicio.
 
 ## Workflow de iteración (active learning)
 
