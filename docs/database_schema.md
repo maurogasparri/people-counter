@@ -2,8 +2,10 @@
 
 Modelo ER de las dos databases del sistema:
 
-1. **Postgres (RDS, cloud)** — 4 tablas raw + capa de rollup incremental + vistas derivadas
-2. **SQLite (device, local)** — 2 tablas para outbox MQTT y stitching state
+1. **Postgres (RDS, cloud)** — 4 tablas raw + 3 de dimensiones (`sites` /
+   `devices` / `holidays`) + capa de rollup incremental + vistas derivadas
+2. **SQLite (device, local)** — 3 tablas en 2 archivos (`messages` para el
+   outbox MQTT; `hash_groups` + `dedup_meta` para el stitching state)
 
 DDL fuente:
 - Postgres: [`infra/sql/bootstrap.sql`](../infra/sql/bootstrap.sql)
@@ -24,6 +26,11 @@ post-CASCADE) ya están consolidados en
 incrementales 2026-05-2x que los introdujeron se squashearon ahí (ver el
 header de bootstrap.sql).
 
+Revisión 2026-06-06: los diagramas ER se sincronizaron con el DDL canónico —
+`telemetry` ahora lista las ~30 columnas reales (incl. health del dashboard ⑤),
+se sumaron las dimensiones `sites`/`devices`/`holidays` con la FK `devices →
+sites`, y el diagrama SQLite incorpora `dedup_meta` (salt local).
+
 ---
 
 # Parte 1 — Postgres (RDS, cloud)
@@ -33,76 +40,134 @@ header de bootstrap.sql).
 ```mermaid
 erDiagram
     count_events {
-        uuid        event_id        PK
-        text        device_id       "indexado"
+        uuid        event_id        PK "gen_random_uuid()"
+        text        device_id       "indexado; infiere store_id"
         text        store_id        "join key principal"
-        timestamptz event_ts        "indexado"
+        timestamptz event_ts        "instante del cruce (indexado)"
         timestamptz bucket_15min    "GENERATED desde event_ts (server-side)"
         timestamptz bucket_hour     "GENERATED desde event_ts"
         date        bucket_day      "GENERATED desde event_ts"
         text        direction       "CHECK in_out"
-        int         track_id
-        real        confidence      "debug: investigar FPs"
-        real        height_m        "medicion cruda; categorizacion via SQL height_class()"
-        timestamptz received_at
+        int         track_id        "id del track (parte del UNIQUE de idempotencia)"
+        real        confidence      "score del detector; debug de FPs"
+        real        height_m        "medición cruda; categorización vía SQL height_class()"
+        timestamptz received_at     "ingreso a RDS (default now); watermark del rollup"
     }
 
     wifi_ble_events {
-        uuid        event_id        PK
-        text        device_id
+        uuid        event_id        PK "gen_random_uuid()"
+        text        device_id       "indexado; infiere store_id"
         text        store_id        "join key"
         bytea       visitor_hash    "16 bytes; group_id post-stitching local (opaco)"
         text        protocol        "CHECK wifi_ble"
-        int         rssi_max        "dBm crudo; categorizacion via SQL rssi_class()"
+        int         rssi_max        "dBm crudo; categorización vía SQL rssi_class()"
         timestamptz first_seen_ts   "MIN sobre miembros del group"
         timestamptz last_seen_ts    "MAX sobre miembros (puede caer en la ventana)"
-        timestamptz period_start    "inicio ventana de emision del device"
-        timestamptz period_end      "fin ventana de emision"
+        timestamptz period_start    "inicio ventana de emisión del device"
+        timestamptz period_end      "fin ventana de emisión"
         timestamptz bucket_15min    "GENERATED desde last_seen_ts (server-side)"
         timestamptz bucket_hour     "GENERATED desde last_seen_ts"
         date        bucket_day      "GENERATED desde last_seen_ts"
-        timestamptz received_at
+        timestamptz received_at     "ingreso a RDS (default now); watermark del rollup"
     }
 
     telemetry {
-        uuid        telemetry_id    PK
-        text        device_id
-        text        store_id
-        timestamptz event_ts        "cada 5min"
+        uuid        telemetry_id    PK "gen_random_uuid()"
+        text        device_id       "indexado"
+        text        store_id        "join key"
+        timestamptz event_ts        "muestra cada 5min"
         timestamptz bucket_hour     "GENERATED, telemetry no usa 15min ni day"
-        real        cpu_temp_c
-        real        hailo_temp_c
-        real        fps
+        real        uptime_s        "segundos desde el boot del proceso"
+        real        cpu_temp_c       "temperatura CPU (°C)"
+        real        hailo_temp_c     "temperatura del Hailo-8L (°C)"
+        int         disk_free_mb     "espacio libre en disco (MB)"
+        int         mem_available_mb "RAM disponible (MB)"
+        real        fps              "frames por segundo del pipeline"
+        real        frame_latency_p50_ms "latencia por frame p50 (ms)"
+        real        frame_latency_p95_ms "latencia por frame p95 (ms)"
+        real        detection_rate_per_min "detecciones por minuto"
+        int         tracker_confirmed_count "tracks CONFIRMED activos"
+        int         tracker_pending_count   "tracks PENDING activos"
+        int         total_in         "ingresos acumulados del día"
+        int         total_out        "egresos acumulados del día"
+        bool        mqtt_connected   "estado de conexión al broker"
+        int         mqtt_disconnect_count "desconexiones acumuladas"
+        real        seconds_since_last_reconnect "seg desde la última reconexión"
+        int         buffer_backlog_messages  "backlog del outbox SQLite (unsent)"
+        bool        wifi_probe_ok    "salud del probe WiFi"
+        bool        ble_scanner_ok   "salud del scanner BLE"
         real        wifi_ble_stitching_ratio "canary del stitching wifi/ble"
         real        track_stitching_ratio    "canary fragmentación del tracker"
-        int         ghost_adoption_count     "capa 1 rescue: ID adoptions"
         int         death_emit_count         "capa 3 rescue: death-emits firing"
-        timestamptz last_shadow_apply_ts     "canary Device Shadow: ultimo delta aplicado, NULL si nunca hubo push"
-        text        error
-        timestamptz received_at
+        int         ghost_adoption_count     "capa 1 rescue: ID adoptions"
+        timestamptz last_shadow_apply_ts     "canary Device Shadow: último delta aplicado, NULL si nunca hubo push"
+        text        error            "mando de error del payload (nullable)"
+        text        schedule_error_detail "detalle largo del error (nullable)"
+        timestamptz received_at      "ingreso a RDS (default now)"
     }
 
     pos_transactions {
-        uuid        pos_id          PK
+        uuid        pos_id          PK "gen_random_uuid()"
         text        transaction_id  "factura o batch_id del POS"
         text        store_id        "join key"
-        timestamptz event_ts        "indexado"
+        timestamptz event_ts        "instante de la transacción (indexado)"
         text        type            "CHECK sale_return"
-        int         items           "CHECK >= 0"
-        bigint      amount_minor    "CHECK >= 0, centavos"
+        int         items           "items vendidos/devueltos (CHECK >= 0)"
+        bigint      amount_minor    "monto en centavos (CHECK >= 0)"
         char        currency        "ISO 4217, default ARS"
         text        payment_method  "nullable o mixed para batches"
         timestamptz bucket_15min    "GENERATED server-side desde event_ts"
         timestamptz bucket_hour     "GENERATED"
         date        bucket_day      "GENERATED"
-        timestamptz received_at
+        timestamptz received_at     "ingreso a RDS (default now); watermark del rollup"
     }
 
+    sites {
+        text        store_id        PK "matchea store_id de los hechos"
+        text        store_name      "human-readable para dashboards"
+        float       latitude        "DOUBLE PRECISION, geomap"
+        float       longitude       "DOUBLE PRECISION, geomap"
+        text        timezone        "IANA; base del bucketing local"
+        text        address         "dirección (display)"
+        numeric     sales_area_m2   "superficie de venta → ventas/m2"
+        text        status          "CHECK operational/temp_closed/perm_closed"
+        timestamptz created_at      "alta del registro"
+        timestamptz updated_at      "última modificación"
+    }
+
+    devices {
+        text        device_id       PK "matchea device_id de los hechos"
+        text        store_id        FK "→ sites.store_id (ON UPDATE CASCADE)"
+        text        cam_label       "etiqueta de la cámara (ej. puerta principal)"
+        text        firmware_version "versión de firmware del device"
+        timestamptz installed_at    "fecha de instalación"
+        timestamptz created_at      "alta del registro"
+        timestamptz updated_at      "última modificación"
+    }
+
+    holidays {
+        date        holiday_date    PK "fecha del feriado"
+        text        name            "nombre del feriado"
+        text        tipo            "CHECK nacional/puente"
+    }
+
+    sites            ||--o{ devices          : "FK device → site (única FK del schema)"
+    sites            ||--o{ count_events     : "store_id (LEFT JOIN, sin FK)"
+    sites            ||--o{ wifi_ble_events  : "store_id (LEFT JOIN, sin FK)"
+    sites            ||--o{ pos_transactions : "store_id (LEFT JOIN, sin FK)"
+    sites            ||--o{ telemetry        : "store_id (LEFT JOIN, sin FK)"
     count_events     ||--o{ wifi_ble_events   : "store_id + bucket_15min (turn-in rate)"
     count_events     ||--o{ pos_transactions  : "store_id + bucket_15min (conversion rate)"
     count_events     ||--o{ telemetry         : "device_id (mismo device)"
     wifi_ble_events  ||--o{ telemetry         : "device_id (mismo device)"
 ```
+
+> **Nota sobre las relaciones**: la única **FK real** del schema es `devices →
+> sites`. El resto de las líneas (`sites`→hechos y los joins entre hechos) son
+> **convención de naming** (`store_id` / `device_id` / `bucket_15min` como
+> TEXT/TIMESTAMPTZ libres) — Grafana hace LEFT JOIN, sin constraint, para que la
+> Lambda no falle al escribir un hecho de un site aún no registrado (ver
+> [Modelo de joins](#modelo-de-joins)).
 
 ## Categorización server-side via funciones SQL
 
@@ -367,7 +432,7 @@ cargo del device: el buffer purga >72h, el dedup hace `reset_daily()`.
 ```mermaid
 erDiagram
     messages {
-        integer  id           PK
+        integer  id           PK "AUTOINCREMENT; orden cronológico implícito"
         text     topic         "counting | telemetry | wifi_ble"
         text     payload       "JSON blob completo del evento"
         real     created_at    "epoch seconds, para purge >72h"
@@ -385,11 +450,18 @@ erDiagram
         integer  seqnum        "WiFi 802.11 SC, nullable para BLE"
         text     fingerprint   "fingerprint estable (IEs WiFi / mfg-data BLE), regla 4"
     }
+
+    dedup_meta {
+        text     key           PK "nombre de la entrada (ej. slot del salt)"
+        text     value         "salt local del hashing (rotado en reset_daily) + metadata"
+    }
 ```
 
-**No hay relación entre las dos tablas** — viven en archivos sqlite distintos
-y tienen ciclos de vida distintos. Aparecen en el mismo diagrama solo por
-documentación.
+**No hay relación entre las tablas del diagrama** — `messages` vive en
+`mqtt_buffer.sqlite`; `hash_groups` y `dedup_meta` viven juntas en
+`wifi_ble_dedup.sqlite` (mismo archivo, pero sin FK entre sí: una es el state
+del stitching y la otra un key-value de metadata). Aparecen en el mismo
+diagrama solo por documentación.
 
 ## `messages` — outbox MQTT (`src/mqtt/buffer.py`)
 
@@ -455,14 +527,29 @@ cross-día no tiene sentido con MAC/RPA rotando igual.
 las marcas temporales fine-grained. Nunca se publica por MQTT — el publisher
 emite solo el count agregado de `DISTINCT group_id` (`passersby`, `shoppers`).
 
+## `dedup_meta` — metadata del dedup (`src/wifi_ble/dedup.py`)
+
+Key-value chico en `wifi_ble_dedup.sqlite`. Su uso crítico es persistir el
+**salt local** del hashing de MACs: estable durante la vida del DB (así el
+mismo MAC hashea igual y el stitching funciona) y **rotado en `reset_daily()`**
+junto con el wipe de `hash_groups`. Cachea el salt en memoria para no pegarle al
+DB en cada `process_detection`. Sin este salt at-rest una MAC cruda sería
+reversible por fuerza bruta del hash — ver la regla dura "nunca hash sin sal".
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `key` | TEXT PK | Nombre de la entrada (ej. el slot del salt) |
+| `value` | TEXT | Valor serializado |
+
 ## ¿Algo que limpiar acá?
 
-**No**. Ambos schemas son lean:
+**No**. Los tres schemas SQLite son lean:
 - `messages` tiene 5 columnas, todas usadas en el lifecycle
   enqueue → get_pending → mark_sent → purge_old.
 - `hash_groups` tiene 9 columnas, cada una sirve a una regla del stitching
   (seqnum, cross-protocol, BLE anchoring, fingerprint), a la clasificación
   passerby/shopper (`max_rssi`) o a la rotación diaria.
+- `dedup_meta` tiene 2 columnas (key-value) — el mínimo para persistir el salt.
 
 El cleanup del payload server-side (drop de scaling_factor, total_in, etc.)
 no afecta al SQLite local: `messages.payload` es JSON blob — los campos
