@@ -259,7 +259,6 @@ CREATE TABLE IF NOT EXISTS sites (
     latitude    DOUBLE PRECISION,
     longitude   DOUBLE PRECISION,
     timezone    TEXT NOT NULL DEFAULT 'UTC',              -- IANA, ej. 'America/Argentina/Buenos_Aires'. Base del bucketing local (multi-país).
-    address     TEXT,
     sales_area_m2 NUMERIC,                                 -- superficie de venta (m²) → métrica ventas/m²
     -- Lifecycle de la tienda (NO afecta ingesta — Lambdas/MQTT/RDS guardan igual;
     -- es solo un filtro de visualización). Grafana muestra SOLO 'operational'.
@@ -289,9 +288,9 @@ CREATE INDEX IF NOT EXISTS idx_devices_store ON devices (store_id);
 CREATE TABLE IF NOT EXISTS holidays (
     holiday_date DATE PRIMARY KEY,
     name         TEXT NOT NULL,
-    tipo         TEXT NOT NULL DEFAULT 'nacional' CHECK (tipo IN ('nacional', 'puente'))
+    type         TEXT NOT NULL DEFAULT 'nacional' CHECK (type IN ('nacional', 'puente'))
 );
-INSERT INTO holidays (holiday_date, name, tipo) VALUES
+INSERT INTO holidays (holiday_date, name, type) VALUES
     ('2026-01-01', 'Año Nuevo', 'nacional'),
     ('2026-02-16', 'Carnaval', 'nacional'),
     ('2026-02-17', 'Carnaval', 'nacional'),
@@ -311,7 +310,7 @@ INSERT INTO holidays (holiday_date, name, tipo) VALUES
     ('2026-12-07', 'Puente turístico', 'puente'),
     ('2026-12-08', 'Inmaculada Concepción de María', 'nacional'),
     ('2026-12-25', 'Navidad', 'nacional')
-    ON CONFLICT (holiday_date) DO UPDATE SET name = EXCLUDED.name, tipo = EXCLUDED.tipo;
+    ON CONFLICT (holiday_date) DO UPDATE SET name = EXCLUDED.name, type = EXCLUDED.type;
 
 -- Grafana consulta como master user (people_counter), que es owner → ya puede
 -- leer estas tablas. El seed de provisioning corre como master (mismo path que

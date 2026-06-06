@@ -207,14 +207,13 @@ def _seed_dimensions(args: argparse.Namespace) -> None:
             cur.execute(
                 """
                 INSERT INTO sites (store_id, store_name, latitude, longitude,
-                                   timezone, address, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, now())
+                                   timezone, updated_at)
+                VALUES (%s, %s, %s, %s, %s, now())
                 ON CONFLICT (store_id) DO UPDATE SET
                     store_name = EXCLUDED.store_name,
                     latitude   = COALESCE(EXCLUDED.latitude,  sites.latitude),
                     longitude  = COALESCE(EXCLUDED.longitude, sites.longitude),
                     timezone   = COALESCE(EXCLUDED.timezone,  sites.timezone),
-                    address    = COALESCE(EXCLUDED.address,   sites.address),
                     updated_at = now();
                 """,
                 (
@@ -223,7 +222,6 @@ def _seed_dimensions(args: argparse.Namespace) -> None:
                     args.latitude,
                     args.longitude,
                     args.timezone,
-                    args.address,
                 ),
             )
             cur.execute(
@@ -618,9 +616,6 @@ def main() -> None:
     p_create.add_argument(
         "--timezone", default=None,
         help="Timezone IANA del local, ej. America/Argentina/Buenos_Aires",
-    )
-    p_create.add_argument(
-        "--address", default=None, help="Dirección del local (opcional, sites)",
     )
     p_create.add_argument(
         "--cam-label", default=None,

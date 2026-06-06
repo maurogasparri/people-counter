@@ -395,13 +395,12 @@ def main() -> None:
 
             for (sid, name, lat, lon, _base, _cv, _ti, _dw, area_m2) in sites:
                 cur.execute(
-                    """INSERT INTO sites (store_id, store_name, latitude, longitude, timezone, address, sales_area_m2)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """INSERT INTO sites (store_id, store_name, latitude, longitude, timezone, sales_area_m2)
+                       VALUES (%s, %s, %s, %s, %s, %s)
                        ON CONFLICT (store_id) DO UPDATE SET store_name=EXCLUDED.store_name,
                          latitude=EXCLUDED.latitude, longitude=EXCLUDED.longitude,
                          sales_area_m2=EXCLUDED.sales_area_m2, updated_at=now()""",
-                    (sid, name, lat, lon, "America/Argentina/Buenos_Aires",
-                     f"{name} 1000, Argentina", area_m2),
+                    (sid, name, lat, lon, "America/Argentina/Buenos_Aires", area_m2),
                 )
                 cur.execute(
                     """INSERT INTO devices (device_id, store_id, cam_label, firmware_version, installed_at)

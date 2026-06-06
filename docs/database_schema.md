@@ -128,7 +128,6 @@ erDiagram
         float       latitude        "DOUBLE PRECISION, geomap"
         float       longitude       "DOUBLE PRECISION, geomap"
         text        timezone        "IANA; base del bucketing local"
-        text        address         "dirección (display)"
         numeric     sales_area_m2   "superficie de venta → ventas/m2"
         text        status          "CHECK operational/temp_closed/perm_closed"
         timestamptz created_at      "alta del registro"
@@ -148,7 +147,7 @@ erDiagram
     holidays {
         date        holiday_date    PK "fecha del feriado"
         text        name            "nombre del feriado"
-        text        tipo            "CHECK nacional/puente"
+        text        type            "CHECK nacional/puente"
     }
 
     sites            ||--o{ devices          : "FK device → site (única FK del schema)"
@@ -206,7 +205,7 @@ provisioning vía `scripts/provision.py` / `scripts/reset_dedup.py`... ver
 
 - **`sites`** (PK `store_id`): `store_name`, `latitude`/`longitude` (DOUBLE
   PRECISION, para el geomap de Grafana), `timezone` (IANA — base del bucketing
-  local de la capa de rollup, ver abajo), `address`, `sales_area_m2` (NUMERIC,
+  local de la capa de rollup, ver abajo), `sales_area_m2` (NUMERIC,
   superficie de venta en m² → métrica ventas/m²), `status` (TEXT con `CHECK IN
   ('operational', 'temp_closed', 'perm_closed')`, default `operational`; NO
   afecta la ingesta —es solo un filtro de visualización: Grafana muestra solo
@@ -215,7 +214,7 @@ provisioning vía `scripts/provision.py` / `scripts/reset_dedup.py`... ver
   `firmware_version`, `installed_at`.
 
 También hay una tabla de referencia **`holidays`** (PK `holiday_date`):
-`name`, `tipo` (`CHECK IN ('nacional', 'puente')`). No se dropea en el reset
+`name`, `type` (`CHECK IN ('nacional', 'puente')`). No se dropea en el reset
 (seedeada inline en `bootstrap.sql` con `ON CONFLICT DO UPDATE`). Grafana la
 pinta como annotations (líneas verticales) sobre las series temporales para
 contextualizar picos/valles.
