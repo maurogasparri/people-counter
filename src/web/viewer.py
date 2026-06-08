@@ -16,17 +16,31 @@ Diseñado para ser seguro en el hot path del runtime:
 Puerto default 80 porque el operador on-site no carga una lista de puertos
 custom. ``--web-viewer-port 0`` deshabilita el viewer entero.
 """
+
 from __future__ import annotations
 
+import hmac
 import json
 import logging
+import subprocess
 import threading
+import urllib.parse
 from collections import deque
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
 import cv2
 import numpy as np
+
+from src.web.admin_auth import (
+    ADMIN_SECRET_PATH,
+    MIN_PASSWORD_LEN,
+    read_secret,
+    session_token,
+    verify_password,
+    write_secret,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +120,23 @@ _HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
+  <style>
+    .adminbar{margin-top:10px;padding:8px 14px;background:var(--panel);
+      border:1px solid var(--line);border-radius:12px;}
+    .adm-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+    .adm-label{display:inline-flex;align-items:center;gap:6px;color:var(--muted);
+      font-size:12.5px;font-weight:600;margin-right:4px;}
+    .adminbar input{background:var(--panel2);border:1px solid var(--line);
+      color:var(--txt);border-radius:8px;padding:6px 9px;font-size:13px;min-width:120px;}
+    .abtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+      line-height:1;border:1px solid var(--line);background:var(--panel2);
+      color:var(--txt);border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;}
+    .ic{font-size:14px;line-height:1;}
+    .abtn:hover{border-color:var(--accent);}
+    .abtn.warn{border-color:var(--out);color:var(--out);}
+    .abtn.danger{border-color:#ff5d5d;color:#ff5d5d;}
+    .abtn.ghost{color:var(--muted);}
+  </style>
   <div class='wrap'>
     <header>
       <div class='brand'><span class='dot'></span> People Counter</div>
@@ -114,6 +145,27 @@ _HTML = """<!DOCTYPE html>
         <div class='dev' id='device'>—</div>
       </div>
     </header>
+    <div class='adminbar' id='adminbar' style='display:none'>
+      <form id='loginForm' class='adm-row'>
+        <span class='adm-label'><span class='ic'>🔒</span>Admin</span>
+        <input type='password' id='admpw' placeholder='Contraseña' autocomplete='current-password'>
+        <button type='submit' class='abtn'>Entrar</button>
+      </form>
+      <div id='powerPanel' class='adm-row' style='display:none'>
+        <span class='adm-label'><span class='ic'>🔓</span>Admin</span>
+        <button id='btnReboot' class='abtn warn'><span class='ic'>⟳</span>Reiniciar</button>
+        <button id='btnShutdown' class='abtn danger'><span class='ic'>⏻</span>Apagar</button>
+        <button id='btnChangePw' class='abtn'>Cambiar contraseña</button>
+        <button id='btnLogout' class='abtn ghost'>Salir</button>
+      </div>
+      <form id='changePwForm' class='adm-row' style='display:none'>
+        <input type='password' id='curpw' placeholder='Actual' autocomplete='current-password'>
+        <input type='password' id='newpw' placeholder='Nueva (mín 8)' autocomplete='new-password'>
+        <input type='password' id='newpw2' placeholder='Repetir' autocomplete='new-password'>
+        <button type='submit' class='abtn'>Guardar</button>
+        <button type='button' id='btnCancelPw' class='abtn ghost'>Cancelar</button>
+      </form>
+    </div>
     <div class='meta'>
       <span>Horario <b id='hours'>—</b></span>
       <span style='margin-left:auto'><b id='clock'>—</b></span>
@@ -294,6 +346,57 @@ _HTML = """<!DOCTYPE html>
       }catch(e){_statsOk=false;}
     }
     setInterval(tick,1000);tick();
+
+    // ----- Panel admin: login + power + cambio de contraseña -----
+    async function refreshAuth(){
+      try{
+        const a=await (await fetch('/auth/status',{cache:'no-store'})).json();
+        if(!a.power_enabled){$('adminbar').style.display='none';return;}
+        $('adminbar').style.display='block';
+        $('loginForm').style.display=a.authed?'none':'flex';
+        $('powerPanel').style.display=a.authed?'flex':'none';
+        $('changePwForm').style.display='none';
+      }catch(e){}
+    }
+    $('loginForm').addEventListener('submit',async ev=>{
+      ev.preventDefault();
+      const r=await fetch('/login',{method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'password='+encodeURIComponent($('admpw').value)});
+      $('admpw').value='';
+      if(r.ok){refreshAuth();}else{alert('Contraseña incorrecta');}
+    });
+    $('btnLogout').addEventListener('click',async()=>{
+      await fetch('/logout',{method:'POST'});refreshAuth();
+    });
+    async function powerAction(path,verbo){
+      if(!confirm('¿Seguro que querés '+verbo+' el dispositivo? Va a quedar fuera de línea.'))return;
+      const r=await fetch(path,{method:'POST'});
+      if(r.status===403){alert('Sesión expirada — volvé a entrar.');refreshAuth();return;}
+      if(r.ok){alert('Listo: '+verbo+' iniciado. El dispositivo se desconecta en unos segundos.');}
+      else{alert('No se pudo ('+r.status+').');}
+    }
+    $('btnReboot').addEventListener('click',()=>powerAction('/reboot','reiniciar'));
+    $('btnShutdown').addEventListener('click',()=>powerAction('/shutdown','apagar'));
+    $('btnChangePw').addEventListener('click',()=>{
+      $('powerPanel').style.display='none';$('changePwForm').style.display='flex';
+    });
+    $('btnCancelPw').addEventListener('click',()=>{
+      $('curpw').value=$('newpw').value=$('newpw2').value='';refreshAuth();
+    });
+    $('changePwForm').addEventListener('submit',async ev=>{
+      ev.preventDefault();
+      if($('newpw').value!==$('newpw2').value){alert('La nueva no coincide.');return;}
+      const r=await fetch('/change-password',{method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'current='+encodeURIComponent($('curpw').value)+
+             '&new='+encodeURIComponent($('newpw').value)});
+      const j=await r.json().catch(()=>({}));
+      $('curpw').value=$('newpw').value=$('newpw2').value='';
+      if(r.ok){alert('Contraseña actualizada.');refreshAuth();}
+      else{alert('No se pudo: '+(j.error||r.status));}
+    });
+    refreshAuth();
   </script>
 </body>
 </html>
@@ -324,9 +427,13 @@ class WebViewer:
         host: str = "0.0.0.0",
         jpeg_quality: int = 55,
         queue_size: int = 4,
+        secret_path: str = ADMIN_SECRET_PATH,
     ) -> None:
         self.port = port
         self.host = host
+        # Path del hash de la contraseña admin. Si el archivo existe, los
+        # controles de power (Reiniciar/Apagar) se habilitan; si no, no aparecen.
+        self._secret_path = secret_path
         self.jpeg_quality = int(jpeg_quality)
         # Queue de input al encoder. Semántica drop-oldest enforced en ``push``.
         self._encode_queue: deque[np.ndarray] = deque(maxlen=queue_size)
@@ -338,8 +445,11 @@ class WebViewer:
         self._latest_cond = threading.Condition()
         # Stats publicados por /stats.
         self._stats: dict[str, Any] = {
-            "total_in": 0, "total_out": 0, "fps": 0.0,
-            "tracks": 0, "dets": 0,
+            "total_in": 0,
+            "total_out": 0,
+            "fps": 0.0,
+            "tracks": 0,
+            "dets": 0,
         }
         self._stats_lock = threading.Lock()
         self._server: Optional[_ReusableServer] = None
@@ -396,13 +506,16 @@ class WebViewer:
         handler_cls = _build_handler(self)
         try:
             self._server = _ReusableServer(
-                (self.host, self.port), handler_cls,
+                (self.host, self.port),
+                handler_cls,
             )
         except (OSError, PermissionError) as e:
             logger.warning(
                 "WebViewer bind to %s:%d failed (%s) - viewer disabled, "
                 "pipeline continues.",
-                self.host, self.port, e,
+                self.host,
+                self.port,
+                e,
             )
             self._server = None
             return False
@@ -410,16 +523,20 @@ class WebViewer:
         self._stop_evt.clear()
         self._server_thread = threading.Thread(
             target=self._server.serve_forever,
-            name="web-viewer-http", daemon=True,
+            name="web-viewer-http",
+            daemon=True,
         )
         self._server_thread.start()
         self._encode_thread = threading.Thread(
             target=self._encode_loop,
-            name="web-viewer-encode", daemon=True,
+            name="web-viewer-encode",
+            daemon=True,
         )
         self._encode_thread.start()
         logger.info(
-            "WebViewer listening on http://%s:%d/", self.host, self.port,
+            "WebViewer listening on http://%s:%d/",
+            self.host,
+            self.port,
         )
         return True
 
@@ -455,7 +572,9 @@ class WebViewer:
             self._stats.update(stats)
 
     def push(
-        self, frame_bgr: np.ndarray, stats: Optional[dict] = None,
+        self,
+        frame_bgr: np.ndarray,
+        stats: Optional[dict] = None,
     ) -> None:
         """Encola un frame para encode JPEG. No bloqueante.
 
@@ -490,7 +609,8 @@ class WebViewer:
                     self._encode_queue.clear()
                 try:
                     ok, buf = cv2.imencode(
-                        ".jpg", frame,
+                        ".jpg",
+                        frame,
                         [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
                     )
                 except Exception:
@@ -504,7 +624,9 @@ class WebViewer:
                     self._latest_cond.notify_all()
 
     def _wait_next_jpeg(
-        self, last_seen: int, timeout: float = 5.0,
+        self,
+        last_seen: int,
+        timeout: float = 5.0,
     ) -> tuple[Optional[bytes], int]:
         with self._latest_cond:
             if self._latest_id == last_seen and not self._stop_evt.is_set():
@@ -514,6 +636,63 @@ class WebViewer:
     def _stats_json(self) -> bytes:
         with self._stats_lock:
             return json.dumps(self._stats).encode()
+
+    # --------------------------------------------------------- admin / power
+    def _power_enabled(self) -> bool:
+        """True si hay contraseña admin seteada (habilita Reiniciar/Apagar)."""
+        return read_secret(self._secret_path) is not None
+
+    def _check_password(self, password: str) -> bool:
+        return verify_password(password, read_secret(self._secret_path))
+
+    def _session_token(self) -> Optional[str]:
+        stored = read_secret(self._secret_path)
+        return session_token(stored) if stored else None
+
+    def _is_authed(self, cookie_header: Optional[str]) -> bool:
+        token = self._session_token()
+        if not token or not cookie_header:
+            return False
+        try:
+            jar = SimpleCookie()
+            jar.load(cookie_header)
+            morsel = jar.get("pc_session")
+        except Exception:
+            return False
+        return morsel is not None and hmac.compare_digest(morsel.value, token)
+
+    def _change_password(self, current: str, new: str) -> tuple[bool, str]:
+        """(ok, mensaje). Valida la actual + política de la nueva, escribe el hash."""
+        if not self._check_password(current):
+            return False, "contraseña actual incorrecta"
+        if len(new) < MIN_PASSWORD_LEN:
+            return False, f"mínimo {MIN_PASSWORD_LEN} caracteres"
+        try:
+            write_secret(new, self._secret_path)
+        except OSError as e:
+            logger.exception("admin_password_write_failed")
+            return False, f"no se pudo guardar: {e}"
+        logger.warning("admin_password_changed")
+        return True, "ok"
+
+    def _trigger_power(self, action: str) -> bool:
+        """Dispara reboot/poweroff vía systemd-logind. NO usa sudo: el request
+        va a PID1 (ya root) → compatible con NoNewPrivileges. Requiere la regla
+        polkit que autoriza a pi (config/polkit/10-people-counter-power.rules)."""
+        cmd = {"reboot": "reboot", "shutdown": "poweroff"}.get(action)
+        if cmd is None:
+            return False
+        try:
+            subprocess.Popen(
+                ["systemctl", cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            logger.warning("power_action_triggered action=%s", cmd)
+            return True
+        except Exception:
+            logger.exception("power_action_failed action=%s", action)
+            return False
 
 
 def _build_handler(viewer: WebViewer):
@@ -569,6 +748,106 @@ def _build_handler(viewer: WebViewer):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
+            if path == "/auth/status":
+                self._send_json(
+                    200,
+                    {
+                        "power_enabled": viewer._power_enabled(),
+                        "authed": viewer._is_authed(self.headers.get("Cookie")),
+                    },
+                )
+                return
+            self.send_error(404)
+
+        # --------------------------------------------------------- helpers
+        def _send_json(
+            self, code: int, obj: dict, cookie: Optional[str] = None
+        ) -> None:
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            if cookie is not None:
+                self.send_header("Set-Cookie", cookie)
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def _read_form(self) -> dict:
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                n = 0
+            raw = self.rfile.read(n).decode("utf-8", "replace") if n > 0 else ""
+            return {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+
+            if path == "/login":
+                if not viewer._power_enabled():
+                    self._send_json(404, {"error": "disabled"})
+                    return
+                pw = self._read_form().get("password", "")
+                if viewer._check_password(pw):
+                    cookie = (
+                        f"pc_session={viewer._session_token()}; HttpOnly; Path=/; "
+                        "SameSite=Strict; Max-Age=86400"
+                    )
+                    self._send_json(200, {"ok": True}, cookie=cookie)
+                else:
+                    self._send_json(401, {"error": "contraseña incorrecta"})
+                return
+
+            if path == "/logout":
+                self._send_json(
+                    200,
+                    {"ok": True},
+                    cookie="pc_session=; HttpOnly; Path=/; Max-Age=0",
+                )
+                return
+
+            if path == "/change-password":
+                if not viewer._is_authed(self.headers.get("Cookie")):
+                    self._send_json(403, {"error": "auth required"})
+                    return
+                form = self._read_form()
+                ok, msg = viewer._change_password(
+                    form.get("current", ""), form.get("new", "")
+                )
+                if ok:
+                    # El token cambió (deriva del hash) → re-emitir cookie así la
+                    # sesión actual sigue válida sin re-login.
+                    cookie = (
+                        f"pc_session={viewer._session_token()}; HttpOnly; Path=/; "
+                        "SameSite=Strict; Max-Age=86400"
+                    )
+                    self._send_json(200, {"ok": True}, cookie=cookie)
+                else:
+                    self._send_json(400, {"error": msg})
+                return
+
+            if path in ("/reboot", "/shutdown"):
+                if not viewer._power_enabled():
+                    self._send_json(404, {"error": "disabled"})
+                    return
+                if not viewer._is_authed(self.headers.get("Cookie")):
+                    self._send_json(403, {"error": "auth required"})
+                    return
+                action = "reboot" if path == "/reboot" else "shutdown"
+                # Responder ANTES de disparar para que el browser reciba el 200
+                # (después de esto el device se va a desconectar).
+                self._send_json(200, {"ok": True, "action": action})
+                try:
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                viewer._trigger_power(action)
+                return
+
             self.send_error(404)
 
         def _stream_mjpeg(self) -> None:
@@ -592,9 +871,7 @@ def _build_handler(viewer: WebViewer):
                         continue
                     self.wfile.write(b"--frame\r\n")
                     self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                    self.wfile.write(
-                        f"Content-Length: {len(jpeg)}\r\n\r\n".encode()
-                    )
+                    self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode())
                     self.wfile.write(jpeg)
                     self.wfile.write(b"\r\n")
             except (BrokenPipeError, ConnectionResetError):

@@ -1,18 +1,40 @@
 """Smoke tests para src/web/viewer.py."""
+
 from __future__ import annotations
 
+import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import numpy as np
 import pytest
 
+from src.web.admin_auth import write_secret
 from src.web.viewer import WebViewer
+
+
+def _post(url, data=None, cookie=None, timeout=2):
+    body = urllib.parse.urlencode(data).encode() if data else b""
+    req = urllib.request.Request(url, data=body, method="POST")
+    if data:
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    if cookie:
+        req.add_header("Cookie", cookie)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _get(url, cookie=None, timeout=2):
+    req = urllib.request.Request(url)
+    if cookie:
+        req.add_header("Cookie", cookie)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def _free_port() -> int:
     import socket as _s
+
     with _s.socket(_s.AF_INET, _s.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -54,6 +76,7 @@ def test_index_and_stats_endpoints():
         with urllib.request.urlopen(f"{url}/stats", timeout=2) as r:
             assert r.status == 200
             import json
+
             payload = json.loads(r.read())
             assert "total_in" in payload
             assert "total_out" in payload
@@ -75,14 +98,21 @@ def test_push_updates_stats():
     assert viewer.start() is True
     try:
         frame = np.zeros((100, 200, 3), dtype=np.uint8)
-        viewer.push(frame, {
-            "total_in": 5, "total_out": 3, "fps": 12.5,
-            "tracks": 2, "dets": 4,
-        })
+        viewer.push(
+            frame,
+            {
+                "total_in": 5,
+                "total_out": 3,
+                "fps": 12.5,
+                "tracks": 2,
+                "dets": 4,
+            },
+        )
         # Give the encoder a moment.
         time.sleep(0.2)
         url = f"http://127.0.0.1:{viewer.port}/stats"
         import json
+
         with urllib.request.urlopen(url, timeout=2) as r:
             payload = json.loads(r.read())
         assert payload["total_in"] == 5
@@ -127,6 +157,93 @@ def test_has_subscribers_false_before_start():
     assert viewer.has_subscribers() is False
 
 
+# ---------------------------------------------------------------------------
+# Panel admin: login + power + cambio de contraseña
+# ---------------------------------------------------------------------------
+
+
+def test_power_controls_disabled_without_secret(tmp_path):
+    viewer = WebViewer(
+        port=_free_port(), host="127.0.0.1", secret_path=str(tmp_path / "no.secret")
+    )
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        with _get(f"{url}/auth/status") as r:
+            assert json.loads(r.read())["power_enabled"] is False
+        # /reboot deshabilitado sin secret → 404
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{url}/reboot")
+        assert exc.value.code == 404
+    finally:
+        viewer.stop()
+
+
+def test_login_and_power_flow(tmp_path):
+    secret = str(tmp_path / "admin.secret")
+    write_secret("test-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+    triggered = []
+    viewer._trigger_power = lambda action: (triggered.append(action) or True)
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        with _get(f"{url}/auth/status") as r:
+            st = json.loads(r.read())
+        assert st["power_enabled"] is True and st["authed"] is False
+        # sin cookie → 403
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{url}/reboot")
+        assert exc.value.code == 403
+        # contraseña mal → 401
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(f"{url}/login", {"password": "wrong"})
+        assert exc.value.code == 401
+        # login bien → 200 + cookie
+        with _post(f"{url}/login", {"password": "test-password-1"}) as r:
+            assert r.status == 200
+            cookie = r.headers.get("Set-Cookie").split(";", 1)[0]
+        assert "pc_session=" in cookie
+        with _get(f"{url}/auth/status", cookie=cookie) as r:
+            assert json.loads(r.read())["authed"] is True
+        # /reboot con cookie → 200 y dispara la acción
+        with _post(f"{url}/reboot", cookie=cookie) as r:
+            assert r.status == 200
+        assert triggered == ["reboot"]
+    finally:
+        viewer.stop()
+
+
+def test_change_password_flow(tmp_path):
+    secret = str(tmp_path / "admin.secret")
+    write_secret("old-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        with _post(f"{url}/login", {"password": "old-password-1"}) as r:
+            cookie = r.headers.get("Set-Cookie").split(";", 1)[0]
+        # actual incorrecta → 400
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(
+                f"{url}/change-password",
+                {"current": "nope", "new": "new-password-2"},
+                cookie=cookie,
+            )
+        assert exc.value.code == 400
+        # cambio OK → 200; la nueva contraseña loguea
+        with _post(
+            f"{url}/change-password",
+            {"current": "old-password-1", "new": "new-password-2"},
+            cookie=cookie,
+        ) as r:
+            assert r.status == 200
+        with _post(f"{url}/login", {"password": "new-password-2"}) as r:
+            assert r.status == 200
+    finally:
+        viewer.stop()
+
+
 def test_has_subscribers_tracks_attach_detach():
     """Conectar/desconectar a /stream incrementa/decrementa el contador.
     Verificado vía las primitivas internas ``_subscriber_attach`` /
@@ -160,12 +277,18 @@ def test_update_stats_works_without_subscribers():
     viewer = WebViewer(port=_free_port(), host="127.0.0.1")
     assert viewer.start() is True
     try:
-        viewer.update_stats({
-            "total_in": 7, "total_out": 4, "fps": 13.1,
-            "tracks": 1, "dets": 2,
-        })
+        viewer.update_stats(
+            {
+                "total_in": 7,
+                "total_out": 4,
+                "fps": 13.1,
+                "tracks": 1,
+                "dets": 2,
+            }
+        )
         url = f"http://127.0.0.1:{viewer.port}/stats"
         import json
+
         with urllib.request.urlopen(url, timeout=2) as r:
             payload = json.loads(r.read())
         assert payload["total_in"] == 7

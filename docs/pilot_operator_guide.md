@@ -362,6 +362,37 @@ En los primeros 30 segundos deberías ver:
 Ctrl+C cuando lo veas estable. Si aparecen `ERROR` o `exception` repetidos,
 ir a sección 5.
 
+### 3.7. Panel admin del viewer (Reiniciar / Apagar)
+
+El viewer en vivo (la IP del dispositivo en el navegador) tiene un panel
+**Admin** opcional con botones **Reiniciar** y **Apagar** — útil para reciclar
+o apagar el device sin SSH ni tocar el cableado. Está **deshabilitado hasta que
+le pongas una contraseña**.
+
+Setearla una vez, en la instalación, **como `pi` (NO con sudo)**:
+
+```bash
+cd /usr/src/people-counter
+PYTHONPATH=. python3 scripts/set_admin_password.py
+# pide la contraseña por teclado (mínimo 8 caracteres)
+```
+
+Con eso aparece la barra **Admin** en el viewer: el operador entra una vez con
+la contraseña (queda una cookie de sesión) y los botones quedan a un click. El
+botón **Cambiar contraseña** permite rotarla desde la misma UI.
+
+> **Cómo funciona (sin sudo)**: el servicio corre con `NoNewPrivileges`, así que
+> `sudo` no aplica. Los botones usan `systemctl reboot`/`poweroff`, autorizados
+> al usuario `pi` por una regla polkit (`config/polkit/10-people-counter-power.rules`,
+> la instala `setup_device.sh`). La contraseña se guarda **hasheada** (pbkdf2)
+> en `/etc/people-counter/admin.secret` (modo 600), nunca en claro.
+>
+> **Seguridad**: el viewer es HTTP en la LAN (sin TLS) — el login y la cookie
+> viajan por la red del local. Es aceptable en una red de tienda confiable por
+> Ethernet, pero **el WiFi es solo para probing**, así que mantené el viewer en
+> la VLAN cableada. Sin contraseña seteada, los botones no existen y los
+> endpoints rechazan (no hay control de power expuesto por default).
+
 ---
 
 ## 4. Verificación post-instalación (primeros 30 minutos)

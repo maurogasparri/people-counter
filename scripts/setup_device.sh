@@ -116,6 +116,13 @@ info "  Deploying sysctl drop-in (vm.swappiness=10 + dirty page caps)"
 cp "$REPO_DIR/config/sysctl-people-counter.conf" /etc/sysctl.d/99-people-counter.conf
 sysctl --system 2>/dev/null | grep -E "swappiness|dirty" || true
 
+# Regla polkit: autoriza a `pi` a reboot/poweroff vía logind (botones del
+# viewer). El servicio corre con NoNewPrivileges → sudo no sirve; los botones
+# usan `systemctl reboot|poweroff`, que polkit consulta contra esta regla.
+info "  Deploying polkit rule (pi → reboot/poweroff via logind)"
+cp "$REPO_DIR/config/polkit/10-people-counter-power.rules" /etc/polkit-1/rules.d/10-people-counter-power.rules
+systemctl restart polkit 2>/dev/null || warn "    (no se pudo reiniciar polkit; toma efecto al próximo boot)"
+
 # Audio stack innecesario. Pipewire + wireplumber + pipewire-pulse arrancan
 # por default con la sesión del usuario `pi` (autostart como user units).
 # El sistema NO usa audio (RGB LED es GPIO directo); ocupan ~30 MB sostenido

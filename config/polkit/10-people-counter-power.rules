@@ -1,0 +1,19 @@
+// Autoriza al usuario del servicio (pi) a reiniciar / apagar el device vía
+// systemd-logind, sin sudo y sin sesión activa. Lo necesitan los botones
+// Reiniciar / Apagar del viewer: el servicio corre con NoNewPrivileges=true,
+// así que sudo está bloqueado; el camino es `systemctl reboot|poweroff`, que
+// manda el request a logind (PID1, ya root) — esta regla es la que polkit
+// consulta para permitirlo.
+//
+// Instalar en /etc/polkit-1/rules.d/ (lo hace scripts/setup_device.sh).
+// Solo cubre reboot/power-off; no otorga ningún otro privilegio.
+
+polkit.addRule(function(action, subject) {
+    if (subject.user == "pi" && (
+            action.id == "org.freedesktop.login1.reboot" ||
+            action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+            action.id == "org.freedesktop.login1.power-off" ||
+            action.id == "org.freedesktop.login1.power-off-multiple-sessions")) {
+        return polkit.Result.YES;
+    }
+});
