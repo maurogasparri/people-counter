@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 # calibración previa.
 CANONICAL_RAW_SIZE = (2304, 1296)
 
+# Capturas consecutivas sin que avance el SensorTimestamp de una cámara antes
+# de marcarla como caída. ~10 ≈ 0.3-0.4s a 25-30fps: un duplicado aislado (raro)
+# no la marca, una cámara congelada / cable CSI muerto sí.
+CAMERA_STALL_THRESHOLD = 10
+
+
+def _next_stall(ts: int, last_ts: int, stall: int) -> int:
+    """Contador de stall del SensorTimestamp por cámara. ts==0 (libcamera sin
+    SensorTimestamp) no es evaluable → resetea (no marca falla espuria)."""
+    if ts == 0:
+        return 0
+    return stall + 1 if ts == last_ts else 0
+
 
 class StereoCapture:
     """Maneja la captura simultánea desde las cámaras CSI izquierda y derecha vía picamera2."""
@@ -112,13 +125,19 @@ class StereoCapture:
         self.async_capture = bool(async_capture)
         self._stream_thread: Optional[threading.Thread] = None
         self._stream_stop = threading.Event()
-        self._slot_ready = threading.Event()      # thread -> consumidor: par listo
-        self._slot_consumed = threading.Event()   # consumidor -> thread: backpressure
+        self._slot_ready = threading.Event()  # thread -> consumidor: par listo
+        self._slot_consumed = threading.Event()  # consumidor -> thread: backpressure
         self._stream_lock = threading.Lock()
         self._stream_slot: Optional[
             tuple[np.ndarray, np.ndarray, int, int, Optional[float], Optional[float]]
         ] = None
         self._stream_error: Optional[str] = None
+        # Health por cámara: stall del SensorTimestamp (no avanza = cámara
+        # congelada/muerta). Lo escribe el stream loop, lo lee la telemetría.
+        self._cam_l_last_ts = 0
+        self._cam_r_last_ts = 0
+        self._cam_l_stall = 0
+        self._cam_r_stall = 0
 
     def open(self) -> None:
         """Abre ambos streams de cámara vía picamera2.
@@ -130,8 +149,7 @@ class StereoCapture:
             from picamera2 import Picamera2
         except ImportError:
             raise RuntimeError(
-                "picamera2 no instalado. "
-                "Instalar con: pip install picamera2"
+                "picamera2 no instalado. " "Instalar con: pip install picamera2"
             )
 
         try:
@@ -171,6 +189,7 @@ class StereoCapture:
         if self.meter_mode != "matrix":
             try:
                 from libcamera import controls as _libcam_controls
+
                 meter_map = {
                     "centre": _libcam_controls.AeMeteringModeEnum.CentreWeighted,
                     "spot": _libcam_controls.AeMeteringModeEnum.Spot,
@@ -197,6 +216,7 @@ class StereoCapture:
         # AE independiente entre L/R durante la sesión.
         if self.lock_ae:
             import time as _time
+
             _time.sleep(self.initial_settle_seconds)
             self._lock_ae_to_current_metadata(event="initial")
 
@@ -228,13 +248,15 @@ class StereoCapture:
             (self._cam_right, "right"),
         ]:
             metadata = cam.capture_metadata()
-            cam.set_controls({
-                "AeEnable": False,
-                "AwbEnable": False,
-                "ExposureTime": metadata.get("ExposureTime", 30000),
-                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
-                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
-            })
+            cam.set_controls(
+                {
+                    "AeEnable": False,
+                    "AwbEnable": False,
+                    "ExposureTime": metadata.get("ExposureTime", 30000),
+                    "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                    "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+                }
+            )
             logger.info(
                 "camera_controls_locked",
                 extra={
@@ -246,7 +268,8 @@ class StereoCapture:
             )
 
     def resettle_and_lock(
-        self, settle_seconds: Optional[float] = None,
+        self,
+        settle_seconds: Optional[float] = None,
     ) -> None:
         """Re-habilita AE/AWB, espera ``settle_seconds`` para que reconverja
         a la escena actual, y vuelve a lockear con el snapshot fresco.
@@ -270,6 +293,7 @@ class StereoCapture:
         if self._cam_left is None or self._cam_right is None:
             raise RuntimeError("Cámaras no abiertas. Llamar open() primero.")
         import time as _time
+
         dt = (
             float(settle_seconds)
             if settle_seconds is not None
@@ -364,6 +388,7 @@ class StereoCapture:
         """Captura BLOQUEANTE de un par sincronizado + metadata. Lógica core
         compartida por la lectura síncrona y el thread de streaming. Las dos
         cámaras se capturan en paralelo (executor)."""
+
         def _grab(cam):
             req = cam.capture_request()
             try:
@@ -418,7 +443,16 @@ class StereoCapture:
                 logger.exception("stereo_stream_capture_failed")
                 self._stream_stop.wait(0.05)  # backoff: no spinear en error
                 continue
+            ts_l, ts_r = pair[2], pair[3]
             with self._stream_lock:
+                self._cam_l_stall = _next_stall(
+                    ts_l, self._cam_l_last_ts, self._cam_l_stall
+                )
+                self._cam_r_stall = _next_stall(
+                    ts_r, self._cam_r_last_ts, self._cam_r_stall
+                )
+                self._cam_l_last_ts = ts_l
+                self._cam_r_last_ts = ts_r
                 self._stream_slot = pair
                 self._stream_error = None
             self._slot_ready.set()
@@ -428,6 +462,18 @@ class StereoCapture:
             # cvtColor, compitiéndole al main loop (medido: bajaba los FPS).
             self._slot_consumed.wait()
             self._slot_consumed.clear()
+
+    def camera_health(self) -> tuple[bool, bool]:
+        """``(left_ok, right_ok)``. Una cámara está NOT ok si su SensorTimestamp
+        dejó de avanzar por ≥ ``CAMERA_STALL_THRESHOLD`` capturas (congelada o
+        cable CSI muerto). Permite atribuir una caída de FPS a la cámara
+        culpable sin subir al techo a adivinar. Ambas True hasta que el stream
+        loop corra (o si libcamera no expone SensorTimestamp)."""
+        with self._stream_lock:
+            return (
+                self._cam_l_stall < CAMERA_STALL_THRESHOLD,
+                self._cam_r_stall < CAMERA_STALL_THRESHOLD,
+            )
 
     def close(self) -> None:
         """Libera los recursos de las cámaras."""

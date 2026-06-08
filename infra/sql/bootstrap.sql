@@ -138,6 +138,20 @@ CREATE TABLE IF NOT EXISTS telemetry (
     hailo_temp_c                  REAL,
     disk_free_mb                  INT,
     mem_available_mb              INT,
+    -- Hardware health: detecta fallas silenciosas en un device de techo
+    -- desatendido (fan clavado / airflow bloqueado / fuente o cable flojo).
+    throttled_flags               INT,   -- bitmask vcgencmd get_throttled (0 = sano; 0x1 undervolt, 0x4 throttle, 0x8 soft-temp; 0xN0000 = sticky "ocurrió")
+    arm_clock_mhz                 INT,   -- frecuencia ARM actual; cae bajo el nominal (2400 en Pi 5) al throttlear
+    fan_rpm                       INT,   -- RPM del fan del Active Cooler (0 con temp alta = fan clavado)
+    power_w                       REAL,  -- consumo total output-side del PMIC (placa + Hailo vía PCIe + cámaras)
+    ext5v_v                       REAL,  -- tensión de entrada 5V; sag bajo 5V = fuente/cable USB-C o PoE flojo
+    -- Salud "corre pero roto": fallas silenciosas que dejan el device up pero degradado.
+    fs_readonly                   BOOLEAN,  -- root fs montado read-only (microSD fallando → escrituras muertas)
+    service_restarts              INT,      -- NRestarts del service (auto-restarts acumulados; crece en crash-loop)
+    clock_synchronized            BOOLEAN,  -- reloj sincronizado por NTP (false sostenido = timestamps en riesgo)
+    -- Health por cámara del par estéreo: atribuye una caída de FPS a la cámara culpable.
+    cam_left_ok                   BOOLEAN,  -- SensorTimestamp avanza (false = cámara izq congelada / cable CSI muerto)
+    cam_right_ok                  BOOLEAN,  -- idem cámara derecha
     -- Pipeline metrics
     fps                           REAL,
     frame_latency_p50_ms          REAL,
@@ -155,6 +169,7 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- WiFi/BLE subsystem health
     wifi_probe_ok                 BOOLEAN,
     ble_scanner_ok                BOOLEAN,
+    wifi_probe_rate_per_min       REAL,     -- probes/min (canary: 0 sostenido con wifi_probe_ok=true = nexmon mudo / radiotap caído)
     -- Stitching ratio del dedup: groups / hashes en el dia (1.0 = sin stitch
     -- efectivo, baja a medida que MAC rotations se mergean en el mismo group).
     wifi_ble_stitching_ratio      REAL,

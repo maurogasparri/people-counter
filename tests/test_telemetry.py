@@ -1,12 +1,22 @@
 """Tests para src/telemetry.py — observability del device + runtime."""
+
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from src.telemetry import collect_telemetry
+from src.telemetry import (
+    _read_arm_mhz,
+    _read_clock_synchronized,
+    _read_fan_rpm,
+    _read_fs_readonly,
+    _read_pmic,
+    _read_service_restarts,
+    _read_throttled,
+    collect_telemetry,
+)
 
 
 def _fake_hailo_module(
@@ -54,6 +64,17 @@ EXPECTED_KEYS = {
     "mqtt_disconnect_count",
     "seconds_since_last_reconnect",
     "buffer_backlog_messages",
+    "throttled_flags",
+    "arm_clock_mhz",
+    "fan_rpm",
+    "power_w",
+    "ext5v_v",
+    "fs_readonly",
+    "service_restarts",
+    "clock_synchronized",
+    "cam_left_ok",
+    "cam_right_ok",
+    "wifi_probe_rate_per_min",
 }
 
 
@@ -144,6 +165,130 @@ def test_detection_rate_fallback_to_fps():
 def test_detection_rate_empty():
     telem = collect_telemetry({"detection_counts": []})
     assert telem["detection_rate_per_min"] is None
+
+
+# ---------------------------------------------------------------------------
+# Salud de hardware (throttle / clock / fan / power delivery)
+# ---------------------------------------------------------------------------
+
+_PMIC_SAMPLE = """\
+ 3V3_SYS_A current(1)=0.40000000A
+   VDD_CORE_A current(7)=1.50000000A
+   3V3_SYS_V volt(9)=3.30000000V
+  VDD_CORE_V volt(15)=0.88000000V
+     EXT5V_V volt(24)=5.12000000V
+      BATT_V volt(25)=3.00000000V
+"""
+
+
+def test_hw_health_keys_present():
+    telem = collect_telemetry(None)
+    for k in ("throttled_flags", "arm_clock_mhz", "fan_rpm", "power_w", "ext5v_v"):
+        assert k in telem
+
+
+def test_read_throttled_parses_hex():
+    with patch("src.telemetry._vcgencmd", return_value="throttled=0x80008"):
+        assert _read_throttled() == 0x80008
+
+
+def test_read_throttled_zero():
+    with patch("src.telemetry._vcgencmd", return_value="throttled=0x0"):
+        assert _read_throttled() == 0
+
+
+def test_read_throttled_none_on_failure():
+    with patch("src.telemetry._vcgencmd", return_value=None):
+        assert _read_throttled() is None
+
+
+def test_read_arm_mhz():
+    with patch("src.telemetry._vcgencmd", return_value="frequency(48)=2400000000"):
+        assert _read_arm_mhz() == 2400
+
+
+def test_read_pmic_power_and_ext5v():
+    with patch("src.telemetry._vcgencmd", return_value=_PMIC_SAMPLE):
+        power, ext5v = _read_pmic()
+    # 0.4*3.3 + 1.5*0.88 = 1.32 + 1.32 = 2.64; EXT5V/BATT no suman (sin corriente)
+    assert power == pytest.approx(2.64, abs=0.001)
+    assert ext5v == pytest.approx(5.12)
+
+
+def test_read_pmic_none_on_failure():
+    with patch("src.telemetry._vcgencmd", return_value=None):
+        assert _read_pmic() == (None, None)
+
+
+def test_read_fan_rpm_never_raises():
+    # En CI no hay hwmon 'pwmfan' → None; nunca debe raisear.
+    result = _read_fan_rpm()
+    assert result is None or isinstance(result, int)
+
+
+# ---------------------------------------------------------------------------
+# Tier 2/3: fs read-only / crash-loop / clock sync
+# ---------------------------------------------------------------------------
+
+
+def test_hw_health_tier2_keys_present():
+    telem = collect_telemetry(None)
+    for k in ("fs_readonly", "service_restarts", "clock_synchronized"):
+        assert k in telem
+
+
+def test_read_fs_readonly_true():
+    with patch(
+        "builtins.open", mock_open(read_data="/dev/root / ext4 ro,relatime 0 0\n")
+    ):
+        assert _read_fs_readonly() is True
+
+
+def test_read_fs_readonly_false():
+    with patch(
+        "builtins.open", mock_open(read_data="/dev/root / ext4 rw,relatime 0 0\n")
+    ):
+        assert _read_fs_readonly() is False
+
+
+def test_read_fs_readonly_sandbox_root_ro_datadir_rw():
+    # ProtectSystem=strict: "/" aparece ro en el namespace, pero el data dir
+    # (ReadWritePaths) es rw → debe dar False (no falso positivo).
+    mounts = (
+        "/dev/mmcblk0p2 / ext4 ro,nosuid,noatime 0 0\n"
+        "/dev/mmcblk0p2 /var/lib/people-counter ext4 rw,nosuid,noatime 0 0\n"
+    )
+    with patch("builtins.open", mock_open(read_data=mounts)):
+        assert _read_fs_readonly() is False
+
+
+def test_read_fs_readonly_sd_failure_flips_datadir():
+    # SD falla: el superblock (mismo device) se vuelve ro incl. el data dir.
+    mounts = (
+        "/dev/mmcblk0p2 / ext4 ro,nosuid,noatime 0 0\n"
+        "/dev/mmcblk0p2 /var/lib/people-counter ext4 ro,nosuid,noatime 0 0\n"
+    )
+    with patch("builtins.open", mock_open(read_data=mounts)):
+        assert _read_fs_readonly() is True
+
+
+def test_read_service_restarts():
+    fake = MagicMock(returncode=0, stdout="3\n")
+    with patch("src.telemetry.subprocess.run", return_value=fake):
+        assert _read_service_restarts() == 3
+
+
+def test_read_clock_synchronized_yes_no():
+    with patch(
+        "src.telemetry.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="yes\n"),
+    ):
+        assert _read_clock_synchronized() is True
+    with patch(
+        "src.telemetry.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="no\n"),
+    ):
+        assert _read_clock_synchronized() is False
 
 
 # ---------------------------------------------------------------------------

@@ -41,9 +41,7 @@ CHANNELS_5GHZ = [36, 40, 44, 48, 149, 153, 157, 161]
 DEFAULT_HOP_INTERVAL = 0.3  # segundos por canal (200-300ms: sweet spot)
 
 
-def _build_hop_sequence(
-    channels_24: list[int], channels_5: list[int]
-) -> list[int]:
+def _build_hop_sequence(channels_24: list[int], channels_5: list[int]) -> list[int]:
     """Construye la secuencia de hopping ponderada hacia 2.4/no-solapados.
 
     Por cada canal de 5 GHz emite el bloque completo de 2.4 (1/6/11) y luego
@@ -147,10 +145,34 @@ class WiFiProbeCapture:
         self._setup_thread: Optional[threading.Thread] = None
         self._current_channel = 0
         self._probe_count = 0
+        # Baseline para el rate por intervalo de telemetría (probe_rate_per_min).
+        self._rate_last_count = 0
+        self._rate_last_ts: Optional[float] = None
 
     @property
     def probe_count(self) -> int:
         return self._probe_count
+
+    def probe_rate_per_min(self) -> Optional[float]:
+        """Probes/min desde la última llamada (la telemetría la llama cada tick).
+
+        Canary del monitor mode: si el thread está vivo (``is_running=True``)
+        pero el rate cae a 0 sostenido en un site con tráfico, nexmon dejó de
+        entregar 802.11 en silencio (radiotap caído) — falla que el bool
+        ``wifi_probe_ok`` no ve. Devuelve None en la primera llamada (sin
+        baseline) o si el intervalo es degenerado."""
+        now = time.time()
+        last_count = self._rate_last_count
+        last_ts = self._rate_last_ts
+        cur = self._probe_count
+        self._rate_last_count = cur
+        self._rate_last_ts = now
+        if last_ts is None:
+            return None
+        elapsed = now - last_ts
+        if elapsed <= 0:
+            return None
+        return max(0, cur - last_count) / elapsed * 60.0
 
     @property
     def is_running(self) -> bool:
@@ -162,9 +184,7 @@ class WiFiProbeCapture:
         """
         thread = self._capture_thread
         return (
-            thread is not None
-            and thread.is_alive()
-            and not self._stop_event.is_set()
+            thread is not None and thread.is_alive() and not self._stop_event.is_set()
         )
 
     # Timeout para los subprocess de setup. Si nexmon/brcmfmac crashearon,
@@ -425,6 +445,8 @@ class WiFiProbeCapture:
 
         self._stop_event.clear()
         self._probe_count = 0
+        self._rate_last_count = 0
+        self._rate_last_ts = None  # sin baseline → la 1ra telemetría no da rate falso
 
         self._hop_thread = threading.Thread(
             target=self._channel_hop_loop, daemon=True, name="wifi-hop"
@@ -471,9 +493,7 @@ class WiFiProbeCapture:
                 )
                 self._current_channel = channel
             except subprocess.CalledProcessError:
-                logger.debug(
-                    "channel_set_failed", extra={"channel": channel}
-                )
+                logger.debug("channel_set_failed", extra={"channel": channel})
             except subprocess.TimeoutExpired:
                 logger.warning(
                     "channel_set_timeout — driver no responde",

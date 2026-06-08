@@ -1,9 +1,13 @@
-# Dimensionamiento de hardware — RAM del dispositivo edge
+# Dimensionamiento de hardware — RAM y consumo del dispositivo edge
 
 Documento de soporte para la elección **Raspberry Pi 5 2GB** sobre las
 variantes de 4GB / 8GB. La decisión es empírica: se midió el consumo real
 del pipeline en piloto, se le aplicó un stress test agresivo simulando el
 ambiente de 2GB, y se proyectó el costo por flota.
+
+Cubre dos dimensiones de "consumo": **RAM** (working set, secciones de abajo
+hasta los guardrails) y **energía eléctrica** (sección [Consumo
+eléctrico](#consumo-eléctrico)).
 
 ## Tl;dr
 
@@ -160,6 +164,69 @@ En un device sano, post-1h de uptime con tráfico normal:
 - `vmstat si=so`: ambos `0`
 - `free -h`: `used <1G` en una Pi 5 2GB
 
+## Consumo eléctrico
+
+Medición empírica del consumo del device entero (Pi 5 2GB + AI HAT+ Hailo-8L
++ 2× IMX708), tomada el **2026-06-07** con la Pi alimentada por USB-C (sin la
+PoE HAT instalada todavía).
+
+**Método**: suma de V×I de todos los rieles del PMIC vía
+`vcgencmd pmic_read_adc` → herramienta `scripts/measure_power.py`. Es la
+potencia *output-side* del PMIC; el draw de pared real suma ~12-15% de
+pérdidas de conversión (y, con PoE, además la conversión del PoE HAT).
+
+| Estado | avg | p95 | pico | ≈ pared |
+|---|---:|---:|---:|---:|
+| Pipeline detenido (idle real) | 2.19 W | — | 2.32 W | ~2.5 W |
+| Pipeline corriendo, **sin gente** | 6.02 W | 8.53 W | 9.89 W | ~7 W |
+| Pipeline corriendo, **gente cruzando** | 6.13 W | 8.51 W | 9.15 W | ~7 W |
+
+*(ventana de 320 s / 603 muestras a 0.5 s; el tramo "con gente" cubrió 25
+cruces reales —12 in + 13 out— validados contra los `counting_event_published`
+del journal.)*
+
+**Hallazgo clave: el consumo es independiente de la carga de personas.** Con
+gente cruzando (6.13 W) vs sin nadie (6.02 W) la diferencia es **0.11 W —
+ruido**; el pico absoluto (9.89 W) incluso cayó en el tramo *sin* gente. La
+razón es arquitectónica: el peso lo domina el **pipeline siempre-activo**
+(captura estéreo + SGBM + inferencia Hailo en *cada frame*), que corre haya o
+no alguien en cuadro. El Hailo infiere todos los frames; una pasada no agrega
+trabajo apreciable. El único salto que importa es **encendido vs apagado del
+pipeline** (2.2 → 6 W, ~3.8 W).
+
+**Implicancias**:
+
+1. **Presupuesto eléctrico/térmico: peor caso ≈ caso típico.** Se dimensiona a
+   ~6 W constantes (≈7 W de pared), no a "hora pico de tráfico" — el device
+   tira lo mismo corra quien corra.
+2. **La PoE HAT (H) 25.5 W tiene amplísimo margen**: pico del device ~10 W
+   output / ~11-12 W de pared, ~45% del presupuesto PoE. Holgado para los
+   363 días × 12 h.
+
+**Gotchas de medición**:
+
+- El Hailo **no expone medición de potencia propia**: el firmware del AI HAT+
+  rechaza `hailortcli measure-power` con `UNSUPPORTED_DEVICE`. El PMIC es la
+  única vía software.
+- El Hailo se alimenta **por PCIe desde los rieles del PMIC** (no tiene entrada
+  de energía propia) → el sum del PMIC **ya lo incluye**, no se suma aparte. Se
+  ve sobre todo en `3V3_SYS` y `VDD_CORE`.
+- `EXT5V` del PMIC es solo la **tensión de entrada** (sin sense de corriente) →
+  no se puede leer la potencia de entrada directa; se suma output-side.
+- Para el total de pared exacto: medidor USB-C inline ahora, o el puerto del
+  switch PoE gestionado cuando se instale la PoE HAT (reporta watts por puerto
+  e incluye la conversión del PoE).
+
+**Cómo verificar en cualquier device**:
+
+```bash
+cd /usr/src/people-counter
+# resumen de 10s con desglose por riel
+python3 scripts/measure_power.py --duration 10 --rails
+# monitoreo continuo a CSV (para correlacionar con actividad)
+python3 scripts/measure_power.py --duration 0 --csv power_monitor.csv
+```
+
 ## Nota — sizing del RDS cloud (no edge)
 
 Este documento es sobre el device edge. Un apunte aparte para el otro lado del
@@ -190,3 +257,6 @@ RDS, no es el sizing del edge — es esto.
   + 16 streams MJPEG + 8 loopers /health + CPU stressor. Peak del service:
   281 MB. Cero throttles, cero swap escrito, cero OOM.
 - **2026-05-25 11:45 ART**: decisión confirmada — **Pi 5 2GB**.
+- **2026-06-07**: medición de consumo eléctrico vía PMIC (`measure_power.py`)
+  sobre USB-C. Operación ~6 W (load-independent), idle 2.2 W, pico 9.9 W.
+  PoE HAT 25.5 W con amplio margen.

@@ -112,6 +112,755 @@
           "isPaused": false,
           "notification_settings": null,
           "record": null
+        },
+        {
+          "uid": "pc-throttle-undervolt",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "Throttle / undervoltage activo (get_throttled)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, (throttled_flags & 15) AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' AND throttled_flags IS NOT NULL ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: throttle o undervoltage ACTIVO (bits bajos de get_throttled). Revisar fuente/cable USB-C o PoE, o airflow bloqueado."
+          },
+          "labels": {
+            "severity": "critical"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        },
+        {
+          "uid": "pc-fan-stalled",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "Fan clavado (0 rpm con temp alta)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, (CASE WHEN fan_rpm = 0 AND cpu_temp_c > 70 THEN 1 ELSE 0 END) AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' AND fan_rpm IS NOT NULL ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: fan a 0 rpm con CPU > 70 °C — posible fan clavado. El device sigue throttleando; programar reemplazo."
+          },
+          "labels": {
+            "severity": "critical"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        },
+        {
+          "uid": "pc-fs-readonly",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "Filesystem read-only (microSD)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, (CASE WHEN fs_readonly THEN 1 ELSE 0 END) AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' AND fs_readonly IS NOT NULL ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: filesystem montado READ-ONLY — microSD probablemente fallando. Las escrituras (outbox/SQLite) están muertas."
+          },
+          "labels": {
+            "severity": "critical"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        },
+        {
+          "uid": "pc-crash-loop",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "Crash-loop del pipeline (NRestarts > 5)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, service_restarts AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' AND service_restarts IS NOT NULL ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        5
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: el pipeline se reinició más de 5 veces (crash-loop). Revisar journalctl -u people-counter."
+          },
+          "labels": {
+            "severity": "critical"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        },
+        {
+          "uid": "pc-clock-unsynced",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "Reloj sin sincronizar (NTP)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, (CASE WHEN clock_synchronized THEN 0 ELSE 1 END) AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' AND clock_synchronized IS NOT NULL ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "15m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: reloj sin sincronizar por NTP más de 15 min — riesgo de timestamps incorrectos en los eventos."
+          },
+          "labels": {
+            "severity": "warning"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        },
+        {
+          "uid": "pc-camera-down",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "Cámara del par estéreo caída",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, (CASE WHEN cam_left_ok AND cam_right_ok THEN 0 ELSE 1 END) AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' AND cam_left_ok IS NOT NULL ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: una cámara del par estéreo dejó de entregar frames (cam_left_ok/cam_right_ok=false) — revisar cable CSI / sensor."
+          },
+          "labels": {
+            "severity": "critical"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
+        },
+        {
+          "uid": "pc-wifi-mute",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Hardware",
+          "title": "WiFi sin probes (monitor mode mudo)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, wifi_probe_rate_per_min AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' AND wifi_probe_ok = true AND wifi_probe_rate_per_min IS NOT NULL ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.5
+                      ],
+                      "type": "lt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2h",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: 0 probes WiFi sostenido con el thread vivo — nexmon dejó de entregar 802.11 (radiotap caído). Probar reboot. (Solo sites operational; ventana larga para evitar falsos positivos en horas sin tráfico.)"
+          },
+          "labels": {
+            "severity": "warning"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
         }
       ]
     },

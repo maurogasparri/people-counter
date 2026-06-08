@@ -1,4 +1,5 @@
 """Tests para el módulo de captura de probe requests WiFi."""
+
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -121,6 +122,19 @@ def test_build_hop_sequence_weights_24ghz():
     assert _build_hop_sequence([1, 6, 11], []) == [1, 6, 11]
 
 
+def test_probe_rate_per_min():
+    cap = WiFiProbeCapture(interface="wlan0")
+    # Primera llamada: sin baseline → None (no rate falso al arrancar).
+    assert cap.probe_rate_per_min() is None
+    # Baseline hace 60s con 0 probes; ahora 60 → ~60 probes/min.
+    cap._rate_last_count = 0
+    cap._rate_last_ts = time.time() - 60.0
+    cap._probe_count = 60
+    rate = cap.probe_rate_per_min()
+    assert rate is not None
+    assert 55.0 < rate < 65.0
+
+
 def test_initial_state():
     cap = WiFiProbeCapture()
     assert cap.probe_count == 0
@@ -144,6 +158,7 @@ def test_setup_monitor_mode_calls_expected_commands(mock_run):
     """El setup ejecuta el flujo nexmon: rfkill unblock + airmon-ng check
     kill (mata NM/wpa) + ip link down + iw set type monitor + ip link up
     + iw info verify."""
+
     # El último call es ``iw info`` para verify — tiene que devolver
     # stdout con ``type monitor`` o setup_monitor_mode raisea.
     def _run_side_effect(*args, **kwargs):
@@ -164,8 +179,7 @@ def test_setup_monitor_mode_calls_expected_commands(mock_run):
     assert any("airmon-ng" in str(c) and "kill" in str(c) for c in calls)
     # iw dev wlan0 set type monitor (no wlan0mon — same interface)
     assert any(
-        "iw" in str(c) and "wlan0" in str(c) and "monitor" in str(c)
-        for c in calls
+        "iw" in str(c) and "wlan0" in str(c) and "monitor" in str(c) for c in calls
     )
     # ip link up/down sobre wlan0
     assert any("ip" in str(c) and "link" in str(c) for c in calls)
@@ -199,9 +213,7 @@ def test_setup_monitor_mode_raises_if_nexutil_fails(mock_run):
 def test_setup_monitor_mode_raises_if_verify_fails(mock_run):
     """Si ``iw info`` post-setup no muestra ``type monitor``, raisea —
     el driver probablemente rechazó el cambio de modo."""
-    mock_run.return_value = MagicMock(
-        returncode=0, stdout="type managed", stderr=""
-    )
+    mock_run.return_value = MagicMock(returncode=0, stdout="type managed", stderr="")
     cap = WiFiProbeCapture(interface="wlan0")
     cap._MONITOR_SETUP_ATTEMPTS = 1  # sin retry: el verify falla determinístico
     with pytest.raises(RuntimeError, match="no quedó en monitor mode"):
@@ -267,9 +279,7 @@ def test_teardown_monitor_mode(mock_run):
     calls = mock_run.call_args_list
     # ip link down/up + iw set type managed.
     assert any("ip" in str(c) and "link" in str(c) for c in calls)
-    assert any(
-        "iw" in str(c) and "managed" in str(c) for c in calls
-    )
+    assert any("iw" in str(c) and "managed" in str(c) for c in calls)
     # nmcli para devolverle la interface a NetworkManager (best-effort).
     assert any("nmcli" in str(c) for c in calls)
 

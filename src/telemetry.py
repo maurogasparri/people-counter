@@ -9,11 +9,15 @@ Cada probe está wrappeado en try/except y emite ``None`` si falla, así el
 schema downstream se mantiene estable — los consumers pueden distinguir entre
 "sensor consultado, falló" y "campo no emitido".
 """
+
 from __future__ import annotations
 
+import glob
 import logging
+import re
 import shutil
 import statistics
+import subprocess
 import time
 from typing import Any
 
@@ -33,6 +37,9 @@ _STATE_DEPENDENT_KEYS = (
     "wifi_probe_ok",
     "ble_scanner_ok",
     "wifi_ble_stitching_ratio",
+    "cam_left_ok",
+    "cam_right_ok",
+    "wifi_probe_rate_per_min",
 )
 
 
@@ -98,6 +105,192 @@ def _read_hailo_temp() -> float | None:
     except Exception:
         logger.exception("Failed to read Hailo chip temperature")
         return None
+
+
+# --- Probes de salud de hardware (S12) ---------------------------------------
+# Detectan fallas que en un device de techo, desatendido, pasan en silencio:
+# fan clavado / airflow bloqueado (throttle térmico), fuente o cable PoE/USB-C
+# flojo (undervoltage + sag de EXT5V), y consumo anómalo. Todos son reads
+# rápidos (sysfs / vcgencmd / PMIC) → samplean a la cadencia de telemetría sin
+# caché. Fail → None, igual que el resto de los probes.
+
+
+def _vcgencmd(*args: str) -> str | None:
+    """Corre ``vcgencmd <args>`` y devuelve stdout, o None si falla/no existe."""
+    try:
+        r = subprocess.run(
+            ["vcgencmd", *args], capture_output=True, text=True, timeout=5
+        )
+        if r.returncode != 0:
+            return None
+        return r.stdout.strip()
+    except Exception:
+        return None
+
+
+def _read_throttled() -> int | None:
+    """Bitmask de ``vcgencmd get_throttled``. Bits: 0x1 undervoltage actual,
+    0x2 ARM freq capped, 0x4 throttled actual, 0x8 soft-temp-limit actual;
+    0x10000/0x20000/0x40000/0x80000 = los mismos "ocurrió desde el boot"
+    (sticky). 0 = todo sano. Se persiste crudo; el classify es server-side."""
+    out = _vcgencmd("get_throttled")
+    if not out:
+        return None
+    try:
+        return int(out.split("=")[1], 16)
+    except Exception:
+        return None
+
+
+def _read_arm_mhz() -> int | None:
+    """Frecuencia actual del ARM en MHz (``vcgencmd measure_clock arm``).
+    Cae bajo el nominal (2400 en Pi 5) cuando hay throttle — corrobora flags."""
+    out = _vcgencmd("measure_clock", "arm")
+    if not out:
+        return None
+    try:
+        return int(out.split("=")[1]) // 1_000_000
+    except Exception:
+        return None
+
+
+def _read_fan_rpm() -> int | None:
+    """RPM del fan del Active Cooler vía el hwmon ``pwmfan`` (índice no estable
+    entre boots → se busca por name). 0 con temp alta = fan clavado."""
+    try:
+        for hw in glob.glob("/sys/class/hwmon/hwmon*"):
+            try:
+                with open(f"{hw}/name") as f:
+                    if f.read().strip() != "pwmfan":
+                        continue
+                with open(f"{hw}/fan1_input") as f:
+                    return int(f.read().strip())
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
+_PMIC_CUR_RE = re.compile(r"(\S+)_A current\(\d+\)=([\d.]+)A")
+_PMIC_VOLT_RE = re.compile(r"(\S+)_V volt\(\d+\)=([\d.]+)V")
+
+
+def _read_pmic() -> tuple[float | None, float | None]:
+    """``(power_w, ext5v_v)`` de un solo ``vcgencmd pmic_read_adc``.
+
+    ``power_w`` = suma de V×I de todos los rieles (output-side; incluye placa +
+    Hailo vía PCIe + cámaras). ``ext5v_v`` = tensión de entrada (sag = fuente o
+    cable flojo). ``(None, None)`` si falla."""
+    out = _vcgencmd("pmic_read_adc")
+    if not out:
+        return None, None
+    try:
+        cur: dict[str, float] = {}
+        vol: dict[str, float] = {}
+        for line in out.splitlines():
+            m = _PMIC_CUR_RE.search(line)
+            if m:
+                cur[m.group(1)] = float(m.group(2))
+            m = _PMIC_VOLT_RE.search(line)
+            if m:
+                vol[m.group(1)] = float(m.group(2))
+        power = round(sum(cur[k] * vol[k] for k in cur if k in vol), 3) if cur else None
+        return power, vol.get("EXT5V")
+    except Exception:
+        return None, None
+
+
+# --- Probes Tier 2/3: fallas silenciosas "corre pero roto" ---------------------
+# Detectan estados donde el device figura up pero está degradado o produciendo
+# data mala: microSD fallando (fs read-only), pipeline en crash-loop, reloj
+# desincronizado (timestamps corruptos). Reads baratos; fail → None.
+
+
+# Path escribible del device (ReadWritePaths del .service; outbox del buffer).
+_WRITABLE_DATA_DIR = "/var/lib/people-counter"
+
+
+def _mount_contains(mount_point: str, path: str) -> bool:
+    """True si ``mount_point`` es prefijo de directorio de ``path``."""
+    if mount_point == "/":
+        return True
+    return path == mount_point or path.startswith(mount_point.rstrip("/") + "/")
+
+
+def _read_fs_readonly() -> bool | None:
+    """True si el filesystem que respalda el dir de datos escribible está
+    montado read-only — microSD fallando: ext4 con ``errors=remount-ro``
+    flipea el superblock a ro y las escrituras (outbox/SQLite) mueren.
+
+    Chequea el mount que cubre ``_WRITABLE_DATA_DIR`` (prefijo más largo), NO
+    ``/``: el service corre con ``ProtectSystem=strict``, que monta ``/``
+    read-only en su mount namespace → ``/`` daría True permanentemente (falso
+    positivo). El bind de ReadWritePaths es rw salvo que el superblock real
+    (mismo /dev/mmcblk0p2) se vuelva ro por error de la SD."""
+    try:
+        best_mp = None
+        best_ro = None
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                mp = parts[1]
+                if not _mount_contains(mp, _WRITABLE_DATA_DIR):
+                    continue
+                if best_mp is None or len(mp) > len(best_mp):
+                    best_mp = mp
+                    best_ro = "ro" in parts[3].split(",")
+        return best_ro
+    except Exception:
+        return None
+
+
+def _read_service_restarts() -> int | None:
+    """``NRestarts`` del service (auto-restarts acumulados desde el último start
+    limpio). Crece rápido en crash-loop. Se resetea en restart manual."""
+    try:
+        r = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                "people-counter.service",
+                "-p",
+                "NRestarts",
+                "--value",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        return int(r.stdout.strip())
+    except Exception:
+        return None
+
+
+def _read_clock_synchronized() -> bool | None:
+    """True si el reloj del sistema está sincronizado por NTP. Sin sync (y RTC
+    drifteado tras un corte) → timestamps de eventos incorrectos."""
+    try:
+        r = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        v = r.stdout.strip().lower()
+        if v in ("yes", "true", "1"):
+            return True
+        if v in ("no", "false", "0"):
+            return False
+    except Exception:
+        return None
+    return None
 
 
 def _percentile(values: list[float], pct: float) -> float | None:
@@ -188,6 +381,19 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
     telemetry["mem_available_mb"] = _read_mem_available_mb()
     telemetry["hailo_temp_c"] = _read_hailo_temp()
 
+    # --- Salud de hardware (throttle, clock, fan, power delivery) ---
+    telemetry["throttled_flags"] = _read_throttled()
+    telemetry["arm_clock_mhz"] = _read_arm_mhz()
+    telemetry["fan_rpm"] = _read_fan_rpm()
+    power_w, ext5v_v = _read_pmic()
+    telemetry["power_w"] = power_w
+    telemetry["ext5v_v"] = ext5v_v
+
+    # --- Salud "corre pero roto" (SD / crash-loop / reloj) ---
+    telemetry["fs_readonly"] = _read_fs_readonly()
+    telemetry["service_restarts"] = _read_service_restarts()
+    telemetry["clock_synchronized"] = _read_clock_synchronized()
+
     # --- Percentiles de latencia por frame ---
     try:
         latencies = list(state.get("frame_latencies_ms") or [])
@@ -238,6 +444,11 @@ def collect_telemetry(state: dict[str, Any] | None = None) -> dict[str, Any]:
     # H1+ con seqnum reset, BLE off, etc) — en ese caso ratio == 1 sostenido y
     # los counts estaran inflados; calibrar contra la cam.
     telemetry["wifi_ble_stitching_ratio"] = state.get("wifi_ble_stitching_ratio")
+
+    # --- Health por cámara (atribución del par estéreo) + rate de probes WiFi ---
+    telemetry["cam_left_ok"] = state.get("cam_left_ok")
+    telemetry["cam_right_ok"] = state.get("cam_right_ok")
+    telemetry["wifi_probe_rate_per_min"] = state.get("wifi_probe_rate_per_min")
 
     # Garantiza que toda key dependiente de state exista aunque algo arriba
     # haya raiseado antes de asignarla.

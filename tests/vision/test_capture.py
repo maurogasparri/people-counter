@@ -8,7 +8,25 @@ import cv2
 import numpy as np
 import pytest
 
-from src.vision.capture import FileCapture, StereoCapture
+from src.vision.capture import (
+    CAMERA_STALL_THRESHOLD,
+    FileCapture,
+    StereoCapture,
+    _next_stall,
+)
+
+
+def test_next_stall_advances_resets_and_handles_no_ts():
+    assert _next_stall(100, 90, 5) == 0  # ts avanzó → reset
+    assert _next_stall(100, 100, 5) == 6  # ts no avanzó → +1
+    assert _next_stall(0, 100, 5) == 0  # sin SensorTimestamp → no evaluable
+
+
+def test_camera_health_attributes_stalled_camera():
+    cap = StereoCapture(0, 1, (640, 480))
+    assert cap.camera_health() == (True, True)  # default sano
+    cap._cam_r_stall = CAMERA_STALL_THRESHOLD  # derecha congelada
+    assert cap.camera_health() == (True, False)
 
 
 def _create_test_pairs(directory: str, n: int = 5, ext: str = "png") -> None:
@@ -145,7 +163,9 @@ class _FakeCam:
 def _wired_stereo(async_capture: bool) -> StereoCapture:
     """StereoCapture con cámaras fake inyectadas (sin picamera2/open)."""
     cap = StereoCapture(
-        cam_left_id=0, cam_right_id=1, resolution=(64, 48),
+        cam_left_id=0,
+        cam_right_id=1,
+        resolution=(64, 48),
         async_capture=async_capture,
     )
     cap._cam_left = _FakeCam(np.zeros((48, 64, 3), np.uint8), ts=111)

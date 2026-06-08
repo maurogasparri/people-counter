@@ -110,11 +110,10 @@ def _all_tracks_height_stable(tracks: dict[int, Track], threshold: int) -> bool:
         # Threshold 30 frames es generoso — sigue capturando PENDING reciente.
         if getattr(t, "disappeared", 0) > 30:
             continue
-        history = (t.meta or {}).get("detection_history", []) if hasattr(t, "meta") else []
-        n_height = sum(
-            1 for d in history
-            if d.get("head_height_mm") is not None
+        history = (
+            (t.meta or {}).get("detection_history", []) if hasattr(t, "meta") else []
         )
+        n_height = sum(1 for d in history if d.get("head_height_mm") is not None)
         if n_height < threshold:
             return False
     return True
@@ -475,8 +474,11 @@ def build_wifi_ble(
     if period_seconds != raw_interval:
         logger.warning(
             "wifi_ble_summary_interval_clamped",
-            extra={"raw": raw_interval, "clamped": period_seconds,
-                   "valid_range": [30, _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS]},
+            extra={
+                "raw": raw_interval,
+                "clamped": period_seconds,
+                "valid_range": [30, _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS],
+            },
         )
 
     # Los thresholds rssi_passerby/rssi_shopper ya no se pasan al publisher:
@@ -534,6 +536,7 @@ def _build_telemetry_state(
     wifi_capture: "WiFiProbeCapture | None" = None,
     ble_scanner: "BLEScanner | None" = None,
     dedup: "DedupEngine | None" = None,
+    capture: "StereoCapture | None" = None,
 ) -> dict[str, Any]:
     """Toma snapshot del estado runtime del pipeline al dict que espera
     :func:`collect_telemetry`. Cada lookup está wrappeado así un solo probe
@@ -577,6 +580,27 @@ def _build_telemetry_state(
     wifi_ok, ble_ok = _wifi_ble_health(wifi_capture, ble_scanner)
     state["wifi_probe_ok"] = wifi_ok
     state["ble_scanner_ok"] = ble_ok
+
+    # Rate de probes WiFi: canary del monitor mode (thread vivo pero 0 probes
+    # en un site con tráfico = nexmon mudo, que wifi_probe_ok no detecta).
+    state["wifi_probe_rate_per_min"] = None
+    if wifi_capture is not None:
+        try:
+            state["wifi_probe_rate_per_min"] = wifi_capture.probe_rate_per_min()
+        except Exception:
+            logger.exception("wifi_capture.probe_rate_per_min failed")
+
+    # Health por cámara: atribuye una caída de FPS a la cámara del par estéreo
+    # que se congeló (cable CSI / sensor muerto). None si no es StereoCapture.
+    state["cam_left_ok"] = None
+    state["cam_right_ok"] = None
+    if isinstance(capture, StereoCapture):
+        try:
+            cam_l_ok, cam_r_ok = capture.camera_health()
+            state["cam_left_ok"] = cam_l_ok
+            state["cam_right_ok"] = cam_r_ok
+        except Exception:
+            logger.exception("capture.camera_health failed")
 
     # Canary del dedup: groups/hashes en la ventana del dia. 1.0 = sin stitch
     # efectivo. Util para diagnosticar si las reglas estan agarrando.
@@ -719,9 +743,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     depth_stable_height_samples = int(
         depth_skip_cfg.get("height_samples_threshold", 20)
     )
-    depth_skip_match_radius_px = float(
-        depth_skip_cfg.get("match_radius_px", 100.0)
-    )
+    depth_skip_match_radius_px = float(depth_skip_cfg.get("match_radius_px", 100.0))
     depth_cache_ttl_s = float(depth_skip_cfg.get("cache_ttl_seconds", 1.0))
     last_depth_map: "np.ndarray | None" = None
     last_depth_map_t: float = 0.0
@@ -970,9 +992,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 tracking_zone_polygon = None
                 tracking_zone_enabled = False
         except (TypeError, ValueError, IndexError) as exc:
-            logger.warning(
-                "tracking_zone.polygon malformed: %s — disabling", exc
-            )
+            logger.warning("tracking_zone.polygon malformed: %s — disabling", exc)
             tracking_zone_polygon = None
             tracking_zone_enabled = False
 
@@ -1533,9 +1553,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 # SIEMPRE le da chance al tracker a adoptar el ghost antes de
                 # emitir por muerte — sin esto, una desincronización (default
                 # del counter < adoption del tracker) produciría doble-conteo.
-                counter.death_emit_grace_frames = (
-                    tracker.adoption_window_frames + 2
-                )
+                counter.death_emit_grace_frames = tracker.adoption_window_frames + 2
                 logger.info(
                     "Counter inicializado: %s (keepalive_counting_zone=%s)",
                     type(counter).__name__,
@@ -1556,6 +1574,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         from src.vision.pre_filter import (
                             derive_polygon_from_frame_margin,
                         )
+
                         tracking_zone_polygon = derive_polygon_from_frame_margin(
                             frame_size=(frame_w, frame_h),
                             frame_margin_px=float(tracking_zone_frame_margin),
@@ -1570,6 +1589,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         from src.vision.pre_filter import (
                             derive_polygon_from_counting_zone,
                         )
+
                         tracking_zone_polygon = derive_polygon_from_counting_zone(
                             counter.counting_zone,
                             float(tracking_zone_auto_margin),
@@ -1672,6 +1692,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             # se preserva por construcción).
             if tracking_zone_enabled and tracking_zone_polygon is not None:
                 from src.vision.pre_filter import filter_detections_by_polygon
+
                 all_detections = filter_detections_by_polygon(
                     all_detections, tracking_zone_polygon
                 )
@@ -1687,7 +1708,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 # ataca clutter estructural de la periferia, fuera de la counting zone.
                 all_detections = static_suppressor.update_and_filter(
                     all_detections,
-                    exempt_counting_zone=counter.counting_zone if counter is not None else None,
+                    exempt_counting_zone=(
+                        counter.counting_zone if counter is not None else None
+                    ),
                 )
 
             # Separa las detecciones en buckets spawn-eligible vs match-only.
@@ -1732,9 +1755,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             )
             has_dets_to_query = bool(detections or low_conf_detections)
             cache_age_s = t_iter_start - last_depth_map_t
-            cache_fresh = (
-                last_depth_map is not None and cache_age_s < depth_cache_ttl_s
-            )
+            cache_fresh = last_depth_map is not None and cache_age_s < depth_cache_ttl_s
             # Casos donde el cache es suficiente (no hace falta SGBM fresco):
             #  (a) no hay detecciones este frame — sólo viewer pide depth para
             #      el panel; el cache es válido para diagnostic display.
@@ -2017,7 +2038,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 )
                 if is_periodic or is_slow:
                     has_dets = "Y" if depth_map is not None else "N"
-                    depth_mode = "cache" if can_skip_sgbm else ("fresh" if depth_map is not None else "none")
+                    depth_mode = (
+                        "cache"
+                        if can_skip_sgbm
+                        else ("fresh" if depth_map is not None else "none")
+                    )
                     tag = "SLOW" if (is_slow and not is_periodic) else ""
                     logger.info(
                         "PROFILE%s frame=%d cap=%.0fms rect=%.0fms detect=%.0fms "
@@ -2262,11 +2287,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             if _push_mono - data[1] <= _COUNT_FLASH_TTL_S
                         }
                         left_annot = annotate_left(
-                            rect_l, viewer_tracks, counter,
+                            rect_l,
+                            viewer_tracks,
+                            counter,
                             tracking_zone_polygon=(
-                                tracking_zone_polygon
-                                if tracking_zone_enabled
-                                else None
+                                tracking_zone_polygon if tracking_zone_enabled else None
                             ),
                             recent_counts=_recent_count_flashes,
                             now_mono=_push_mono,
@@ -2308,6 +2333,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                         wifi_capture=wifi_capture,
                         ble_scanner=ble_scanner,
                         dedup=dedup,
+                        capture=capture,
                     )
                 )
                 telem["fps"] = telem_frame_count / max(telem_elapsed, 1)

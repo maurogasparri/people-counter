@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -130,6 +130,17 @@ def test_telemetry_event_inserts(fake_pg):
             "wifi_probe_ok": True,
             "ble_scanner_ok": False,
             "last_shadow_apply_ts": 1762962800.0,
+            "throttled_flags": 0,
+            "arm_clock_mhz": 2400,
+            "fan_rpm": 5900,
+            "power_w": 6.1,
+            "ext5v_v": 5.12,
+            "fs_readonly": False,
+            "service_restarts": 2,
+            "clock_synchronized": True,
+            "cam_left_ok": True,
+            "cam_right_ok": False,
+            "wifi_probe_rate_per_min": 42.0,
         },
     }
     result = handler(event, None)
@@ -137,9 +148,23 @@ def test_telemetry_event_inserts(fake_pg):
     assert result["statusCode"] == 200
     call_args = fake_pg["cursor"].execute.call_args
     sql = call_args[0][0]
+    params = call_args[0][1]
     assert "INSERT INTO telemetry" in sql
     # Canary del Device Shadow llega como columna explícita.
     assert "last_shadow_apply_ts" in sql
+    # Columnas de salud de hardware (Tier 1) presentes y mapeadas.
+    for col in ("throttled_flags", "arm_clock_mhz", "fan_rpm", "power_w", "ext5v_v"):
+        assert col in sql
+    assert 0 in params and 2400 in params and 5900 in params
+    assert 6.1 in params and 5.12 in params
+    # Columnas Tier 2/3 (corre pero roto) presentes y mapeadas.
+    for col in ("fs_readonly", "service_restarts", "clock_synchronized"):
+        assert col in sql
+    assert 2 in params  # service_restarts
+    # Health por cámara + rate de probes WiFi presentes y mapeados.
+    for col in ("cam_left_ok", "cam_right_ok", "wifi_probe_rate_per_min"):
+        assert col in sql
+    assert 42.0 in params  # wifi_probe_rate_per_min
 
 
 def test_telemetry_event_without_shadow_apply_ts(fake_pg):

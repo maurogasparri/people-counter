@@ -94,6 +94,16 @@ con esos campos silenciosamente ignorados.
     "hailo_temp_c": 48.2,
     "disk_free_mb": 12345,
     "mem_available_mb": 1820,
+    "throttled_flags": 0,
+    "arm_clock_mhz": 2400,
+    "fan_rpm": 5900,
+    "power_w": 6.1,
+    "ext5v_v": 5.12,
+    "fs_readonly": false,
+    "service_restarts": 0,
+    "clock_synchronized": true,
+    "cam_left_ok": true,
+    "cam_right_ok": true,
     "fps": 11.8,
     "frame_latency_p50_ms": 78.2,
     "frame_latency_p95_ms": 142.5,
@@ -108,6 +118,7 @@ con esos campos silenciosamente ignorados.
     "buffer_backlog_messages": 0,
     "wifi_probe_ok": true,
     "ble_scanner_ok": true,
+    "wifi_probe_rate_per_min": 42.0,
     "wifi_ble_stitching_ratio": 0.34,
     "track_stitching_ratio": 1.05,
     "death_emit_count": 2,
@@ -121,10 +132,13 @@ con esos campos silenciosamente ignorados.
 | Categoría | Campos |
 |---|---|
 | **OS** | `uptime_s`, `cpu_temp_c`, `hailo_temp_c`, `disk_free_mb`, `mem_available_mb` |
+| **Hardware** | `throttled_flags` (bitmask `get_throttled`: 0=sano, undervolt/throttle/soft-temp + sticky), `arm_clock_mhz` (cae al throttlear), `fan_rpm` (0+temp alta=fan clavado), `power_w` (consumo PMIC), `ext5v_v` (sag=fuente/cable flojo). Detección de fallas de hardware silenciosas en device de techo desatendido |
+| **Sistema** | `fs_readonly` (microSD fallando → root fs read-only), `service_restarts` (NRestarts del service, crash-loop si crece), `clock_synchronized` (NTP; false sostenido = timestamps en riesgo). Fallas "corre pero roto" |
+| **Cámaras** | `cam_left_ok` / `cam_right_ok` — cada cámara del par estéreo viva (false = SensorTimestamp congelado por ≥10 capturas → cable CSI / sensor muerto). Atribuye una caída de FPS a la cámara culpable |
 | **Pipeline** | `fps`, `frame_latency_p50_ms`, `frame_latency_p95_ms`, `detection_rate_per_min`, `tracker_confirmed_count`, `tracker_pending_count` |
 | **Counts** | `total_in`, `total_out` — running totals device-side desde el último boot. Sirve como sanity check vs `COUNT(*)` server-side |
 | **MQTT** | `mqtt_connected`, `mqtt_disconnect_count`, `seconds_since_last_reconnect`, `buffer_backlog_messages` |
-| **WiFi/BLE** | `wifi_probe_ok`, `ble_scanner_ok`, `wifi_ble_stitching_ratio` (canary: groups / hashes, baja a medida que el stitching mergea MAC rotations) |
+| **WiFi/BLE** | `wifi_probe_ok`, `ble_scanner_ok`, `wifi_probe_rate_per_min` (canary del monitor mode: 0 sostenido con `wifi_probe_ok=true` = nexmon mudo / radiotap caído), `wifi_ble_stitching_ratio` (canary: groups / hashes, baja a medida que el stitching mergea MAC rotations) |
 | **Tracker (visión)** | `track_stitching_ratio` (unique_track_ids cruzando counting zone / counts emitidos, ideal ≈ 1.0, >1.3 = fragmentación), `ghost_adoption_count` (capa 1: rescates por ID adoption), `death_emit_count` (capa 3: rescates por death-emit). Las tres combinadas cierran el árbol diagnóstico (tracker perfecto / fragmentación rescatada / fragmentación sin rescate) |
 | **Device Shadow** | `last_shadow_apply_ts` (canary: epoch del último delta del Device Shadow aplicado vía `apply_shadow_delta`. NULL hasta el primer push real post-boot — distinguir "shadow nunca usado" vs "última push hace mucho" en Grafana) |
 | **Errors** | `error` (corto), `schedule_error_detail` (detalle largo). `null` cuando todo OK |

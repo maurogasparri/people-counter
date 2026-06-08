@@ -205,6 +205,9 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                  track_stitching_ratio, death_emit_count,
                  ghost_adoption_count,
                  last_shadow_apply_ts,
+                 throttled_flags, arm_clock_mhz, fan_rpm, power_w, ext5v_v,
+                 fs_readonly, service_restarts, clock_synchronized,
+                 cam_left_ok, cam_right_ok, wifi_probe_rate_per_min,
                  error, schedule_error_detail)
             VALUES (%s, %s, %s,
                     %s, %s, %s,
@@ -220,6 +223,9 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                     %s, %s,
                     %s,
                     %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
                     %s, %s)
             ON CONFLICT (device_id, event_ts) DO NOTHING
             """,
@@ -250,7 +256,22 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                 data.get("track_stitching_ratio"),
                 data.get("death_emit_count"),
                 data.get("ghost_adoption_count"),
-                _ts(data.get("last_shadow_apply_ts")) if data.get("last_shadow_apply_ts") is not None else None,
+                (
+                    _ts(data.get("last_shadow_apply_ts"))
+                    if data.get("last_shadow_apply_ts") is not None
+                    else None
+                ),
+                data.get("throttled_flags"),
+                data.get("arm_clock_mhz"),
+                data.get("fan_rpm"),
+                data.get("power_w"),
+                data.get("ext5v_v"),
+                data.get("fs_readonly"),
+                data.get("service_restarts"),
+                data.get("clock_synchronized"),
+                data.get("cam_left_ok"),
+                data.get("cam_right_ok"),
+                data.get("wifi_probe_rate_per_min"),
                 data.get("error"),
                 data.get("schedule_error_detail"),
             ),
@@ -304,15 +325,23 @@ def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
         except (KeyError, ValueError, TypeError):
             logger.warning(
                 "wifi_ble_bad_visitor_hash device_id=%s hash=%r",
-                device_id, d.get("visitor_hash"),
+                device_id,
+                d.get("visitor_hash"),
             )
             continue
-        rows.append((
-            device_id, store_id, visitor_hash,
-            d["protocol"], int(d["rssi_max"]),
-            _ts(d["first_seen_ts"]), _ts(d["last_seen_ts"]),
-            period_start, period_end,
-        ))
+        rows.append(
+            (
+                device_id,
+                store_id,
+                visitor_hash,
+                d["protocol"],
+                int(d["rssi_max"]),
+                _ts(d["first_seen_ts"]),
+                _ts(d["last_seen_ts"]),
+                period_start,
+                period_end,
+            )
+        )
 
     if not rows:
         return
@@ -335,7 +364,8 @@ def _insert_wifi_ble(conn, event: dict[str, Any]) -> None:
         )
     logger.info(
         "wifi_ble_events_inserted device_id=%s n=%d",
-        device_id, len(rows),
+        device_id,
+        len(rows),
     )
 
 
