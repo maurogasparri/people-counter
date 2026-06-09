@@ -105,7 +105,22 @@ def test_line_side_of_horizontal():
     line = _line_h(line_y=100)
     assert line.side_of(50, 99) == -1  # above
     assert line.side_of(50, 101) == 1  # below
-    assert line.side_of(50, 100) == 0  # on line
+    # Exactamente sobre la línea = lado +1 (no un estado 0 propio):
+    # un sample en la línea absorbía el cruce — la secuencia -1 → 0 → +1
+    # no registraba transición y la visita salía con net=0 (no contaba).
+    assert line.side_of(50, 100) == 1
+
+
+def test_crossing_counted_with_sample_exactly_on_line():
+    """Regresión: -1 → (sobre la línea) → +1 tiene que contar como UN
+    cruce top_to_bottom, no ser absorbido por el sample intermedio."""
+    line = _line_h(line_y=100)
+    s1 = line.side_of(50, 90)
+    s2 = line.side_of(50, 100)  # exactamente sobre la línea
+    s3 = line.side_of(50, 110)
+    labels = [line.crossing_label(a, b) for a, b in ((s1, s2), (s2, s3))]
+    crossings = [lab for lab in labels if lab is not None]
+    assert len(crossings) == 1
 
 
 def test_line_within_segment():
@@ -401,7 +416,9 @@ def test_legitimate_exit_counts_once_and_death_does_not_recount():
     track.positions.append(np.array([300, 350, 3000]))  # cross (still inside)
     counter.check_all({1: track})
 
-    track.positions.append(np.array([300, 450, 3000]))  # exit (sale de la counting zone)
+    track.positions.append(
+        np.array([300, 450, 3000])
+    )  # exit (sale de la counting zone)
     events = counter.check_all({1: track})
     assert len(events) == 1  # count event geométrico en la salida
     assert events[0].direction == "ingress"
@@ -545,7 +562,9 @@ def test_no_counting_zone_single_crossing_does_not_count():
     track = _make_track(1, [[200, 200, 3000]])
     counter._process_track(track)
     _advance(counter, track, [200, 350, 3000])
-    assert counter.total_in == 0  # sin counting zone no hay salida que dispare el conteo
+    assert (
+        counter.total_in == 0
+    )  # sin counting zone no hay salida que dispare el conteo
 
 
 # ---------------------------------------------------------------------------
@@ -640,10 +659,13 @@ def test_build_counter_reads_min_visit_range_from_config():
         "counter": {
             "counting_zone": COUNTING_ZONE,
             "min_visit_range_for_death_emit": 50.0,
-            "lines": [{
-                "from": [100, 300], "to": [500, 300],
-                "labels": {"top_to_bottom": "ingress"},
-            }],
+            "lines": [
+                {
+                    "from": [100, 300],
+                    "to": [500, 300],
+                    "labels": {"top_to_bottom": "ingress"},
+                }
+            ],
         },
     }
     c = build_counter(cfg)
@@ -656,14 +678,20 @@ def test_build_counter_min_visit_range_defaults_when_absent():
     cfg = {
         "counter": {
             "counting_zone": COUNTING_ZONE,
-            "lines": [{
-                "from": [100, 300], "to": [500, 300],
-                "labels": {"top_to_bottom": "ingress"},
-            }],
+            "lines": [
+                {
+                    "from": [100, 300],
+                    "to": [500, 300],
+                    "labels": {"top_to_bottom": "ingress"},
+                }
+            ],
         },
     }
     c = build_counter(cfg)
-    assert c.min_visit_range_for_death_emit == Counter.DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT
+    assert (
+        c.min_visit_range_for_death_emit
+        == Counter.DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1219,8 +1247,9 @@ def test_entry_fresca_skipped_when_first_inside_frame_is_kalman():
     track.disappeared = 3
     assert counter._process_track(track) is None
     meta = track.meta.get(Counter.META_KEY, {})
-    assert not meta.get("inside", False), \
-        "entry-fresca con Kalman NO debe setear inside=True"
+    assert not meta.get(
+        "inside", False
+    ), "entry-fresca con Kalman NO debe setear inside=True"
 
     # Frame 3: track sale de la counting zone por Kalman a (300, 520). Como nunca
     # tuvo entry-fresca legítima, was_inside=False — el exit branch
@@ -1363,8 +1392,10 @@ def test_death_emit_deferred_then_resurrected_no_double_count():
         "last_crossing_pos": (300.0, 300.0),
         "last_track_pos": (300.0, 350.0),
         "had_outside_pos": True,
-        "visit_x_min": 300.0, "visit_x_max": 300.0,
-        "visit_y_min": 250.0, "visit_y_max": 350.0,
+        "visit_x_min": 300.0,
+        "visit_x_max": 300.0,
+        "visit_y_min": 250.0,
+        "visit_y_max": 350.0,
     }
     events = counter.check_all({1: resurrected})
     # No emit todavía (sigue inside).
@@ -1466,7 +1497,9 @@ def test_death_emit_grace_override_via_constructor():
     """Pasar el param explícito sobreescribe el default — usado por main.py
     para sincronizar con ``tracker.adoption_window_frames + 2``."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE, death_emit_grace_frames=50,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
+        death_emit_grace_frames=50,
     )
     assert counter.death_emit_grace_frames == 50
 
@@ -1548,7 +1581,10 @@ def test_reset_daily_clears_death_emit_count():
 def test_min_visit_range_default_from_class_constant():
     """Sin override, ``min_visit_range_for_death_emit`` usa el default."""
     counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
-    assert counter.min_visit_range_for_death_emit == Counter.DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT
+    assert (
+        counter.min_visit_range_for_death_emit
+        == Counter.DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT
+    )
 
 
 def test_min_visit_range_override_relaxes_guard_2():
@@ -1556,7 +1592,9 @@ def test_min_visit_range_override_relaxes_guard_2():
     que con el default fueron filtradas. Útil para sites con detector flakey
     donde la mayoría del visit cae en frames Kalman (no actualizan range)."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE, min_visit_range_for_death_emit=20.0,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
+        min_visit_range_for_death_emit=20.0,
     )
     track = _make_track(1, [[300, 150, 3000]])  # outside counting zone
     counter.check_all({1: track})
@@ -1595,9 +1633,9 @@ def test_death_with_zigzag_net_zero_does_not_emit():
     # muere DENTRO de la counting zone con guard 2 (visit_range >= 80) OK.
     track = _make_track(1, [[300, 150, 3000]])  # outside arriba
     counter.check_all({1: track})
-    _advance(counter, track, [300, 250, 3000])   # entry arriba de línea
-    _advance(counter, track, [300, 350, 3000])   # cross abajo (net=+1)
-    _advance(counter, track, [300, 250, 3000])   # vuelta arriba (net=0)
+    _advance(counter, track, [300, 250, 3000])  # entry arriba de línea
+    _advance(counter, track, [300, 350, 3000])  # cross abajo (net=+1)
+    _advance(counter, track, [300, 250, 3000])  # vuelta arriba (net=0)
     # visit_y_range = 100 (250..350) ≥ 80 → pasa guard 2.
 
     # Track desaparece dentro de la counting zone con net=0.
@@ -1618,10 +1656,10 @@ def test_real_cycle_with_double_crossing_same_direction_counts_once():
     counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
     track = _make_track(1, [[300, 150, 3000]])  # outside arriba
     counter.check_all({1: track})
-    _advance(counter, track, [300, 250, 3000])   # entry arriba
-    _advance(counter, track, [300, 350, 3000])   # cross abajo (net=+1)
-    _advance(counter, track, [300, 250, 3000])   # vuelve arriba (net=0)
-    _advance(counter, track, [300, 350, 3000])   # cross abajo de nuevo (net=+1)
+    _advance(counter, track, [300, 250, 3000])  # entry arriba
+    _advance(counter, track, [300, 350, 3000])  # cross abajo (net=+1)
+    _advance(counter, track, [300, 250, 3000])  # vuelve arriba (net=0)
+    _advance(counter, track, [300, 350, 3000])  # cross abajo de nuevo (net=+1)
     # net = +1 final (no +2: cada cruce suma 1 si va al +1, resta 1 si va al -1).
     # Verificamos el invariante del net signed.
     ev = _advance(counter, track, [300, 450, 3000])  # exit abajo
@@ -1638,19 +1676,25 @@ def test_multi_line_each_line_tracks_independent_net():
     líneas cubren regiones disjuntas, pero el invariante debe valer).
     """
     line_top = Line(
-        from_xy=(100, 250), to_xy=(500, 250),
+        from_xy=(100, 250),
+        to_xy=(500, 250),
         labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
     )
     line_bottom = Line(
-        from_xy=(100, 350), to_xy=(500, 350),
+        from_xy=(100, 350),
+        to_xy=(500, 350),
         labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
     )
     counter = Counter(lines=[line_top, line_bottom], counting_zone=COUNTING_ZONE)
     track = _make_track(1, [[300, 150, 3000]])  # outside arriba
     counter.check_all({1: track})
-    _advance(counter, track, [300, 220, 3000])   # entry arriba de ambas líneas
-    _advance(counter, track, [300, 300, 3000])   # cruza line_top hacia abajo (net_top=+1)
-    _advance(counter, track, [300, 400, 3000])   # cruza line_bottom hacia abajo (net_bottom=+1)
+    _advance(counter, track, [300, 220, 3000])  # entry arriba de ambas líneas
+    _advance(
+        counter, track, [300, 300, 3000]
+    )  # cruza line_top hacia abajo (net_top=+1)
+    _advance(
+        counter, track, [300, 400, 3000]
+    )  # cruza line_bottom hacia abajo (net_bottom=+1)
     ev = _advance(counter, track, [300, 500, 3000])  # exit
     assert ev is not None
     # Ambas líneas tienen net=+1, mismo label → un solo emit ingress.
@@ -1663,8 +1707,7 @@ def _set_track_height_history(track, head_height_mm_values):
     classifier downstream usa para la mediana. Helper para tests del
     guard ``min_count_height_m``."""
     track.meta["detection_history"] = [
-        {"head_height_mm": v}
-        for v in head_height_mm_values
+        {"head_height_mm": v} for v in head_height_mm_values
     ]
 
 
@@ -1673,14 +1716,15 @@ def test_min_count_height_blocks_emit_for_short_track():
     al exit observado. Caso real: perro caminando cruza la línea — altura
     medida ~0.5m con detector disparando — counter rechaza emit."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_count_height_m=1.0,
     )
     track = _make_track(1, [[300, 150, 3000]])  # outside arriba
     counter.check_all({1: track})
     _set_track_height_history(track, [500.0, 520.0, 510.0, 490.0])  # ~0.5m
-    _advance(counter, track, [300, 250, 3000])   # entry inside
-    _advance(counter, track, [300, 350, 3000])   # cross net=+1
+    _advance(counter, track, [300, 250, 3000])  # entry inside
+    _advance(counter, track, [300, 350, 3000])  # cross net=+1
     ev = _advance(counter, track, [300, 450, 3000])  # real exit
     assert ev is None, "track con altura <1m no debe contar"
     assert counter.total_in == 0
@@ -1692,7 +1736,8 @@ def test_min_count_height_passes_when_height_unknown():
     detecciones) PASA el guard — preservamos recall en casos donde SGBM
     falla (motion blur, oclusiones)."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_count_height_m=1.0,
     )
     track = _make_track(1, [[300, 150, 3000]])
@@ -1708,7 +1753,8 @@ def test_min_count_height_passes_when_height_unknown():
 def test_min_count_height_passes_when_track_is_tall_enough():
     """Track con altura >= threshold (humano normal) no se filtra."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_count_height_m=1.0,
     )
     track = _make_track(1, [[300, 150, 3000]])
@@ -1726,7 +1772,8 @@ def test_min_count_height_blocks_death_emit_for_short_track():
     """Death-emit también respeta el guard de altura. Track muere dentro
     de la counting zone con cruce registrado + altura baja → no emite."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_count_height_m=1.0,
     )
     track = _make_track(1, [[300, 150, 3000]])
@@ -1760,9 +1807,11 @@ def _set_track_conf_history(track, confidence_values, head_height_mm=None):
     """detection_history con confidence (y opcionalmente head_height_mm). Para
     tests del guard ``min_count_confidence`` (caso sin altura medida)."""
     track.meta["detection_history"] = [
-        {"confidence": c}
-        if head_height_mm is None
-        else {"confidence": c, "head_height_mm": head_height_mm}
+        (
+            {"confidence": c}
+            if head_height_mm is None
+            else {"confidence": c, "head_height_mm": head_height_mm}
+        )
         for c in confidence_values
     ]
 
@@ -1835,7 +1884,8 @@ def test_min_count_confidence_blocks_death_emit_dog():
 def test_min_count_confidence_off_when_zero():
     """0.0 = guard desactivado: sin altura + conf baja igual cuenta (back-compat)."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_count_confidence=0.0,
     )
     track = _make_track(1, [[300, 150, 3000]])
@@ -1861,10 +1911,13 @@ def test_build_counter_reads_min_count_confidence_from_config():
         "counter": {
             "counting_zone": COUNTING_ZONE,
             "min_count_confidence": 0.5,
-            "lines": [{
-                "from": [100, 300], "to": [500, 300],
-                "labels": {"top_to_bottom": "ingress"},
-            }],
+            "lines": [
+                {
+                    "from": [100, 300],
+                    "to": [500, 300],
+                    "labels": {"top_to_bottom": "ingress"},
+                }
+            ],
         },
     }
     c = build_counter(cfg)
@@ -1881,7 +1934,8 @@ def test_height_confidence_gate_default_from_class_constant():
 def test_height_confidence_gate_override_via_constructor():
     """``height_confidence_gate`` kwarg overrides el default."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         height_confidence_gate=0.7,
     )
     assert counter.height_confidence_gate == 0.7
@@ -1893,7 +1947,8 @@ def test_height_confidence_gate_below_threshold_marks_unknown():
     se aplica server-side desde height_m (NULL → 'unknown' en la
     función SQL height_class)."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         height_confidence_gate=0.7,
     )
     track = _make_track(1, [[300, 150, 3000]])
@@ -1909,14 +1964,15 @@ def test_height_confidence_gate_below_threshold_marks_unknown():
     ev = _advance(counter, track, [300, 450, 3000])
     assert ev is not None
     assert ev.direction == "ingress"  # SÍ cuenta — gate no afecta conteo
-    assert ev.height_m is None         # demografía blanqueada → SQL: 'unknown'
+    assert ev.height_m is None  # demografía blanqueada → SQL: 'unknown'
     assert ev.head_depth_m is None
 
 
 def test_height_confidence_gate_above_threshold_reports_demographics():
     """Median conf >= gate → height_m se reporta normalmente."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         height_confidence_gate=0.5,
     )
     track = _make_track(1, [[300, 150, 3000]])
@@ -1939,10 +1995,13 @@ def test_build_counter_reads_height_confidence_gate_from_config():
         "counter": {
             "counting_zone": COUNTING_ZONE,
             "height_confidence_gate": 0.65,
-            "lines": [{
-                "from": [100, 300], "to": [500, 300],
-                "labels": {"top_to_bottom": "ingress"},
-            }],
+            "lines": [
+                {
+                    "from": [100, 300],
+                    "to": [500, 300],
+                    "labels": {"top_to_bottom": "ingress"},
+                }
+            ],
         },
     }
     c = build_counter(cfg)
@@ -1955,10 +2014,13 @@ def test_build_counter_reads_min_count_height_m_from_config():
         "counter": {
             "counting_zone": COUNTING_ZONE,
             "min_count_height_m": 1.0,
-            "lines": [{
-                "from": [100, 300], "to": [500, 300],
-                "labels": {"top_to_bottom": "ingress"},
-            }],
+            "lines": [
+                {
+                    "from": [100, 300],
+                    "to": [500, 300],
+                    "labels": {"top_to_bottom": "ingress"},
+                }
+            ],
         },
     }
     c = build_counter(cfg)
@@ -1974,7 +2036,8 @@ def test_min_real_inside_frames_blocks_single_frame_entry():
     exit Kalman no acumula suficientes frames reales → rechaza emit.
     """
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_real_inside_frames=2,
     )
     track = _make_track(1, [[300, 150, 3000]])  # outside arriba
@@ -1991,15 +2054,16 @@ def test_min_real_inside_frames_blocks_single_frame_entry():
 def test_min_real_inside_frames_passes_walker_with_enough_frames():
     """Caminante real con 3+ frames inside cruza limpio el guard."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_real_inside_frames=2,
     )
     track = _make_track(1, [[300, 150, 3000]])
     counter.check_all({1: track})
     # Trayectoria evita y=300 exacto (line) para no corromper sides cache.
-    _advance(counter, track, [300, 220, 3000])   # entry (real_inside=1)
-    _advance(counter, track, [300, 270, 3000])   # inside above (real_inside=2)
-    _advance(counter, track, [300, 360, 3000])   # cross below (real_inside=3)
+    _advance(counter, track, [300, 220, 3000])  # entry (real_inside=1)
+    _advance(counter, track, [300, 270, 3000])  # inside above (real_inside=2)
+    _advance(counter, track, [300, 360, 3000])  # cross below (real_inside=3)
     ev = _advance(counter, track, [300, 460, 3000])
     assert ev is not None
     assert ev.direction == "ingress"
@@ -2017,10 +2081,13 @@ def test_build_counter_reads_min_real_inside_frames_from_config():
         "counter": {
             "counting_zone": COUNTING_ZONE,
             "min_real_inside_frames": 2,
-            "lines": [{
-                "from": [100, 300], "to": [500, 300],
-                "labels": {"top_to_bottom": "ingress"},
-            }],
+            "lines": [
+                {
+                    "from": [100, 300],
+                    "to": [500, 300],
+                    "labels": {"top_to_bottom": "ingress"},
+                }
+            ],
         },
     }
     c = build_counter(cfg)
@@ -2030,7 +2097,8 @@ def test_build_counter_reads_min_real_inside_frames_from_config():
 def test_min_real_inside_frames_blocks_death_emit_thin_evidence():
     """Death-emit también respeta el guard de evidencia mínima."""
     counter = Counter(
-        lines=[_line_h()], counting_zone=COUNTING_ZONE,
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
         min_real_inside_frames=2,
     )
     track = _make_track(1, [[300, 150, 3000]])
@@ -2094,9 +2162,9 @@ def test_stale_outside_pos_after_kalman_exit_does_not_double_count():
     #    no hay flip al salir por abajo → NO emit espurio.
     ev2 = _advance(counter, track, [300, 480, 3000])
     assert ev2 is None, "no debe emitir un segundo ingress dentro de 200 ms"
-    assert counter.total_in == 1, (
-        f"sin el fix, total_in == 2 (doble conteo); con el fix, == 1"
-    )
+    assert (
+        counter.total_in == 1
+    ), "sin el fix, total_in == 2 (doble conteo); con el fix, == 1"
 
 
 def test_ghost_adoption_preserves_counter_meta_so_resurrected_track_emits():
@@ -2117,7 +2185,7 @@ def test_ghost_adoption_preserves_counter_meta_so_resurrected_track_emits():
     from src.tracking.tracker import EuclideanTracker
 
     tracker = EuclideanTracker(
-        max_distance=200,         # cubre saltos del test sintético
+        max_distance=200,  # cubre saltos del test sintético
         confirm_frames=2,
         pending_max_frames=2,
         max_disappeared=3,
@@ -2193,9 +2261,9 @@ def test_ghost_adoption_preserves_counter_meta_so_resurrected_track_emits():
     assert tid_a in tracker.tracks, "Ghost adoption debería resucitar el ID"
     # Meta del counter heredada (incluyendo el cruce registrado por Track A).
     meta_after_adoption = tracker.tracks[tid_a].meta.get(Counter.META_KEY, {})
-    assert meta_after_adoption.get("inside") is True, (
-        f"meta post-adoption inesperada: {meta_after_adoption}"
-    )
+    assert (
+        meta_after_adoption.get("inside") is True
+    ), f"meta post-adoption inesperada: {meta_after_adoption}"
     assert meta_after_adoption.get("crossing_net") == [1]
     assert meta_after_adoption.get("had_outside_pos") is True
 

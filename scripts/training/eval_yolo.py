@@ -24,11 +24,13 @@ from ultralytics import YOLO
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--weights", required=True, type=Path)
-    parser.add_argument("--source", required=True, type=Path,
-                        help="Carpeta con jpgs a evaluar")
+    parser.add_argument(
+        "--source", required=True, type=Path, help="Carpeta con jpgs a evaluar"
+    )
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--conf", type=float, default=0.25,
-                        help="Confidence threshold (default 0.25)")
+    parser.add_argument(
+        "--conf", type=float, default=0.25, help="Confidence threshold (default 0.25)"
+    )
     parser.add_argument("--imgsz", type=int, default=416)
     args = parser.parse_args()
 
@@ -73,8 +75,10 @@ def main() -> None:
         avg = total_dets / max(1, len(results))
         f.write(f"Avg per frame: {avg:.2f}\n")
 
-    print(f"Total detects: {total_dets} en {len(results)} frames "
-          f"(avg {total_dets/max(1,len(results)):.2f}/frame)")
+    print(
+        f"Total detects: {total_dets} en {len(results)} frames "
+        f"(avg {total_dets/max(1,len(results)):.2f}/frame)"
+    )
     print(f"Output: {args.output}/")
     print(f"Resumen: {summary_path}")
 

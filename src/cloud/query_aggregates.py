@@ -70,8 +70,8 @@ _BUCKET_COLS = {
 # el rol readonly_external. La vista hace los FULL OUTER JOINs internamente.
 _BUCKET_UNIFIED_VIEWS = {
     "15min": "metrics_unified_by_bucket_15min",
-    "1h":    "metrics_unified_by_bucket_hour",
-    "1d":    "metrics_unified_by_bucket_day",
+    "1h": "metrics_unified_by_bucket_hour",
+    "1d": "metrics_unified_by_bucket_day",
 }
 _BUCKET_INTERVALS = {
     "15min": timedelta(minutes=15),
@@ -112,6 +112,7 @@ class _BadRequest(Exception):
 # =============================================================================
 # Postgres connection (IAM auth, cached warm)
 # =============================================================================
+
 
 def _generate_iam_token() -> str:
     import boto3
@@ -195,6 +196,7 @@ def _get_connection():
 # =============================================================================
 # Input parsing + validation
 # =============================================================================
+
 
 def _parse_iso_utc(name: str, value: str) -> datetime:
     """Acepta ISO 8601 con timezone explícita (Z u offset). Devuelve UTC aware."""
@@ -349,6 +351,7 @@ def _parse_input(event: dict[str, Any]) -> dict[str, Any]:
 # SQL execution
 # =============================================================================
 
+
 def _align_to_bucket(dt: datetime, bucket: str) -> datetime:
     """Trunca un datetime al inicio del bucket que lo contiene."""
     if bucket == "15min":
@@ -497,8 +500,10 @@ def _query_data_freshness(conn, sites: list[str]) -> dict[str, str]:
         out: dict[str, str] = {}
         for store_id, last_seen in cur.fetchall():
             if last_seen is not None:
-                out[store_id] = last_seen.astimezone(timezone.utc).isoformat().replace(
-                    "+00:00", "Z"
+                out[store_id] = (
+                    last_seen.astimezone(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
                 )
         return out
 
@@ -506,6 +511,7 @@ def _query_data_freshness(conn, sites: list[str]) -> dict[str, str]:
 # =============================================================================
 # Response shaping
 # =============================================================================
+
 
 def _shape_row(raw: dict[str, Any]) -> dict[str, Any]:
     """Transforma una fila SQL plana al shape público (nested)."""
@@ -517,31 +523,31 @@ def _shape_row(raw: dict[str, Any]) -> dict[str, Any]:
         "bucket_start": bucket_start_iso,
         "counts": {
             "in": {
-                "adult":   int(raw["in_adult"]),
-                "child":   int(raw["in_child"]),
+                "adult": int(raw["in_adult"]),
+                "child": int(raw["in_child"]),
                 "unknown": int(raw["in_unknown"]),
-                "total":   int(raw["in_total"]),
+                "total": int(raw["in_total"]),
             },
             "out": {
-                "adult":   int(raw["out_adult"]),
-                "child":   int(raw["out_child"]),
+                "adult": int(raw["out_adult"]),
+                "child": int(raw["out_child"]),
                 "unknown": int(raw["out_unknown"]),
-                "total":   int(raw["out_total"]),
+                "total": int(raw["out_total"]),
             },
         },
         "external_traffic": {
             "passersby": int(raw["passersby"]),
-            "shoppers":  int(raw["shoppers"]),
+            "shoppers": int(raw["shoppers"]),
         },
         "pos": {
-            "sales":               int(raw["sales"]),
-            "returns":             int(raw["returns"]),
-            "transactions":        int(raw["transactions"]),
-            "items_sale":          int(raw["items_sale"]),
-            "items_return":        int(raw["items_return"]),
-            "amount_minor_sale":   int(raw["amount_minor_sale"]),
+            "sales": int(raw["sales"]),
+            "returns": int(raw["returns"]),
+            "transactions": int(raw["transactions"]),
+            "items_sale": int(raw["items_sale"]),
+            "items_return": int(raw["items_return"]),
+            "amount_minor_sale": int(raw["amount_minor_sale"]),
             "amount_minor_return": int(raw["amount_minor_return"]),
-            "currency":            raw["currency"],
+            "currency": raw["currency"],
         },
     }
 
@@ -549,6 +555,7 @@ def _shape_row(raw: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 # HTTP headers (Link RFC 8288, ETag, Cache-Control)
 # =============================================================================
+
 
 def _api_base_url() -> str:
     return os.environ.get("API_BASE_URL", "https://api.tfg.gasparri.com.ar").rstrip("/")
@@ -590,7 +597,9 @@ def _build_cache_headers(to_dt: datetime, etag: str, now: datetime) -> dict[str,
     """
     headers = {"etag": etag}
     if to_dt < now - _CACHE_FRESH_THRESHOLD:
-        headers["cache-control"] = f"public, max-age={_CACHE_MAX_AGE_SECONDS}, immutable"
+        headers["cache-control"] = (
+            f"public, max-age={_CACHE_MAX_AGE_SECONDS}, immutable"
+        )
     else:
         headers["cache-control"] = "no-cache"
     return headers
@@ -599,6 +608,7 @@ def _build_cache_headers(to_dt: datetime, etag: str, now: datetime) -> dict[str,
 # =============================================================================
 # Lambda response builders
 # =============================================================================
+
 
 def _http_response(
     status_code: int,
@@ -657,7 +667,9 @@ def _emf_log(
                 {
                     "Namespace": "PeopleCounter/QueryAPI",
                     "Dimensions": [list(dimensions.keys())] if dimensions else [],
-                    "Metrics": [{"Name": name, "Unit": unit} for name, _, unit in metrics],
+                    "Metrics": [
+                        {"Name": name, "Unit": unit} for name, _, unit in metrics
+                    ],
                 }
             ],
         },
@@ -672,6 +684,7 @@ def _emf_log(
 # =============================================================================
 # OpenAPI 3.1 spec
 # =============================================================================
+
 
 def _openapi_spec() -> dict[str, Any]:
     return {
@@ -774,10 +787,26 @@ def _openapi_spec() -> dict[str, Any]:
                     ),
                     "required": ["adult", "child", "unknown", "total"],
                     "properties": {
-                        "adult":   {"type": "integer", "minimum": 0, "description": "Personas clasificadas como adultos."},
-                        "child":   {"type": "integer", "minimum": 0, "description": "Personas clasificadas como niños."},
-                        "unknown": {"type": "integer", "minimum": 0, "description": "Eventos sin clasificación demográfica confiable."},
-                        "total":   {"type": "integer", "minimum": 0, "description": "Suma de adult + child + unknown."},
+                        "adult": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Personas clasificadas como adultos.",
+                        },
+                        "child": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Personas clasificadas como niños.",
+                        },
+                        "unknown": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Eventos sin clasificación demográfica confiable.",
+                        },
+                        "total": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Suma de adult + child + unknown.",
+                        },
                     },
                 },
                 "AggregatesRow": {
@@ -787,7 +816,13 @@ def _openapi_spec() -> dict[str, Any]:
                         "puntual. Si el bucket no tuvo datos, todos los "
                         "contadores son 0 y `pos.currency` defaultea a `ARS`."
                     ),
-                    "required": ["site_id", "bucket_start", "counts", "external_traffic", "pos"],
+                    "required": [
+                        "site_id",
+                        "bucket_start",
+                        "counts",
+                        "external_traffic",
+                        "pos",
+                    ],
                     "properties": {
                         "site_id": {
                             "type": "string",
@@ -810,11 +845,19 @@ def _openapi_spec() -> dict[str, Any]:
                             "required": ["in", "out"],
                             "properties": {
                                 "in": {
-                                    "allOf": [{"$ref": "#/components/schemas/DirectionBreakdown"}],
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/DirectionBreakdown"
+                                        }
+                                    ],
                                     "description": "Personas que entraron al local en el bucket.",
                                 },
                                 "out": {
-                                    "allOf": [{"$ref": "#/components/schemas/DirectionBreakdown"}],
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/DirectionBreakdown"
+                                        }
+                                    ],
                                     "description": "Personas que salieron del local en el bucket.",
                                 },
                             },
@@ -851,17 +894,41 @@ def _openapi_spec() -> dict[str, Any]:
                                 "vía `POST /pos/transactions` para el bucket."
                             ),
                             "required": [
-                                "sales", "returns", "transactions",
-                                "items_sale", "items_return",
-                                "amount_minor_sale", "amount_minor_return",
+                                "sales",
+                                "returns",
+                                "transactions",
+                                "items_sale",
+                                "items_return",
+                                "amount_minor_sale",
+                                "amount_minor_return",
                                 "currency",
                             ],
                             "properties": {
-                                "sales":        {"type": "integer", "minimum": 0, "description": "Cantidad de ventas (`type='sale'`)."},
-                                "returns":      {"type": "integer", "minimum": 0, "description": "Cantidad de devoluciones (`type='return'`)."},
-                                "transactions": {"type": "integer", "minimum": 0, "description": "Total de transacciones (sales + returns)."},
-                                "items_sale":   {"type": "integer", "minimum": 0, "description": "Suma de ítems vendidos en el bucket."},
-                                "items_return": {"type": "integer", "minimum": 0, "description": "Suma de ítems devueltos en el bucket."},
+                                "sales": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "Cantidad de ventas (`type='sale'`).",
+                                },
+                                "returns": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "Cantidad de devoluciones (`type='return'`).",
+                                },
+                                "transactions": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "Total de transacciones (sales + returns).",
+                                },
+                                "items_sale": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "Suma de ítems vendidos en el bucket.",
+                                },
+                                "items_return": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "Suma de ítems devueltos en el bucket.",
+                                },
                                 "amount_minor_sale": {
                                     "type": "integer",
                                     "minimum": 0,
@@ -936,7 +1003,13 @@ def _openapi_spec() -> dict[str, Any]:
                         "moneda (centavos para ARS/USD, mils para BHD), nunca "
                         "como float."
                     ),
-                    "required": ["transaction_id", "store_id", "event_ts", "type", "amount_minor"],
+                    "required": [
+                        "transaction_id",
+                        "store_id",
+                        "event_ts",
+                        "type",
+                        "amount_minor",
+                    ],
                     "properties": {
                         "transaction_id": {
                             "type": "string",
@@ -954,8 +1027,15 @@ def _openapi_spec() -> dict[str, Any]:
                         },
                         "event_ts": {
                             "oneOf": [
-                                {"type": "string", "format": "date-time", "description": "ISO 8601 con timezone explícita (`Z` u offset)."},
-                                {"type": "number", "description": "Epoch numérico. Valores > 10^12 se interpretan como milisegundos; el resto, como segundos."},
+                                {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "ISO 8601 con timezone explícita (`Z` u offset).",
+                                },
+                                {
+                                    "type": "number",
+                                    "description": "Epoch numérico. Valores > 10^12 se interpretan como milisegundos; el resto, como segundos.",
+                                },
                             ],
                             "description": "Timestamp de la transacción. Datetimes naive (sin timezone) son rechazados.",
                             "example": "2026-05-18T14:32:15-03:00",
@@ -1003,9 +1083,21 @@ def _openapi_spec() -> dict[str, Any]:
                     "description": "Resumen de la operación de ingesta (single o bulk).",
                     "required": ["total", "inserted", "conflicted"],
                     "properties": {
-                        "total":      {"type": "integer", "minimum": 0, "description": "Transacciones recibidas en el body del request."},
-                        "inserted":   {"type": "integer", "minimum": 0, "description": "Transacciones nuevas (no existían) que se insertaron."},
-                        "conflicted": {"type": "integer", "minimum": 0, "description": "Transacciones que ya existían por su `(store_id, transaction_id)` y se ignoraron silenciosamente."},
+                        "total": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Transacciones recibidas en el body del request.",
+                        },
+                        "inserted": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Transacciones nuevas (no existían) que se insertaron.",
+                        },
+                        "conflicted": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Transacciones que ya existían por su `(store_id, transaction_id)` y se ignoraron silenciosamente.",
+                        },
                     },
                 },
             },
@@ -1025,7 +1117,7 @@ def _openapi_spec() -> dict[str, Any]:
                         "no hubo datos, la fila se devuelve igual con todos los "
                         "contadores en 0.\n\n"
                         "**Paginación**: cursor opaco vía header `Link` "
-                        "(RFC 8288). Iterar siguiendo el `rel=\"next\"` hasta "
+                        '(RFC 8288). Iterar siguiendo el `rel="next"` hasta '
                         "que el header no lo incluya.\n\n"
                         "**Cacheo**: el response trae `ETag` siempre, y "
                         "`Cache-Control: public, max-age=86400, immutable` "
@@ -1075,7 +1167,11 @@ def _openapi_spec() -> dict[str, Any]:
                             "name": "bucket",
                             "in": "query",
                             "required": False,
-                            "schema": {"type": "string", "enum": ["15min", "1h", "1d"], "default": "15min"},
+                            "schema": {
+                                "type": "string",
+                                "enum": ["15min", "1h", "1d"],
+                                "default": "15min",
+                            },
                             "description": (
                                 "Granularidad de agrupación. Caps de rango "
                                 "por bucket (defensa contra full scans):\n"
@@ -1091,7 +1187,7 @@ def _openapi_spec() -> dict[str, Any]:
                             "schema": {"type": "string"},
                             "description": (
                                 "Cursor opaco de paginación. Tomar del header "
-                                "`Link; rel=\"next\"` de la respuesta anterior "
+                                '`Link; rel="next"` de la respuesta anterior '
                                 "y reenviar sin modificar. No incluir en el "
                                 "primer request."
                             ),
@@ -1100,7 +1196,12 @@ def _openapi_spec() -> dict[str, Any]:
                             "name": "limit",
                             "in": "query",
                             "required": False,
-                            "schema": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 1000},
+                            "schema": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 5000,
+                                "default": 1000,
+                            },
                             "description": "Máximo de filas por página. Rango: 1 a 5000.",
                         },
                     ],
@@ -1108,8 +1209,8 @@ def _openapi_spec() -> dict[str, Any]:
                         "200": {
                             "description": (
                                 "Página de agregados. El header `Link` "
-                                "incluye `rel=\"first\"` siempre y "
-                                "`rel=\"next\"` solo cuando hay más páginas."
+                                'incluye `rel="first"` siempre y '
+                                '`rel="next"` solo cuando hay más páginas.'
                             ),
                             "headers": {
                                 "Link": {
@@ -1131,7 +1232,9 @@ def _openapi_spec() -> dict[str, Any]:
                             },
                             "content": {
                                 "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/AggregatesResponse"}
+                                    "schema": {
+                                        "$ref": "#/components/schemas/AggregatesResponse"
+                                    }
                                 }
                             },
                         },
@@ -1237,7 +1340,9 @@ def _openapi_spec() -> dict[str, Any]:
                                         {"$ref": "#/components/schemas/PosTransaction"},
                                         {
                                             "type": "array",
-                                            "items": {"$ref": "#/components/schemas/PosTransaction"},
+                                            "items": {
+                                                "$ref": "#/components/schemas/PosTransaction"
+                                            },
                                             "minItems": 1,
                                             "description": "Bulk: array de transacciones (mínimo 1).",
                                         },
@@ -1255,7 +1360,9 @@ def _openapi_spec() -> dict[str, Any]:
                             ),
                             "content": {
                                 "application/json": {
-                                    "schema": {"$ref": "#/components/schemas/PosIngestResponse"}
+                                    "schema": {
+                                        "$ref": "#/components/schemas/PosIngestResponse"
+                                    }
                                 }
                             },
                         },
@@ -1315,10 +1422,13 @@ def _openapi_spec() -> dict[str, Any]:
 # Handler
 # =============================================================================
 
+
 def _request_path(event: dict[str, Any]) -> str:
-    return (event.get("rawPath")
-            or event.get("requestContext", {}).get("http", {}).get("path")
-            or "/")
+    return (
+        event.get("rawPath")
+        or event.get("requestContext", {}).get("http", {}).get("path")
+        or "/"
+    )
 
 
 def _request_headers(event: dict[str, Any]) -> dict[str, str]:
@@ -1360,7 +1470,10 @@ def _aggregates_handler(event: dict[str, Any], start_ts: datetime) -> dict[str, 
     if has_more and raw_rows:
         last = raw_rows[-1]
         last_iso = (
-            last["bucket_start"].astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            last["bucket_start"]
+            .astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
         )
         next_cursor = _encode_cursor(last_iso, last["store_id"])
 
@@ -1375,9 +1488,9 @@ def _aggregates_handler(event: dict[str, Any], start_ts: datetime) -> dict[str, 
     latency_ms = (datetime.now(tz=timezone.utc) - start_ts).total_seconds() * 1000.0
     _emf_log(
         metrics=[
-            ("LatencyMs",      latency_ms,           "Milliseconds"),
-            ("RowsReturned",   float(len(rows)),     "Count"),
-            ("HasMore",        1.0 if has_more else 0.0, "Count"),
+            ("LatencyMs", latency_ms, "Milliseconds"),
+            ("RowsReturned", float(len(rows)), "Count"),
+            ("HasMore", 1.0 if has_more else 0.0, "Count"),
         ],
         dimensions={"Endpoint": "aggregates", "Bucket": params["bucket"]},
         sites_count=len(resolved_sites),
@@ -1414,8 +1527,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         latency_ms = (datetime.now(tz=timezone.utc) - start_ts).total_seconds() * 1000.0
         _emf_log(
             metrics=[
-                ("LatencyMs",       latency_ms, "Milliseconds"),
-                ("ValidationError", 1.0,         "Count"),
+                ("LatencyMs", latency_ms, "Milliseconds"),
+                ("ValidationError", 1.0, "Count"),
             ],
             dimensions={"Endpoint": "aggregates", "ErrorSlug": e.problem_slug},
         )
@@ -1434,8 +1547,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         latency_ms = (datetime.now(tz=timezone.utc) - start_ts).total_seconds() * 1000.0
         _emf_log(
             metrics=[
-                ("LatencyMs",     latency_ms, "Milliseconds"),
-                ("InternalError", 1.0,         "Count"),
+                ("LatencyMs", latency_ms, "Milliseconds"),
+                ("InternalError", 1.0, "Count"),
             ],
             dimensions={"Endpoint": "aggregates"},
             error_type=type(e).__name__,

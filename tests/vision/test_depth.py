@@ -24,9 +24,7 @@ class TestCreateSGBM:
 
 
 class TestComputeDisparity:
-    def _make_shifted_pair(
-        self, shift_px: int = 20
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def _make_shifted_pair(self, shift_px: int = 20) -> tuple[np.ndarray, np.ndarray]:
         """Create a synthetic stereo pair with known horizontal shift.
 
         A textured pattern shifted by shift_px pixels simulates a scene
@@ -73,9 +71,9 @@ class TestComputeDisparity:
         if len(valid) > 100:
             median_disp = np.median(valid)
             # Median disparity should be in the ballpark of our shift
-            assert abs(median_disp - shift) < 15, (
-                f"Expected disparity ~{shift}, got median {median_disp:.1f}"
-            )
+            assert (
+                abs(median_disp - shift) < 15
+            ), f"Expected disparity ~{shift}, got median {median_disp:.1f}"
 
     def test_accepts_bgr(self):
         left, right = self._make_shifted_pair(20)
@@ -116,9 +114,9 @@ class TestComputeDisparity:
         )
         valid_no_wls = int((disp_no_wls > 0).sum())
         valid_wls = int((disp_wls > 0).sum())
-        assert valid_wls > valid_no_wls, (
-            f"WLS debe rellenar holes ({valid_no_wls} → {valid_wls} válidos)"
-        )
+        assert (
+            valid_wls > valid_no_wls
+        ), f"WLS debe rellenar holes ({valid_no_wls} → {valid_wls} válidos)"
 
     @pytest.mark.skipif(
         not hasattr(cv2.ximgproc, "createRightMatcher"),

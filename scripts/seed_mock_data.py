@@ -28,6 +28,7 @@ Uso típico:
     py -3 scripts/seed_mock_data.py --dry-run            # solo imprime conteos
     py -3 scripts/seed_mock_data.py --purge-only         # borra la data demo
 """
+
 from __future__ import annotations
 
 import argparse
@@ -72,25 +73,38 @@ DEFAULT_END = date.today()
 SITES = [
     # store_id   nombre                         lat        lon      base  conv  turn  dwell_med  area_m2
     # grandes (área 195-235, tráfico alto)
-    ("demo-01", "Alto Palermo",               -34.5882, -58.4108, 245, 0.052, 0.18, 6.5, 220),
-    ("demo-02", "Unicenter",                  -34.5106, -58.5245, 230, 0.046, 0.16, 7.0, 235),
-    ("demo-03", "Córdoba Shopping",           -31.3795, -64.2200, 218, 0.068, 0.21, 6.0, 195),
+    ("demo-01", "Alto Palermo", -34.5882, -58.4108, 245, 0.052, 0.18, 6.5, 220),
+    ("demo-02", "Unicenter", -34.5106, -58.5245, 230, 0.046, 0.16, 7.0, 235),
+    ("demo-03", "Córdoba Shopping", -31.3795, -64.2200, 218, 0.068, 0.21, 6.0, 195),
     # medianas (área 145-175, tráfico medio)
-    ("demo-04", "Abasto",                     -34.6037, -58.4109, 132, 0.058, 0.20, 6.0, 175),
-    ("demo-05", "Alto Avellaneda",            -34.6680, -58.3705, 124, 0.049, 0.17, 5.5, 160),
-    ("demo-06", "Alto Comahue",               -38.9489, -68.0668, 118, 0.075, 0.23, 6.5, 150),
-    ("demo-07", "Mendoza Plaza",              -32.8990, -68.8000, 112, 0.063, 0.22, 5.5, 145),
-    ("demo-08", "Los Gallegos",               -38.0008, -57.5540, 106, 0.080, 0.25, 7.0, 165),
+    ("demo-04", "Abasto", -34.6037, -58.4109, 132, 0.058, 0.20, 6.0, 175),
+    ("demo-05", "Alto Avellaneda", -34.6680, -58.3705, 124, 0.049, 0.17, 5.5, 160),
+    ("demo-06", "Alto Comahue", -38.9489, -68.0668, 118, 0.075, 0.23, 6.5, 150),
+    ("demo-07", "Mendoza Plaza", -32.8990, -68.8000, 112, 0.063, 0.22, 5.5, 145),
+    ("demo-08", "Los Gallegos", -38.0008, -57.5540, 106, 0.080, 0.25, 7.0, 165),
 ]
 
 # Horario 10-22; peso relativo de tráfico por hora (forma del día).
 HOUR_WEIGHTS = {
-    10: 0.35, 11: 0.50, 12: 0.70, 13: 0.80, 14: 0.70, 15: 0.65,
-    16: 0.80, 17: 0.95, 18: 1.00, 19: 1.00, 20: 0.90, 21: 0.70, 22: 0.45,
+    10: 0.35,
+    11: 0.50,
+    12: 0.70,
+    13: 0.80,
+    14: 0.70,
+    15: 0.65,
+    16: 0.80,
+    17: 0.95,
+    18: 1.00,
+    19: 1.00,
+    20: 0.90,
+    21: 0.70,
+    22: 0.45,
 }
 OPEN_HOURS = sorted(HOUR_WEIGHTS)
 CLOSE_TIME = time(22, 30)  # inicio del "apurón de cierre" (egresos rezagados)
-LAST_OUT_TIME = time(22, 59, 59)  # último egreso posible: fin de la hora 22, nunca pasa a las 23
+LAST_OUT_TIME = time(
+    22, 59, 59
+)  # último egreso posible: fin de la hora 22, nunca pasa a las 23
 
 # Días de semana hay más demanda después de las 16 h: re-pondera (no infla) el
 # perfil diario hacia la tarde/noche en lun-vie.
@@ -116,9 +130,9 @@ ITEMS_WEIGHTS = [0.67, 0.27, 0.05, 0.01]  # media ≈ 1.40
 RETURN_RATE = 0.02  # devoluciones como fracción de las ventas
 
 # Distribución de rssi_max de los visitantes WiFi/BLE (embudo monótono).
-SHOPPER_FRAC = 0.30   # rssi >= -55  (tráfico cercano)
+SHOPPER_FRAC = 0.30  # rssi >= -55  (tráfico cercano)
 PASSERBY_FRAC = 0.45  # -75..-56     (pasa cerca); resto 0.25 = weak (< -75)
-BLE_FRAC = 0.60       # protocolo: 60% BLE / 40% WiFi
+BLE_FRAC = 0.60  # protocolo: 60% BLE / 40% WiFi
 
 
 def _daily_ins(rng: random.Random, base: float, day: date) -> float:
@@ -131,7 +145,8 @@ def _bucket_ins_for_day(rng: random.Random, base: float, day: date) -> dict[int,
     daily = _daily_ins(rng, base, day)
     is_weekday = day.weekday() < 5
     weights = {
-        h: HOUR_WEIGHTS[h] * (WEEKDAY_EVENING_BOOST if (is_weekday and h >= 16) else 1.0)
+        h: HOUR_WEIGHTS[h]
+        * (WEEKDAY_EVENING_BOOST if (is_weekday and h >= 16) else 1.0)
         for h in OPEN_HOURS
     }
     wsum = sum(weights.values())
@@ -161,7 +176,7 @@ def gen_count_events(rng: random.Random, days, sites):
     """Cada ingreso genera su egreso desfasado por el dwell -> ocupación realista,
     ins == outs por día."""
     track = 0
-    for (sid, _n, _la, _lo, base, _cv, _ti, dwell_med, _area) in sites:
+    for sid, _n, _la, _lo, base, _cv, _ti, dwell_med, _area in sites:
         dev = f"{sid}-cam-01"
         mu = math.log(dwell_med)
         for day in days:
@@ -179,13 +194,17 @@ def gen_count_events(rng: random.Random, days, sites):
                     t_out = t_in + timedelta(minutes=dmin)
                     if t_out > close_dt:
                         # apurón de cierre acotado al fin de la hora 22 (nunca pasa a las 23)
-                        t_out = close_dt + timedelta(seconds=rng.randint(0, straggler_span))
+                        t_out = close_dt + timedelta(
+                            seconds=rng.randint(0, straggler_span)
+                        )
                     # Garantiza egreso DESPUÉS del ingreso (un ingreso tardío,
                     # pasado el cierre, no debe egresar antes que él → rompería
                     # el cumsum de ocupación con valores negativos). El min() evita
                     # que un ingreso a las 22:59 empuje el egreso a la hora 23.
                     if t_out <= t_in:
-                        t_out = min(t_in + timedelta(seconds=rng.randint(30, 120)), last_out_dt)
+                        t_out = min(
+                            t_in + timedelta(seconds=rng.randint(30, 120)), last_out_dt
+                        )
                     yield (dev, sid, t_out, "out", track, conf, h)
 
 
@@ -193,7 +212,7 @@ def gen_wifi_ble_events(rng: random.Random, days, sites):
     """Un visitor = 16 bytes random, aparece en 1..N ventanas de 15 min con
     rssi_max según su tier. n_visitors = ingresos / turn_in / (shopper+passerby)."""
     cls_sum = SHOPPER_FRAC + PASSERBY_FRAC
-    for (sid, _n, _la, _lo, base, _cv, turn_in, _dw, _area) in sites:
+    for sid, _n, _la, _lo, base, _cv, turn_in, _dw, _area in sites:
         dev = f"{sid}-cam-01"
         for day in days:
             n_visitors = int(_daily_ins(rng, base, day) / turn_in / cls_sum)
@@ -209,17 +228,31 @@ def gen_wifi_ble_events(rng: random.Random, days, sites):
                     rssi = rng.randint(-95, -76)
                 r = rng.random()
                 n_win = (
-                    1 if r < 0.62 else 2 if r < 0.85
-                    else rng.randint(3, 5) if r < 0.97 else rng.randint(6, 10)
+                    1
+                    if r < 0.62
+                    else (
+                        2
+                        if r < 0.85
+                        else rng.randint(3, 5) if r < 0.97 else rng.randint(6, 10)
+                    )
                 )
-                hour = rng.choices(OPEN_HOURS, weights=[HOUR_WEIGHTS[h] for h in OPEN_HOURS])[0]
-                base_dt = datetime.combine(day, time(hour, rng.randint(0, 59)), tzinfo=EVENT_TZ)
-                w0 = base_dt.replace(minute=(base_dt.minute // 15) * 15, second=0, microsecond=0)
+                hour = rng.choices(
+                    OPEN_HOURS, weights=[HOUR_WEIGHTS[h] for h in OPEN_HOURS]
+                )[0]
+                base_dt = datetime.combine(
+                    day, time(hour, rng.randint(0, 59)), tzinfo=EVENT_TZ
+                )
+                w0 = base_dt.replace(
+                    minute=(base_dt.minute // 15) * 15, second=0, microsecond=0
+                )
                 for k in range(n_win):
                     ps = w0 + timedelta(minutes=15 * k)
                     pe = ps + timedelta(minutes=15)
                     fs = ps + timedelta(seconds=rng.randint(0, 400))
-                    ls = min(fs + timedelta(seconds=rng.randint(10, 500)), pe - timedelta(seconds=1))
+                    ls = min(
+                        fs + timedelta(seconds=rng.randint(10, 500)),
+                        pe - timedelta(seconds=1),
+                    )
                     yield (dev, sid, vhash, proto, rssi, fs, ls, ps, pe)
 
 
@@ -241,7 +274,7 @@ def gen_pos_transactions(rng: random.Random, days, sites):
     # oscila día a día en vez de promediarse a una recta. Determinístico por
     # fecha (random.Random(ordinal)) para que sea estable entre corridas.
     day_factor = {d: random.Random(d.toordinal()).uniform(0.78, 1.22) for d in days}
-    for (sid, _n, _la, _lo, base, conv, _ti, _dw, _area) in sites:
+    for sid, _n, _la, _lo, base, conv, _ti, _dw, _area in sites:
         seq = 0
         for day in days:
             daily_ins = _daily_ins(rng, base, day)
@@ -257,13 +290,24 @@ def gen_pos_transactions(rng: random.Random, days, sites):
             for kind, count in (("sale", n_sales), ("return", n_returns)):
                 for _ in range(count):
                     seq += 1
-                    hour = rng.choices(OPEN_HOURS, weights=[HOUR_WEIGHTS[h] for h in OPEN_HOURS])[0]
+                    hour = rng.choices(
+                        OPEN_HOURS, weights=[HOUR_WEIGHTS[h] for h in OPEN_HOURS]
+                    )[0]
                     ts = _rand_dt(rng, day, hour)
                     items, amount_minor = _ticket_amount_minor(rng)
                     if kind == "return":
                         items = min(items, 2)
                     txid = f"{sid}-{day.isoformat()}-{seq}"
-                    yield (txid, sid, ts, kind, items, amount_minor, "ARS", rng.choice(methods))
+                    yield (
+                        txid,
+                        sid,
+                        ts,
+                        kind,
+                        items,
+                        amount_minor,
+                        "ARS",
+                        rng.choice(methods),
+                    )
 
 
 # Mensajes de error realistas para la tabla "Errores recientes" del tablero de
@@ -279,7 +323,7 @@ ERROR_SAMPLES = (
 
 def gen_telemetry(rng: random.Random, tel_days, sites):
     """Salud de device cada 15 min, sobre los días dados (anclados al presente)."""
-    for (sid, *_rest) in sites:
+    for sid, *_rest in sites:
         dev = f"{sid}-cam-01"
         cum_in = cum_out = 0
         for day in tel_days:
@@ -314,14 +358,26 @@ def gen_telemetry(rng: random.Random, tel_days, sites):
                         backlog = rng.randint(0, 3)
                     err = rng.choice(ERROR_SAMPLES) if rng.random() < 0.004 else None
                     yield (
-                        dev, sid, ts,
-                        cpu, hailo, disk, mem, fps,
-                        cum_in, cum_out,                  # total_in, total_out
-                        mqtt_ok, wifi_ok, ble_ok,
-                        wbsr, tsr, de, ga,
-                        backlog,                          # buffer_backlog_messages
-                        disconnects,                      # mqtt_disconnect_count
-                        err,                              # error
+                        dev,
+                        sid,
+                        ts,
+                        cpu,
+                        hailo,
+                        disk,
+                        mem,
+                        fps,
+                        cum_in,
+                        cum_out,  # total_in, total_out
+                        mqtt_ok,
+                        wifi_ok,
+                        ble_ok,
+                        wbsr,
+                        tsr,
+                        de,
+                        ga,
+                        backlog,  # buffer_backlog_messages
+                        disconnects,  # mqtt_disconnect_count
+                        err,  # error
                     )
 
 
@@ -336,55 +392,114 @@ def _copy(cur, table, cols, rows):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--stack-name", default=os.environ.get("PC_STACK", "people-counter-dev"))
+    ap.add_argument(
+        "--stack-name", default=os.environ.get("PC_STACK", "people-counter-dev")
+    )
     ap.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
-    ap.add_argument("--start", default=DEFAULT_START.isoformat(), help="Fecha inicio YYYY-MM-DD.")
-    ap.add_argument("--end", default=DEFAULT_END.isoformat(), help="Fecha fin YYYY-MM-DD (inclusive).")
-    ap.add_argument("--sites", type=int, default=len(SITES), help="Cuántas sucursales demo (max %d)." % len(SITES))
-    ap.add_argument("--prefix", default="demo-", help="Prefijo de store_id demo (para purga selectiva).")
-    ap.add_argument("--telemetry-days", type=int, default=14, help="Días recientes de telemetry (0 = ninguno). Anclados a hoy.")
+    ap.add_argument(
+        "--start", default=DEFAULT_START.isoformat(), help="Fecha inicio YYYY-MM-DD."
+    )
+    ap.add_argument(
+        "--end",
+        default=DEFAULT_END.isoformat(),
+        help="Fecha fin YYYY-MM-DD (inclusive).",
+    )
+    ap.add_argument(
+        "--sites",
+        type=int,
+        default=len(SITES),
+        help="Cuántas sucursales demo (max %d)." % len(SITES),
+    )
+    ap.add_argument(
+        "--prefix",
+        default="demo-",
+        help="Prefijo de store_id demo (para purga selectiva).",
+    )
+    ap.add_argument(
+        "--telemetry-days",
+        type=int,
+        default=14,
+        help="Días recientes de telemetry (0 = ninguno). Anclados a hoy.",
+    )
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--no-purge", action="store_true", help="No borrar la data demo previa antes de sembrar.")
-    ap.add_argument("--purge-only", action="store_true", help="Solo borrar la data demo y salir.")
-    ap.add_argument("--dry-run", action="store_true", help="Generar y contar filas SIN insertar.")
+    ap.add_argument(
+        "--no-purge",
+        action="store_true",
+        help="No borrar la data demo previa antes de sembrar.",
+    )
+    ap.add_argument(
+        "--purge-only", action="store_true", help="Solo borrar la data demo y salir."
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="Generar y contar filas SIN insertar."
+    )
     args = ap.parse_args()
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end)
     sites = SITES[: args.sites]
     days = [start + timedelta(days=d) for d in range((end - start).days + 1)]
-    logger.info("Sucursales=%d  período=%s..%s (%d días)  prefijo=%s",
-                len(sites), days[0], days[-1], len(days), args.prefix)
+    logger.info(
+        "Sucursales=%d  período=%s..%s (%d días)  prefijo=%s",
+        len(sites),
+        days[0],
+        days[-1],
+        len(days),
+        args.prefix,
+    )
 
     # Telemetry anclada al presente real (no al futuro): últimos N días hasta hoy.
     today = datetime.now(EVENT_TZ).date()
     tel_end = min(end, today)
-    tel_days = [tel_end - timedelta(days=d) for d in range(args.telemetry_days - 1, -1, -1)
-                if start <= tel_end - timedelta(days=d) <= end] if args.telemetry_days else []
+    tel_days = (
+        [
+            tel_end - timedelta(days=d)
+            for d in range(args.telemetry_days - 1, -1, -1)
+            if start <= tel_end - timedelta(days=d) <= end
+        ]
+        if args.telemetry_days
+        else []
+    )
 
     if args.dry_run:
         c = sum(1 for _ in gen_count_events(random.Random(args.seed), days, sites))
         w = sum(1 for _ in gen_wifi_ble_events(random.Random(args.seed), days, sites))
         p = sum(1 for _ in gen_pos_transactions(random.Random(args.seed), days, sites))
         t = sum(1 for _ in gen_telemetry(random.Random(args.seed), tel_days, sites))
-        logger.info("[dry-run] count=%d  wifi_ble=%d  pos=%d  telemetry=%d (%d días)  TOTAL=%d",
-                    c, w, p, t, len(tel_days), c + w + p + t)
+        logger.info(
+            "[dry-run] count=%d  wifi_ble=%d  pos=%d  telemetry=%d (%d días)  TOTAL=%d",
+            c,
+            w,
+            p,
+            t,
+            len(tel_days),
+            c + w + p + t,
+        )
         return
 
     from scripts.provision import _rds_connect  # noqa: E402
+
     conn = _rds_connect(args.stack_name, args.region)
     try:
         with conn.cursor() as cur:
             like = args.prefix + "%"
             if not args.no_purge or args.purge_only:
-                logger.info("Purgando data demo previa (store_id LIKE %r) — el piloto NO se toca…", like)
+                logger.info(
+                    "Purgando data demo previa (store_id LIKE %r) — el piloto NO se toca…",
+                    like,
+                )
                 # Solo tablas crudas. Los rollups NO se purgan acá a propósito: en el
                 # t4g.micro, sumar el DELETE de los rollups (~3M filas) a la transacción de
                 # DELETE+COPY del crudo la hace demasiado pesada (la tabla se duplica hasta
                 # el commit) y se cuelga por presión de memoria. La limpieza de huérfanos en
                 # los rollups (cuando cambia la distribución horaria) se hace aparte, fuera de
                 # esta transacción. Ver docs/runbook de re-seed.
-                for tbl in ("count_events", "wifi_ble_events", "pos_transactions", "telemetry"):
+                for tbl in (
+                    "count_events",
+                    "wifi_ble_events",
+                    "pos_transactions",
+                    "telemetry",
+                ):
                     cur.execute(f"DELETE FROM {tbl} WHERE store_id LIKE %s", (like,))
                 cur.execute("DELETE FROM devices WHERE store_id LIKE %s", (like,))
                 cur.execute("DELETE FROM sites   WHERE store_id LIKE %s", (like,))
@@ -393,7 +508,7 @@ def main() -> None:
                     logger.info("Purga completa. Salgo (--purge-only).")
                     return
 
-            for (sid, name, lat, lon, _base, _cv, _ti, _dw, area_m2) in sites:
+            for sid, name, lat, lon, _base, _cv, _ti, _dw, area_m2 in sites:
                 cur.execute(
                     """INSERT INTO sites (store_id, store_name, latitude, longitude, timezone, sales_area_m2)
                        VALUES (%s, %s, %s, %s, %s, %s)
@@ -410,41 +525,102 @@ def main() -> None:
                 )
 
             logger.info("Insertando count_events…")
-            nc = _copy(cur, "count_events",
-                       ("device_id", "store_id", "event_ts", "direction", "track_id", "confidence", "height_m"),
-                       gen_count_events(random.Random(args.seed), days, sites))
+            nc = _copy(
+                cur,
+                "count_events",
+                (
+                    "device_id",
+                    "store_id",
+                    "event_ts",
+                    "direction",
+                    "track_id",
+                    "confidence",
+                    "height_m",
+                ),
+                gen_count_events(random.Random(args.seed), days, sites),
+            )
             logger.info("  count_events: %d filas", nc)
 
             logger.info("Insertando wifi_ble_events…")
-            nw = _copy(cur, "wifi_ble_events",
-                       ("device_id", "store_id", "visitor_hash", "protocol", "rssi_max",
-                        "first_seen_ts", "last_seen_ts", "period_start", "period_end"),
-                       gen_wifi_ble_events(random.Random(args.seed), days, sites))
+            nw = _copy(
+                cur,
+                "wifi_ble_events",
+                (
+                    "device_id",
+                    "store_id",
+                    "visitor_hash",
+                    "protocol",
+                    "rssi_max",
+                    "first_seen_ts",
+                    "last_seen_ts",
+                    "period_start",
+                    "period_end",
+                ),
+                gen_wifi_ble_events(random.Random(args.seed), days, sites),
+            )
             logger.info("  wifi_ble_events: %d filas", nw)
 
             logger.info("Insertando pos_transactions…")
-            np_ = _copy(cur, "pos_transactions",
-                        ("transaction_id", "store_id", "event_ts", "type", "items",
-                         "amount_minor", "currency", "payment_method"),
-                        gen_pos_transactions(random.Random(args.seed), days, sites))
+            np_ = _copy(
+                cur,
+                "pos_transactions",
+                (
+                    "transaction_id",
+                    "store_id",
+                    "event_ts",
+                    "type",
+                    "items",
+                    "amount_minor",
+                    "currency",
+                    "payment_method",
+                ),
+                gen_pos_transactions(random.Random(args.seed), days, sites),
+            )
             logger.info("  pos_transactions: %d filas", np_)
 
             nt = 0
             if tel_days:
-                logger.info("Insertando telemetry (%d días, %s..%s)…", len(tel_days), tel_days[0], tel_days[-1])
-                nt = _copy(cur, "telemetry",
-                           ("device_id", "store_id", "event_ts", "cpu_temp_c", "hailo_temp_c",  # noqa: E128
-                            "disk_free_mb", "mem_available_mb", "fps", "total_in", "total_out",
-                            "mqtt_connected", "wifi_probe_ok", "ble_scanner_ok",
-                            "wifi_ble_stitching_ratio", "track_stitching_ratio",
-                            "death_emit_count", "ghost_adoption_count",
-                            "buffer_backlog_messages", "mqtt_disconnect_count", "error"),
-                           gen_telemetry(random.Random(args.seed), tel_days, sites))
+                logger.info(
+                    "Insertando telemetry (%d días, %s..%s)…",
+                    len(tel_days),
+                    tel_days[0],
+                    tel_days[-1],
+                )
+                nt = _copy(
+                    cur,
+                    "telemetry",
+                    (
+                        "device_id",
+                        "store_id",
+                        "event_ts",
+                        "cpu_temp_c",
+                        "hailo_temp_c",  # noqa: E128
+                        "disk_free_mb",
+                        "mem_available_mb",
+                        "fps",
+                        "total_in",
+                        "total_out",
+                        "mqtt_connected",
+                        "wifi_probe_ok",
+                        "ble_scanner_ok",
+                        "wifi_ble_stitching_ratio",
+                        "track_stitching_ratio",
+                        "death_emit_count",
+                        "ghost_adoption_count",
+                        "buffer_backlog_messages",
+                        "mqtt_disconnect_count",
+                        "error",
+                    ),
+                    gen_telemetry(random.Random(args.seed), tel_days, sites),
+                )
                 logger.info("  telemetry: %d filas", nt)
 
         conn.commit()
-        logger.info("OK — commit. TOTAL insertado: %d filas en %d sucursales demo.",
-                    nc + nw + np_ + nt, len(sites))
+        logger.info(
+            "OK — commit. TOTAL insertado: %d filas en %d sucursales demo.",
+            nc + nw + np_ + nt,
+            len(sites),
+        )
     except Exception:
         conn.rollback()
         logger.exception("FALLÓ — rollback, no se insertó nada.")

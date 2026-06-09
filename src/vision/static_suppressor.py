@@ -30,6 +30,7 @@ Diseñado como defense-in-depth tras los filtros del detector. Inactivo
 durante el "warm-up" inicial — no filtra hasta que el buffer cubre la
 ventana completa (al menos ``window_seconds`` reales de historia).
 """
+
 from __future__ import annotations
 
 import time
@@ -41,8 +42,7 @@ class _HasCentroid(Protocol):
     """Cualquier objeto que expone ``centroid`` como (x, y)."""
 
     @property
-    def centroid(self) -> tuple[float, float]:
-        ...
+    def centroid(self) -> tuple[float, float]: ...
 
 
 def _in_rect(
@@ -101,9 +101,7 @@ class StaticSuppressor:
                 f"hit_rate_threshold must be in (0, 1], got {hit_rate_threshold}"
             )
         if window_seconds < 0:
-            raise ValueError(
-                f"window_seconds must be >= 0, got {window_seconds}"
-            )
+            raise ValueError(f"window_seconds must be >= 0, got {window_seconds}")
         self.cell_size_px = int(cell_size_px)
         self.window_seconds = float(window_seconds)
         self.hit_rate_threshold = float(hit_rate_threshold)
@@ -165,9 +163,7 @@ class StaticSuppressor:
         det_list = list(detections)
         # Snapshot de celdas activas este frame (set para deduplicar
         # múltiples detecciones que caen en la misma celda).
-        current_cells = {
-            self._cell_of(d.centroid[0], d.centroid[1]) for d in det_list
-        }
+        current_cells = {self._cell_of(d.centroid[0], d.centroid[1]) for d in det_list}
         self._buffer.append((now, current_cells))
 
         if not self._is_warm(now):

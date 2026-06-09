@@ -41,6 +41,35 @@ CHANNELS_5GHZ = [36, 40, 44, 48, 149, 153, 157, 161]
 DEFAULT_HOP_INTERVAL = 0.3  # segundos por canal (200-300ms: sweet spot)
 
 
+def _is_probe_req_radiotap(raw: bytes) -> bool | None:
+    """Pre-filtro BARATO sobre los bytes crudos: ¿el frame es un probe request?
+
+    Mira el header radiotap a mano (versión 0 en byte 0, largo LE en bytes
+    2:4) y el byte de Frame Control 802.11 que viene justo después: un probe
+    request es type 0 / subtype 4 → FC0 == 0x40 (se enmascaran los 2 bits de
+    protocol version con 0xFC).
+
+    Existe porque el ~99% de los frames del canal (beacons, data) NO son
+    probe-reqs, y el descarte previo era ``RadioTap(bytes(pkt))`` — disección
+    COMPLETA de scapy por frame, en el thread de sniff, medido ~10% de un
+    core en el piloto. El filtro BPF kernel-level NO es opción acá: nexmon
+    reporta el netdev como Ethernet (DLT EN10MB) y libpcap rechaza los
+    primitivos 802.11 (``Failed to compile filter`` — verificado en hardware
+    2026-06-09).
+
+    Returns:
+        True/False si los bytes parsean como radiotap (FC dice si es
+        probe-req), None si NO parecen radiotap — el caller debe caer al
+        parse completo de scapy (defensivo: otro driver/DLT).
+    """
+    if len(raw) < 4 or raw[0] != 0:
+        return None
+    rt_len = raw[2] | (raw[3] << 8)
+    if rt_len < 8 or len(raw) <= rt_len:
+        return False
+    return (raw[rt_len] & 0xFC) == 0x40
+
+
 def _build_hop_sequence(channels_24: list[int], channels_5: list[int]) -> list[int]:
     """Construye la secuencia de hopping ponderada hacia 2.4/no-solapados.
 
@@ -538,8 +567,15 @@ class WiFiProbeCapture:
             # 802.11. Si el setup ya entregara radiotap nativo (otro driver),
             # el primer haslayer(Dot11) corta sin re-parsear.
             if not pkt.haslayer(Dot11):
+                raw = bytes(pkt)
+                # Descarte barato ANTES de la disección completa: solo los
+                # probe-req (y los bytes que no parecen radiotap, que caen
+                # al parse defensivo) pagan el RadioTap(raw). Ver el
+                # docstring de _is_probe_req_radiotap.
+                if _is_probe_req_radiotap(raw) is False:
+                    return
                 try:
-                    pkt = RadioTap(bytes(pkt))
+                    pkt = RadioTap(raw)
                 except Exception:
                     return
             if not pkt.haslayer(Dot11):

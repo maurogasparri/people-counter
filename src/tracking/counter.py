@@ -162,25 +162,23 @@ class Line:
 
     # ----------------------------------------------------------------- API
     def side_of(self, cx: float, cy: float) -> int:
-        """Devuelve +1, -1, o 0 según el lado de la línea en que está el punto.
+        """Devuelve +1 o -1 según el lado de la línea en que está el punto.
 
         Convención de signo: para una línea horizontal, ``-1`` significa
         "arriba" (menor ``y``), ``+1`` significa "abajo" (mayor ``y``);
         para una línea vertical, ``-1`` es "izquierda" (menor ``x``) y
-        ``+1`` es "derecha" (mayor ``x``). Cero significa que el punto
-        cae exactamente en la línea (edge case).
+        ``+1`` es "derecha" (mayor ``x``). Un punto exactamente SOBRE la
+        línea pertenece al lado ``+1`` — devolver un estado propio (0)
+        absorbía el cruce: la secuencia ``-1 → 0 → +1`` cacheaba el 0 en
+        el medio y ``crossing_label`` ignora transiciones desde 0, así la
+        visita salía con net=0 y no contaba. Alcanzable con centroides
+        cuantizados (path ONNX dev, grilla de 0.5px) y líneas en Y entero;
+        el path Hailo (centroides float continuos) lo hacía improbable
+        pero no imposible.
         """
         if self.orientation == "horizontal":
-            if cy < self._line_pos:
-                return -1
-            if cy > self._line_pos:
-                return 1
-            return 0
-        if cx < self._line_pos:
-            return -1
-        if cx > self._line_pos:
-            return 1
-        return 0
+            return -1 if cy < self._line_pos else 1
+        return -1 if cx < self._line_pos else 1
 
     def within_segment(self, cx: float, cy: float) -> bool:
         """True si ``(cx, cy)`` proyecta dentro del extent del segmento
@@ -195,7 +193,11 @@ class Line:
 
     def crossing_label(self, prev_side: int, new_side: int) -> Optional[str]:
         """Mapea una transición de lado al label configurado, o ``None``
-        si la dirección no tiene label (gate one-way, dirección opuesta)."""
+        si la dirección no tiene label (gate one-way, dirección opuesta).
+
+        El guard de ``0`` es defensivo: ``side_of`` ya no produce 0 (un
+        punto sobre la línea es lado +1), pero estados legacy persistidos
+        en el tracking_state podrían tenerlo."""
         if prev_side == 0 or new_side == 0 or prev_side == new_side:
             return None
         if self.orientation == "horizontal":
@@ -686,9 +688,7 @@ class Counter:
 
     def _snapshot_track(self, track: Track) -> None:
         meta = track.meta.get(self.META_KEY) or {}
-        cx, cy = (
-            self._tracking_point(track) if track.positions else (0.0, 0.0)
-        )
+        cx, cy = self._tracking_point(track) if track.positions else (0.0, 0.0)
         # Visit-range para los guards anti-falso-positivo del death-emit.
         vx_min = float(meta.get("visit_x_min", cx))
         vx_max = float(meta.get("visit_x_max", cx))
@@ -730,7 +730,8 @@ class Counter:
         if not snap.get("had_outside_pos"):
             logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=no_outside_history net=%s",
-                snap.get("track_id"), net,
+                snap.get("track_id"),
+                net,
             )
             return None
 
@@ -744,7 +745,10 @@ class Counter:
             logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=small_visit_range "
                 "x_range=%.0f y_range=%.0f net=%s",
-                snap.get("track_id"), x_range, y_range, net,
+                snap.get("track_id"),
+                x_range,
+                y_range,
+                net,
             )
             return None
 
@@ -773,8 +777,10 @@ class Counter:
                 logger.debug(
                     "TRACKDBG death_emit_skipped tid=%d reason=thin_evidence "
                     "real_inside_frames=%d threshold=%d net=%s",
-                    snap.get("track_id"), real_frames,
-                    self.min_real_inside_frames, net,
+                    snap.get("track_id"),
+                    real_frames,
+                    self.min_real_inside_frames,
+                    net,
                 )
                 return None
 
@@ -792,8 +798,10 @@ class Counter:
             logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=short_height "
                 "height_m=%.2f threshold=%.2f net=%s",
-                snap.get("track_id"), snap_height_m,
-                self.min_count_height_m, net,
+                snap.get("track_id"),
+                snap_height_m,
+                self.min_count_height_m,
+                net,
             )
             return None
 
@@ -809,8 +817,10 @@ class Counter:
             logger.debug(
                 "TRACKDBG death_emit_skipped tid=%d reason=lowconf_noheight "
                 "conf=%.2f threshold=%.2f net=%s",
-                snap.get("track_id"), snap_conf,
-                self.min_count_confidence, net,
+                snap.get("track_id"),
+                snap_conf,
+                self.min_count_confidence,
+                net,
             )
             return None
 
@@ -824,7 +834,9 @@ class Counter:
         self._death_emit_count += 1
         logger.info(
             "count_event_on_death tid=%d label=%s net=%s",
-            snap["track_id"], label, net,
+            snap["track_id"],
+            label,
+            net,
         )
         # Aplicar el mismo confidence gate que la rama de exit (altura no
         # confiable si el bbox fue marginal a lo largo del track).
@@ -1024,7 +1036,9 @@ class Counter:
             if not is_real:
                 logger.debug(
                     "TRACKDBG entry_kalman_skipped tid=%d pos=(%.0f,%.0f)",
-                    track.track_id, cx, cy,
+                    track.track_id,
+                    cx,
+                    cy,
                 )
                 return None
             # Entry fresca: resetear estado del ciclo y snapshotear
@@ -1067,7 +1081,13 @@ class Counter:
             self._seen_track_ids.add(track.track_id)
             logger.debug(
                 "TRACKDBG entry tid=%d pos=(%.0f,%.0f) snap=(%.0f,%.0f) sides=%s is_real=%s",
-                track.track_id, cx, cy, snap_x, snap_y, sides, is_real,
+                track.track_id,
+                cx,
+                cy,
+                snap_x,
+                snap_y,
+                sides,
+                is_real,
             )
             return None
 
@@ -1135,7 +1155,13 @@ class Counter:
                         meta["last_crossing_pos"] = (cx, cy)
                         logger.debug(
                             "TRACKDBG cross tid=%d line=%d new_side=%+d net=%+d pos=(%.0f,%.0f) label=%s",
-                            track.track_id, i, new_side, net[i], cx, cy, label,
+                            track.track_id,
+                            i,
+                            new_side,
+                            net[i],
+                            cx,
+                            cy,
+                            label,
                         )
                 sides[i] = new_side
             meta["last_track_pos"] = (cx, cy)
@@ -1201,7 +1227,12 @@ class Counter:
             crossing_pos = meta.get("last_crossing_pos") or (cx, cy)
             logger.debug(
                 "TRACKDBG exit tid=%d is_real=%s net=%s verdict=%s exit_pos=(%.0f,%.0f) real_inside_frames=%d",
-                track.track_id, is_real, net, label, cx, cy,
+                track.track_id,
+                is_real,
+                net,
+                label,
+                cx,
+                cy,
                 int(meta.get("real_inside_frames", 0)),
             )
             # Snapshot del net antes del reset para logging del skip.
@@ -1249,15 +1280,12 @@ class Counter:
             # aunque haya nacido inside (caso del primer-frame-perdido
             # por el detector en el borde de la counting zone). Coherente con el
             # mismo guard en _emit_on_death (capa 3 del rescue cascade).
-            if (
-                label
-                and not is_real
-                and not bool(meta.get("had_outside_pos", False))
-            ):
+            if label and not is_real and not bool(meta.get("had_outside_pos", False)):
                 logger.debug(
                     "TRACKDBG exit_kalman_skipped tid=%d "
                     "reason=no_outside_history net=%s",
-                    track.track_id, net_snapshot,
+                    track.track_id,
+                    net_snapshot,
                 )
                 label = None
             # Guard de evidencia mínima — defensa contra single-frame entries
@@ -1271,8 +1299,10 @@ class Counter:
                     logger.debug(
                         "TRACKDBG exit_thin_evidence_skipped tid=%d "
                         "real_inside_frames=%d threshold=%d net=%s",
-                        track.track_id, real_frames,
-                        self.min_real_inside_frames, net_snapshot,
+                        track.track_id,
+                        real_frames,
+                        self.min_real_inside_frames,
+                        net_snapshot,
                     )
                     label = None
             # Guard de altura humana — defensa contra FPs no-humanos del
@@ -1291,8 +1321,10 @@ class Counter:
                     logger.debug(
                         "TRACKDBG exit_short_height_skipped tid=%d "
                         "height_m=%.2f threshold=%.2f net=%s",
-                        track.track_id, track_height_m,
-                        self.min_count_height_m, net_snapshot,
+                        track.track_id,
+                        track_height_m,
+                        self.min_count_height_m,
+                        net_snapshot,
                     )
                     label = None
             # Guard anti-FP no-humano SIN altura (perro / track fantasma sobre
@@ -1313,8 +1345,10 @@ class Counter:
                     logger.debug(
                         "TRACKDBG exit_lowconf_noheight_skipped tid=%d "
                         "conf=%.2f threshold=%.2f net=%s",
-                        track.track_id, conf_median,
-                        self.min_count_confidence, net_snapshot,
+                        track.track_id,
+                        conf_median,
+                        self.min_count_confidence,
+                        net_snapshot,
                     )
                     label = None
             if label:

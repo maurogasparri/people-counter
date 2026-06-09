@@ -362,4 +362,3 @@ class TestHeadDepthInBbox:
             f"got {wide}, expected ~800 with wide radius (overhead "
             "structure now inside the column and picked as nearest)"
         )
-

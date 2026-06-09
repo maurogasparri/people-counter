@@ -243,11 +243,21 @@ class TestCalibration:
 
         # Check all expected keys
         expected_keys = {
-            "camera_matrix_l", "dist_coeffs_l",
-            "camera_matrix_r", "dist_coeffs_r",
-            "R", "T",
-            "R1", "R2", "P1", "P2", "Q",
-            "map_l_x", "map_l_y", "map_r_x", "map_r_y",
+            "camera_matrix_l",
+            "dist_coeffs_l",
+            "camera_matrix_r",
+            "dist_coeffs_r",
+            "R",
+            "T",
+            "R1",
+            "R2",
+            "P1",
+            "P2",
+            "Q",
+            "map_l_x",
+            "map_l_y",
+            "map_r_x",
+            "map_r_y",
             "image_size",
         }
         assert expected_keys.issubset(set(result.keys()))
@@ -324,11 +334,13 @@ class TestLensAlignmentMetrics:
         # 5° around Y (yaw). XYZ-Euler convention: ry should pop out
         # exactly, others zero.
         ang = math.radians(5.0)
-        R = np.array([
-            [math.cos(ang), 0, math.sin(ang)],
-            [0, 1, 0],
-            [-math.sin(ang), 0, math.cos(ang)],
-        ])
+        R = np.array(
+            [
+                [math.cos(ang), 0, math.sin(ang)],
+                [0, 1, 0],
+                [-math.sin(ang), 0, math.cos(ang)],
+            ]
+        )
         m = lens_alignment_metrics(R, np.zeros(3))
         assert m["rotation_y_deg"] == pytest.approx(5.0, abs=1e-5)
         assert abs(m["rotation_x_deg"]) < 1e-5
@@ -337,11 +349,13 @@ class TestLensAlignmentMetrics:
     def test_pure_pitch_rotation(self):
         # 2° around X (pitch).
         ang = math.radians(2.0)
-        R = np.array([
-            [1, 0, 0],
-            [0, math.cos(ang), -math.sin(ang)],
-            [0, math.sin(ang), math.cos(ang)],
-        ])
+        R = np.array(
+            [
+                [1, 0, 0],
+                [0, math.cos(ang), -math.sin(ang)],
+                [0, math.sin(ang), math.cos(ang)],
+            ]
+        )
         m = lens_alignment_metrics(R, np.zeros(3))
         assert m["rotation_x_deg"] == pytest.approx(2.0, abs=1e-5)
         assert abs(m["rotation_y_deg"]) < 1e-5
@@ -350,11 +364,13 @@ class TestLensAlignmentMetrics:
     def test_pure_roll_rotation(self):
         # 1.2° around Z (roll).
         ang = math.radians(1.2)
-        R = np.array([
-            [math.cos(ang), -math.sin(ang), 0],
-            [math.sin(ang), math.cos(ang), 0],
-            [0, 0, 1],
-        ])
+        R = np.array(
+            [
+                [math.cos(ang), -math.sin(ang), 0],
+                [math.sin(ang), math.cos(ang), 0],
+                [0, 0, 1],
+            ]
+        )
         m = lens_alignment_metrics(R, np.zeros(3))
         assert m["rotation_z_deg"] == pytest.approx(1.2, abs=1e-5)
         assert abs(m["rotation_x_deg"]) < 1e-5
@@ -389,14 +405,18 @@ class TestEarlyStopReadiness:
 
     def test_all_conditions_met_returns_ready(self):
         ready, reason = is_calibration_ready_for_early_stop(
-            self._full_coverage(), per_pair_rms_px=0.30, captured_count=13,
+            self._full_coverage(),
+            per_pair_rms_px=0.30,
+            captured_count=13,
         )
         assert ready is True
         assert reason == ""
 
     def test_too_few_captures_blocks(self):
         ready, reason = is_calibration_ready_for_early_stop(
-            self._full_coverage(), per_pair_rms_px=0.20, captured_count=10,
+            self._full_coverage(),
+            per_pair_rms_px=0.20,
+            captured_count=10,
         )
         assert ready is False
         assert "10/12" in reason
@@ -405,7 +425,9 @@ class TestEarlyStopReadiness:
         cov = self._full_coverage()
         cov["critical"] = ["Banda de distancia 'far' sin capturas"]
         ready, reason = is_calibration_ready_for_early_stop(
-            cov, per_pair_rms_px=0.30, captured_count=14,
+            cov,
+            per_pair_rms_px=0.30,
+            captured_count=14,
         )
         assert ready is False
         assert "cobertura incompleta" in reason
@@ -414,7 +436,9 @@ class TestEarlyStopReadiness:
         cov = self._full_coverage()
         cov["by_distance"]["far"] = 1  # below min_per_band=2
         ready, reason = is_calibration_ready_for_early_stop(
-            cov, per_pair_rms_px=0.30, captured_count=14,
+            cov,
+            per_pair_rms_px=0.30,
+            captured_count=14,
         )
         assert ready is False
         assert "far" in reason
@@ -423,7 +447,9 @@ class TestEarlyStopReadiness:
         cov = self._full_coverage()
         cov["by_group"]["B"] = 0
         ready, reason = is_calibration_ready_for_early_stop(
-            cov, per_pair_rms_px=0.30, captured_count=14,
+            cov,
+            per_pair_rms_px=0.30,
+            captured_count=14,
         )
         assert ready is False
         assert "grupo B" in reason or "grupo B" in reason.lower()
@@ -449,7 +475,9 @@ class TestEarlyStopReadiness:
     def test_thresholds_are_overridable(self):
         # Stricter min_poses keeps a session open even with great metrics.
         ready, _ = is_calibration_ready_for_early_stop(
-            self._full_coverage(), per_pair_rms_px=0.20, captured_count=12,
+            self._full_coverage(),
+            per_pair_rms_px=0.20,
+            captured_count=12,
             min_poses=15,
         )
         assert ready is False
@@ -459,7 +487,9 @@ class TestEarlyStopReadiness:
         cov = self._full_coverage()
         cov["by_group"].pop("E", None)
         ready, _ = is_calibration_ready_for_early_stop(
-            cov, per_pair_rms_px=0.30, captured_count=13,
+            cov,
+            per_pair_rms_px=0.30,
+            captured_count=13,
         )
         assert ready is True
 
@@ -478,6 +508,33 @@ class TestRectifyPair:
         assert rect_l.shape == img.shape
         assert rect_r.shape == img.shape
 
+    def test_rectify_one_matches_pair(self):
+        """rectify_one (usado por el hot path para rectificar el ojo derecho
+        LAZY) debe producir exactamente lo mismo que rectify_pair — son el
+        mismo remap, factorizado."""
+        from src.vision.calibration import rectify_one
+
+        rng = np.random.default_rng(seed=7)
+        cal = {
+            "map_l_x": rng.uniform(0, IMAGE_W - 1, (IMAGE_H, IMAGE_W)).astype(
+                np.float32
+            ),
+            "map_l_y": rng.uniform(0, IMAGE_H - 1, (IMAGE_H, IMAGE_W)).astype(
+                np.float32
+            ),
+            "map_r_x": rng.uniform(0, IMAGE_W - 1, (IMAGE_H, IMAGE_W)).astype(
+                np.float32
+            ),
+            "map_r_y": rng.uniform(0, IMAGE_H - 1, (IMAGE_H, IMAGE_W)).astype(
+                np.float32
+            ),
+        }
+        img_l = rng.integers(0, 255, (IMAGE_H, IMAGE_W, 3), dtype=np.uint8)
+        img_r = rng.integers(0, 255, (IMAGE_H, IMAGE_W, 3), dtype=np.uint8)
+        pair_l, pair_r = rectify_pair(img_l, img_r, cal)
+        np.testing.assert_array_equal(rectify_one(img_l, cal, "left"), pair_l)
+        np.testing.assert_array_equal(rectify_one(img_r, cal, "right"), pair_r)
+
 
 class TestIO:
     def test_save_and_load_roundtrip(self):
@@ -490,9 +547,7 @@ class TestIO:
             save_calibration(params, path)
 
             loaded = load_calibration(path)
-            np.testing.assert_array_almost_equal(
-                loaded["camera_matrix_l"], np.eye(3)
-            )
+            np.testing.assert_array_almost_equal(loaded["camera_matrix_l"], np.eye(3))
             np.testing.assert_array_almost_equal(
                 loaded["T"], np.array([[140.0], [0.0], [0.0]])
             )
@@ -533,7 +588,9 @@ class TestPoseSequence:
         assert has_big_pitch and has_big_yaw and has_big_roll
 
     def test_rvec_roundtrip(self):
-        pose = PoseTarget("test", "label", (0, 0, 1500), pitch_deg=10, yaw_deg=20, roll_deg=30)
+        pose = PoseTarget(
+            "test", "label", (0, 0, 1500), pitch_deg=10, yaw_deg=20, roll_deg=30
+        )
         rv = pose.rvec()
         assert rv.shape == (3,)
         # Applying Rodrigues and inverse should round-trip
@@ -545,30 +602,52 @@ class TestPoseSequence:
 class TestProjectPose:
     def test_frontal_projection_centered(self):
         pose = PoseTarget("c", "center", (0, 0, 1500))
-        proj = project_pose(pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
+        proj = project_pose(
+            pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE
+        )
         cx, cy = proj["center"]
         assert abs(cx - PREVIEW_SIZE[0] / 2) < 1
         assert abs(cy - PREVIEW_SIZE[1] / 2) < 1
 
     def test_far_projection_smaller(self):
-        near = project_pose(PoseTarget("n", "", (0, 0, 1000)),
-                            DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
-        far = project_pose(PoseTarget("f", "", (0, 0, 2500)),
-                           DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
+        near = project_pose(
+            PoseTarget("n", "", (0, 0, 1000)),
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
+        )
+        far = project_pose(
+            PoseTarget("f", "", (0, 0, 2500)),
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
+        )
         near_w = np.ptp(near["outer_corners"][:, 0])
         far_w = np.ptp(far["outer_corners"][:, 0])
         assert near_w > far_w * 2  # much bigger when closer
 
     def test_offset_shifts_projection(self):
-        center = project_pose(PoseTarget("c", "", (0, 0, 1500)),
-                              DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
-        right = project_pose(PoseTarget("r", "", (200, 0, 1500)),
-                             DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
+        center = project_pose(
+            PoseTarget("c", "", (0, 0, 1500)),
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
+        )
+        right = project_pose(
+            PoseTarget("r", "", (200, 0, 1500)),
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
+        )
         assert right["center"][0] > center["center"][0] + 20
 
     def test_inner_corner_count_matches_chess_grid(self):
-        proj = project_pose(PoseTarget("c", "", (0, 0, 1500)),
-                            DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
+        proj = project_pose(
+            PoseTarget("c", "", (0, 0, 1500)),
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
+        )
         cols, rows = DEFAULT_BOARD_SIZE
         expected = (cols - 1) * (rows - 1)
         assert len(proj["inner_corners"]) == expected
@@ -577,7 +656,9 @@ class TestProjectPose:
 class TestAlignment:
     def _ghost(self, tvec=(0, 0, 1500), **kw):
         pose = PoseTarget("g", "", tvec, **kw)
-        return project_pose(pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
+        return project_pose(
+            pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE
+        )
 
     def test_exact_match_is_aligned(self):
         ghost = self._ghost()
@@ -608,8 +689,9 @@ class TestAlignment:
         ghost = self._ghost()
         centroid = ghost["inner_corners"].mean(axis=0)
         theta = math.radians(10)
-        R = np.array([[math.cos(theta), -math.sin(theta)],
-                      [math.sin(theta), math.cos(theta)]])
+        R = np.array(
+            [[math.cos(theta), -math.sin(theta)], [math.sin(theta), math.cos(theta)]]
+        )
         detected = (ghost["inner_corners"] - centroid) @ R.T + centroid
         err = compute_alignment_error(detected, ghost["inner_corners"])
         assert abs(err["rotation_deg"]) > ALIGN_ROTATION_TOL_DEG
@@ -695,10 +777,11 @@ class TestStability:
         st = StabilityTracker(window=5, max_disp_px=1.5)
         for i in range(5):
             pts = np.array(
-                [[100 + i * 5, 100], [200, 200], [300, 300]], dtype=np.float32,
+                [[100 + i * 5, 100], [200, 200], [300, 300]],
+                dtype=np.float32,
             )
             ids = np.array([1, 2, 3]) if i % 2 == 0 else np.array([1, 2])
-            st.push(pts[:len(ids)], ids=ids)
+            st.push(pts[: len(ids)], ids=ids)
         assert not st.is_stable()
 
 
@@ -745,14 +828,18 @@ class TestCornerIdMatching:
     def _ghost(self):
         return project_pose(
             PoseTarget("g", "", (0, 0, 1500)),
-            DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE,
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
         )
 
     def test_exact_match_zero_error(self):
         ghost = self._ghost()
         ids = np.arange(len(ghost["inner_corners"]))
         err = compute_alignment_by_corners(
-            ghost["inner_corners"], ids, ghost["inner_corners"],
+            ghost["inner_corners"],
+            ids,
+            ghost["inner_corners"],
         )
         assert err["mean_error_px"] < 1e-3
         assert err["centroid_offset_px"] < 1e-3
@@ -774,7 +861,7 @@ class TestCornerIdMatching:
         n_full = len(ghost["inner_corners"])
         # Detect only half the corners
         ids = np.arange(n_full // 2)
-        detected = ghost["inner_corners"][:n_full // 2]
+        detected = ghost["inner_corners"][: n_full // 2]
         err = compute_alignment_by_corners(detected, ids, ghost["inner_corners"])
         assert err["matched"] == n_full // 2
         assert err["mean_error_px"] < 1e-3
@@ -793,7 +880,9 @@ class TestCornerIdMatching:
         shifted = ghost["inner_corners"] + np.array([18, 0])
         err = compute_alignment_by_corners(shifted, ids, ghost["inner_corners"])
         # Would fail tight (12px) but pass loose (25px)
-        assert not is_aligned_by_corners(err, mean_err_tol_px=ALIGN_MEAN_ERR_TOL_PX_TIGHT)
+        assert not is_aligned_by_corners(
+            err, mean_err_tol_px=ALIGN_MEAN_ERR_TOL_PX_TIGHT
+        )
         assert is_aligned_by_corners(
             err,
             mean_err_tol_px=ALIGN_MEAN_ERR_TOL_PX_LOOSE,
@@ -812,7 +901,9 @@ class TestCornerIdMatching:
         ghost = self._ghost()
         ids = np.arange(len(ghost["inner_corners"]))
         err = compute_alignment_by_corners(
-            ghost["inner_corners"], ids, ghost["inner_corners"],
+            ghost["inner_corners"],
+            ids,
+            ghost["inner_corners"],
         )
         assert "alineado" in alignment_hint_by_corners(err).lower()
 
@@ -821,10 +912,14 @@ class TestCornerIdMatching:
         should still give near-zero error when detected = ghost exactly.
         """
         pose = PoseTarget("t", "", (0, 0, 1500), pitch_deg=20, yaw_deg=15)
-        ghost = project_pose(pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE)
+        ghost = project_pose(
+            pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE
+        )
         ids = np.arange(len(ghost["inner_corners"]))
         err = compute_alignment_by_corners(
-            ghost["inner_corners"], ids, ghost["inner_corners"],
+            ghost["inner_corners"],
+            ids,
+            ghost["inner_corners"],
         )
         assert err["mean_error_px"] < 1e-3
 
@@ -872,11 +967,17 @@ class TestFitBootstrapIntrinsics:
         small_f = np.array([[1000, 0, 2304], [0, 1000, 1296], [0, 0, 1]])
         large_f = np.array([[1500, 0, 2304], [0, 1500, 1296], [0, 0, 1]])
         proj_small = project_pose(
-            pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE,
+            pose,
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
             fitted_K=small_f,
         )
         proj_large = project_pose(
-            pose, DEFAULT_BOARD_SIZE, DEFAULT_SQUARE_LENGTH, PREVIEW_SIZE,
+            pose,
+            DEFAULT_BOARD_SIZE,
+            DEFAULT_SQUARE_LENGTH,
+            PREVIEW_SIZE,
             fitted_K=large_f,
         )
         w_small = np.ptp(proj_small["outer_corners"][:, 0])
@@ -952,7 +1053,9 @@ class TestPoseCoverage:
         # Empty bands and missing groups are CRITICAL, not soft warnings
         all_msgs = coverage["warnings"] + coverage["critical"]
         assert any("mid" in m or "far" in m for m in all_msgs)
-        assert coverage["critical"], "expected critical entries when whole bands missing"
+        assert coverage[
+            "critical"
+        ], "expected critical entries when whole bands missing"
 
     def test_no_yaw_flagged(self):
         all_poses = default_pose_sequence()
@@ -980,15 +1083,20 @@ class TestCornerLocalSharpness:
 
     def test_blurred_corners_give_lower_score(self):
         import cv2
+
         gray = self._sharp_frame()
         blurred = cv2.GaussianBlur(gray, (15, 15), 5)
         corners = np.array([[320, 240], [100, 100], [500, 400]], dtype=np.float32)
-        assert corner_local_sharpness(blurred, corners) < corner_local_sharpness(gray, corners)
+        assert corner_local_sharpness(blurred, corners) < corner_local_sharpness(
+            gray, corners
+        )
 
     def test_empty_corners_returns_nan(self):
         gray = self._sharp_frame()
         assert math.isnan(corner_local_sharpness(gray, None))
-        assert math.isnan(corner_local_sharpness(gray, np.zeros((0, 2), dtype=np.float32)))
+        assert math.isnan(
+            corner_local_sharpness(gray, np.zeros((0, 2), dtype=np.float32))
+        )
 
 
 class TestQualityGateCornerSharpness:
@@ -1004,17 +1112,20 @@ class TestQualityGateCornerSharpness:
     def test_sharp_corners_still_pass(self):
         f = self._textured()
         corners = np.array([[[100, 100]], [[300, 200]], [[500, 300]]], dtype=np.float32)
-        q = assess_frame_quality(f, f, n_corners=30,
-                                 corners_l=corners, corners_r=corners)
+        q = assess_frame_quality(
+            f, f, n_corners=30, corners_l=corners, corners_r=corners
+        )
         assert q["checks"]["corner_sharp_l"]
         assert q["checks"]["corner_sharp_r"]
 
     def test_soft_corners_fail(self):
         import cv2
+
         blurred = cv2.GaussianBlur(self._textured(), (31, 31), 12)
         corners = np.array([[[100, 100]], [[300, 200]], [[500, 300]]], dtype=np.float32)
-        q = assess_frame_quality(blurred, blurred, n_corners=30,
-                                 corners_l=corners, corners_r=corners)
+        q = assess_frame_quality(
+            blurred, blurred, n_corners=30, corners_l=corners, corners_r=corners
+        )
         # Motion-smeared pattern: whole-frame blur already fails, but the
         # per-corner check should also flag it independently
         assert not q["all_pass"]

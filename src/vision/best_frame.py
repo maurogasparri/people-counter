@@ -48,12 +48,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BufferedFrame:
-    """Un snapshot de frame guardado para un solo track vivo.
+    """Un snapshot guardado para un solo track vivo.
 
-    Contiene los bytes de imagen raw más los componentes de scoring per-frame
-    así el picker puede rankear candidatos sin re-correr detección. La imagen
-    se guarda como numpy array; el buffer capea las entries totales (ver
-    ``buffer_size``) así la RAM se mantiene acotada.
+    ``frame_image`` es el CROP del bbox con margen de contexto (ver
+    ``_crop_with_margin``), NO el frame completo, más los componentes de
+    scoring per-frame así el picker puede rankear candidatos sin re-correr
+    detección. ``bbox`` queda en coordenadas del frame original (metadata).
+    El buffer capea las entries totales (``buffer_size``) y cada entry pesa
+    ~0.05-0.2MB en vez de ~2.2MB — ver el racional en ``_CROP_MARGIN_FRAC``.
     """
 
     frame_image: np.ndarray
@@ -184,6 +186,41 @@ def score_frame(
     return float(score), components
 
 
+# Margen del crop alrededor del bbox (fracción del ancho/alto del bbox por
+# lado). El buffer guarda SOLO el crop, no el frame completo: a 1152x648 cada
+# frame copiado pesaba ~2.2MB × buffer_size 20 = ~45MB POR TRACK — con los
+# ~10 tracks simultáneos de un site con tráfico, encender el feature rompía
+# el presupuesto de RAM del Pi 5 2GB (working set ~270MB, MemoryMax=1500M).
+# Un crop cabeza+hombros con 50% de contexto por lado pesa ~0.05-0.2MB y el
+# JPG resultante sigue sirviendo para auditoría del operador y labeling.
+_CROP_MARGIN_FRAC = 0.5
+
+
+def _crop_with_margin(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    margin_frac: float = _CROP_MARGIN_FRAC,
+) -> Optional[np.ndarray]:
+    """Crop del bbox con margen de contexto, clampeado al frame.
+
+    Devuelve una COPIA (mutaciones in-place posteriores del pipeline no la
+    tocan) o ``None`` si el bbox es degenerado o cae fuera del frame.
+    """
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    bw, bh = x2 - x1, y2 - y1
+    if bw <= 0 or bh <= 0:
+        return None
+    mx, my = int(bw * margin_frac), int(bh * margin_frac)
+    cx1 = max(0, x1 - mx)
+    cy1 = max(0, y1 - my)
+    cx2 = min(w, x2 + mx)
+    cy2 = min(h, y2 + my)
+    if cx2 <= cx1 or cy2 <= cy1:
+        return None
+    return frame[cy1:cy2, cx1:cx2].copy()
+
+
 def pick_best(buffer: list[BufferedFrame]) -> Optional[BufferedFrame]:
     """Devuelve el único frame con el score más alto del buffer (o ``None``).
 
@@ -296,11 +333,12 @@ class BestFrameManager:
         bbox: tuple[int, int, int, int],
         confidence: float,
     ) -> None:
-        """Scorea el frame actual y lo pushea al buffer del track.
+        """Scorea el frame actual y pushea el CROP del bbox al buffer.
 
-        Copia el frame así mutaciones in-place subsiguientes del
-        pipeline (anotaciones, conversiones de color) no envenenan
-        el candidato buffereado.
+        El scoring corre sobre el frame completo (centrality/area lo
+        necesitan), pero al buffer va solo el crop con margen — copia
+        independiente, así mutaciones in-place subsiguientes del pipeline
+        (anotaciones, conversiones de color) no envenenan el candidato.
         """
         if frame is None or frame.size == 0:
             return
@@ -313,8 +351,11 @@ class BestFrameManager:
                 frame_shape,
                 self._weights,
             )
+            crop = _crop_with_margin(frame, bbox)
+            if crop is None:
+                return
             bf = BufferedFrame(
-                frame_image=frame.copy(),
+                frame_image=crop,
                 bbox=tuple(int(v) for v in bbox),  # type: ignore[arg-type]
                 confidence=float(confidence),
                 score=score,

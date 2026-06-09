@@ -19,11 +19,12 @@ custom. ``--web-viewer-port 0`` deshabilita el viewer entero.
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
+import secrets
 import subprocess
 import threading
+import time
 import urllib.parse
 from collections import deque
 from http.cookies import SimpleCookie
@@ -37,12 +38,23 @@ from src.web.admin_auth import (
     ADMIN_SECRET_PATH,
     MIN_PASSWORD_LEN,
     read_secret,
-    session_token,
     verify_password,
     write_secret,
 )
 
 logger = logging.getLogger(__name__)
+
+# Backoff del login: tras N fallos consecutivos, cada verificación duerme
+# este delay (dentro del lock → todo el flood espera en cola). Baja el
+# brute-force online a ~1 guess/s sin molestar al operador legítimo (que
+# rara vez falla 5 veces; un login exitoso resetea el contador).
+_LOGIN_BACKOFF_AFTER = 5
+_LOGIN_BACKOFF_S = 1.0
+
+# Vida de una sesión admin server-side. Mantener en sync con el Max-Age de
+# la cookie pc_session (el server es la fuente de verdad; el Max-Age solo
+# le ahorra al browser mandar una cookie que igual sería rechazada).
+_SESSION_TTL_S = 86400.0
 
 
 _HTML = """<!DOCTYPE html>
@@ -464,6 +476,13 @@ class WebViewer:
         # del pipeline NO depende de este flag.
         self._subscribers = 0
         self._subscribers_lock = threading.Lock()
+        # Auth: serializa la verificación PBKDF2 + backoff anti brute-force
+        # (ver _check_password y las constantes _LOGIN_BACKOFF_*).
+        self._auth_lock = threading.Lock()
+        self._failed_logins = 0
+        # Sesiones admin activas: token random -> expiry epoch (ver
+        # _new_session). Protegido por _auth_lock.
+        self._sessions: dict[str, float] = {}
 
     # ----------------------------------------------------------------- API
     @property
@@ -643,23 +662,78 @@ class WebViewer:
         return read_secret(self._secret_path) is not None
 
     def _check_password(self, password: str) -> bool:
-        return verify_password(password, read_secret(self._secret_path))
+        """Verifica la contraseña con serialización + backoff.
 
-    def _session_token(self) -> Optional[str]:
-        stored = read_secret(self._secret_path)
-        return session_token(stored) if stored else None
+        El lock convierte un flood de logins en una cola de a uno:
+        ``pbkdf2_hmac`` (200k rounds, ~100ms en la Pi) LIBERA el GIL y
+        ``ThreadingHTTPServer`` no capea threads — sin el lock, N requests
+        concurrentes saturaban los 4 cores compitiendo con visión/SGBM.
+        Tras ``_LOGIN_BACKOFF_AFTER`` fallos consecutivos se agrega un
+        sleep DENTRO del lock (todo el flood espera detrás) que baja el
+        brute-force online a ~1 guess/s; un login OK resetea el contador.
+        """
+        with self._auth_lock:
+            if self._failed_logins >= _LOGIN_BACKOFF_AFTER:
+                time.sleep(_LOGIN_BACKOFF_S)
+            ok = verify_password(password, read_secret(self._secret_path))
+            if ok:
+                self._failed_logins = 0
+            else:
+                self._failed_logins += 1
+            return ok
 
-    def _is_authed(self, cookie_header: Optional[str]) -> bool:
-        token = self._session_token()
-        if not token or not cookie_header:
-            return False
+    def _new_session(self) -> str:
+        """Crea una sesión nueva: token random + expiry server-side.
+
+        Reemplaza al token determinístico HMAC(hash) anterior, que era
+        idéntico para todos los logins y válido para siempre hasta el
+        próximo cambio de contraseña: el Max-Age de la cookie era puramente
+        client-side y /logout solo borraba la cookie del browser que lo
+        pedía. Con tokens per-sesión, el server expira de verdad
+        (``_SESSION_TTL_S``), /logout invalida ESA sesión y el cambio de
+        contraseña invalida todas (``_invalidate_sessions``). Un restart
+        del proceso borra las sesiones — re-login, aceptable.
+        """
+        token = secrets.token_hex(32)
+        with self._auth_lock:
+            self._sessions[token] = time.time() + _SESSION_TTL_S
+        return token
+
+    def _cookie_token(self, cookie_header: Optional[str]) -> Optional[str]:
+        if not cookie_header:
+            return None
         try:
             jar = SimpleCookie()
             jar.load(cookie_header)
             morsel = jar.get("pc_session")
         except Exception:
+            return None
+        return morsel.value if morsel is not None else None
+
+    def _is_authed(self, cookie_header: Optional[str]) -> bool:
+        token = self._cookie_token(cookie_header)
+        if not token:
             return False
-        return morsel is not None and hmac.compare_digest(morsel.value, token)
+        now = time.time()
+        with self._auth_lock:
+            # Purge perezoso de sesiones vencidas (el dict queda acotado al
+            # puñado de logins recientes; no hace falta un sweeper aparte).
+            expired = [t for t, exp in self._sessions.items() if exp <= now]
+            for t in expired:
+                del self._sessions[t]
+            return self._sessions.get(token, 0.0) > now
+
+    def _drop_session(self, cookie_header: Optional[str]) -> None:
+        """Invalida server-side la sesión del cookie (logout real)."""
+        token = self._cookie_token(cookie_header)
+        if token:
+            with self._auth_lock:
+                self._sessions.pop(token, None)
+
+    def _invalidate_sessions(self) -> None:
+        """Invalida TODAS las sesiones (post cambio de contraseña)."""
+        with self._auth_lock:
+            self._sessions.clear()
 
     def _change_password(self, current: str, new: str) -> tuple[bool, str]:
         """(ok, mensaje). Valida la actual + política de la nueva, escribe el hash."""
@@ -672,6 +746,9 @@ class WebViewer:
         except OSError as e:
             logger.exception("admin_password_write_failed")
             return False, f"no se pudo guardar: {e}"
+        # Cambio de contraseña invalida toda sesión previa — el caller
+        # re-emite una cookie nueva para la sesión actual.
+        self._invalidate_sessions()
         logger.warning("admin_password_changed")
         return True, "ok"
 
@@ -695,8 +772,21 @@ class WebViewer:
             return False
 
 
+# Cap del body de los POST (login/change-password). Un form real pesa <1KB;
+# sin cap, un Content-Length gigante (sin auth — /login lee el body antes de
+# verificar nada) acumularía todo el body en un solo bytes en RAM: en la Pi
+# de 2GB el OOM killer mata el proceso ENTERO, visión incluida.
+_MAX_FORM_BYTES = 8 * 1024
+
+
 def _build_handler(viewer: WebViewer):
     class Handler(BaseHTTPRequestHandler):
+        # Timeout del socket por conexión: un cliente que abre y no manda
+        # nada (o declara Content-Length y nunca envía el body) no puede
+        # retener el thread indefinidamente. No afecta a /stream, que solo
+        # escribe — y un cliente MJPEG colgado también se reapea con esto.
+        timeout = 30
+
         # Silenciar el log default per-request a stderr (spamearía el
         # log con cada byte de MJPEG).
         def log_message(self, fmt, *args) -> None:  # noqa: ARG002
@@ -776,11 +866,23 @@ def _build_handler(viewer: WebViewer):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        def _read_form(self) -> dict:
+        def _read_form(self) -> Optional[dict]:
+            """Lee y parsea el form urlencoded del body.
+
+            Devuelve None (y responde 413) si el Content-Length declarado
+            excede ``_MAX_FORM_BYTES`` — el caller debe cortar ahí.
+            """
             try:
                 n = int(self.headers.get("Content-Length", 0))
             except (TypeError, ValueError):
                 n = 0
+            if n > _MAX_FORM_BYTES:
+                # Cerrar la conexión: el body nunca se lee, y si quedara
+                # abierta el handler intentaría parsear esos bytes como el
+                # próximo request.
+                self.close_connection = True
+                self._send_json(413, {"error": "body too large"})
+                return None
             raw = self.rfile.read(n).decode("utf-8", "replace") if n > 0 else ""
             return {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
 
@@ -791,10 +893,13 @@ def _build_handler(viewer: WebViewer):
                 if not viewer._power_enabled():
                     self._send_json(404, {"error": "disabled"})
                     return
-                pw = self._read_form().get("password", "")
+                form = self._read_form()
+                if form is None:
+                    return
+                pw = form.get("password", "")
                 if viewer._check_password(pw):
                     cookie = (
-                        f"pc_session={viewer._session_token()}; HttpOnly; Path=/; "
+                        f"pc_session={viewer._new_session()}; HttpOnly; Path=/; "
                         "SameSite=Strict; Max-Age=86400"
                     )
                     self._send_json(200, {"ok": True}, cookie=cookie)
@@ -803,6 +908,10 @@ def _build_handler(viewer: WebViewer):
                 return
 
             if path == "/logout":
+                # Logout REAL: invalida la sesión server-side (antes solo se
+                # borraba la cookie del browser que lo pedía y el token —
+                # compartido — seguía siendo válido desde otros clientes).
+                viewer._drop_session(self.headers.get("Cookie"))
                 self._send_json(
                     200,
                     {"ok": True},
@@ -815,14 +924,16 @@ def _build_handler(viewer: WebViewer):
                     self._send_json(403, {"error": "auth required"})
                     return
                 form = self._read_form()
+                if form is None:
+                    return
                 ok, msg = viewer._change_password(
                     form.get("current", ""), form.get("new", "")
                 )
                 if ok:
-                    # El token cambió (deriva del hash) → re-emitir cookie así la
-                    # sesión actual sigue válida sin re-login.
+                    # _change_password invalidó todas las sesiones → emitir
+                    # una nueva para que ESTA sesión siga sin re-login.
                     cookie = (
-                        f"pc_session={viewer._session_token()}; HttpOnly; Path=/; "
+                        f"pc_session={viewer._new_session()}; HttpOnly; Path=/; "
                         "SameSite=Strict; Max-Age=86400"
                     )
                     self._send_json(200, {"ok": True}, cookie=cookie)

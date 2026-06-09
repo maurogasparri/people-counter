@@ -183,6 +183,8 @@ recall-preservado (N3 altura None, O1 conf alta sin altura). No quedan gaps.
 | 52 | L2 | keep-alive no protege outside | `test_keepalive_counting_zone_does_not_protect_outside` |
 | 53 | Lowe ratio | rechaza match ambiguo | `test_pass2_recovers_confirmed_with_bbox_jitter`, `test_pass2_respects_depth_gate`, `test_pass2_does_not_misroute_when_pass1_was_clean` |
 | 54 | Knob ghost outside cap | configurable per-instancia | `test_ghost_outside_invalidate_px_is_configurable` |
+| 54b | Lowe ratio en pass 2 | detección consumida por ambigua NO spawnea duplicado | `test_pass2_ambiguous_detection_does_not_spawn_duplicate` |
+| 54c | Depth gate con sentinel | `z == 0.0` ("sin depth") exento del gate — no fuerza unmatch | `test_zero_depth_sentinel_does_not_break_matching` |
 
 ### E2E (integración pipeline)
 

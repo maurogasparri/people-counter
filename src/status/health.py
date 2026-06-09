@@ -16,6 +16,7 @@ Justificación de thresholds:
       representa ~75 iteraciones perdidas — muy por encima de cualquier
       hiccup plausible de un solo frame.
 """
+
 from __future__ import annotations
 
 import logging
@@ -104,7 +105,9 @@ def check_calibration_loadable(path: str | None) -> bool:
 
 
 def check_internet(
-    host: str = "1.1.1.1", port: int = 53, timeout_s: float = 3.0,
+    host: str = "1.1.1.1",
+    port: int = 53,
+    timeout_s: float = 3.0,
 ) -> bool:
     """Probe TCP-connect para reachability de internet.
 

@@ -6,9 +6,9 @@ el viewer (login / cambio de contraseña) y ``scripts/set_admin_password.py``
 (seteo inicial en el provisioning).
 
 Modelo: la presencia del archivo habilita los controles de power (Reiniciar /
-Apagar). El token de cookie de sesión se deriva del hash almacenado, así un
-cambio de contraseña invalida las sesiones viejas automáticamente. Todo stdlib
-(hashlib/hmac/secrets) — sin dependencias.
+Apagar). Las sesiones de cookie viven en el viewer (tokens random per-login
+con expiry server-side; el cambio de contraseña las invalida todas). Todo
+stdlib (hashlib/hmac/secrets) — sin dependencias.
 """
 
 from __future__ import annotations
@@ -71,11 +71,3 @@ def write_secret(password: str, path: str = ADMIN_SECRET_PATH) -> None:
         os.chmod(path, 0o600)
     except OSError:
         pass
-
-
-def session_token(stored_hash: str) -> str:
-    """Token opaco de cookie derivado del hash almacenado (HMAC). Cambia cuando
-    cambia la contraseña → las sesiones viejas dejan de validar solas."""
-    return hmac.new(
-        stored_hash.encode("utf-8"), b"pc-admin-session-v1", hashlib.sha256
-    ).hexdigest()

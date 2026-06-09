@@ -113,8 +113,10 @@ def _build_nominal_k(width: int, height: int) -> np.ndarray:
 
 
 def _solve_board_pose(
-    corners: np.ndarray, ids: np.ndarray,
-    board: cv2.aruco.CharucoBoard, K: np.ndarray,
+    corners: np.ndarray,
+    ids: np.ndarray,
+    board: cv2.aruco.CharucoBoard,
+    K: np.ndarray,
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """SolvePnP del board en el frame de la cámara.
 
@@ -133,7 +135,10 @@ def _solve_board_pose(
         return None
     try:
         ok, rvec, tvec = cv2.solvePnP(
-            obj_pts, img_pts, K, np.zeros(5),
+            obj_pts,
+            img_pts,
+            K,
+            np.zeros(5),
             flags=cv2.SOLVEPNP_ITERATIVE,
         )
     except cv2.error:
@@ -144,8 +149,10 @@ def _solve_board_pose(
 
 
 def _compose_relative_pose(
-    rvec_l: np.ndarray, tvec_l: np.ndarray,
-    rvec_r: np.ndarray, tvec_r: np.ndarray,
+    rvec_l: np.ndarray,
+    tvec_l: np.ndarray,
+    rvec_r: np.ndarray,
+    tvec_r: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     R_L, _ = cv2.Rodrigues(rvec_l)
     R_R, _ = cv2.Rodrigues(rvec_r)
@@ -165,7 +172,7 @@ class _State:
     así no hace falta lock para reads del HTTP server."""
 
     def __init__(self) -> None:
-        self.phase: str = "waiting"          # waiting | collecting | done | error
+        self.phase: str = "waiting"  # waiting | collecting | done | error
         self.message: str = "Posicioná el board y apretá Comenzar"
         self.samples: list[dict[str, float]] = []
         self.target_samples: int = 30
@@ -334,13 +341,17 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
         elif self.path == "/stream":
             self.send_response(200)
-            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header(
+                "Content-Type", "multipart/x-mixed-replace; boundary=frame"
+            )
             self.end_headers()
             try:
                 while not _finish_requested.is_set():
                     jpg = _state.latest_jpeg
                     if jpg:
-                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ")
+                        self.wfile.write(
+                            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                        )
                         self.wfile.write(str(len(jpg)).encode())
                         self.wfile.write(b"\r\n\r\n")
                         self.wfile.write(jpg)
@@ -405,20 +416,25 @@ def _aggregate(samples: list[dict[str, float]]) -> dict[str, object]:
     off_z_med, off_z_std = med("offset_z_mm")
 
     checks = {
-        "pitch":    abs(pitch_med) <= THR_PITCH_DEG,
-        "yaw":      abs(yaw_med) <= THR_YAW_DEG,
-        "roll":     abs(roll_med) <= THR_ROLL_DEG,
+        "pitch": abs(pitch_med) <= THR_PITCH_DEG,
+        "yaw": abs(yaw_med) <= THR_YAW_DEG,
+        "roll": abs(roll_med) <= THR_ROLL_DEG,
         "offset_y": abs(off_y_med) <= THR_OFFSET_Y_MM,
         "offset_z": abs(off_z_med) <= THR_OFFSET_Z_MM,
     }
     return {
         "samples": len(samples),
         "metrics": {
-            "pitch": pitch_med, "pitch_std": pitch_std,
-            "yaw": yaw_med, "yaw_std": yaw_std,
-            "roll": roll_med, "roll_std": roll_std,
-            "offset_y": off_y_med, "offset_y_std": off_y_std,
-            "offset_z": off_z_med, "offset_z_std": off_z_std,
+            "pitch": pitch_med,
+            "pitch_std": pitch_std,
+            "yaw": yaw_med,
+            "yaw_std": yaw_std,
+            "roll": roll_med,
+            "roll_std": roll_std,
+            "offset_y": off_y_med,
+            "offset_y_std": off_y_std,
+            "offset_z": off_z_med,
+            "offset_z_std": off_z_std,
         },
         "checks": checks,
         "verdict": all(checks.values()),
@@ -440,19 +456,25 @@ def _build_status_json() -> str:
     if _state.final_summary is not None:
         m = _state.final_summary["metrics"]
         metrics_payload = {
-            "pitch": m["pitch"], "yaw": m["yaw"], "roll": m["roll"],
-            "offset_y": m["offset_y"], "offset_z": m["offset_z"],
+            "pitch": m["pitch"],
+            "yaw": m["yaw"],
+            "roll": m["roll"],
+            "offset_y": m["offset_y"],
+            "offset_z": m["offset_z"],
         }
         checks_payload = {k: bool(v) for k, v in _state.final_summary["checks"].items()}
     elif _state.live_metrics is not None:
         lm = _state.live_metrics
         metrics_payload = {
-            "pitch": lm["rotation_x_deg"], "yaw": lm["rotation_y_deg"],
+            "pitch": lm["rotation_x_deg"],
+            "yaw": lm["rotation_y_deg"],
             "roll": lm["rotation_z_deg"],
-            "offset_y": lm["offset_y_mm"], "offset_z": lm["offset_z_mm"],
+            "offset_y": lm["offset_y_mm"],
+            "offset_z": lm["offset_z_mm"],
         }
-        checks_payload = {k: None for k in
-                          ("pitch", "yaw", "roll", "offset_y", "offset_z")}
+        checks_payload = {
+            k: None for k in ("pitch", "yaw", "roll", "offset_y", "offset_z")
+        }
 
     data = {
         "phase": phase,
@@ -463,8 +485,11 @@ def _build_status_json() -> str:
         "metrics": metrics_payload,
         "checks": checks_payload,
         "thresholds": {
-            "pitch": THR_PITCH_DEG, "yaw": THR_YAW_DEG, "roll": THR_ROLL_DEG,
-            "offset_y": THR_OFFSET_Y_MM, "offset_z": THR_OFFSET_Z_MM,
+            "pitch": THR_PITCH_DEG,
+            "yaw": THR_YAW_DEG,
+            "roll": THR_ROLL_DEG,
+            "offset_y": THR_OFFSET_Y_MM,
+            "offset_z": THR_OFFSET_Z_MM,
         },
         "report_path": _state.report_path,
     }
@@ -497,29 +522,56 @@ def _save_report(
     checks: dict[str, bool] = summary["checks"]  # type: ignore
     verdict: bool = bool(summary["verdict"])
 
-    snapshot_b64 = base64.b64encode(snapshot_jpeg).decode("ascii") if snapshot_jpeg else ""
+    snapshot_b64 = (
+        base64.b64encode(snapshot_jpeg).decode("ascii") if snapshot_jpeg else ""
+    )
 
     rows = []
-    rows.append((
-        "pitch (rotación X)", f"{m['pitch']:+.3f}°", f"{m['pitch_std']:.3f}°",
-        f"±{THR_PITCH_DEG:.2f}°", checks["pitch"],
-    ))
-    rows.append((
-        "yaw (rotación Y)", f"{m['yaw']:+.3f}°", f"{m['yaw_std']:.3f}°",
-        f"±{THR_YAW_DEG:.2f}°", checks["yaw"],
-    ))
-    rows.append((
-        "roll (rotación Z)", f"{m['roll']:+.3f}°", f"{m['roll_std']:.3f}°",
-        f"±{THR_ROLL_DEG:.2f}°", checks["roll"],
-    ))
-    rows.append((
-        "offset Y", f"{m['offset_y']:+.2f} mm", f"{m['offset_y_std']:.3f} mm",
-        f"±{THR_OFFSET_Y_MM:.1f} mm", checks["offset_y"],
-    ))
-    rows.append((
-        "offset Z", f"{m['offset_z']:+.2f} mm", f"{m['offset_z_std']:.3f} mm",
-        f"±{THR_OFFSET_Z_MM:.1f} mm", checks["offset_z"],
-    ))
+    rows.append(
+        (
+            "pitch (rotación X)",
+            f"{m['pitch']:+.3f}°",
+            f"{m['pitch_std']:.3f}°",
+            f"±{THR_PITCH_DEG:.2f}°",
+            checks["pitch"],
+        )
+    )
+    rows.append(
+        (
+            "yaw (rotación Y)",
+            f"{m['yaw']:+.3f}°",
+            f"{m['yaw_std']:.3f}°",
+            f"±{THR_YAW_DEG:.2f}°",
+            checks["yaw"],
+        )
+    )
+    rows.append(
+        (
+            "roll (rotación Z)",
+            f"{m['roll']:+.3f}°",
+            f"{m['roll_std']:.3f}°",
+            f"±{THR_ROLL_DEG:.2f}°",
+            checks["roll"],
+        )
+    )
+    rows.append(
+        (
+            "offset Y",
+            f"{m['offset_y']:+.2f} mm",
+            f"{m['offset_y_std']:.3f} mm",
+            f"±{THR_OFFSET_Y_MM:.1f} mm",
+            checks["offset_y"],
+        )
+    )
+    rows.append(
+        (
+            "offset Z",
+            f"{m['offset_z']:+.2f} mm",
+            f"{m['offset_z_std']:.3f} mm",
+            f"±{THR_OFFSET_Z_MM:.1f} mm",
+            checks["offset_z"],
+        )
+    )
 
     table_rows = "\n".join(
         f"<tr><td>{label}</td><td><b>{val}</b></td><td>{std}</td>"
@@ -528,13 +580,21 @@ def _save_report(
     )
 
     banner_color = "#2ecc71" if verdict else "#e74c3c"
-    banner_text = "PASS — bracket dentro de tolerancia" if verdict else "FAIL — re-ajustar bracket y volver a medir"
+    banner_text = (
+        "PASS — bracket dentro de tolerancia"
+        if verdict
+        else "FAIL — re-ajustar bracket y volver a medir"
+    )
 
     snapshot_html = (
-        f'<h2>Preview en el momento del verdict</h2>'
-        f'<img src="data:image/jpeg;base64,{snapshot_b64}" '
-        f'style="max-width:100%;border:1px solid #333" />'
-    ) if snapshot_b64 else ""
+        (
+            f"<h2>Preview en el momento del verdict</h2>"
+            f'<img src="data:image/jpeg;base64,{snapshot_b64}" '
+            f'style="max-width:100%;border:1px solid #333" />'
+        )
+        if snapshot_b64
+        else ""
+    )
 
     html = f"""<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
 <title>Diagnóstico de bracket — {device_id}</title>
@@ -572,7 +632,9 @@ bracket "bien armado" para QA de fabricación.
 </body></html>
 """
     safe_device = "".join(c if c.isalnum() or c in "-_" else "_" for c in device_id)
-    fname = f"bracket_{safe_device}_{ts:%Y%m%d_%H%M%S}_{'PASS' if verdict else 'FAIL'}.html"
+    fname = (
+        f"bracket_{safe_device}_{ts:%Y%m%d_%H%M%S}_{'PASS' if verdict else 'FAIL'}.html"
+    )
     path = output_dir / fname
     path.write_text(html, encoding="utf-8")
     return path
@@ -651,12 +713,15 @@ def _capture_loop(
     time.sleep(HW.ae_initial_settle_seconds)
     for cam in [cam_l, cam_r]:
         m = cam.capture_metadata()
-        cam.set_controls({
-            "AeEnable": False, "AwbEnable": False,
-            "ExposureTime": m.get("ExposureTime", 30000),
-            "AnalogueGain": m.get("AnalogueGain", 1.0),
-            "ColourGains": m.get("ColourGains", (1.0, 1.0)),
-        })
+        cam.set_controls(
+            {
+                "AeEnable": False,
+                "AwbEnable": False,
+                "ExposureTime": m.get("ExposureTime", 30000),
+                "AnalogueGain": m.get("AnalogueGain", 1.0),
+                "ColourGains": m.get("ColourGains", (1.0, 1.0)),
+            }
+        )
     time.sleep(0.3)
     logger.info(
         "Lock provisional tras %.1fs settle. L: exp=%dus gain=%.2f | R: exp=%dus gain=%.2f",
@@ -691,15 +756,20 @@ def _capture_loop(
                 meta_r = cam_r.capture_metadata()
                 mean_l = float(np.mean(frame_l))
                 mean_r = float(np.mean(frame_r))
-                bad = (nl < 8 or nr < 8)
+                bad = nl < 8 or nr < 8
                 tag = "BAD " if bad else "ok  "
                 logger.info(
                     "[%s] f=%3d  L: corners=%2d brillo=%5.1f exp=%5dus gain=%4.2f | "
                     "R: corners=%2d brillo=%5.1f exp=%5dus gain=%4.2f",
-                    tag, frame_counter,
-                    nl, mean_l, meta_l.get("ExposureTime", 0),
+                    tag,
+                    frame_counter,
+                    nl,
+                    mean_l,
+                    meta_l.get("ExposureTime", 0),
                     meta_l.get("AnalogueGain", 0),
-                    nr, mean_r, meta_r.get("ExposureTime", 0),
+                    nr,
+                    mean_r,
+                    meta_r.get("ExposureTime", 0),
                     meta_r.get("AnalogueGain", 0),
                 )
                 # Guardá el frame de la 1ra falla a disco para inspección.
@@ -707,7 +777,9 @@ def _capture_loop(
                     cv2.imwrite("/tmp/bracket_bad_l.jpg", frame_l)
                     cv2.imwrite("/tmp/bracket_bad_r.jpg", frame_r)
                     _capture_loop._saved_bad = True
-                    logger.warning("Frame de falla guardado en /tmp/bracket_bad_{l,r}.jpg")
+                    logger.warning(
+                        "Frame de falla guardado en /tmp/bracket_bad_{l,r}.jpg"
+                    )
 
             pose_pair = None
             if corners_l is not None and corners_r is not None:
@@ -729,10 +801,16 @@ def _capture_loop(
                     c_r_common = corners_r[mask_r][order_r]
                     common_ids_sorted = np.sort(common_ids).reshape(-1, 1)
                     pose_l = _solve_board_pose(
-                        c_l_common, common_ids_sorted, board, K,
+                        c_l_common,
+                        common_ids_sorted,
+                        board,
+                        K,
                     )
                     pose_r = _solve_board_pose(
-                        c_r_common, common_ids_sorted, board, K,
+                        c_r_common,
+                        common_ids_sorted,
+                        board,
+                        K,
                     )
                     if pose_l is not None and pose_r is not None:
                         R_LR, T_LR = _compose_relative_pose(*pose_l, *pose_r)
@@ -741,8 +819,14 @@ def _capture_loop(
 
             # Dibujar preview: L | R con corners + ghost del board target.
             preview = _render_preview(
-                frame_l, frame_r, corners_l, ids_l, corners_r, ids_r,
-                ghost=ghost, preview_size=preview_size,
+                frame_l,
+                frame_r,
+                corners_l,
+                ids_l,
+                corners_r,
+                ids_r,
+                ghost=ghost,
+                preview_size=preview_size,
             )
             ok, jpg = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 70])
             if ok:
@@ -800,12 +884,15 @@ def _capture_loop(
                 time.sleep(HW.ae_resettle_seconds)
                 for cam in [cam_l, cam_r]:
                     m = cam.capture_metadata()
-                    cam.set_controls({
-                        "AeEnable": False, "AwbEnable": False,
-                        "ExposureTime": m.get("ExposureTime", 30000),
-                        "AnalogueGain": m.get("AnalogueGain", 1.0),
-                        "ColourGains": m.get("ColourGains", (1.0, 1.0)),
-                    })
+                    cam.set_controls(
+                        {
+                            "AeEnable": False,
+                            "AwbEnable": False,
+                            "ExposureTime": m.get("ExposureTime", 30000),
+                            "AnalogueGain": m.get("AnalogueGain", 1.0),
+                            "ColourGains": m.get("ColourGains", (1.0, 1.0)),
+                        }
+                    )
                 time.sleep(0.3)
                 logger.info(
                     "Re-lock con board en escena. L: exp=%dus gain=%.2f | "
@@ -822,15 +909,20 @@ def _capture_loop(
                 _start_event.clear()
                 logger.info("Captura iniciada")
     finally:
-        cam_l.stop(); cam_l.close()
-        cam_r.stop(); cam_r.close()
+        cam_l.stop()
+        cam_l.close()
+        cam_r.stop()
+        cam_r.close()
         _capture_done.set()
 
 
 def _render_preview(
-    frame_l: np.ndarray, frame_r: np.ndarray,
-    corners_l: Optional[np.ndarray], ids_l: Optional[np.ndarray],
-    corners_r: Optional[np.ndarray], ids_r: Optional[np.ndarray],
+    frame_l: np.ndarray,
+    frame_r: np.ndarray,
+    corners_l: Optional[np.ndarray],
+    ids_l: Optional[np.ndarray],
+    corners_r: Optional[np.ndarray],
+    ids_r: Optional[np.ndarray],
     ghost: Optional[dict[str, np.ndarray]] = None,
     preview_size: Optional[tuple[int, int]] = None,
 ) -> np.ndarray:
@@ -872,18 +964,30 @@ def _render_preview(
     if ghost is not None:
         outer = ghost["outer_corners"].astype(np.int32)
         cv2.polylines(
-            vis_l, [outer.reshape(-1, 1, 2)], isClosed=True,
-            color=(0, 180, 255), thickness=2,
+            vis_l,
+            [outer.reshape(-1, 1, 2)],
+            isClosed=True,
+            color=(0, 180, 255),
+            thickness=2,
         )
         cx = int(np.mean(outer[:, 0]))
         cy = int(np.mean(outer[:, 1]))
         cv2.drawMarker(
-            vis_l, (cx, cy), (0, 180, 255),
-            markerType=cv2.MARKER_CROSS, markerSize=14, thickness=2,
+            vis_l,
+            (cx, cy),
+            (0, 180, 255),
+            markerType=cv2.MARKER_CROSS,
+            markerSize=14,
+            thickness=2,
         )
         cv2.putText(
-            vis_l, "alinear board aqui", (cx - 70, cy - 18),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 180, 255), 1,
+            vis_l,
+            "alinear board aqui",
+            (cx - 70, cy - 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 180, 255),
+            1,
             lineType=cv2.LINE_AA,
         )
 
@@ -892,10 +996,24 @@ def _render_preview(
 
     nl = 0 if ids_l is None else len(ids_l)
     nr = 0 if ids_r is None else len(ids_r)
-    cv2.putText(vis_l, f"{nl} corners", (8, PREVIEW_H - 14),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
-    cv2.putText(vis_r, f"{nr} corners", (8, PREVIEW_H - 14),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+    cv2.putText(
+        vis_l,
+        f"{nl} corners",
+        (8, PREVIEW_H - 14),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 200, 0),
+        2,
+    )
+    cv2.putText(
+        vis_r,
+        f"{nr} corners",
+        (8, PREVIEW_H - 14),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 200, 0),
+        2,
+    )
 
     return np.hstack([vis_l, vis_r])
 
@@ -911,59 +1029,107 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         description="Diagnóstico de bracket estéreo (browser-driven). "
-                    "Mide pitch/yaw/roll + offsets Y/Z entre cámaras sin "
-                    "necesidad de calibración previa. Para verificar el "
-                    "ensamblado físico del bracket antes de la calibración "
-                    "completa.",
+        "Mide pitch/yaw/roll + offsets Y/Z entre cámaras sin "
+        "necesidad de calibración previa. Para verificar el "
+        "ensamblado físico del bracket antes de la calibración "
+        "completa.",
     )
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--left", type=int, default=HW.camera_left_csi)
     parser.add_argument("--right", type=int, default=HW.camera_right_csi)
-    parser.add_argument("--resolution", type=int, nargs=2, default=None,
-                        help="Resolución de captura. Default: lee "
-                             "vision.resolution de /etc/people-counter/"
-                             "config.yaml.")
-    parser.add_argument("--frames", type=int, default=30,
-                        help="Frames a agregar tras Comenzar. Default 30.")
-    parser.add_argument("--board-cols", type=int, default=HW.board_cols,
-                        help="Default desde vision.charuco.board_cols.")
-    parser.add_argument("--board-rows", type=int, default=HW.board_rows,
-                        help="Default desde vision.charuco.board_rows.")
-    parser.add_argument("--square-mm", type=float, default=HW.square_mm,
-                        help="Default desde vision.charuco.square_mm.")
-    parser.add_argument("--marker-mm", type=float, default=HW.marker_mm,
-                        help="Default desde vision.charuco.marker_mm.")
-    parser.add_argument("--dict", dest="aruco_dict", default=HW.aruco_dict,
-                        help="Default desde vision.charuco.dict.")
-    parser.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
-                        default=HW.legacy_pattern,
-                        help="Default desde vision.charuco.legacy_pattern.")
-    parser.add_argument("--board-distance-mm", type=float, default=1000.0,
-                        help="Distancia objetivo del board para el ghost del "
-                             "preview (mm). Default 1000 (1m). Subir/bajar "
-                             "si el setup de QC tiene espacio distinto.")
-    parser.add_argument("--device-id", default="unknown",
-                        help="ID de la unidad bajo prueba, va al header del "
-                             "reporte HTML. Default 'unknown' — pasalo por "
-                             "barcode scanner o serial en la línea.")
-    parser.add_argument("--output-dir", default="./bracket_reports",
-                        help="Directorio donde se guardan los reportes HTML. "
-                             "Default ./bracket_reports (relativo al CWD).")
-    parser.add_argument("--max-exposure-us", type=int, default=16000,
-                        help="Cap del shutter time en microsegundos (default "
-                             "16000 = 16ms, matchea vision.max_exposure_us "
-                             "del runtime). Sin cap, AE en luz baja sube "
-                             "shutter a ~66ms y vibraciones micro hacen "
-                             "ghosting asimétrico L/R que rompe el decoder "
-                             "ArUco. 16ms freezea cualquier vibración a "
-                             "costa de más gain (más noisy pero crisp).")
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Resolución de captura. Default: lee "
+        "vision.resolution de /etc/people-counter/"
+        "config.yaml.",
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=30,
+        help="Frames a agregar tras Comenzar. Default 30.",
+    )
+    parser.add_argument(
+        "--board-cols",
+        type=int,
+        default=HW.board_cols,
+        help="Default desde vision.charuco.board_cols.",
+    )
+    parser.add_argument(
+        "--board-rows",
+        type=int,
+        default=HW.board_rows,
+        help="Default desde vision.charuco.board_rows.",
+    )
+    parser.add_argument(
+        "--square-mm",
+        type=float,
+        default=HW.square_mm,
+        help="Default desde vision.charuco.square_mm.",
+    )
+    parser.add_argument(
+        "--marker-mm",
+        type=float,
+        default=HW.marker_mm,
+        help="Default desde vision.charuco.marker_mm.",
+    )
+    parser.add_argument(
+        "--dict",
+        dest="aruco_dict",
+        default=HW.aruco_dict,
+        help="Default desde vision.charuco.dict.",
+    )
+    parser.add_argument(
+        "--legacy-pattern",
+        action=argparse.BooleanOptionalAction,
+        default=HW.legacy_pattern,
+        help="Default desde vision.charuco.legacy_pattern.",
+    )
+    parser.add_argument(
+        "--board-distance-mm",
+        type=float,
+        default=1000.0,
+        help="Distancia objetivo del board para el ghost del "
+        "preview (mm). Default 1000 (1m). Subir/bajar "
+        "si el setup de QC tiene espacio distinto.",
+    )
+    parser.add_argument(
+        "--device-id",
+        default="unknown",
+        help="ID de la unidad bajo prueba, va al header del "
+        "reporte HTML. Default 'unknown' — pasalo por "
+        "barcode scanner o serial en la línea.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./bracket_reports",
+        help="Directorio donde se guardan los reportes HTML. "
+        "Default ./bracket_reports (relativo al CWD).",
+    )
+    parser.add_argument(
+        "--max-exposure-us",
+        type=int,
+        default=16000,
+        help="Cap del shutter time en microsegundos (default "
+        "16000 = 16ms, matchea vision.max_exposure_us "
+        "del runtime). Sin cap, AE en luz baja sube "
+        "shutter a ~66ms y vibraciones micro hacen "
+        "ghosting asimétrico L/R que rompe el decoder "
+        "ArUco. 16ms freezea cualquier vibración a "
+        "costa de más gain (más noisy pero crisp).",
+    )
     args = parser.parse_args()
 
     if args.resolution is None:
         try:
             from src.config.loader import (
-                DEFAULT_DEVICE_CONFIG_PATH, load_device_config,
+                DEFAULT_DEVICE_CONFIG_PATH,
+                load_device_config,
             )
+
             cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
             res = cfg.get("vision", {}).get("resolution")
             if res and isinstance(res, list) and len(res) == 2:
@@ -974,7 +1140,8 @@ def main() -> None:
             parser.error("--resolution no provisto y no se pudo leer del config")
 
     dict_attr = (
-        args.aruco_dict if args.aruco_dict.startswith("DICT_")
+        args.aruco_dict
+        if args.aruco_dict.startswith("DICT_")
         else f"DICT_{args.aruco_dict}"
     )
     dict_id = getattr(cv2.aruco, dict_attr)
@@ -1007,7 +1174,9 @@ def main() -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     logger.info("Diagnóstico de bracket — http://people-counter.local:%d", args.port)
-    logger.info("Posicioná el board ChArUco a ~1m, centrado en ambos lados, y apretá Comenzar.")
+    logger.info(
+        "Posicioná el board ChArUco a ~1m, centrado en ambos lados, y apretá Comenzar."
+    )
 
     try:
         _capture_loop(args, board, K, output_dir)

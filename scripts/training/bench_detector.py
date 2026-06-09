@@ -51,8 +51,7 @@ logger = logging.getLogger("bench_detector")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
-def _zone_of(x_center: float, y_center: float,
-             width: int, height: int) -> str:
+def _zone_of(x_center: float, y_center: float, width: int, height: int) -> str:
     """5-grid zone label for a detection center.
 
     The frame is split into a 3×3 grid; we collapse the 9 cells into 5
@@ -74,8 +73,9 @@ def _zone_of(x_center: float, y_center: float,
     return "br"
 
 
-def run_bench(weights: Path, frames_dir: Path, conf: float,
-              imgsz: int = 640) -> dict[str, Any]:
+def run_bench(
+    weights: Path, frames_dir: Path, conf: float, imgsz: int = 640
+) -> dict[str, Any]:
     """Run inference over every image in ``frames_dir`` and aggregate.
 
     Returns a dict with frame-level + zone-level stats. Doesn't write to
@@ -94,7 +94,8 @@ def run_bench(weights: Path, frames_dir: Path, conf: float,
         raise SystemExit(f"Frames dir not found: {frames_dir}")
 
     images = sorted(
-        p for p in frames_dir.iterdir()
+        p
+        for p in frames_dir.iterdir()
         if p.is_file() and p.suffix.lower() in IMAGE_EXTS
     )
     if not images:
@@ -103,18 +104,17 @@ def run_bench(weights: Path, frames_dir: Path, conf: float,
     logger.info("Loading weights: %s", weights)
     model = YOLO(str(weights))
 
-    logger.info("Benching %d frames (conf=%.2f, imgsz=%d)",
-                len(images), conf, imgsz)
+    logger.info("Benching %d frames (conf=%.2f, imgsz=%d)", len(images), conf, imgsz)
 
     per_frame = []
     confidences: list[float] = []
-    zone_counts: dict[str, int] = {z: 0 for z in
-                                   ("center", "tl", "tr", "bl", "br")}
+    zone_counts: dict[str, int] = {z: 0 for z in ("center", "tl", "tr", "bl", "br")}
     frames_with_any = 0
 
     for img_path in images:
-        results = model.predict(source=str(img_path), conf=conf,
-                                imgsz=imgsz, verbose=False)
+        results = model.predict(
+            source=str(img_path), conf=conf, imgsz=imgsz, verbose=False
+        )
         if not results:
             continue
         r = results[0]
@@ -136,11 +136,13 @@ def run_bench(weights: Path, frames_dir: Path, conf: float,
                 frame_confs.append(float(score))
                 confidences.append(float(score))
 
-        per_frame.append({
-            "path": img_path.name,
-            "n_detections": n,
-            "confidences": frame_confs,
-        })
+        per_frame.append(
+            {
+                "path": img_path.name,
+                "n_detections": n,
+                "confidences": frame_confs,
+            }
+        )
 
     summary = {
         "weights": str(weights),
@@ -159,8 +161,7 @@ def run_bench(weights: Path, frames_dir: Path, conf: float,
             "median": statistics.median(confidences),
             "min": min(confidences),
             "max": max(confidences),
-            "stdev": statistics.stdev(confidences)
-            if len(confidences) > 1 else 0.0,
+            "stdev": statistics.stdev(confidences) if len(confidences) > 1 else 0.0,
         }
     else:
         summary["confidence"] = None
@@ -190,27 +191,46 @@ def diff_reports(a_path: Path, b_path: Path) -> dict[str, Any]:
     out.append(f"B: {sb['weights']}")
     out.append(f"Frames: {sa['n_frames']} (A) vs {sb['n_frames']} (B)")
     out.append("")
-    out.append(_delta("frames_with_detections",
-                      sa["frames_with_detections"],
-                      sb["frames_with_detections"]))
-    out.append(_delta("detection_rate",
-                      round(sa["detection_rate"], 3),
-                      round(sb["detection_rate"], 3)))
-    out.append(_delta("total_detections",
-                      sa["total_detections"], sb["total_detections"]))
+    out.append(
+        _delta(
+            "frames_with_detections",
+            sa["frames_with_detections"],
+            sb["frames_with_detections"],
+        )
+    )
+    out.append(
+        _delta(
+            "detection_rate",
+            round(sa["detection_rate"], 3),
+            round(sb["detection_rate"], 3),
+        )
+    )
+    out.append(
+        _delta("total_detections", sa["total_detections"], sb["total_detections"])
+    )
     if sa.get("confidence") and sb.get("confidence"):
-        out.append(_delta("confidence.mean",
-                          round(sa["confidence"]["mean"], 3),
-                          round(sb["confidence"]["mean"], 3)))
-        out.append(_delta("confidence.median",
-                          round(sa["confidence"]["median"], 3),
-                          round(sb["confidence"]["median"], 3)))
+        out.append(
+            _delta(
+                "confidence.mean",
+                round(sa["confidence"]["mean"], 3),
+                round(sb["confidence"]["mean"], 3),
+            )
+        )
+        out.append(
+            _delta(
+                "confidence.median",
+                round(sa["confidence"]["median"], 3),
+                round(sb["confidence"]["median"], 3),
+            )
+        )
     out.append("")
     out.append("Per-zone detections (A -> B):")
     for z in ("center", "tl", "tr", "bl", "br"):
-        out.append(_delta(f"  zone.{z}",
-                          sa["zone_counts"].get(z, 0),
-                          sb["zone_counts"].get(z, 0)))
+        out.append(
+            _delta(
+                f"  zone.{z}", sa["zone_counts"].get(z, 0), sb["zone_counts"].get(z, 0)
+            )
+        )
 
     text = "\n".join(out)
     print(text)
@@ -222,16 +242,24 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd")
 
     bench_p = sub.add_parser("bench", help="Run inference + write report")
-    bench_p.add_argument("--weights", type=Path, required=True,
-                         help="Path to .pt weights (or .onnx)")
-    bench_p.add_argument("--frames", type=Path, required=True,
-                         help="Folder of frames to run inference on")
-    bench_p.add_argument("--conf", type=float, default=0.25,
-                         help="Confidence threshold (default: 0.25)")
-    bench_p.add_argument("--imgsz", type=int, default=640,
-                         help="Inference image size (default: 640)")
-    bench_p.add_argument("--report", type=Path, required=True,
-                         help="Where to write the JSON report")
+    bench_p.add_argument(
+        "--weights", type=Path, required=True, help="Path to .pt weights (or .onnx)"
+    )
+    bench_p.add_argument(
+        "--frames",
+        type=Path,
+        required=True,
+        help="Folder of frames to run inference on",
+    )
+    bench_p.add_argument(
+        "--conf", type=float, default=0.25, help="Confidence threshold (default: 0.25)"
+    )
+    bench_p.add_argument(
+        "--imgsz", type=int, default=640, help="Inference image size (default: 640)"
+    )
+    bench_p.add_argument(
+        "--report", type=Path, required=True, help="Where to write the JSON report"
+    )
 
     diff_p = sub.add_parser("diff", help="Diff two reports")
     diff_p.add_argument("a", type=Path, help="Baseline report (JSON)")
@@ -256,12 +284,17 @@ def main(argv: list[str] | None = None) -> int:
         s = report["summary"]
         logger.info(
             "Done. %d/%d frames had detections (%.1f%%); %d total dets",
-            s["frames_with_detections"], s["n_frames"],
-            100 * s["detection_rate"], s["total_detections"],
+            s["frames_with_detections"],
+            s["n_frames"],
+            100 * s["detection_rate"],
+            s["total_detections"],
         )
         if s.get("confidence"):
-            logger.info("Mean conf: %.3f, median: %.3f",
-                        s["confidence"]["mean"], s["confidence"]["median"])
+            logger.info(
+                "Mean conf: %.3f, median: %.3f",
+                s["confidence"]["mean"],
+                s["confidence"]["median"],
+            )
         print(f"\nReport written to: {args.report}\n")
     elif args.cmd == "diff":
         diff_reports(args.a, args.b)

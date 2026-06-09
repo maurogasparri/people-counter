@@ -212,6 +212,29 @@ vision:
                                     # bajar (0.5s) si el visitor se
                                     # mueve rápido y el cache desfasa.
 
+  # --- FPS adaptativo en escena vacía ---
+  # Cuando NO hay actividad (sin tracks que no sean clutter estacionario,
+  # sin ghosts esperando adopción, sin detecciones nuevas, nadie mirando el
+  # preview) durante idle_after_seconds, el main loop baja a idle_fps. El
+  # productor de captura está backpressured al consumidor → toda la cadena
+  # (grab + rectify + prep de detección) baja proporcionalmente: en un
+  # deploy real ~95% de los frames son escena vacía. Vuelta a full rate
+  # instantánea al primer signo de actividad (latencia agregada a la 1ra
+  # detección ≈ 1/idle_fps, vs ~1s que tarda un cruce). El FPS reportado
+  # en telemetría baja a ~idle_fps mientras está throttled — esa es la
+  # señal para verificarlo en Grafana; los canaries diarios
+  # (track_stitching_ratio / ghost_adoption_count / death_emit_count) son
+  # la métrica de regresión. Default OFF fleet-wide; validado E2E en el
+  # piloto (2026-06-09): CPU ~102%→~50% en escena vacía, wake instantáneo,
+  # 9 cruces contados y persistidos en RDS bajo throttle.
+  idle_throttle:
+    enabled: false
+    idle_fps: 10                    # FPS objetivo en idle. 10 ≈ 100ms de
+                                    # frescura máxima del primer frame con
+                                    # actividad.
+    idle_after_seconds: 2.0         # Cuánta quietud sostenida antes de
+                                    # frenar (histéresis anti-flapping).
+
   # --- ChArUco board + dual-pass detection ---
   charuco:
     board_cols: 9                   # Columnas (cuadrados) del board.

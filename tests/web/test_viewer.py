@@ -214,6 +214,155 @@ def test_login_and_power_flow(tmp_path):
         viewer.stop()
 
 
+def test_login_oversized_body_rejected_with_413(tmp_path):
+    """Un body más grande que el cap responde 413 SIN leerlo a memoria.
+    Sin el cap, un POST /login (sin auth) con Content-Length gigante
+    acumulaba todo el body en RAM — OOM del proceso entero en la Pi 2GB,
+    visión incluida."""
+    secret = str(tmp_path / "admin.secret")
+    write_secret("test-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        big = urllib.parse.urlencode({"password": "x" * 20000}).encode()
+        req = urllib.request.Request(f"{url}/login", data=big, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 413
+        # El server sigue vivo y el login legítimo funciona.
+        with _post(f"{url}/login", {"password": "test-password-1"}) as r:
+            assert r.status == 200
+    finally:
+        viewer.stop()
+
+
+def test_logout_invalidates_session_server_side(tmp_path):
+    """Regresión: /logout solo borraba la cookie del browser que lo pedía —
+    el token (determinístico, compartido entre todos los logins) seguía
+    siendo aceptado desde cualquier otro cliente que lo tuviera. Ahora la
+    sesión se invalida en el server."""
+    secret = str(tmp_path / "admin.secret")
+    write_secret("test-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        with _post(f"{url}/login", {"password": "test-password-1"}) as r:
+            cookie = r.headers.get("Set-Cookie").split(";", 1)[0]
+        with _get(f"{url}/auth/status", cookie=cookie) as r:
+            assert json.loads(r.read())["authed"] is True
+        with _post(f"{url}/logout", cookie=cookie) as r:
+            assert r.status == 200
+        # La MISMA cookie (p.ej. copiada por otro cliente) ya no sirve.
+        with _get(f"{url}/auth/status", cookie=cookie) as r:
+            assert json.loads(r.read())["authed"] is False
+    finally:
+        viewer.stop()
+
+
+def test_session_tokens_are_per_login(tmp_path):
+    """Cada login emite un token DISTINTO. Antes el token era un HMAC
+    determinístico del hash — idéntico para todos los logins y clientes,
+    válido para siempre hasta el próximo cambio de contraseña."""
+    secret = str(tmp_path / "admin.secret")
+    write_secret("test-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        cookies = []
+        for _ in range(2):
+            with _post(f"{url}/login", {"password": "test-password-1"}) as r:
+                cookies.append(r.headers.get("Set-Cookie").split(";", 1)[0])
+        assert cookies[0] != cookies[1]
+        # Ambas sesiones conviven válidas.
+        for c in cookies:
+            with _get(f"{url}/auth/status", cookie=c) as r:
+                assert json.loads(r.read())["authed"] is True
+    finally:
+        viewer.stop()
+
+
+def test_sessions_expire_server_side(tmp_path, monkeypatch):
+    """El expiry es del server, no solo el Max-Age client-side de la cookie
+    (antes el server nunca expiraba nada)."""
+    import src.web.viewer as viewer_mod
+
+    monkeypatch.setattr(viewer_mod, "_SESSION_TTL_S", 0.05)
+    secret = str(tmp_path / "admin.secret")
+    write_secret("test-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        with _post(f"{url}/login", {"password": "test-password-1"}) as r:
+            cookie = r.headers.get("Set-Cookie").split(";", 1)[0]
+        time.sleep(0.1)
+        with _get(f"{url}/auth/status", cookie=cookie) as r:
+            assert json.loads(r.read())["authed"] is False
+    finally:
+        viewer.stop()
+
+
+def test_change_password_invalidates_old_sessions(tmp_path):
+    """Cambiar la contraseña invalida TODAS las sesiones previas (otro
+    browser logueado queda afuera); la respuesta re-emite una cookie nueva
+    para que la sesión actual siga sin re-login."""
+    secret = str(tmp_path / "admin.secret")
+    write_secret("old-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+    assert viewer.start() is True
+    try:
+        url = f"http://127.0.0.1:{viewer.port}"
+        # Dos sesiones (dos "browsers").
+        with _post(f"{url}/login", {"password": "old-password-1"}) as r:
+            cookie_a = r.headers.get("Set-Cookie").split(";", 1)[0]
+        with _post(f"{url}/login", {"password": "old-password-1"}) as r:
+            cookie_b = r.headers.get("Set-Cookie").split(";", 1)[0]
+        # B cambia la contraseña.
+        with _post(
+            f"{url}/change-password",
+            {"current": "old-password-1", "new": "new-password-2"},
+            cookie=cookie_b,
+        ) as r:
+            assert r.status == 200
+            cookie_b_new = r.headers.get("Set-Cookie").split(";", 1)[0]
+        # A quedó invalidada; la cookie re-emitida de B sigue válida.
+        with _get(f"{url}/auth/status", cookie=cookie_a) as r:
+            assert json.loads(r.read())["authed"] is False
+        with _get(f"{url}/auth/status", cookie=cookie_b_new) as r:
+            assert json.loads(r.read())["authed"] is True
+    finally:
+        viewer.stop()
+
+
+def test_login_backoff_after_repeated_failures(tmp_path, monkeypatch):
+    """Tras N fallos consecutivos, _check_password agrega un delay dentro
+    del lock (anti brute-force online + anti CPU-flood: PBKDF2 libera el
+    GIL y sin freno un flood de logins saturaba los cores compitiendo con
+    visión). Un login exitoso resetea el contador."""
+    import src.web.viewer as viewer_mod
+
+    monkeypatch.setattr(viewer_mod, "_LOGIN_BACKOFF_AFTER", 2)
+    monkeypatch.setattr(viewer_mod, "_LOGIN_BACKOFF_S", 0.2)
+    secret = str(tmp_path / "admin.secret")
+    write_secret("test-password-1", secret)
+    viewer = WebViewer(port=_free_port(), host="127.0.0.1", secret_path=secret)
+
+    assert viewer._check_password("wrong-1") is False
+    assert viewer._check_password("wrong-2") is False
+    assert viewer._failed_logins == 2
+    t0 = time.monotonic()
+    assert viewer._check_password("wrong-3") is False  # 3ro: ya con backoff
+    assert time.monotonic() - t0 >= 0.19
+    # Login OK resetea el contador (el backoff de este intento aplica, pero
+    # los siguientes vuelven a ser inmediatos).
+    assert viewer._check_password("test-password-1") is True
+    assert viewer._failed_logins == 0
+
+
 def test_change_password_flow(tmp_path):
     secret = str(tmp_path / "admin.secret")
     write_secret("old-password-1", secret)

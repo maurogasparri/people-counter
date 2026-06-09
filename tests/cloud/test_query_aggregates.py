@@ -1,7 +1,7 @@
 """Tests del Lambda query_aggregates con conexion Postgres + boto3 mockeadas."""
+
 from __future__ import annotations
 
-import base64
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -86,10 +86,12 @@ def _sql_row_factory(cursor_mock, columns: list[str], rows: list[tuple]):
 def test_parse_input_minimal_required(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00Z",
-        "to":   "2026-05-02T00:00:00Z",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+        }
+    )
     params = query_aggregates._parse_input(event)
     assert params["bucket"] == "15min"
     assert params["sites"] is None
@@ -102,11 +104,13 @@ def test_parse_input_minimal_required(fake_pg):
 def test_parse_sites_csv(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00Z",
-        "to":   "2026-05-02T00:00:00Z",
-        "sites": "site_a,site_b,site_a",  # dedup
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+            "sites": "site_a,site_b,site_a",  # dedup
+        }
+    )
     params = query_aggregates._parse_input(event)
     assert params["sites"] == ["site_a", "site_b"]
 
@@ -114,10 +118,12 @@ def test_parse_sites_csv(fake_pg):
 def test_parse_input_with_offset_timezone(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00-03:00",
-        "to":   "2026-05-02T00:00:00-03:00",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00-03:00",
+            "to": "2026-05-02T00:00:00-03:00",
+        }
+    )
     params = query_aggregates._parse_input(event)
     # -03:00 = UTC+3, así que la conversión a UTC suma 3hs
     assert params["from"].hour == 3
@@ -145,10 +151,12 @@ def test_missing_from_returns_400(fake_pg):
 def test_naive_datetime_returns_400(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00",  # sin TZ
-        "to":   "2026-05-02T00:00:00Z",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00",  # sin TZ
+            "to": "2026-05-02T00:00:00Z",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 400
     body = json.loads(resp["body"])
@@ -158,10 +166,12 @@ def test_naive_datetime_returns_400(fake_pg):
 def test_from_gte_to_returns_400(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-02T00:00:00Z",
-        "to":   "2026-05-01T00:00:00Z",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-02T00:00:00Z",
+            "to": "2026-05-01T00:00:00Z",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 400
     body = json.loads(resp["body"])
@@ -171,11 +181,13 @@ def test_from_gte_to_returns_400(fake_pg):
 def test_range_too_large_for_15min_returns_400(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-01-01T00:00:00Z",
-        "to":   "2026-04-01T00:00:00Z",  # 90d con bucket=15min, cap=7d
-        "bucket": "15min",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-01-01T00:00:00Z",
+            "to": "2026-04-01T00:00:00Z",  # 90d con bucket=15min, cap=7d
+            "bucket": "15min",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 400
     body = json.loads(resp["body"])
@@ -186,11 +198,13 @@ def test_range_too_large_for_15min_returns_400(fake_pg):
 def test_invalid_bucket_returns_400(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00Z",
-        "to":   "2026-05-02T00:00:00Z",
-        "bucket": "30min",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+            "bucket": "30min",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 400
     body = json.loads(resp["body"])
@@ -201,11 +215,13 @@ def test_invalid_bucket_returns_400(fake_pg):
 def test_invalid_site_id_returns_400(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00Z",
-        "to":   "2026-05-02T00:00:00Z",
-        "sites": "site_a,DROP TABLE users;--",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+            "sites": "site_a,DROP TABLE users;--",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 400
     body = json.loads(resp["body"])
@@ -215,11 +231,13 @@ def test_invalid_site_id_returns_400(fake_pg):
 def test_limit_out_of_range_returns_400(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00Z",
-        "to":   "2026-05-02T00:00:00Z",
-        "limit": "10000",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+            "limit": "10000",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 400
     body = json.loads(resp["body"])
@@ -229,11 +247,13 @@ def test_limit_out_of_range_returns_400(fake_pg):
 def test_invalid_cursor_returns_400(fake_pg):
     from src.cloud import query_aggregates
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00Z",
-        "to":   "2026-05-02T00:00:00Z",
-        "cursor": "not-base64-!!!",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+            "cursor": "not-base64-!!!",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 400
     body = json.loads(resp["body"])
@@ -271,13 +291,26 @@ def test_cursor_decode_none_returns_none():
 
 
 _AGG_COLS = [
-    "bucket_start", "store_id",
-    "in_adult", "in_child", "in_unknown", "in_total",
-    "out_adult", "out_child", "out_unknown", "out_total",
-    "passersby", "shoppers",
-    "sales", "returns", "transactions",
-    "items_sale", "items_return",
-    "amount_minor_sale", "amount_minor_return", "currency",
+    "bucket_start",
+    "store_id",
+    "in_adult",
+    "in_child",
+    "in_unknown",
+    "in_total",
+    "out_adult",
+    "out_child",
+    "out_unknown",
+    "out_total",
+    "passersby",
+    "shoppers",
+    "sales",
+    "returns",
+    "transactions",
+    "items_sale",
+    "items_return",
+    "amount_minor_sale",
+    "amount_minor_return",
+    "currency",
 ]
 
 
@@ -285,15 +318,30 @@ def test_aggregates_happy_path_shape(fake_pg):
     from src.cloud import query_aggregates
 
     bucket = datetime(2026, 5, 25, 10, 0, tzinfo=timezone.utc)
-    rows = [(
-        bucket, "site_a",
-        12, 0, 2, 14,
-        11, 0, 3, 14,
-        87, 22,
-        5, 1, 6,
-        18, 2,
-        142350, 12500, "ARS",
-    )]
+    rows = [
+        (
+            bucket,
+            "site_a",
+            12,
+            0,
+            2,
+            14,
+            11,
+            0,
+            3,
+            14,
+            87,
+            22,
+            5,
+            1,
+            6,
+            18,
+            2,
+            142350,
+            12500,
+            "ARS",
+        )
+    ]
 
     cursor_mock = fake_pg["cursor"]
 
@@ -311,11 +359,13 @@ def test_aggregates_happy_path_shape(fake_pg):
 
     cursor_mock.execute.side_effect = fake_execute
 
-    event = _apigw_event(qs={
-        "from": "2026-05-25T00:00:00Z",
-        "to":   "2026-05-25T23:59:59Z",
-        "bucket": "1h",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-25T00:00:00Z",
+            "to": "2026-05-25T23:59:59Z",
+            "bucket": "1h",
+        }
+    )
     resp = query_aggregates.handler(event, None)
 
     assert resp["statusCode"] == 200
@@ -329,13 +379,17 @@ def test_aggregates_happy_path_shape(fake_pg):
     row = body["rows"][0]
     assert row["site_id"] == "site_a"
     assert row["bucket_start"] == "2026-05-25T10:00:00Z"
-    assert row["counts"]["in"]  == {"adult": 12, "child": 0, "unknown": 2, "total": 14}
+    assert row["counts"]["in"] == {"adult": 12, "child": 0, "unknown": 2, "total": 14}
     assert row["counts"]["out"] == {"adult": 11, "child": 0, "unknown": 3, "total": 14}
     assert row["external_traffic"] == {"passersby": 87, "shoppers": 22}
     assert row["pos"] == {
-        "sales": 5, "returns": 1, "transactions": 6,
-        "items_sale": 18, "items_return": 2,
-        "amount_minor_sale": 142350, "amount_minor_return": 12500,
+        "sales": 5,
+        "returns": 1,
+        "transactions": 6,
+        "items_sale": 18,
+        "items_return": 2,
+        "amount_minor_sale": 142350,
+        "amount_minor_return": 12500,
         "currency": "ARS",
     }
 
@@ -351,11 +405,13 @@ def test_response_has_etag_and_cache_control(fake_pg):
     )
 
     # Rango muy en el pasado → cache_control immutable
-    event = _apigw_event(qs={
-        "from": "2020-01-01T00:00:00Z",
-        "to":   "2020-01-02T00:00:00Z",
-        "bucket": "1d",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2020-01-01T00:00:00Z",
+            "to": "2020-01-02T00:00:00Z",
+            "bucket": "1d",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 200
     assert resp["headers"]["etag"].startswith('"')
@@ -375,11 +431,13 @@ def test_response_cache_control_no_cache_for_recent_data(fake_pg):
 
     # `to` apunta a futuro cercano → no-cache (datos siendo escritos)
     now = datetime.now(tz=timezone.utc)
-    event = _apigw_event(qs={
-        "from": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
-        "to":   (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
-        "bucket": "15min",
-    })
+    event = _apigw_event(
+        qs={
+            "from": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            "to": (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            "bucket": "15min",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 200
     assert resp["headers"]["cache-control"] == "no-cache"
@@ -395,10 +453,12 @@ def test_link_header_first_only_when_no_more(fake_pg):
         else _sql_row_factory(cursor_mock, _AGG_COLS, [])
     )
 
-    event = _apigw_event(qs={
-        "from": "2026-05-25T00:00:00Z",
-        "to":   "2026-05-25T01:00:00Z",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-25T00:00:00Z",
+            "to": "2026-05-25T01:00:00Z",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     link = resp["headers"]["link"]
     assert 'rel="first"' in link
@@ -422,8 +482,26 @@ def test_link_header_includes_next_when_has_more(fake_pg):
         n = params["limit_plus_one"]
         rows = [
             (
-                bucket + timedelta(minutes=15 * i), "site_a",
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "ARS",
+                bucket + timedelta(minutes=15 * i),
+                "site_a",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                "ARS",
             )
             for i in range(n)
         ]
@@ -431,11 +509,13 @@ def test_link_header_includes_next_when_has_more(fake_pg):
 
     cursor_mock.execute.side_effect = fake_execute
 
-    event = _apigw_event(qs={
-        "from": "2026-05-25T00:00:00Z",
-        "to":   "2026-05-25T23:59:59Z",
-        "limit": "2",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-25T00:00:00Z",
+            "to": "2026-05-25T23:59:59Z",
+            "limit": "2",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     link = resp["headers"]["link"]
     assert 'rel="first"' in link
@@ -455,7 +535,7 @@ def test_if_none_match_returns_304(fake_pg):
 
     qs = {
         "from": "2020-01-01T00:00:00Z",
-        "to":   "2020-01-02T00:00:00Z",
+        "to": "2020-01-02T00:00:00Z",
         "bucket": "1d",
     }
     # Primero pedimos sin If-None-Match para obtener el etag
@@ -479,10 +559,12 @@ def test_empty_sites_returns_empty_body(fake_pg):
         cursor_mock, ["store_id"], []
     )
 
-    event = _apigw_event(qs={
-        "from": "2026-05-01T00:00:00Z",
-        "to":   "2026-05-02T00:00:00Z",
-    })
+    event = _apigw_event(
+        qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+        }
+    )
     resp = query_aggregates.handler(event, None)
     assert resp["statusCode"] == 200
     body = json.loads(resp["body"])
@@ -575,7 +657,11 @@ def test_build_link_with_next_strips_cursor_from_first(monkeypatch):
     from src.cloud import query_aggregates
 
     link = query_aggregates._build_link_header(
-        raw_qs={"from": "2026-05-01T00:00:00Z", "to": "2026-05-02T00:00:00Z", "cursor": "oldcursor"},
+        raw_qs={
+            "from": "2026-05-01T00:00:00Z",
+            "to": "2026-05-02T00:00:00Z",
+            "cursor": "oldcursor",
+        },
         has_more=True,
         next_cursor="newcursor",
     )

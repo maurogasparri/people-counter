@@ -11,6 +11,7 @@ A diferencia de los tests per-módulo en ``tests/test_main.py``, este archivo
 scriptea un escenario multi-frame para una única persona simulada y verifica
 los side-effects de counting/telemetría producidos por el loop entero.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -233,9 +234,7 @@ def _install_common_patches(
     monkeypatch.setattr("src.main.build_capture", lambda *a, **k: capture_mock)
 
     # MQTT (+ buffer)
-    monkeypatch.setattr(
-        "src.main.build_mqtt", lambda *a, **k: (mqtt_mock, MagicMock())
-    )
+    monkeypatch.setattr("src.main.build_mqtt", lambda *a, **k: (mqtt_mock, MagicMock()))
 
     # Calibration: load_calibration returns our identity dict
     monkeypatch.setattr(
@@ -263,8 +262,11 @@ def _install_common_patches(
     frame_idx = [0]
 
     def _fake_detect(
-        frame, model,
-        confidence_threshold=0.5, nms_threshold=0.45, cluster_distance_px=0.0,
+        frame,
+        model,
+        confidence_threshold=0.5,
+        nms_threshold=0.45,
+        cluster_distance_px=0.0,
     ):
         i = frame_idx[0]
         frame_idx[0] += 1
@@ -391,9 +393,9 @@ def test_e2e_indeciso_no_count(monkeypatch: pytest.MonkeyPatch) -> None:
 
     run_pipeline(config, args)
 
-    assert _counting_events(mqtt) == [], (
-        "indeciso (same-side entry/exit) must not emit a counting event"
-    )
+    assert (
+        _counting_events(mqtt) == []
+    ), "indeciso (same-side entry/exit) must not emit a counting event"
 
     # Pipeline still ran normally — capture and detector were driven.
     assert capture.read.call_count >= len(detections)

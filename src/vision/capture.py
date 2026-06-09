@@ -32,6 +32,15 @@ CANONICAL_RAW_SIZE = (2304, 1296)
 # no la marca, una cámara congelada / cable CSI muerto sí.
 CAMERA_STALL_THRESHOLD = 10
 
+# Rate-limit del log de errores del stream loop ante falla PERSISTENTE de
+# captura (cable CSI muerto): el primer error va con traceback completo;
+# después 1 línea cada N consecutivos. Sin esto eran ~20 tracebacks/seg
+# sostenidos (~1.7M líneas/día) — wear de la microSD + journald saturado en
+# un device desatendido. El backoff también escala: corto al principio
+# (glitch transitorio se recupera rápido), 0.5s cuando es persistente.
+_STREAM_ERROR_LOG_EVERY = 200
+_STREAM_ERROR_BACKOFF_AFTER = 20
+
 
 def _next_stall(ts: int, last_ts: int, stall: int) -> int:
     """Contador de stall del SensorTimestamp por cámara. ts==0 (libcamera sin
@@ -176,8 +185,16 @@ class StereoCapture:
             (self._cam_left, "left"),
             (self._cam_right, "right"),
         ]:
+            # Formato "RGB888": en los builds de RPi OS Trixie / libcamera con
+            # los que shippeamos, los nombres de formato de picamera2 están
+            # invertidos empíricamente — "BGR888" entrega RGB y "RGB888"
+            # entrega BGR. Pedir "RGB888" da BGR directo del ISP y elimina
+            # los 2 cv2.cvtColor por par que había en el hot path (~28 fps).
+            # Verificado en hardware 2026-06-09: diff medio 1.77 (ruido de AE
+            # entre capturas) contra el output del pipeline anterior
+            # (BGR888 + cvtColor), con los means por canal espejados exactos.
             config = cam.create_still_configuration(
-                main={"size": (w, h), "format": "BGR888"},
+                main={"size": (w, h), "format": "RGB888"},
                 raw={"size": self.sensor_raw_size},
                 controls=initial_controls,
             )
@@ -328,13 +345,10 @@ class StereoCapture:
         except Exception as e:
             raise RuntimeError(f"Falló la captura de frame: {e}") from e
 
-        # picamera2 con formato "BGR888" entrega empíricamente RGB en los builds
-        # de RPi OS Trixie / libcamera con los que shippeamos. Convertir a BGR
-        # para que los consumers downstream (OpenCV, preproceso YOLO que asume
-        # entrada BGR) vean el orden de canales correcto.
-        frame_l = cv2.cvtColor(frame_l, cv2.COLOR_RGB2BGR)
-        frame_r = cv2.cvtColor(frame_r, cv2.COLOR_RGB2BGR)
-
+        # Sin cvtColor: el formato "RGB888" pedido en open() ya entrega BGR
+        # directo del ISP (nombres invertidos empíricamente en picamera2 —
+        # ver el comentario en la configuración). Los consumers downstream
+        # (OpenCV, preproceso YOLO) ven el mismo orden de canales de siempre.
         return frame_l, frame_r
 
     def read_with_metadata(
@@ -409,9 +423,7 @@ class StereoCapture:
         except Exception as e:
             raise RuntimeError(f"Falló la captura de frame: {e}") from e
 
-        frame_l = cv2.cvtColor(frame_l, cv2.COLOR_RGB2BGR)
-        frame_r = cv2.cvtColor(frame_r, cv2.COLOR_RGB2BGR)
-
+        # Sin cvtColor — "RGB888" entrega BGR directo (ver open()).
         return frame_l, frame_r, ts_l, ts_r, temp_l, temp_r
 
     def _ensure_stream_started(self) -> None:
@@ -434,15 +446,29 @@ class StereoCapture:
         propio thread; el main loop consume el último par sin bloquear. La
         cámara corre más rápido que el cómputo del pipeline, así que siempre
         hay un frame fresco listo y el consumidor nunca espera."""
+        consecutive_errors = 0
         while not self._stream_stop.is_set():
             try:
                 pair = self._capture_pair_with_metadata()
             except Exception as e:
+                consecutive_errors += 1
                 with self._stream_lock:
                     self._stream_error = str(e)
-                logger.exception("stereo_stream_capture_failed")
-                self._stream_stop.wait(0.05)  # backoff: no spinear en error
+                if consecutive_errors == 1:
+                    logger.exception("stereo_stream_capture_failed")
+                elif consecutive_errors % _STREAM_ERROR_LOG_EVERY == 0:
+                    logger.error(
+                        "stereo_stream_capture_failed persistente "
+                        "(%d consecutivos): %s",
+                        consecutive_errors,
+                        e,
+                    )
+                delay = (
+                    0.05 if consecutive_errors < _STREAM_ERROR_BACKOFF_AFTER else 0.5
+                )
+                self._stream_stop.wait(delay)  # backoff: no spinear en error
                 continue
+            consecutive_errors = 0
             ts_l, ts_r = pair[2], pair[3]
             with self._stream_lock:
                 self._cam_l_stall = _next_stall(
@@ -478,13 +504,23 @@ class StereoCapture:
     def close(self) -> None:
         """Libera los recursos de las cámaras."""
         # Frenar el thread productor ANTES del executor (el thread lo usa).
+        stream_wedged = False
         if self._stream_thread is not None:
             self._stream_stop.set()
             self._slot_consumed.set()  # desbloquea el thread si espera backpressure
             self._stream_thread.join(timeout=2.0)
+            stream_wedged = self._stream_thread.is_alive()
+            if stream_wedged:
+                logger.warning("stereo_stream_thread_join_timeout_wedged")
             self._stream_thread = None
         if self._executor is not None:
-            self._executor.shutdown(wait=True)
+            # wait=False si el productor sigue wedgeado (típicamente colgado
+            # dentro de un capture_request con la cámara stalleada): un
+            # shutdown(wait=True) esperaría para siempre a ese future y
+            # close() nunca llegaría a cam.stop() — el shutdown "limpio"
+            # terminaba en kill de systemd por TimeoutStopSec, justo en el
+            # escenario de falla que CAMERA_STALL_THRESHOLD detecta.
+            self._executor.shutdown(wait=not stream_wedged)
             self._executor = None
         for cam, name in [
             (self._cam_left, "left"),

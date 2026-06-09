@@ -82,8 +82,10 @@ def boxes_conf(model, jpg, conf):
     if res.boxes is not None and len(res.boxes):
         xy = res.boxes.xyxy.cpu().numpy()
         cf = res.boxes.conf.cpu().numpy()
-        out = [((float(b[0]), float(b[1]), float(b[2]), float(b[3])), float(c))
-               for b, c in zip(xy, cf)]
+        out = [
+            ((float(b[0]), float(b[1]), float(b[2]), float(b[3])), float(c))
+            for b, c in zip(xy, cf)
+        ]
     return out
 
 
@@ -96,13 +98,33 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--captures", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--v3", type=Path, required=True, help="Modelo actual (head+shoulders).")
-    p.add_argument("--v1", type=Path, required=True, help="Modelo high-recall (oraculo).")
-    p.add_argument("--pool-sample", type=int, default=2000,
-                   help="Cuantos frames del pool escanear (subset, por costo de inferencia).")
-    p.add_argument("--n-total", type=int, default=250, help="Cuantos seleccionar para labelar.")
-    p.add_argument("--v1-conf", type=float, default=0.5, help="Conf alta de v1 (oraculo confiable).")
-    p.add_argument("--v3-conf", type=float, default=0.2, help="Conf baja de v3 (para 'cubrio o no').")
+    p.add_argument(
+        "--v3", type=Path, required=True, help="Modelo actual (head+shoulders)."
+    )
+    p.add_argument(
+        "--v1", type=Path, required=True, help="Modelo high-recall (oraculo)."
+    )
+    p.add_argument(
+        "--pool-sample",
+        type=int,
+        default=2000,
+        help="Cuantos frames del pool escanear (subset, por costo de inferencia).",
+    )
+    p.add_argument(
+        "--n-total", type=int, default=250, help="Cuantos seleccionar para labelar."
+    )
+    p.add_argument(
+        "--v1-conf",
+        type=float,
+        default=0.5,
+        help="Conf alta de v1 (oraculo confiable).",
+    )
+    p.add_argument(
+        "--v3-conf",
+        type=float,
+        default=0.2,
+        help="Conf baja de v3 (para 'cubrio o no').",
+    )
     p.add_argument("--unc-lo", type=float, default=0.2)
     p.add_argument("--unc-hi", type=float, default=0.5)
     p.add_argument("--w-disagree", type=float, default=3.0)
@@ -143,12 +165,14 @@ def main() -> None:
         d1 = boxes_conf(v1, jpg, args.v1_conf)
         # disagreement: dets de v1 (alta conf) que ninguna det de v3 cubre.
         dis = 0
-        for (b1, _c1) in d1:
+        for b1, _c1 in d1:
             cx = (b1[0] + b1[2]) / 2.0
             cy = (b1[1] + b1[3]) / 2.0
             # "cubierta por v3" si algun centro de v3 cae dentro de la silueta v1
-            covered = any(center_in(b1, (b3[0] + b3[2]) / 2.0, (b3[1] + b3[3]) / 2.0)
-                          for (b3, _c3) in d3)
+            covered = any(
+                center_in(b1, (b3[0] + b3[2]) / 2.0, (b3[1] + b3[3]) / 2.0)
+                for (b3, _c3) in d3
+            )
             if not covered:
                 dis += 1
         # uncertainty: dets de v3 con conf media
@@ -157,7 +181,9 @@ def main() -> None:
         if score > 0:
             scored.append((score, dis, unc, jpg))
         if i % 200 == 0:
-            print(f"  escaneados {i}/{len(pool)} | candidatos con score>0: {len(scored)}")
+            print(
+                f"  escaneados {i}/{len(pool)} | candidatos con score>0: {len(scored)}"
+            )
 
     scored.sort(key=lambda t: t[0], reverse=True)
     pick = scored[: args.n_total]
@@ -171,7 +197,9 @@ def main() -> None:
         shutil.copy2(jpg, args.output / dst)
         rel = jpg.relative_to(args.captures).as_posix()
         manifest.append(f"{dst}\t{rel}\t{score:.1f}\t{dis}\t{unc}")
-    (args.output / "manifest.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
+    (args.output / "manifest.txt").write_text(
+        "\n".join(manifest) + "\n", encoding="utf-8"
+    )
 
     tot_dis = sum(t[1] for t in pick)
     tot_unc = sum(t[2] for t in pick)

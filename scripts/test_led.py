@@ -18,14 +18,14 @@ STATIC_S = 2.0
 BLINK_S = 4.0
 
 SEQUENCE: list[tuple[LedState, float, str]] = [
-    (LedState.OFF,            STATIC_S, "OFF              — sin power"),
-    (LedState.BOOT_FAILURE,   STATIC_S, "Rojo fijo        — boot failure"),
+    (LedState.OFF, STATIC_S, "OFF              — sin power"),
+    (LedState.BOOT_FAILURE, STATIC_S, "Rojo fijo        — boot failure"),
     (LedState.HARDWARE_FAULT, STATIC_S, "Amarillo fijo    — hardware fault"),
-    (LedState.SOFTWARE_FAULT, BLINK_S,  "Amarillo blink   — software fault"),
-    (LedState.NO_INTERNET,    BLINK_S,  "Verde blink      — sin internet"),
-    (LedState.NO_CLOUD,       STATIC_S, "Verde fijo       — sin cloud"),
-    (LedState.UNPROVISIONED,  BLINK_S,  "Azul blink       — sin provisioning"),
-    (LedState.OK,             STATIC_S, "Azul fijo        — operación normal"),
+    (LedState.SOFTWARE_FAULT, BLINK_S, "Amarillo blink   — software fault"),
+    (LedState.NO_INTERNET, BLINK_S, "Verde blink      — sin internet"),
+    (LedState.NO_CLOUD, STATIC_S, "Verde fijo       — sin cloud"),
+    (LedState.UNPROVISIONED, BLINK_S, "Azul blink       — sin provisioning"),
+    (LedState.OK, STATIC_S, "Azul fijo        — operación normal"),
 ]
 
 

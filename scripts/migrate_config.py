@@ -96,13 +96,13 @@ def main() -> int:
         description="Migra el config per-device a los nombres canónicos.",
     )
     parser.add_argument(
-        "--config", default=DEFAULT_DEVICE_CONFIG_PATH,
-        help=(
-            f"Path al config. Default {DEFAULT_DEVICE_CONFIG_PATH}."
-        ),
+        "--config",
+        default=DEFAULT_DEVICE_CONFIG_PATH,
+        help=(f"Path al config. Default {DEFAULT_DEVICE_CONFIG_PATH}."),
     )
     parser.add_argument(
-        "--apply", action="store_true",
+        "--apply",
+        action="store_true",
         help="Aplicar los cambios. Sin este flag el script es dry-run.",
     )
     args = parser.parse_args()

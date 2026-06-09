@@ -1,5 +1,5 @@
 """Tests para el módulo de captura de advertising BLE (basado en bleak)."""
-import threading
+
 import time
 from unittest.mock import MagicMock, patch
 
@@ -99,12 +99,29 @@ def test_start_twice_warns(caplog):
     import logging
 
     scanner = BLEScanner()
-    scanner._scan_thread = threading.Thread()  # fake
+    alive_thread = MagicMock()
+    alive_thread.is_alive.return_value = True
+    scanner._scan_thread = alive_thread  # fake thread corriendo
 
     with caplog.at_level(logging.WARNING):
         scanner.start()
 
     assert "ble_scan_already_running" in caplog.text
+    assert scanner._scan_thread is alive_thread  # no lo reemplazó
+
+
+def test_start_replaces_dead_thread():
+    """Un thread que murió solo (bleak crasheó, BlueZ down) no debe bloquear
+    el restart: start() lo reemplaza en vez de warnear already_running."""
+    scanner = BLEScanner()
+    dead_thread = MagicMock()
+    dead_thread.is_alive.return_value = False
+    scanner._scan_thread = dead_thread
+
+    with patch.object(scanner, "_scan_thread_main"):
+        scanner.start()
+        assert scanner._scan_thread is not dead_thread
+        scanner.stop()
 
 
 def test_stop_sets_event():
@@ -112,6 +129,38 @@ def test_stop_sets_event():
     scanner._stop_event.clear()
     scanner.stop()
     assert scanner._stop_event.is_set()
+
+
+def test_watchdog_restart_does_not_resurrect_wedged_thread():
+    """Regresión: stop()+start() del watchdog con el thread viejo wedgeado
+    (join timeout) NO debe poder resucitarlo. Cada start() crea un
+    stop_event NUEVO que el thread y su detection callback capturan por
+    closure; el evento del zombie queda set para siempre, así cuando se
+    des-wedgea sale solo. Con el evento compartido, el clear() del restart
+    lo revivía: dos BleakScanner activos (rate doble) y el zombie tickeando
+    el heartbeat compartido — enmascaraba wedges futuros del thread nuevo."""
+    scanner = BLEScanner()
+    with patch.object(scanner, "_scan_thread_main"):
+        scanner.start()
+        gen1_event = scanner._stop_event
+
+        # Simular el wedge: el join de stop() va a expirar (thread "vivo").
+        wedged = MagicMock()
+        wedged.is_alive.return_value = True
+        wedged.join.return_value = None
+        scanner._scan_thread = wedged
+
+        scanner.stop()  # setea el evento de la gen 1, join timeoutea
+        assert gen1_event.is_set()
+        assert scanner._scan_thread is None
+
+        scanner.start()  # restart del watchdog
+        # Gen 2 con evento NUEVO y limpio; el del zombie sigue set → si el
+        # zombie se des-wedgea, su loop/callback ven set y mueren solos.
+        assert scanner._stop_event is not gen1_event
+        assert not scanner._stop_event.is_set()
+        assert gen1_event.is_set()
+        scanner.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +248,7 @@ def test_is_healthy_false_when_heartbeat_stale():
 
 def test_callback_error_does_not_propagate():
     """Errors in on_advert should not crash the scanner."""
+
     def bad_callback(e):
         raise ValueError("boom")
 

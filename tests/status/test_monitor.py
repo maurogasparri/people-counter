@@ -1,4 +1,5 @@
 """Tests para src/status/monitor.py — HealthMonitor end-to-end."""
+
 from __future__ import annotations
 
 import time
@@ -33,11 +34,13 @@ class _NullLed(StatusLED):
 @pytest.fixture
 def all_probes_ok():
     """Patch every health probe so only ``HealthSignals`` drives the result."""
-    with patch("src.status.monitor.check_cpu_temp_ok", return_value=True), \
-         patch("src.status.monitor.check_hailo_temp_ok", return_value=True), \
-         patch("src.status.monitor.check_disk_ok", return_value=True), \
-         patch("src.status.monitor.check_calibration_loadable", return_value=True), \
-         patch("src.status.monitor.check_internet", return_value=True):
+    with (
+        patch("src.status.monitor.check_cpu_temp_ok", return_value=True),
+        patch("src.status.monitor.check_hailo_temp_ok", return_value=True),
+        patch("src.status.monitor.check_disk_ok", return_value=True),
+        patch("src.status.monitor.check_calibration_loadable", return_value=True),
+        patch("src.status.monitor.check_internet", return_value=True),
+    ):
         yield
 
 
@@ -78,6 +81,50 @@ def test_evaluate_once_pipeline_stalled_after_threshold(all_probes_ok):
     assert monitor.evaluate_once() is LedState.SOFTWARE_FAULT
 
 
+def test_boot_failed_flag_shows_boot_failure(all_probes_ok):
+    """main() setea boot_failed en el except de init antes de morir — el
+    tick tiene que mostrar rojo fijo. Regresión: nadie pasaba boot_failure
+    a decide_state, así que BOOT_FAILURE era inalcanzable y un crash de
+    init mostraba verde (NO_CLOUD) — el operador leía 'problema de
+    internet' frente a una falla de boot."""
+    led = _NullLed()
+    signals = HealthSignals(boot_failed=True)
+    monitor = HealthMonitor(led=led, signals=signals)
+    assert monitor.evaluate_once() is LedState.BOOT_FAILURE
+
+
+def test_boot_grace_expired_without_boot_complete_shows_boot_failure(all_probes_ok):
+    """Init wedgeado (load_model/capture.open colgados): si venció el grace
+    sin boot_complete, el LED pasa a rojo en vez de quedarse verde para
+    siempre."""
+    led = _NullLed()
+    signals = HealthSignals(boot_complete=False)
+    monitor = HealthMonitor(led=led, signals=signals, boot_grace_s=0.0)
+    assert monitor.evaluate_once() is LedState.BOOT_FAILURE
+
+
+def test_boot_grace_not_expired_keeps_normal_cascade(all_probes_ok):
+    """Durante el grace (init normal en curso), la cascada sigue normal —
+    no flaggear boot failure mientras el operador espera el arranque."""
+    led = _NullLed()
+    signals = HealthSignals(boot_complete=False, mqtt_connected=True)
+    monitor = HealthMonitor(led=led, signals=signals, boot_grace_s=120.0)
+    state = monitor.evaluate_once()
+    assert state is not LedState.BOOT_FAILURE
+
+
+def test_boot_complete_disables_grace_path(all_probes_ok):
+    """Con boot_complete=True el grace nunca dispara, aunque haya pasado."""
+    led = _NullLed()
+    signals = HealthSignals(
+        last_loop_ts=time.time(),
+        boot_complete=True,
+        mqtt_connected=True,
+    )
+    monitor = HealthMonitor(led=led, signals=signals, boot_grace_s=0.0)
+    assert monitor.evaluate_once() is LedState.OK
+
+
 def test_evaluate_once_no_pipeline_check_during_boot(all_probes_ok):
     """Before the first loop iteration ``last_loop_ts`` is 0 — don't fault."""
     led = _NullLed()
@@ -92,11 +139,13 @@ def test_evaluate_once_no_internet():
         last_loop_ts=time.time(),
         mqtt_connected=False,
     )
-    with patch("src.status.monitor.check_cpu_temp_ok", return_value=True), \
-         patch("src.status.monitor.check_hailo_temp_ok", return_value=True), \
-         patch("src.status.monitor.check_disk_ok", return_value=True), \
-         patch("src.status.monitor.check_calibration_loadable", return_value=True), \
-         patch("src.status.monitor.check_internet", return_value=False):
+    with (
+        patch("src.status.monitor.check_cpu_temp_ok", return_value=True),
+        patch("src.status.monitor.check_hailo_temp_ok", return_value=True),
+        patch("src.status.monitor.check_disk_ok", return_value=True),
+        patch("src.status.monitor.check_calibration_loadable", return_value=True),
+        patch("src.status.monitor.check_internet", return_value=False),
+    ):
         monitor = HealthMonitor(led=led, signals=signals)
         assert monitor.evaluate_once() is LedState.NO_INTERNET
 
@@ -117,7 +166,9 @@ def test_internet_probe_is_cached(all_probes_ok, monkeypatch):
     led = _NullLed()
     signals = HealthSignals(last_loop_ts=time.time(), mqtt_connected=True)
     monitor = HealthMonitor(
-        led=led, signals=signals, internet_probe_interval_s=60.0,
+        led=led,
+        signals=signals,
+        internet_probe_interval_s=60.0,
     )
     call_count = {"n": 0}
 
@@ -138,7 +189,9 @@ def test_hailo_probe_is_cached():
     led = _NullLed()
     signals = HealthSignals(last_loop_ts=time.time(), mqtt_connected=True)
     monitor = HealthMonitor(
-        led=led, signals=signals, hailo_probe_interval_s=60.0,
+        led=led,
+        signals=signals,
+        hailo_probe_interval_s=60.0,
     )
     call_count = {"n": 0}
 
@@ -146,11 +199,13 @@ def test_hailo_probe_is_cached():
         call_count["n"] += 1
         return True
 
-    with patch("src.status.monitor.check_cpu_temp_ok", return_value=True), \
-         patch("src.status.monitor.check_disk_ok", return_value=True), \
-         patch("src.status.monitor.check_calibration_loadable", return_value=True), \
-         patch("src.status.monitor.check_internet", return_value=True), \
-         patch("src.status.monitor.check_hailo_temp_ok", side_effect=_counting_hailo):
+    with (
+        patch("src.status.monitor.check_cpu_temp_ok", return_value=True),
+        patch("src.status.monitor.check_disk_ok", return_value=True),
+        patch("src.status.monitor.check_calibration_loadable", return_value=True),
+        patch("src.status.monitor.check_internet", return_value=True),
+        patch("src.status.monitor.check_hailo_temp_ok", side_effect=_counting_hailo),
+    ):
         for _ in range(5):
             monitor.evaluate_once()
     assert call_count["n"] == 1  # solo el primer tick probó el subprocess
@@ -161,11 +216,13 @@ def test_hailo_fault_surfaces_via_cache():
     led = _NullLed()
     signals = HealthSignals(last_loop_ts=time.time(), mqtt_connected=True)
     monitor = HealthMonitor(led=led, signals=signals)
-    with patch("src.status.monitor.check_cpu_temp_ok", return_value=True), \
-         patch("src.status.monitor.check_disk_ok", return_value=True), \
-         patch("src.status.monitor.check_calibration_loadable", return_value=True), \
-         patch("src.status.monitor.check_internet", return_value=True), \
-         patch("src.status.monitor.check_hailo_temp_ok", return_value=False):
+    with (
+        patch("src.status.monitor.check_cpu_temp_ok", return_value=True),
+        patch("src.status.monitor.check_disk_ok", return_value=True),
+        patch("src.status.monitor.check_calibration_loadable", return_value=True),
+        patch("src.status.monitor.check_internet", return_value=True),
+        patch("src.status.monitor.check_hailo_temp_ok", return_value=False),
+    ):
         assert monitor.evaluate_once() is LedState.HARDWARE_FAULT
 
 

@@ -47,12 +47,19 @@ def shape_to_yolo(points: list, W: int, H: int) -> tuple[float, float, float, fl
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--input", type=Path, required=True,
-                   help="Carpeta con <name>.jpg + <name>.json (labelme).")
+    p.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Carpeta con <name>.jpg + <name>.json (labelme).",
+    )
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--class-name", default="person")
-    p.add_argument("--split", default="val",
-                   help="Nombre del split en data.yaml (val/train). Default val.")
+    p.add_argument(
+        "--split",
+        default="val",
+        help="Nombre del split en data.yaml (val/train). Default val.",
+    )
     args = p.parse_args()
 
     if not args.input.exists():
@@ -82,6 +89,7 @@ def main() -> None:
             H = d.get("imageHeight")
             if not W or not H:
                 from PIL import Image
+
                 with Image.open(jpg) as im:
                     W, H = im.size
             for sh in d.get("shapes", []):

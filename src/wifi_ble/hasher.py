@@ -1,4 +1,5 @@
 """Hashing SHA-256 truncado para direcciones MAC."""
+
 import hashlib
 
 

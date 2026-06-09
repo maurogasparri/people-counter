@@ -191,15 +191,16 @@ class TestMQTTClientConstruction:
             client.connect(startup_jitter_seconds=10.0)
             elapsed_sync = _time.time() - t0
             # connect() debe retornar casi instantáneo (thread bg).
-            assert elapsed_sync < 0.5, (
-                f"connect() debió retornar inmediato, tardó {elapsed_sync:.2f}s"
-            )
+            assert (
+                elapsed_sync < 0.5
+            ), f"connect() debió retornar inmediato, tardó {elapsed_sync:.2f}s"
 
-            # Esperar a que el thread bg complete (poll hasta que connect_async
-            # del client mock se haya llamado).
+            # Esperar a que el thread bg complete. Poll por loop_start (la
+            # ÚLTIMA llamada del thread, no connect_async — pollear la primera
+            # era flaky: el poll podía salir entre ambas llamadas).
             deadline = _time.time() + 2.0
             while _time.time() < deadline:
-                if mock_client.connect_async.called:
+                if mock_client.loop_start.called:
                     break
                 _time.sleep(0.05)
 
@@ -421,9 +422,7 @@ class TestMQTTClientConstruction:
         # Solo se re-publicaron id1 e id3 — id2 se salteó.
         assert count == 2
         assert mock_client.publish.call_count == 2
-        sent_payloads = {
-            call.args[1] for call in mock_client.publish.call_args_list
-        }
+        sent_payloads = {call.args[1] for call in mock_client.publish.call_args_list}
         import json as _json
 
         sent_is = {_json.loads(p)["i"] for p in sent_payloads}
@@ -431,6 +430,87 @@ class TestMQTTClientConstruction:
         assert 2 not in sent_is
         # Sanity: las 3 estaban pendientes pero solo 2 se reenviaron.
         assert {id1, id2, id3} == {id1, id2, id3}
+
+    @patch("src.mqtt.client.mqtt.Client")
+    def test_replay_drains_backlog_beyond_batch_size(self, mock_mqtt_cls):
+        """Un backlog más grande que el batch se drena ENTERO en una sola
+        reconexión. Regresión: el replay original mandaba un único batch de
+        200 por reconnect — tras un outage multi-día el resto quedaba
+        sent=0 esperando un próximo reconnect que en una conexión estable
+        no llega, y purge_old lo terminaba borrando (pérdida silenciosa)."""
+        import itertools
+
+        from src.mqtt.client import REPLAY_BATCH_SIZE, MQTTClient
+
+        mock_client = MagicMock()
+        mid_counter = itertools.count(1)
+        mock_client.publish.side_effect = lambda *a, **k: MagicMock(
+            rc=0, mid=next(mid_counter)
+        )
+        mock_mqtt_cls.return_value = mock_client
+
+        tmpdir = tempfile.mkdtemp()
+        cert, key, ca = self._make_certs(tmpdir)
+        db_path = str(Path(tmpdir) / "buf.db")
+        buffer = MessageBuffer(db_path)
+
+        client = MQTTClient(
+            device_id="test-001",
+            endpoint="e.iot.amazonaws.com",
+            port=8883,
+            cert_path=cert,
+            key_path=key,
+            ca_path=ca,
+            buffer=buffer,
+        )
+        client._connected = True
+
+        total_msgs = REPLAY_BATCH_SIZE * 2 + 50  # 3 batches, el último parcial
+        for i in range(total_msgs):
+            buffer.enqueue("t/x", {"i": i})
+
+        # Low-water alto = el espera-ACKs inter-batch no frena (acá no hay
+        # broker que ACKee; el pacing real se testea aparte).
+        with patch("src.mqtt.client.REPLAY_INFLIGHT_LOW_WATER", 10_000):
+            count = client.replay_buffer()
+
+        assert count == total_msgs
+        assert mock_client.publish.call_count == total_msgs
+
+    @patch("src.mqtt.client.mqtt.Client")
+    def test_replay_inflight_drain_wait(self, mock_mqtt_cls):
+        """_wait_inflight_drain: devuelve True cuando los ACKs pendientes
+        están bajo el low-water, y False (timeout) cuando el broker no
+        drena — eso interrumpe el replay sin perder filas (siguen sent=0)."""
+        from src.mqtt.client import MQTTClient
+
+        mock_mqtt_cls.return_value = MagicMock()
+        tmpdir = tempfile.mkdtemp()
+        cert, key, ca = self._make_certs(tmpdir)
+        buffer = MessageBuffer(str(Path(tmpdir) / "buf.db"))
+        client = MQTTClient(
+            device_id="test-001",
+            endpoint="e.iot.amazonaws.com",
+            port=8883,
+            cert_path=cert,
+            key_path=key,
+            ca_path=ca,
+            buffer=buffer,
+        )
+        client._connected = True
+
+        # Pocos in-flight → drena al toque.
+        client._pending_acks = {1: 10}
+        assert client._wait_inflight_drain() is True
+
+        # Muchos in-flight y nadie ACKea → timeout corto → False.
+        client._pending_acks = {i: i for i in range(1000)}
+        with patch("src.mqtt.client.REPLAY_ACK_DRAIN_TIMEOUT_S", 0.3):
+            assert client._wait_inflight_drain() is False
+
+        # Desconexión mid-wait → True (el loop del caller re-chequea y corta).
+        client._connected = False
+        assert client._wait_inflight_drain() is True
 
     @patch("src.mqtt.client.mqtt.Client")
     def test_disconnect_count_not_incremented_on_graceful_stop(self, mock_mqtt_cls):
@@ -483,6 +563,7 @@ class TestMQTTClientConstruction:
         )
 
         import time as _time
+
         assert client.reconnect_ts is None
         t0 = _time.time()
         client._on_connect(mock_client, None, None, rc=0)

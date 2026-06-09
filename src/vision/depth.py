@@ -652,9 +652,9 @@ def _dump_depth_debug(
         # Azul = rango antropométrico; verde = después del column
         # filter; rojo = blob de cabeza elegido.
         masks = np.zeros((h, w, 3), dtype=np.uint8)
-        masks[valid] = (180, 80, 0)         # B (antropométrico)
-        masks[valid_col] = (0, 200, 0)      # G (column filter)
-        masks[head_blob_mask] = (0, 0, 255) # R (blob de cabeza elegido)
+        masks[valid] = (180, 80, 0)  # B (antropométrico)
+        masks[valid_col] = (0, 200, 0)  # G (column filter)
+        masks[head_blob_mask] = (0, 0, 255)  # R (blob de cabeza elegido)
 
         # ---- Panel 1: crop de frame con bbox + polígono rotado + texto ----
         # Construido solo cuando main.py nos pasó el frame rectificado.
@@ -677,7 +677,11 @@ def _dump_depth_debug(
             # Dibujar el envelope axis-aligned del bbox en blanco para
             # contraste contra el contenido del crop.
             cv2.rectangle(
-                crop, (0, 0), (w - 1, h - 1), (255, 255, 255), 1,
+                crop,
+                (0, 0),
+                (w - 1, h - 1),
+                (255, 255, 255),
+                1,
             )
 
             # Marcar el centroide del blob de cabeza elegido en el
@@ -689,8 +693,12 @@ def _dump_depth_debug(
                 blob_cx = int(np.round(xs.mean() * cv_crop_w / w))
                 blob_cy = int(np.round(ys.mean() * cv_crop_h / h))
                 cv2.drawMarker(
-                    crop, (blob_cx, blob_cy), (0, 0, 255),
-                    cv2.MARKER_CROSS, 20, 2,
+                    crop,
+                    (blob_cx, blob_cy),
+                    (0, 0, 255),
+                    cv2.MARKER_CROSS,
+                    20,
+                    2,
                 )
 
             # Overlay de texto (esquina top-left, dos líneas así
@@ -704,12 +712,24 @@ def _dump_depth_debug(
             for i, txt in enumerate((line_a, line_b)):
                 y_off = 16 + i * 18
                 cv2.putText(
-                    crop, txt, (4, y_off), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45, (0, 0, 0), 3, cv2.LINE_AA,
+                    crop,
+                    txt,
+                    (4, y_off),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (0, 0, 0),
+                    3,
+                    cv2.LINE_AA,
                 )
                 cv2.putText(
-                    crop, txt, (4, y_off), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45, (255, 255, 255), 1, cv2.LINE_AA,
+                    crop,
+                    txt,
+                    (4, y_off),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
                 )
             panel = np.concatenate([crop, heatmap, masks], axis=1)
         else:
@@ -743,7 +763,9 @@ def _dump_depth_debug(
             y_center,
             hist_summary,
         )
-    except Exception as e:  # pragma: no cover — diagnóstico, nunca debe crashear runtime
+    except (
+        Exception
+    ) as e:  # pragma: no cover — diagnóstico, nunca debe crashear runtime
         logger.warning("depth_debug_dump_failed err=%s", e)
 
 

@@ -1,4 +1,5 @@
 """Tests del bridge WiFi/BLE → MQTT (per-device events, post PR 2)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -47,8 +48,13 @@ def _clock(values):
     return _now
 
 
-def _make_record(visitor_hash: str = "aa" * 16, protocol: str = "wifi",
-                 rssi_max: int = -55, first: float = 0.0, last: float = 10.0) -> dict:
+def _make_record(
+    visitor_hash: str = "aa" * 16,
+    protocol: str = "wifi",
+    rssi_max: int = -55,
+    first: float = 0.0,
+    last: float = 10.0,
+) -> dict:
     return {
         "visitor_hash": visitor_hash,
         "protocol": protocol,
@@ -77,10 +83,16 @@ def test_no_publish_before_period_elapses():
 def test_publishes_devices_array_when_period_elapsed():
     mqtt = _FakeMQTT()
     records = [
-        _make_record(visitor_hash="aa" * 16, protocol="wifi", rssi_max=-55,
-                     first=10.0, last=120.0),
-        _make_record(visitor_hash="bb" * 16, protocol="ble", rssi_max=-70,
-                     first=20.0, last=200.0),
+        _make_record(
+            visitor_hash="aa" * 16,
+            protocol="wifi",
+            rssi_max=-55,
+            first=10.0,
+            last=120.0,
+        ),
+        _make_record(
+            visitor_hash="bb" * 16, protocol="ble", rssi_max=-70, first=20.0, last=200.0
+        ),
     ]
     dedup = _FakeDedup(records=records)
     pub = WifiBlePublisher(

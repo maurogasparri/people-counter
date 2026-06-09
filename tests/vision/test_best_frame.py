@@ -268,6 +268,8 @@ def test_manager_filename_layout(tmp_path):
 
 
 def test_manager_observe_does_not_mutate_input_frame(tmp_path):
+    from src.vision.best_frame import _crop_with_margin
+
     mgr = BestFrameManager(tmp_path)
     img = _make_frame()
     snapshot = img.copy()
@@ -276,7 +278,39 @@ def test_manager_observe_does_not_mutate_input_frame(tmp_path):
     # copy must not share storage.
     img[:] = 0
     buffered = mgr._buffers[1].frames[0].frame_image
-    np.testing.assert_array_equal(buffered, snapshot)
+    # El buffer guarda el CROP del bbox (no el frame completo — presupuesto
+    # de RAM del Pi 2GB); comparar contra el mismo crop del snapshot.
+    expected = _crop_with_margin(snapshot, (10, 10, 90, 90))
+    np.testing.assert_array_equal(buffered, expected)
+
+
+def test_manager_buffers_crop_not_full_frame(tmp_path):
+    """Regresión RAM: el buffer NO debe guardar el frame completo. A
+    1152x648 cada copia pesaba ~2.2MB x 20 de buffer = ~45MB por track —
+    con ~10 tracks rompía el presupuesto del Pi 5 2GB al encender el
+    feature. Se guarda el crop del bbox con margen de contexto."""
+    mgr = BestFrameManager(tmp_path)
+    img = _make_frame(h=648, w=1152)
+    bbox = (500, 300, 580, 380)  # cabeza+hombros típica ~80px
+    mgr.observe(1, img, bbox, 0.5)
+    buffered = mgr._buffers[1].frames[0].frame_image
+    # Crop = bbox (80x80) + 50% de margen por lado = 160x160 — no 648x1152.
+    assert buffered.shape[0] < img.shape[0] / 2
+    assert buffered.shape[1] < img.shape[1] / 2
+    assert buffered.nbytes < img.nbytes / 10
+
+
+def test_crop_with_margin_clamps_and_rejects_degenerate():
+    from src.vision.best_frame import _crop_with_margin
+
+    img = _make_frame(h=100, w=200)
+    # bbox pegado al borde: el margen se clampea al frame sin crashear.
+    crop = _crop_with_margin(img, (0, 0, 40, 40))
+    assert crop is not None and crop.shape[0] > 0
+    # bbox degenerado (w/h <= 0) → None.
+    assert _crop_with_margin(img, (50, 50, 50, 80)) is None
+    # bbox completamente fuera del frame → None.
+    assert _crop_with_margin(img, (300, 300, 350, 350)) is None
 
 
 def test_manager_commit_failure_returns_none(tmp_path, monkeypatch):

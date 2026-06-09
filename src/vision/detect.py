@@ -605,7 +605,7 @@ def cluster_detections(
     if max_centroid_distance_px <= 0 or len(detections) <= 1:
         return list(detections)
 
-    threshold_sq = max_centroid_distance_px ** 2
+    threshold_sq = max_centroid_distance_px**2
     # Highest-confidence primero así el representante de cada cluster
     # es la detección más confiable.
     sorted_dets = sorted(detections, key=lambda d: -d.confidence)
@@ -710,7 +710,8 @@ def detect_persons(
     backend: DetectionBackend = model["backend"]
     architecture = model.get("architecture", DEFAULT_ARCHITECTURE)
     input_size: tuple[int, int] = model.get(
-        "input_size", ARCHITECTURES[architecture]["input_size"],
+        "input_size",
+        ARCHITECTURES[architecture]["input_size"],
     )
     postprocess_fn: PostprocessFn = ARCHITECTURES[architecture]["postprocess"]
 

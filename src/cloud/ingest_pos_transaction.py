@@ -152,7 +152,9 @@ def _parse_event_ts(value: Any) -> datetime:
         if dt.tzinfo is None:
             raise ValueError(f"event_ts sin timezone explicita: {value!r}")
         return dt
-    raise ValueError(f"event_ts debe ser numerico o ISO-8601 string, got {type(value).__name__}")
+    raise ValueError(
+        f"event_ts debe ser numerico o ISO-8601 string, got {type(value).__name__}"
+    )
 
 
 def _validate_transaction(tx: Any) -> dict[str, Any]:
@@ -168,12 +170,21 @@ def _validate_transaction(tx: Any) -> dict[str, Any]:
         raise ValueError(f"type debe ser uno de {_VALID_TYPES}, got {tx['type']!r}")
 
     amount = tx["amount_minor"]
-    if not isinstance(amount, int) or amount < 0:
+    # bool es subclase de int: sin el check explícito, ``amount_minor: true``
+    # pasaba la validación y psycopg lo adaptaba a boolean contra la columna
+    # BIGINT → error de Postgres → 500 (el POS reintentaba un payload que
+    # jamás iba a entrar) en vez del 400 correcto.
+    if not isinstance(amount, int) or isinstance(amount, bool) or amount < 0:
         raise ValueError(f"amount_minor debe ser int >= 0, got {amount!r}")
 
     items = tx.get("items", _DEFAULT_ITEMS)
-    if not isinstance(items, int) or items < 0:
+    if not isinstance(items, int) or isinstance(items, bool) or items < 0:
         raise ValueError(f"items debe ser int >= 0, got {items!r}")
+
+    # ``or _DEFAULT_CURRENCY`` (no default del .get): un ``"currency": null``
+    # explícito en el JSON hace que la key EXISTA con valor None — con el
+    # default del .get se persistía str(None)[:3] = "NON" como moneda.
+    currency = tx.get("currency") or _DEFAULT_CURRENCY
 
     return {
         "transaction_id": str(tx["transaction_id"]),
@@ -182,7 +193,7 @@ def _validate_transaction(tx: Any) -> dict[str, Any]:
         "type": tx["type"],
         "items": items,
         "amount_minor": amount,
-        "currency": str(tx.get("currency", _DEFAULT_CURRENCY))[:3].upper(),
+        "currency": str(currency)[:3].upper(),
         "payment_method": tx.get("payment_method"),  # nullable
     }
 
@@ -257,7 +268,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             raw_txs = [body]
         else:
             return _http_response(
-                400, {"error": f"body debe ser objeto o array, got {type(body).__name__}"}
+                400,
+                {"error": f"body debe ser objeto o array, got {type(body).__name__}"},
             )
 
         if not raw_txs:

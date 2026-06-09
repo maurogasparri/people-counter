@@ -50,9 +50,7 @@ def cmd_onnx(args: argparse.Namespace) -> None:
     try:
         from ultralytics import YOLO
     except ImportError:
-        logger.error(
-            "ultralytics not installed. Install with: pip install ultralytics"
-        )
+        logger.error("ultralytics not installed. Install with: pip install ultralytics")
         sys.exit(1)
 
     logger.info("Loading YOLOv8n and exporting to ONNX...")

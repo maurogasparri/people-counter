@@ -19,6 +19,7 @@ lenient (no exige que el config sea válido para el runtime), pensado
 para tools que pueden correr antes de que el device esté completamente
 aprovisionado.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -183,15 +184,10 @@ def load_hardware_params(
     ae_lock = (vision.get("ae_lock") or {}) if isinstance(vision, dict) else {}
 
     return HardwareParams(
-        full_res=_as_tuple_2(
-            sensor.get("full_res"), FLEET_DEFAULTS.full_res
-        ),
-        default_res=_as_tuple_2(
-            sensor.get("default_res"), FLEET_DEFAULTS.default_res
-        ),
+        full_res=_as_tuple_2(sensor.get("full_res"), FLEET_DEFAULTS.full_res),
+        default_res=_as_tuple_2(sensor.get("default_res"), FLEET_DEFAULTS.default_res),
         nominal_focal_full_px=_as_float(
-            sensor.get("nominal_focal_full_px")
-            or FLEET_DEFAULTS.nominal_focal_full_px,
+            sensor.get("nominal_focal_full_px") or FLEET_DEFAULTS.nominal_focal_full_px,
             FLEET_DEFAULTS.nominal_focal_full_px,
         ),
         hfov_deg=_as_float(

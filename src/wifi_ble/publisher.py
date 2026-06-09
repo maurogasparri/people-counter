@@ -113,9 +113,7 @@ class WifiBlePublisher:
         # antecede al arranque hasta el siguiente boundary. Es parcial
         # (solo tiene datos desde el arranque), pero etiqueta una ventana
         # completa — aceptable trade-off contra perder los primeros 1-15min.
-        self._last_period_end: float = (
-            self._now() // self._period
-        ) * self._period
+        self._last_period_end: float = (self._now() // self._period) * self._period
 
     @property
     def last_period_end(self) -> float:

@@ -47,6 +47,7 @@ from src.vision.calibration import (
 # con fleet defaults para que las funciones top-level (estimate_charuco_distance_mm)
 # tengan algo razonable durante import / tests.
 from src.config.hardware import FLEET_DEFAULTS as _FALLBACK_HW
+
 HW: HardwareParams = _FALLBACK_HW
 
 latest_jpeg: bytes = b""
@@ -61,34 +62,34 @@ capture_started = False
 capture_started_lock = threading.Lock()
 
 MIN_SCORE = 200
-MIN_CORNER_SCORE = 100.0          # Variance Laplaciana absoluta para
-                                   # las zonas de corner. Reemplaza al
-                                   # ratio bordes/centro viejo: en
-                                   # cuartos chicos de test el board
-                                   # llena el centro y arrastra el ratio
-                                   # cerca de cero incluso con lentes
-                                   # buenos. Medir corners en su propia
-                                   # escala es honesto entre escenas.
+MIN_CORNER_SCORE = 100.0  # Variance Laplaciana absoluta para
+# las zonas de corner. Reemplaza al
+# ratio bordes/centro viejo: en
+# cuartos chicos de test el board
+# llena el centro y arrastra el ratio
+# cerca de cero incluso con lentes
+# buenos. Medir corners en su propia
+# escala es honesto entre escenas.
 MAX_LR_DIFF_PCT = 15.0
 MAX_LR_ZONE_DIFF_PCT = 30.0
-TARGET_DISTANCE_MIN_MM = 1300.0   # Protocolo lab: foco a 1.5m ±20cm
-TARGET_DISTANCE_MAX_MM = 1700.0   # Target universal para toda la flota —
-                                   # IMX708 + M12 f/2.0 con foco a 1.5m
-                                   # peakea el DoF sobre el rango
-                                   # operativo cabezas+piso 1.0–3.5m
-                                   # (mount 2.0–3.5m), con margen
-                                   # simétrico en ambos extremos. Ver
-                                   # docs/lab_calibration_guide.md.
-DEFAULT_MOUNT_HEIGHT_M = 3.0      # Moda de nuestra distribución de altura de puerta
-HEAD_HEIGHT_MAX_M = 1.85          # adulto alto
-HEAD_HEIGHT_MIN_M = 1.20          # niño bajo
-COMPACT_BBOX_THRESHOLD = 0.25     # Área bbox del board/frame > esto ->
-                                   # escena compacta (el board llena la
-                                   # vista, los corners ven paredes a
-                                   # profundidades muy distintas, así
-                                   # que la corner sharpness no es
-                                   # comparable al centro y salteamos
-                                   # ese check).
+TARGET_DISTANCE_MIN_MM = 1300.0  # Protocolo lab: foco a 1.5m ±20cm
+TARGET_DISTANCE_MAX_MM = 1700.0  # Target universal para toda la flota —
+# IMX708 + M12 f/2.0 con foco a 1.5m
+# peakea el DoF sobre el rango
+# operativo cabezas+piso 1.0–3.5m
+# (mount 2.0–3.5m), con margen
+# simétrico en ambos extremos. Ver
+# docs/lab_calibration_guide.md.
+DEFAULT_MOUNT_HEIGHT_M = 3.0  # Moda de nuestra distribución de altura de puerta
+HEAD_HEIGHT_MAX_M = 1.85  # adulto alto
+HEAD_HEIGHT_MIN_M = 1.20  # niño bajo
+COMPACT_BBOX_THRESHOLD = 0.25  # Área bbox del board/frame > esto ->
+# escena compacta (el board llena la
+# vista, los corners ven paredes a
+# profundidades muy distintas, así
+# que la corner sharpness no es
+# comparable al centro y salteamos
+# ese check).
 
 
 # Presets relajados para corridas PoC en luz baja / cuartos chicos. NO
@@ -145,14 +146,17 @@ def _apply_threshold_overrides(args: argparse.Namespace) -> None:
     explicit_max = args.target_distance_max_mm
     if explicit_min is not None or explicit_max is not None or low_light:
         TARGET_DISTANCE_MIN_MM = _resolve(
-            "target_distance_min_mm", TARGET_DISTANCE_MIN_MM,
+            "target_distance_min_mm",
+            TARGET_DISTANCE_MIN_MM,
         )
         TARGET_DISTANCE_MAX_MM = _resolve(
-            "target_distance_max_mm", TARGET_DISTANCE_MAX_MM,
+            "target_distance_max_mm",
+            TARGET_DISTANCE_MAX_MM,
         )
     else:
         derived_min_mm = max(
-            200.0, (args.mount_height_m - HEAD_HEIGHT_MAX_M) * 1000,
+            200.0,
+            (args.mount_height_m - HEAD_HEIGHT_MAX_M) * 1000,
         )
         derived_max_mm = max(
             derived_min_mm + 200.0,
@@ -188,13 +192,15 @@ def focus_score(frame: np.ndarray) -> float:
 
 
 MIN_ZONE_STD = 8.0  # Bajo este std la zona es casi uniforme (pared
-                    # plana, superficie lisa) — la varianza Laplaciana
-                    # ahí no significa nada como indicador de foco, así
-                    # que la flageamos como "sin contenido".
+# plana, superficie lisa) — la varianza Laplaciana
+# ahí no significa nada como indicador de foco, así
+# que la flageamos como "sin contenido".
 
 
 def focus_grid(
-    frame: np.ndarray, rows: int = 3, cols: int = 3,
+    frame: np.ndarray,
+    rows: int = 3,
+    cols: int = 3,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Computa scores de foco per-zona + una máscara de validez.
 
@@ -220,7 +226,8 @@ def focus_grid(
 
 
 def estimate_charuco_distance_mm(
-    frame: np.ndarray, board: cv2.aruco.CharucoBoard,
+    frame: np.ndarray,
+    board: cv2.aruco.CharucoBoard,
     focal_px_override: float | None = None,
 ) -> tuple[float | None, int, float, float | None]:
     """Detecta ChArUco en el frame, estima la distancia vía solvePnP con K nominal.
@@ -256,7 +263,9 @@ def estimate_charuco_distance_mm(
     obj_pts = board.getChessboardCorners()[ids.flatten()].astype(np.float32)
     img_pts = corners.reshape(-1, 2).astype(np.float32)
     try:
-        ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, K, dist, flags=cv2.SOLVEPNP_ITERATIVE)
+        ok, rvec, tvec = cv2.solvePnP(
+            obj_pts, img_pts, K, dist, flags=cv2.SOLVEPNP_ITERATIVE
+        )
     except cv2.error:
         return None, len(corners), bbox_ratio, centroid_x
     if not ok:
@@ -265,9 +274,12 @@ def estimate_charuco_distance_mm(
 
 
 def evaluate_focus(
-    grid_l: np.ndarray, grid_r: np.ndarray,
-    distance_l_mm: float | None, distance_r_mm: float | None,
-    valid_l: np.ndarray | None = None, valid_r: np.ndarray | None = None,
+    grid_l: np.ndarray,
+    grid_r: np.ndarray,
+    distance_l_mm: float | None,
+    distance_r_mm: float | None,
+    valid_l: np.ndarray | None = None,
+    valid_r: np.ndarray | None = None,
     compact_scene: bool = False,
 ) -> dict:
     if valid_l is None:
@@ -312,8 +324,8 @@ def evaluate_focus(
         # de lens.
         SIGNIFICANCE_THRESHOLD = 100.0
         significant = (
-            (np.maximum(grid_l, grid_r) >= SIGNIFICANCE_THRESHOLD) & both_valid
-        )
+            np.maximum(grid_l, grid_r) >= SIGNIFICANCE_THRESHOLD
+        ) & both_valid
         if significant.any():
             max_zone_diff = float(zone_diffs_full[significant].max())
         else:
@@ -385,32 +397,53 @@ def evaluate_focus(
         # Ambos detectaron pero al menos uno está fuera de rango.
         # Elegir el lado que es peor offender así el operador sabe a
         # dónde mover el board.
-        offender = distance_l_mm if abs(distance_l_mm - (TARGET_DISTANCE_MIN_MM + TARGET_DISTANCE_MAX_MM) / 2) > \
-                                    abs(distance_r_mm - (TARGET_DISTANCE_MIN_MM + TARGET_DISTANCE_MAX_MM) / 2) \
-                   else distance_r_mm
+        offender = (
+            distance_l_mm
+            if abs(
+                distance_l_mm - (TARGET_DISTANCE_MIN_MM + TARGET_DISTANCE_MAX_MM) / 2
+            )
+            > abs(distance_r_mm - (TARGET_DISTANCE_MIN_MM + TARGET_DISTANCE_MAX_MM) / 2)
+            else distance_r_mm
+        )
         if offender < TARGET_DISTANCE_MIN_MM:
-            hints.append(f"Board muy cerca ({distance_avg/1000:.2f}m). Objetivo: {target_lo:.2f}-{target_hi:.2f}m")
+            hints.append(
+                f"Board muy cerca ({distance_avg/1000:.2f}m). Objetivo: {target_lo:.2f}-{target_hi:.2f}m"
+            )
         else:
-            hints.append(f"Board muy lejos ({distance_avg/1000:.2f}m). Objetivo: {target_lo:.2f}-{target_hi:.2f}m")
+            hints.append(
+                f"Board muy lejos ({distance_avg/1000:.2f}m). Objetivo: {target_lo:.2f}-{target_hi:.2f}m"
+            )
     if not checks["center_l"]:
-        hints.append(f"IZQ: centro débil ({center_l:.0f}<{MIN_SCORE}) — girá el lente izquierdo")
+        hints.append(
+            f"IZQ: centro débil ({center_l:.0f}<{MIN_SCORE}) — girá el lente izquierdo"
+        )
     if not checks["center_r"]:
-        hints.append(f"DER: centro débil ({center_r:.0f}<{MIN_SCORE}) — girá el lente derecho")
+        hints.append(
+            f"DER: centro débil ({center_r:.0f}<{MIN_SCORE}) — girá el lente derecho"
+        )
     if checks["center_l"] and uniformity_l_measurable and not checks["uniformity_l"]:
-        hints.append(f"IZQ: corners débiles ({corner_l:.0f}<{MIN_CORNER_SCORE:.0f}) — revisá foco / agregá textura en los bordes")
+        hints.append(
+            f"IZQ: corners débiles ({corner_l:.0f}<{MIN_CORNER_SCORE:.0f}) — revisá foco / agregá textura en los bordes"
+        )
     if checks["center_r"] and uniformity_r_measurable and not checks["uniformity_r"]:
-        hints.append(f"DER: corners débiles ({corner_r:.0f}<{MIN_CORNER_SCORE:.0f}) — revisá foco / agregá textura en los bordes")
+        hints.append(
+            f"DER: corners débiles ({corner_r:.0f}<{MIN_CORNER_SCORE:.0f}) — revisá foco / agregá textura en los bordes"
+        )
     # Solo molestar con corners de baja textura en modo "full" — en
     # modo compact la UI muestra un banner dedicado explicando que
     # los corners se saltean intencionalmente.
-    if not compact_scene and (not uniformity_l_measurable or not uniformity_r_measurable):
+    if not compact_scene and (
+        not uniformity_l_measurable or not uniformity_r_measurable
+    ):
         hints.append(
             "Escena con poca textura en los bordes — agregá detalle (poster/empapelado) "
             "detrás de la zona de medición para validar uniformidad"
         )
     if not checks["lr_global"]:
         side = "IZQ" if global_l < global_r else "DER"
-        hints.append(f"Cámara {side} más blanda que la otra ({lr_diff:.0f}% de diferencia)")
+        hints.append(
+            f"Cámara {side} más blanda que la otra ({lr_diff:.0f}% de diferencia)"
+        )
     if not checks["lr_zones"]:
         hints.append(
             f"Asimetría por zona L/R: hasta {max_zone_diff:.0f}% entre zonas "
@@ -421,15 +454,22 @@ def evaluate_focus(
         hints = ["LISTO — fijá los lentes y pasá a calibración"]
 
     return {
-        "center_l": center_l, "center_r": center_r,
-        "corner_l": corner_l, "corner_r": corner_r,
-        "lr_diff": lr_diff, "max_zone_diff": max_zone_diff,
-        "distance_l_mm": distance_l_mm, "distance_r_mm": distance_r_mm,
-        "distance_avg_mm": distance_avg, "distance_ok": distance_ok,
-        "checks": checks, "all_pass": all_pass,
+        "center_l": center_l,
+        "center_r": center_r,
+        "corner_l": corner_l,
+        "corner_r": corner_r,
+        "lr_diff": lr_diff,
+        "max_zone_diff": max_zone_diff,
+        "distance_l_mm": distance_l_mm,
+        "distance_r_mm": distance_r_mm,
+        "distance_avg_mm": distance_avg,
+        "distance_ok": distance_ok,
+        "checks": checks,
+        "all_pass": all_pass,
         "all_pass_with_distance": all_pass_with_distance,
         "hints": hints,
-        "global_l": global_l, "global_r": global_r,
+        "global_l": global_l,
+        "global_r": global_r,
         "uniformity_l_measurable": uniformity_l_measurable,
         "uniformity_r_measurable": uniformity_r_measurable,
         "n_valid_corners_l": n_valid_corners_l,
@@ -442,11 +482,13 @@ def _ascii(text: str) -> str:
     """Pliega a ASCII para cv2.putText (las fuentes Hershey no soportan unicode)."""
     normalized = unicodedata.normalize("NFKD", text)
     stripped = "".join(c for c in normalized if not unicodedata.combining(c))
-    return stripped.replace("—", "-").replace("–", "-").replace("¿", "?").replace("¡", "!")
+    return (
+        stripped.replace("—", "-").replace("–", "-").replace("¿", "?").replace("¡", "!")
+    )
 
 
 LR_DISPARITY_OK_MIN_PX = 8.0  # Por debajo de esto no confiamos en el signo —
-                              # podría ser ruido de parallax en un board chico.
+# podría ser ruido de parallax en un board chico.
 
 
 def _expected_disparity_px(distance_mm: float, frame_width_px: int) -> float:
@@ -484,7 +526,9 @@ def _classify_lr(
     """
     if not buffer:
         return {
-            "state": "unknown", "median_px": None, "n": 0,
+            "state": "unknown",
+            "median_px": None,
+            "n": 0,
             "expected_px": expected_px,
         }
     arr = sorted(buffer)
@@ -502,7 +546,9 @@ def _classify_lr(
         if ratio < 0.4 or ratio > 2.5:
             state = "magnitude_off"
     return {
-        "state": state, "median_px": median, "n": len(arr),
+        "state": state,
+        "median_px": median,
+        "n": len(arr),
         "expected_px": expected_px,
     }
 
@@ -556,11 +602,19 @@ class PeakTracker:
         )
 
 
-def _draw_bar(img: np.ndarray, x: int, y: int, w: int, h: int,
-              value: float, target: float, label: str,
-              max_value: float | None = None,
-              peak: float | None = None,
-              passing: bool | None = None) -> None:
+def _draw_bar(
+    img: np.ndarray,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    value: float,
+    target: float,
+    label: str,
+    max_value: float | None = None,
+    peak: float | None = None,
+    passing: bool | None = None,
+) -> None:
     """Dibuja una barra horizontal: el valor actual rellena; la zona
     verde marca el target.
 
@@ -601,13 +655,26 @@ def _draw_bar(img: np.ndarray, x: int, y: int, w: int, h: int,
         txt = f"{label}: {value:.2f} (pico {peak:.2f})"
     else:
         txt = f"{label}: {value:.2f}"
-    cv2.putText(img, _ascii(txt), (x + 4, y + h - 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(
+        img,
+        _ascii(txt),
+        (x + 4, y + h - 4),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
 
 
-def _compose_preview(frame_l: np.ndarray, frame_r: np.ndarray,
-                     ev: dict, grid_l: np.ndarray, grid_r: np.ndarray,
-                     peaks: PeakTracker | None = None) -> np.ndarray:
+def _compose_preview(
+    frame_l: np.ndarray,
+    frame_r: np.ndarray,
+    ev: dict,
+    grid_l: np.ndarray,
+    grid_r: np.ndarray,
+    peaks: PeakTracker | None = None,
+) -> np.ndarray:
     """Arma la imagen del preview HTTP con barras visuales +
     distancia + banner grande."""
     h = 360  # mitad de altura del preview
@@ -640,43 +707,86 @@ def _compose_preview(frame_l: np.ndarray, frame_r: np.ndarray,
     bar_w = w - 40
     peak_l_scaled = peaks.peak_l / 10.0 if peaks is not None else None
     peak_r_scaled = peaks.peak_r / 10.0 if peaks is not None else None
-    _draw_bar(panel, 20, 14, bar_w, 22,
-              ev["center_l"] / 10.0, MIN_SCORE / 10.0,
-              f"IZQ nitidez centro: {ev['center_l']:.0f}",
-              max_value=max(MIN_SCORE / 10 * 2.5, ev["center_l"] / 10 * 1.2, 1.0),
-              peak=peak_l_scaled)
-    _draw_bar(panel, w + 20, 14, bar_w, 22,
-              ev["center_r"] / 10.0, MIN_SCORE / 10.0,
-              f"DER nitidez centro: {ev['center_r']:.0f}",
-              max_value=max(MIN_SCORE / 10 * 2.5, ev["center_r"] / 10 * 1.2, 1.0),
-              peak=peak_r_scaled)
+    _draw_bar(
+        panel,
+        20,
+        14,
+        bar_w,
+        22,
+        ev["center_l"] / 10.0,
+        MIN_SCORE / 10.0,
+        f"IZQ nitidez centro: {ev['center_l']:.0f}",
+        max_value=max(MIN_SCORE / 10 * 2.5, ev["center_l"] / 10 * 1.2, 1.0),
+        peak=peak_l_scaled,
+    )
+    _draw_bar(
+        panel,
+        w + 20,
+        14,
+        bar_w,
+        22,
+        ev["center_r"] / 10.0,
+        MIN_SCORE / 10.0,
+        f"DER nitidez centro: {ev['center_r']:.0f}",
+        max_value=max(MIN_SCORE / 10 * 2.5, ev["center_r"] / 10 * 1.2, 1.0),
+        peak=peak_r_scaled,
+    )
 
     # Fila 2: sharpness de corners (absoluta). En escenas compactas
     # este check se saltea, así que poneselo gris al label de la
     # barra y forzamos pass a su color.
     compact = bool(ev.get("compact_scene"))
-    corner_l_label = "IZQ corners (omitido)" if compact else f"IZQ corners: {ev['corner_l']:.0f}"
-    corner_r_label = "DER corners (omitido)" if compact else f"DER corners: {ev['corner_r']:.0f}"
-    corner_max = max(MIN_CORNER_SCORE * 2.5, ev["corner_l"] * 1.2, ev["corner_r"] * 1.2, 100.0)
-    _draw_bar(panel, 20, 50, bar_w, 22,
-              ev["corner_l"], MIN_CORNER_SCORE,
-              corner_l_label, max_value=corner_max,
-              passing=ev["checks"]["uniformity_l"])
-    _draw_bar(panel, w + 20, 50, bar_w, 22,
-              ev["corner_r"], MIN_CORNER_SCORE,
-              corner_r_label, max_value=corner_max,
-              passing=ev["checks"]["uniformity_r"])
+    corner_l_label = (
+        "IZQ corners (omitido)" if compact else f"IZQ corners: {ev['corner_l']:.0f}"
+    )
+    corner_r_label = (
+        "DER corners (omitido)" if compact else f"DER corners: {ev['corner_r']:.0f}"
+    )
+    corner_max = max(
+        MIN_CORNER_SCORE * 2.5, ev["corner_l"] * 1.2, ev["corner_r"] * 1.2, 100.0
+    )
+    _draw_bar(
+        panel,
+        20,
+        50,
+        bar_w,
+        22,
+        ev["corner_l"],
+        MIN_CORNER_SCORE,
+        corner_l_label,
+        max_value=corner_max,
+        passing=ev["checks"]["uniformity_l"],
+    )
+    _draw_bar(
+        panel,
+        w + 20,
+        50,
+        bar_w,
+        22,
+        ev["corner_r"],
+        MIN_CORNER_SCORE,
+        corner_r_label,
+        max_value=corner_max,
+        passing=ev["checks"]["uniformity_r"],
+    )
 
     # Fila 3: simetría L/R — la barra trackea el diff global, pero
     # también falla en rojo cuando el diff per-zone excede el threshold
     # (indicador visual único para los checks lr_global y lr_zones).
     sym_val = max(0.0, 100.0 - ev["lr_diff"])  # 100 = perfecto, 0 = muy asimétrico
     sym_passing = ev["checks"]["lr_global"] and ev["checks"]["lr_zones"]
-    _draw_bar(panel, 20, 86, total_w - 40, 22,
-              sym_val, 100 - MAX_LR_DIFF_PCT,
-              f"Simetría L/R: {100-ev['lr_diff']:.0f}% (max zona diff {ev['max_zone_diff']:.0f}%)",
-              max_value=100.0,
-              passing=sym_passing)
+    _draw_bar(
+        panel,
+        20,
+        86,
+        total_w - 40,
+        22,
+        sym_val,
+        100 - MAX_LR_DIFF_PCT,
+        f"Simetría L/R: {100-ev['lr_diff']:.0f}% (max zona diff {ev['max_zone_diff']:.0f}%)",
+        max_value=100.0,
+        passing=sym_passing,
+    )
 
     # Fila 4: distancia — mostrar L, R, y avg así el operador puede ver divergencia
     if ev["distance_avg_mm"] is not None:
@@ -692,17 +802,52 @@ def _compose_preview(frame_l: np.ndarray, frame_r: np.ndarray,
         divergence_pct = 0.0
         if dl is not None and dr is not None:
             divergence_pct = abs(dl - dr) / max(dl, dr) * 100
-        cv2.putText(panel, _ascii(f"Distancia board: {dist_m:.2f} m  (IZQ {dl_str} / DER {dr_str})"),
-                    (20, 134), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
+        cv2.putText(
+            panel,
+            _ascii(f"Distancia board: {dist_m:.2f} m  (IZQ {dl_str} / DER {dr_str})"),
+            (20, 134),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
         if divergence_pct > 10:
-            cv2.putText(panel, _ascii(f"! IZQ/DER difieren {divergence_pct:.0f}% — revisar lente asimétrico"),
-                        (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50, 180, 240), 1, cv2.LINE_AA)
+            cv2.putText(
+                panel,
+                _ascii(
+                    f"! IZQ/DER difieren {divergence_pct:.0f}% — revisar lente asimétrico"
+                ),
+                (20, 160),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (50, 180, 240),
+                1,
+                cv2.LINE_AA,
+            )
         else:
-            cv2.putText(panel, _ascii(f"(objetivo {TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f} m)"),
-                        (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
+            cv2.putText(
+                panel,
+                _ascii(
+                    f"(objetivo {TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f} m)"
+                ),
+                (20, 160),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (180, 180, 180),
+                1,
+            )
     else:
-        cv2.putText(panel, _ascii("Board ChArUco no detectado — ponelo frente al par"),
-                    (20, 134), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (50, 180, 240), 2, cv2.LINE_AA)
+        cv2.putText(
+            panel,
+            _ascii("Board ChArUco no detectado — ponelo frente al par"),
+            (20, 134),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (50, 180, 240),
+            2,
+            cv2.LINE_AA,
+        )
 
     # Banner
     if ev["all_pass_with_distance"]:
@@ -720,8 +865,16 @@ def _compose_preview(frame_l: np.ndarray, frame_r: np.ndarray,
     fh = frame.shape[0]
     fw = frame.shape[1]
     cv2.rectangle(frame, (0, fh - 36), (fw, fh), banner_color, -1)
-    cv2.putText(frame, _ascii(banner_text), (12, fh - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(
+        frame,
+        _ascii(banner_text),
+        (12, fh - 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
 
     return frame
 
@@ -733,8 +886,13 @@ _eval_lock = threading.Lock()
 _report_path_global: Path | None = None
 
 
-def _save_report(frame_l: np.ndarray, frame_r: np.ndarray,
-                 grid_l: np.ndarray, grid_r: np.ndarray, ev: dict) -> Path:
+def _save_report(
+    frame_l: np.ndarray,
+    frame_r: np.ndarray,
+    grid_l: np.ndarray,
+    grid_r: np.ndarray,
+    ev: dict,
+) -> Path:
     """Guarda un reporte HTML con los frames finales + métricas."""
     import base64
 
@@ -758,24 +916,29 @@ def _save_report(frame_l: np.ndarray, frame_r: np.ndarray,
             rows.append(f"<tr>{cells}</tr>")
         return f'<table border=1 cellpadding=4>{"".join(rows)}</table>'
 
-    dist_text = (f"{ev['distance_avg_mm']/1000:.2f} m"
-                 if ev['distance_avg_mm'] is not None else "no detectado")
+    dist_text = (
+        f"{ev['distance_avg_mm']/1000:.2f} m"
+        if ev["distance_avg_mm"] is not None
+        else "no detectado"
+    )
     compact_note = ""
     if ev.get("compact_scene"):
         compact_note = (
             '<p style="background:#fff3cd;border:1px solid #ffe39a;'
             'padding:8px 12px;border-radius:6px;color:#7a5d00">'
-            'Escena compacta detectada — el check de corners fue omitido '
-            'porque los bordes del frame ven superficies a distancia '
-            'distinta del board. Validación basada en centro + simetría + '
-            'distancia.</p>'
+            "Escena compacta detectada — el check de corners fue omitido "
+            "porque los bordes del frame ven superficies a distancia "
+            "distinta del board. Validación basada en centro + simetría + "
+            "distancia.</p>"
         )
     corner_l_label = (
-        "IZQ corners: omitido (escena compacta)" if ev.get("compact_scene")
+        "IZQ corners: omitido (escena compacta)"
+        if ev.get("compact_scene")
         else f"IZQ corners: {ev['corner_l']:.0f} (≥{MIN_CORNER_SCORE:.0f})"
     )
     corner_r_label = (
-        "DER corners: omitido (escena compacta)" if ev.get("compact_scene")
+        "DER corners: omitido (escena compacta)"
+        if ev.get("compact_scene")
         else f"DER corners: {ev['corner_r']:.0f} (≥{MIN_CORNER_SCORE:.0f})"
     )
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -814,20 +977,24 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         global finish_requested, capture_started
         if self.path == "/finish":
             finish_requested = True
-            self.send_response(204); self.end_headers()
+            self.send_response(204)
+            self.end_headers()
         elif self.path == "/start":
             with capture_started_lock:
                 capture_started = True
-            self.send_response(204); self.end_headers()
+            self.send_response(204)
+            self.end_headers()
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404)
+            self.end_headers()
 
     def do_GET(self) -> None:
         if self.path == "/":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(r"""<!DOCTYPE html>
+            self.wfile.write(
+                r"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Asistente de foco</title>
 <style>
 *{box-sizing:border-box}
@@ -1014,10 +1181,15 @@ setInterval(()=>{
     }
   }).catch(()=>{})
 },400);
-</script></body></html>""".encode("utf-8"))
+</script></body></html>""".encode(
+                    "utf-8"
+                )
+            )
         elif self.path == "/stream":
             self.send_response(200)
-            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header(
+                "Content-Type", "multipart/x-mixed-replace; boundary=frame"
+            )
             self.end_headers()
             try:
                 while not shutting_down:
@@ -1056,14 +1228,16 @@ setInterval(()=>{
             self.end_headers()
             self.wfile.write(body)
         else:
-            self.send_response(404); self.end_headers()
+            self.send_response(404)
+            self.end_headers()
 
     def log_message(self, format, *args) -> None:
         pass
 
 
 def _resolve_resolution_from_device_config(
-    args: argparse.Namespace, parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
 ) -> None:
     """Si --resolution no fue pasado, leerlo de /etc/people-counter/config.yaml.
 
@@ -1078,6 +1252,7 @@ def _resolve_resolution_from_device_config(
         DEFAULT_DEVICE_CONFIG_PATH,
         load_device_config,
     )
+
     try:
         cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
     except FileNotFoundError:
@@ -1096,7 +1271,8 @@ def _resolve_resolution_from_device_config(
 
 
 def _resolve_mount_height_from_device_config(
-    args: argparse.Namespace, parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
 ) -> None:
     """Si --mount-height-m no fue pasado, leerlo de /etc/people-counter/
     config.yaml (vision.mounting_height_m). Si el config no existe o le
@@ -1110,6 +1286,7 @@ def _resolve_mount_height_from_device_config(
         DEFAULT_DEVICE_CONFIG_PATH,
         load_device_config,
     )
+
     try:
         cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
     except FileNotFoundError:
@@ -1144,137 +1321,218 @@ def main() -> None:
     # respetan el config del device.
     HW = load_hardware_params()
 
-    parser = argparse.ArgumentParser(description="Asistente de foco guiado para cámaras estéreo")
+    parser = argparse.ArgumentParser(
+        description="Asistente de foco guiado para cámaras estéreo"
+    )
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--left", type=int, default=0,
-                        help="Índice de la cámara izquierda (lente izquierda "
-                             "mirando desde la cámara hacia la escena). "
-                             "Default 0 — matchea el wiring de la flota.")
-    parser.add_argument("--right", type=int, default=1,
-                        help="Índice de la cámara derecha. Default 1.")
-    parser.add_argument("--low-light", action="store_true",
-                        help="Modo PoC para corridas en luz baja / cuartos "
-                             "chicos. Afloja sharpness de centro, sharpness "
-                             "de corners, balance L/R, rango de distancia, "
-                             "y fuerza scene=compact. Equivalente a pasar "
-                             "--min-score 80 --min-corner-score 30 "
-                             "--max-lr-diff-pct 50 --max-lr-zone-diff-pct "
-                             "100 --target-distance-min-mm 500 "
-                             "--target-distance-max-mm 5000 --scene compact. "
-                             "Los flags explícitos igual overridean este "
-                             "preset. El PASS resultante NO valida foco "
-                             "para producción — solo que la tool corre.")
-    parser.add_argument("--min-score", type=float, default=None,
-                        help="Variance Laplaciana mínima del centro "
-                             "(default 200, o 80 con --low-light)")
-    parser.add_argument("--min-corner-score", type=float, default=None,
-                        help="Variance Laplaciana media mínima sobre las 4 "
-                             "zonas de corner (default 100, o 30 con "
-                             "--low-light). Métrica absoluta — ¿el corner "
-                             "tiene detalle? Reemplaza el ratio viejo "
-                             "bordes/centro que se disparaba mal en cuartos "
-                             "chicos donde el board domina el centro. "
-                             "Subir para más estricto.")
-    parser.add_argument("--scene", choices=("auto", "compact", "full"), default="auto",
-                        help="Modo de escena. 'auto' (default): compact si "
-                             f"el bbox del ChArUco cubre más del {int(COMPACT_BBOX_THRESHOLD*100)}%% "
-                             "del frame. 'compact': siempre saltear el "
-                             "check de corners (para cuartos chicos de "
-                             "test donde los corners ven paredes a "
-                             "distancias no relacionadas). 'full': siempre "
-                             "enforzar el check de corners. --low-light "
-                             "fuerza compact.")
-    parser.add_argument("--meter", choices=("matrix", "centre", "spot"), default="matrix",
-                        help="Modo de AE metering. 'matrix' (default) "
-                             "pondera todo el frame — funciona con luz "
-                             "pareja. 'centre' pondera fuerte el área "
-                             "central y 'spot' usa solo el centro — usar "
-                             "estos cuando hay zonas brillantes (ventanas, "
-                             "paredes detrás de un backdrop texturado) que "
-                             "arrastran la exposición abajo en el board. "
-                             "--low-light defaultea esto a 'centre'.")
-    parser.add_argument("--lock-ae", action="store_true",
-                        help="Lockea AE/AWB en ambas cámaras tras 1s de "
-                             "settle. Sin lock, cada cámara corre AE/AWB "
-                             "independiente y pueden converger a estados "
-                             "distintos (exposición o tinte diferente entre "
-                             "L y R), lo que causa que el decoder ArUco "
-                             "lea los bits del marker bien en un lado y mal "
-                             "en el otro — manifestándose como detección "
-                             "asimétrica random. Recomendado siempre que se "
-                             "use focus_assist en serio. Espejo del flag del "
-                             "wizard de calibrate y del runtime principal.")
-    parser.add_argument("--max-lr-diff-pct", type=float, default=None,
-                        help="Asimetría global máxima de sharpness L/R "
-                             "(default 15%%, o 50%% con --low-light)")
-    parser.add_argument("--max-lr-zone-diff-pct", type=float, default=None,
-                        help="Asimetría per-zone L/R máxima (default 30%%, "
-                             "o 100%% con --low-light)")
-    parser.add_argument("--mount-height-m", type=float, default=None,
-                        help="Altura de mount de la cámara desde el piso. "
-                             "Sin override, se lee vision.mounting_height_m "
-                             "del config per-device. La distancia target de "
-                             "foco se deriva de este valor (mount minus rango "
-                             "de altura de cabezas) salvo que se pasen "
-                             "--target-distance-min/max-mm explícitos.")
-    parser.add_argument("--target-distance-min-mm", type=float,
-                        default=None,
-                        help=f"Distancia target mínima (mm) para validación "
-                             f"de foco. Default {TARGET_DISTANCE_MIN_MM:.0f}mm "
-                             f"(protocolo lab universal: foco a 1.5m ±20cm, "
-                             f"DoF cubre rango operativo 1.0-3.5m para "
-                             f"mount de flota 2.0-3.5m). 500mm con "
-                             f"--low-light.")
-    parser.add_argument("--target-distance-max-mm", type=float,
-                        default=None,
-                        help=f"Distancia target máxima (mm) para validación "
-                             f"de foco. Default {TARGET_DISTANCE_MAX_MM:.0f}mm "
-                             f"(protocolo lab universal). 5000mm con "
-                             f"--low-light.")
-    parser.add_argument("--board-cols", type=int, default=HW.board_cols,
-                        help="Columnas (cuadrados) del ChArUco. "
-                             "Default desde vision.charuco.board_cols.")
-    parser.add_argument("--board-rows", type=int, default=HW.board_rows,
-                        help="Filas (cuadrados) del ChArUco. "
-                             "Default desde vision.charuco.board_rows.")
-    parser.add_argument("--square-mm", type=float, default=HW.square_mm,
-                        help="Tamaño del cuadrado ChArUco en mm. "
-                             "Default desde vision.charuco.square_mm.")
-    parser.add_argument("--marker-mm", type=float, default=HW.marker_mm,
-                        help="Tamaño del marker ChArUco en mm. "
-                             "Default desde vision.charuco.marker_mm.")
-    parser.add_argument("--dict", dest="aruco_dict", default=HW.aruco_dict,
-                        help="Nombre del dict ArUco. Default desde "
-                             "vision.charuco.dict.")
-    parser.add_argument("--legacy-pattern", action=argparse.BooleanOptionalAction,
-                        default=HW.legacy_pattern,
-                        help="Usar enumeración de markers ChArUco pre-4.6 "
-                             "de OpenCV. Default desde vision.charuco."
-                             "legacy_pattern (True matchea calib.io).")
-    parser.add_argument("--focal-px", type=float, default=None,
-                        help="Overridea el focal length en píxeles para "
-                             "la estimación de distancia. Usar si la f "
-                             "nominal del IMX708 da distancias erróneas "
-                             "(ej. modo de sensor con FOV parcial). Medir "
-                             "poniendo el board a distancia conocida y "
-                             "ajustando hasta que la distancia reportada "
-                             "matchee.")
-    parser.add_argument("--resolution", type=int, nargs=2, default=None,
-                        help="Resolución de captura. Default: lee "
-                             "vision.resolution de /etc/people-counter/"
-                             "config.yaml (fuente única de verdad — "
-                             "garantiza match con el runtime). Pasá "
-                             "explícito solo para tests / dev workstation "
-                             "donde no hay config per-device.")
-    parser.add_argument("--max-exposure-us", type=int, default=16000,
-                        help="Cap de exposure time en microsegundos via "
-                             "FrameDurationLimits (mismo cap que el runtime). "
-                             "Default 16000us (16ms) freezea micro-vibración "
-                             "del bracket que rompe el decoder ArUco "
-                             "asimétricamente entre L/R en luz baja con "
-                             "shutter largo. AE compensa con AnalogueGain "
-                             "más alto (más ruido pero cero blur). Setear "
-                             "0 para deshabilitar el cap.")
+    parser.add_argument(
+        "--left",
+        type=int,
+        default=0,
+        help="Índice de la cámara izquierda (lente izquierda "
+        "mirando desde la cámara hacia la escena). "
+        "Default 0 — matchea el wiring de la flota.",
+    )
+    parser.add_argument(
+        "--right", type=int, default=1, help="Índice de la cámara derecha. Default 1."
+    )
+    parser.add_argument(
+        "--low-light",
+        action="store_true",
+        help="Modo PoC para corridas en luz baja / cuartos "
+        "chicos. Afloja sharpness de centro, sharpness "
+        "de corners, balance L/R, rango de distancia, "
+        "y fuerza scene=compact. Equivalente a pasar "
+        "--min-score 80 --min-corner-score 30 "
+        "--max-lr-diff-pct 50 --max-lr-zone-diff-pct "
+        "100 --target-distance-min-mm 500 "
+        "--target-distance-max-mm 5000 --scene compact. "
+        "Los flags explícitos igual overridean este "
+        "preset. El PASS resultante NO valida foco "
+        "para producción — solo que la tool corre.",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=float,
+        default=None,
+        help="Variance Laplaciana mínima del centro "
+        "(default 200, o 80 con --low-light)",
+    )
+    parser.add_argument(
+        "--min-corner-score",
+        type=float,
+        default=None,
+        help="Variance Laplaciana media mínima sobre las 4 "
+        "zonas de corner (default 100, o 30 con "
+        "--low-light). Métrica absoluta — ¿el corner "
+        "tiene detalle? Reemplaza el ratio viejo "
+        "bordes/centro que se disparaba mal en cuartos "
+        "chicos donde el board domina el centro. "
+        "Subir para más estricto.",
+    )
+    parser.add_argument(
+        "--scene",
+        choices=("auto", "compact", "full"),
+        default="auto",
+        help="Modo de escena. 'auto' (default): compact si "
+        f"el bbox del ChArUco cubre más del {int(COMPACT_BBOX_THRESHOLD*100)}%% "
+        "del frame. 'compact': siempre saltear el "
+        "check de corners (para cuartos chicos de "
+        "test donde los corners ven paredes a "
+        "distancias no relacionadas). 'full': siempre "
+        "enforzar el check de corners. --low-light "
+        "fuerza compact.",
+    )
+    parser.add_argument(
+        "--meter",
+        choices=("matrix", "centre", "spot"),
+        default="matrix",
+        help="Modo de AE metering. 'matrix' (default) "
+        "pondera todo el frame — funciona con luz "
+        "pareja. 'centre' pondera fuerte el área "
+        "central y 'spot' usa solo el centro — usar "
+        "estos cuando hay zonas brillantes (ventanas, "
+        "paredes detrás de un backdrop texturado) que "
+        "arrastran la exposición abajo en el board. "
+        "--low-light defaultea esto a 'centre'.",
+    )
+    parser.add_argument(
+        "--lock-ae",
+        action="store_true",
+        help="Lockea AE/AWB en ambas cámaras tras 1s de "
+        "settle. Sin lock, cada cámara corre AE/AWB "
+        "independiente y pueden converger a estados "
+        "distintos (exposición o tinte diferente entre "
+        "L y R), lo que causa que el decoder ArUco "
+        "lea los bits del marker bien en un lado y mal "
+        "en el otro — manifestándose como detección "
+        "asimétrica random. Recomendado siempre que se "
+        "use focus_assist en serio. Espejo del flag del "
+        "wizard de calibrate y del runtime principal.",
+    )
+    parser.add_argument(
+        "--max-lr-diff-pct",
+        type=float,
+        default=None,
+        help="Asimetría global máxima de sharpness L/R "
+        "(default 15%%, o 50%% con --low-light)",
+    )
+    parser.add_argument(
+        "--max-lr-zone-diff-pct",
+        type=float,
+        default=None,
+        help="Asimetría per-zone L/R máxima (default 30%%, " "o 100%% con --low-light)",
+    )
+    parser.add_argument(
+        "--mount-height-m",
+        type=float,
+        default=None,
+        help="Altura de mount de la cámara desde el piso. "
+        "Sin override, se lee vision.mounting_height_m "
+        "del config per-device. La distancia target de "
+        "foco se deriva de este valor (mount minus rango "
+        "de altura de cabezas) salvo que se pasen "
+        "--target-distance-min/max-mm explícitos.",
+    )
+    parser.add_argument(
+        "--target-distance-min-mm",
+        type=float,
+        default=None,
+        help=f"Distancia target mínima (mm) para validación "
+        f"de foco. Default {TARGET_DISTANCE_MIN_MM:.0f}mm "
+        f"(protocolo lab universal: foco a 1.5m ±20cm, "
+        f"DoF cubre rango operativo 1.0-3.5m para "
+        f"mount de flota 2.0-3.5m). 500mm con "
+        f"--low-light.",
+    )
+    parser.add_argument(
+        "--target-distance-max-mm",
+        type=float,
+        default=None,
+        help=f"Distancia target máxima (mm) para validación "
+        f"de foco. Default {TARGET_DISTANCE_MAX_MM:.0f}mm "
+        f"(protocolo lab universal). 5000mm con "
+        f"--low-light.",
+    )
+    parser.add_argument(
+        "--board-cols",
+        type=int,
+        default=HW.board_cols,
+        help="Columnas (cuadrados) del ChArUco. "
+        "Default desde vision.charuco.board_cols.",
+    )
+    parser.add_argument(
+        "--board-rows",
+        type=int,
+        default=HW.board_rows,
+        help="Filas (cuadrados) del ChArUco. "
+        "Default desde vision.charuco.board_rows.",
+    )
+    parser.add_argument(
+        "--square-mm",
+        type=float,
+        default=HW.square_mm,
+        help="Tamaño del cuadrado ChArUco en mm. "
+        "Default desde vision.charuco.square_mm.",
+    )
+    parser.add_argument(
+        "--marker-mm",
+        type=float,
+        default=HW.marker_mm,
+        help="Tamaño del marker ChArUco en mm. "
+        "Default desde vision.charuco.marker_mm.",
+    )
+    parser.add_argument(
+        "--dict",
+        dest="aruco_dict",
+        default=HW.aruco_dict,
+        help="Nombre del dict ArUco. Default desde " "vision.charuco.dict.",
+    )
+    parser.add_argument(
+        "--legacy-pattern",
+        action=argparse.BooleanOptionalAction,
+        default=HW.legacy_pattern,
+        help="Usar enumeración de markers ChArUco pre-4.6 "
+        "de OpenCV. Default desde vision.charuco."
+        "legacy_pattern (True matchea calib.io).",
+    )
+    parser.add_argument(
+        "--focal-px",
+        type=float,
+        default=None,
+        help="Overridea el focal length en píxeles para "
+        "la estimación de distancia. Usar si la f "
+        "nominal del IMX708 da distancias erróneas "
+        "(ej. modo de sensor con FOV parcial). Medir "
+        "poniendo el board a distancia conocida y "
+        "ajustando hasta que la distancia reportada "
+        "matchee.",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Resolución de captura. Default: lee "
+        "vision.resolution de /etc/people-counter/"
+        "config.yaml (fuente única de verdad — "
+        "garantiza match con el runtime). Pasá "
+        "explícito solo para tests / dev workstation "
+        "donde no hay config per-device.",
+    )
+    parser.add_argument(
+        "--max-exposure-us",
+        type=int,
+        default=16000,
+        help="Cap de exposure time en microsegundos via "
+        "FrameDurationLimits (mismo cap que el runtime). "
+        "Default 16000us (16ms) freezea micro-vibración "
+        "del bracket que rompe el decoder ArUco "
+        "asimétricamente entre L/R en luz baja con "
+        "shutter largo. AE compensa con AnalogueGain "
+        "más alto (más ruido pero cero blur). Setear "
+        "0 para deshabilitar el cap.",
+    )
     args = parser.parse_args()
     # mount_height_m tiene que estar resuelto antes de _apply_threshold_overrides
     # porque la derivación del target distance lo usa.
@@ -1282,7 +1540,11 @@ def main() -> None:
     _apply_threshold_overrides(args)
     _resolve_resolution_from_device_config(args, parser)
 
-    dict_attr = args.aruco_dict if args.aruco_dict.startswith("DICT_") else f"DICT_{args.aruco_dict}"
+    dict_attr = (
+        args.aruco_dict
+        if args.aruco_dict.startswith("DICT_")
+        else f"DICT_{args.aruco_dict}"
+    )
     if not hasattr(cv2.aruco, dict_attr):
         parser.error(f"Dict ArUco desconocido: {args.aruco_dict}")
     dict_id = getattr(cv2.aruco, dict_attr)
@@ -1296,9 +1558,7 @@ def main() -> None:
     # Cap de exposure idéntico al runtime (vision.max_exposure_us del
     # config). 0 (o negativo) deshabilita el cap.
     max_exp = int(args.max_exposure_us) if args.max_exposure_us > 0 else None
-    initial_controls = (
-        {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
-    )
+    initial_controls = {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
     # Sensor raw mode desde el config per-device (sensor.default_res).
     # Anclar el mode evita que picamera2 caiga al Mode 0 cropeado del
     # IMX708 que reduce el HFOV a ~80°.
@@ -1326,9 +1586,12 @@ def main() -> None:
     for cam in [cam_l, cam_r]:
         cam.set_controls({"AeMeteringMode": meter_mode})
     if args.meter != "matrix":
-        print(f"[meter] AE metering = {args.meter} (centre/spot ignora "
-              "los bordes del frame, útil cuando hay zonas brillantes "
-              "rodeando el board)", flush=True)
+        print(
+            f"[meter] AE metering = {args.meter} (centre/spot ignora "
+            "los bordes del frame, útil cuando hay zonas brillantes "
+            "rodeando el board)",
+            flush=True,
+        )
     # Lock provisional tras un settle inicial (vision.ae_lock.initial_settle_s
     # del config). La escena puede no tener el board todavía, pero un lock
     # estable evita la oscilación de AE auto durante el waiting. Cuando el
@@ -1338,17 +1601,21 @@ def main() -> None:
     if args.lock_ae:
         for cam, name in [(cam_l, "left"), (cam_r, "right")]:
             metadata = cam.capture_metadata()
-            cam.set_controls({
-                "AeEnable": False,
-                "AwbEnable": False,
-                "ExposureTime": metadata.get("ExposureTime", 30000),
-                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
-                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
-            })
-        print(f"[lock-ae] Lock provisional tras {HW.ae_initial_settle_seconds:.1f}s settle "
-              f"(L: exp={cam_l.capture_metadata().get('ExposureTime',0)}us "
-              f"R: exp={cam_r.capture_metadata().get('ExposureTime',0)}us)",
-              flush=True)
+            cam.set_controls(
+                {
+                    "AeEnable": False,
+                    "AwbEnable": False,
+                    "ExposureTime": metadata.get("ExposureTime", 30000),
+                    "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                    "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+                }
+            )
+        print(
+            f"[lock-ae] Lock provisional tras {HW.ae_initial_settle_seconds:.1f}s settle "
+            f"(L: exp={cam_l.capture_metadata().get('ExposureTime',0)}us "
+            f"R: exp={cam_r.capture_metadata().get('ExposureTime',0)}us)",
+            flush=True,
+        )
 
     board = create_charuco_board(
         board_size=(args.board_cols, args.board_rows),
@@ -1367,11 +1634,15 @@ def main() -> None:
     server_thread.start()
 
     print(f"Focus assist — http://people-counter.local:{args.port}")
-    print(f"Board: {args.board_cols}x{args.board_rows} / {args.square_mm:.0f}mm sq / "
-          f"{args.marker_mm:.0f}mm mk / {dict_attr}")
-    print(f"Distancia target de foco: "
-          f"{TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f}m "
-          f"(mount {args.mount_height_m:.2f}m del config)")
+    print(
+        f"Board: {args.board_cols}x{args.board_rows} / {args.square_mm:.0f}mm sq / "
+        f"{args.marker_mm:.0f}mm mk / {dict_attr}"
+    )
+    print(
+        f"Distancia target de foco: "
+        f"{TARGET_DISTANCE_MIN_MM/1000:.2f}-{TARGET_DISTANCE_MAX_MM/1000:.2f}m "
+        f"(mount {args.mount_height_m:.2f}m del config)"
+    )
     print("Esperando que el operador haga click en Comenzar...")
 
     # Bloquear hasta que el operador apreta Comenzar — matchea el flow de calibrate.py.
@@ -1380,8 +1651,10 @@ def main() -> None:
             if finish_requested:
                 print("\nCancelado antes de comenzar.")
                 try:
-                    cam_l.stop(); cam_l.close()
-                    cam_r.stop(); cam_r.close()
+                    cam_l.stop()
+                    cam_l.close()
+                    cam_r.stop()
+                    cam_r.close()
                 except Exception:
                     pass
                 try:
@@ -1393,8 +1666,10 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nInterrumpido antes de comenzar (Ctrl-C).")
         try:
-            cam_l.stop(); cam_l.close()
-            cam_r.stop(); cam_r.close()
+            cam_l.stop()
+            cam_l.close()
+            cam_r.stop()
+            cam_r.close()
         except Exception:
             pass
         try:
@@ -1407,24 +1682,30 @@ def main() -> None:
     # provisionales del startup pudieron diferir de la escena real de
     # medición. Solo si --lock-ae está activo (matchea diagnose_bracket).
     if args.lock_ae:
-        print(f"[lock-ae] Re-settle con board en escena ({HW.ae_resettle_seconds:.1f}s)...",
-              flush=True)
+        print(
+            f"[lock-ae] Re-settle con board en escena ({HW.ae_resettle_seconds:.1f}s)...",
+            flush=True,
+        )
         for cam in [cam_l, cam_r]:
             cam.set_controls({"AeEnable": True, "AwbEnable": True})
         time.sleep(HW.ae_resettle_seconds)
         for cam, name in [(cam_l, "left"), (cam_r, "right")]:
             metadata = cam.capture_metadata()
-            cam.set_controls({
-                "AeEnable": False,
-                "AwbEnable": False,
-                "ExposureTime": metadata.get("ExposureTime", 30000),
-                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
-                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
-            })
-        print(f"[lock-ae] Re-lock final (L: "
-              f"exp={cam_l.capture_metadata().get('ExposureTime',0)}us "
-              f"R: exp={cam_r.capture_metadata().get('ExposureTime',0)}us)",
-              flush=True)
+            cam.set_controls(
+                {
+                    "AeEnable": False,
+                    "AwbEnable": False,
+                    "ExposureTime": metadata.get("ExposureTime", 30000),
+                    "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                    "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+                }
+            )
+        print(
+            f"[lock-ae] Re-lock final (L: "
+            f"exp={cam_l.capture_metadata().get('ExposureTime',0)}us "
+            f"R: exp={cam_r.capture_metadata().get('ExposureTime',0)}us)",
+            flush=True,
+        )
 
     print("Poné el board ChArUco en ese rango frente al par. Ajustá los lentes.")
     print("Click Finalizar en la UI cuando las barras estén verdes.\n")
@@ -1456,8 +1737,12 @@ def main() -> None:
             grid_l, valid_l = focus_grid(frame_l)
             grid_r, valid_r = focus_grid(frame_r)
 
-            dist_l, ncorn_l, bbox_l, cx_l = estimate_charuco_distance_mm(frame_l, board, args.focal_px)
-            dist_r, ncorn_r, bbox_r, cx_r = estimate_charuco_distance_mm(frame_r, board, args.focal_px)
+            dist_l, ncorn_l, bbox_l, cx_l = estimate_charuco_distance_mm(
+                frame_l, board, args.focal_px
+            )
+            dist_r, ncorn_r, bbox_r, cx_r = estimate_charuco_distance_mm(
+                frame_r, board, args.focal_px
+            )
 
             # Actualizar la memoria de detección per-camera; expira
             # con staleness así una cámara realmente ciega aparece
@@ -1469,8 +1754,12 @@ def main() -> None:
             if dist_r is not None:
                 last_dist_r = dist_r
                 last_dist_r_t = now_ts
-            eff_dist_l = last_dist_l if (now_ts - last_dist_l_t) < DETECT_STALENESS_SEC else None
-            eff_dist_r = last_dist_r if (now_ts - last_dist_r_t) < DETECT_STALENESS_SEC else None
+            eff_dist_l = (
+                last_dist_l if (now_ts - last_dist_l_t) < DETECT_STALENESS_SEC else None
+            )
+            eff_dist_r = (
+                last_dist_r if (now_ts - last_dist_r_t) < DETECT_STALENESS_SEC else None
+            )
 
             # Check de parity L/R — con las cámaras correctamente
             # mapeadas, la cámara L (físicamente a la izquierda) ve
@@ -1509,12 +1798,19 @@ def main() -> None:
                 is_compact = max(bbox_l, bbox_r) > COMPACT_BBOX_THRESHOLD
 
             ev = evaluate_focus(
-                grid_l, grid_r, eff_dist_l, eff_dist_r, valid_l, valid_r,
+                grid_l,
+                grid_r,
+                eff_dist_l,
+                eff_dist_r,
+                valid_l,
+                valid_r,
                 compact_scene=is_compact,
             )
             peaks.update(ev["center_l"], ev["center_r"])
 
-            preview = _compose_preview(frame_l, frame_r, ev, grid_l, grid_r, peaks=peaks)
+            preview = _compose_preview(
+                frame_l, frame_r, ev, grid_l, grid_r, peaks=peaks
+            )
             _, jpeg = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 72])
             with jpeg_lock:
                 latest_jpeg = jpeg.tobytes()
@@ -1544,48 +1840,53 @@ def main() -> None:
             if state_l == "past_peak":
                 peak_hints.append(
                     f"IZQ: superaste el pico reciente ({ev['center_l']:.0f} actual vs "
-                    f"{peaks.peak_l:.0f} máximo) — revertí ligeramente el ajuste")
+                    f"{peaks.peak_l:.0f} máximo) — revertí ligeramente el ajuste"
+                )
             if state_r == "past_peak":
                 peak_hints.append(
                     f"DER: superaste el pico reciente ({ev['center_r']:.0f} actual vs "
-                    f"{peaks.peak_r:.0f} máximo) — revertí ligeramente el ajuste")
+                    f"{peaks.peak_r:.0f} máximo) — revertí ligeramente el ajuste"
+                )
             peak_html = ""
             if peak_hints:
                 peak_html = (
                     '<div style="color:#3fb6f0;font-size:13px;margin-top:6px">'
-                    + "<br>".join(peak_hints) + "</div>"
+                    + "<br>".join(peak_hints)
+                    + "</div>"
                 )
 
             lighting = live_lighting_warnings(frame_l, frame_r)
             lighting_html = ""
             if lighting:
-                lighting_html = '<div style="color:#f1c40f">⚠ ' + " · ".join(lighting) + "</div>"
+                lighting_html = (
+                    '<div style="color:#f1c40f">⚠ ' + " · ".join(lighting) + "</div>"
+                )
 
             compact_html = ""
             if ev.get("compact_scene"):
                 compact_html = (
                     '<div style="color:#3498db;font-size:13px;margin-top:6px">'
-                    'Escena compacta — solo centro + simetría + distancia'
-                    '</div>'
+                    "Escena compacta — solo centro + simetría + distancia"
+                    "</div>"
                 )
 
             lr_html = ""
             if lr_status["state"] == "swapped":
                 lr_html = (
                     '<div style="color:#e74c3c;font-size:14px;font-weight:600;margin-top:6px">'
-                    f'⚠ L/R INVERTIDO — la cámara mapeada como L está físicamente '
+                    f"⚠ L/R INVERTIDO — la cámara mapeada como L está físicamente "
                     f'a la derecha (disparidad mediana {lr_status["median_px"]:.0f}px). '
-                    'Reiniciá con --left/--right swappeados.'
-                    '</div>'
+                    "Reiniciá con --left/--right swappeados."
+                    "</div>"
                 )
             elif lr_status["state"] == "magnitude_off":
                 exp = lr_status["expected_px"] or 0
                 lr_html = (
                     '<div style="color:#e67e22;font-size:13px;font-weight:600;margin-top:6px">'
                     f'⚠ L/R signo OK pero magnitud rara: {lr_status["median_px"]:.0f}px '
-                    f'observados vs {exp:.0f}px esperados a esta distancia. '
-                    'Posible baseline incorrecto, lente flojo, o detección espuria.'
-                    '</div>'
+                    f"observados vs {exp:.0f}px esperados a esta distancia. "
+                    "Posible baseline incorrecto, lente flojo, o detección espuria."
+                    "</div>"
                 )
             elif lr_status["state"] == "ok":
                 exp = lr_status["expected_px"]
@@ -1593,14 +1894,14 @@ def main() -> None:
                 lr_html = (
                     '<div style="color:#2ecc71;font-size:13px;margin-top:6px">'
                     f'✓ L/R OK (disparidad {lr_status["median_px"]:.0f}px{exp_note})'
-                    '</div>'
+                    "</div>"
                 )
             elif lr_status["state"] == "unknown" and lr_status["n"] > 0:
                 lr_html = (
                     '<div style="color:#888;font-size:13px;margin-top:6px">'
                     f'L/R sin determinar (disparidad {lr_status["median_px"]:.0f}px '
-                    f'< {LR_DISPARITY_OK_MIN_PX:.0f}px) — acercá el board para mejor señal'
-                    '</div>'
+                    f"< {LR_DISPARITY_OK_MIN_PX:.0f}px) — acercá el board para mejor señal"
+                    "</div>"
                 )
 
             # Score normalizado al threshold para el pulso del browser:
@@ -1610,25 +1911,28 @@ def main() -> None:
             html = (
                 f'<div data-pulse-score="{pulse_score:.2f}" '
                 f'style="color:{color_status};font-size:18px;font-weight:700">{lead}</div>'
-                f'{lighting_html}'
-                f'{compact_html}'
-                f'{lr_html}'
-                f'{peak_html}'
+                f"{lighting_html}"
+                f"{compact_html}"
+                f"{lr_html}"
+                f"{peak_html}"
                 f'<div style="color:#888;font-size:13px;margin-top:6px">'
-                f'ChArUco IZQ:{ncorn_l} esq · DER:{ncorn_r} esq</div>'
+                f"ChArUco IZQ:{ncorn_l} esq · DER:{ncorn_r} esq</div>"
             )
             with _status_lock:
                 _status_html = html
 
             # One-liner de terminal
             verdict = "PASS" if ev["all_pass_with_distance"] else "FAIL"
-            dist_str = f"{ev['distance_avg_mm']/1000:.2f}m" if ev['distance_avg_mm'] else "-"
+            dist_str = (
+                f"{ev['distance_avg_mm']/1000:.2f}m" if ev["distance_avg_mm"] else "-"
+            )
             scene_tag = "C" if ev.get("compact_scene") else "F"
             print(
                 f"\r  [{verdict}/{scene_tag}] L/R:{ev['lr_diff']:4.1f}% | "
                 f"crn_L:{ev['corner_l']:5.0f} crn_R:{ev['corner_r']:5.0f} | "
                 f"ctr_L:{ev['center_l']:6.0f} ctr_R:{ev['center_r']:6.0f} | d:{dist_str}    ",
-                end="", flush=True,
+                end="",
+                flush=True,
             )
             # Sleep en chunks de 50ms así el loop puede reaccionar
             # a finish_requested rápido (capture+process a 2304x1296
@@ -1653,8 +1957,10 @@ def main() -> None:
             print(f"\nNo se pudo escribir el reporte: {e}")
 
     try:
-        cam_l.stop(); cam_l.close()
-        cam_r.stop(); cam_r.close()
+        cam_l.stop()
+        cam_l.close()
+        cam_r.stop()
+        cam_r.close()
     except Exception:
         pass
 
@@ -1669,17 +1975,17 @@ def main() -> None:
     if report_path is not None:
         report_html = (
             f'<div style="margin-top:14px;font-size:14px">'
-            f'Reporte guardado en:<br>'
+            f"Reporte guardado en:<br>"
             f'<code style="background:#0b0b0d;padding:4px 8px;border-radius:4px;'
             f'display:inline-block;margin-top:4px;word-break:break-all">{report_path}</code>'
-            f'</div>'
+            f"</div>"
         )
     report_link_html = ""
     if report_path is not None:
         report_link_html = (
             '<a href="/report" target="_blank" '
             'style="display:inline-block;margin-top:14px;padding:10px 18px;'
-            'background:#2980b9;color:#fff;text-decoration:none;border-radius:6px;'
+            "background:#2980b9;color:#fff;text-decoration:none;border-radius:6px;"
             'font-weight:600;font-size:14px">Abrir reporte en nueva pestaña</a>'
         )
     final_html = (
@@ -1687,11 +1993,11 @@ def main() -> None:
         f'<div style="color:{verdict_color};font-size:22px;font-weight:700;'
         f'margin-bottom:12px">Sesión finalizada — {verdict}</div>'
         f'<div style="color:#aaa;font-size:13px;line-height:1.6">'
-        f'Las cámaras se cerraron y el reporte HTML fue generado.'
-        f'</div>'
-        f'{report_link_html}'
-        f'{report_html}'
-        f'</div>'
+        f"Las cámaras se cerraron y el reporte HTML fue generado."
+        f"</div>"
+        f"{report_link_html}"
+        f"{report_html}"
+        f"</div>"
     )
     with _status_lock:
         _status_html = final_html

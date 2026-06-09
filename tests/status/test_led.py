@@ -1,4 +1,5 @@
 """Tests para src/status/led.py — driver del status LED RGB."""
+
 from __future__ import annotations
 
 import threading
@@ -27,7 +28,9 @@ class _FakeLed:
         self.closed = True
 
 
-def _make_led(blink_period_s: float = 0.04) -> tuple[StatusLED, _FakeLed, _FakeLed, _FakeLed]:
+def _make_led(
+    blink_period_s: float = 0.04,
+) -> tuple[StatusLED, _FakeLed, _FakeLed, _FakeLed]:
     r, g, b = _FakeLed(), _FakeLed(), _FakeLed()
     led = StatusLED(blink_period_s=blink_period_s, backend=(r, g, b))
     return led, r, g, b
@@ -149,7 +152,9 @@ def test_disabled_when_backend_none(monkeypatch):
     from src.status import led as led_mod
 
     monkeypatch.setattr(
-        led_mod, "_open_default_backend", lambda *_a, **_k: None,
+        led_mod,
+        "_open_default_backend",
+        lambda *_a, **_k: None,
     )
     s = StatusLED()
     try:
@@ -177,10 +182,7 @@ def test_no_backend_calls_after_close():
     # Calling set_state after close should not produce more writes.
     led.set_state(LedState.HARDWARE_FAULT)
     time.sleep(0.05)
-    assert (
-        len(r.history) + len(g.history) + len(b.history)
-        == history_len_after_close
-    )
+    assert len(r.history) + len(g.history) + len(b.history) == history_len_after_close
 
 
 def test_concurrent_state_changes_are_safe():

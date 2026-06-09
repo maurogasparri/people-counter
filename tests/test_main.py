@@ -1,4 +1,5 @@
 """Tests para main.py — orquestador del pipeline."""
+
 import argparse
 import gc
 import logging
@@ -10,7 +11,10 @@ import numpy as np
 import pytest
 
 from src.main import (
+    _TELEM_MIN_FPS_WINDOW_S,
     _auto_num_disparities,
+    _IdleThrottle,
+    _telem_fps,
     build_capture,
     build_mqtt,
     get_telemetry,
@@ -19,9 +23,96 @@ from src.main import (
 )
 
 
+class TestTelemFps:
+    def test_short_window_returns_none(self):
+        """Ventana de boot warm-up (corta) → None: no se publica un fps
+        transitorio que ensucie el dashboard de la flota."""
+        assert _telem_fps(frame_count=12, elapsed_s=1.0) is None
+        assert (
+            _telem_fps(frame_count=200, elapsed_s=_TELEM_MIN_FPS_WINDOW_S - 0.1) is None
+        )
+
+    def test_full_window_returns_rate(self):
+        """Ventana suficiente (reconexión normal o intervalo) → promedio real."""
+        assert _telem_fps(frame_count=560, elapsed_s=20.0) == pytest.approx(28.0)
+        assert _telem_fps(frame_count=3000, elapsed_s=300.0) == pytest.approx(10.0)
+
+    def test_boundary_exactly_at_threshold_is_valid(self):
+        assert _telem_fps(frame_count=200, elapsed_s=_TELEM_MIN_FPS_WINDOW_S) == (
+            pytest.approx(200 / _TELEM_MIN_FPS_WINDOW_S)
+        )
+
+
+# ---------------------------------------------------------------------------
+# _IdleThrottle (FPS adaptativo en escena vacía)
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class TestIdleThrottle:
+    def test_no_sleep_while_busy(self):
+        clock = _FakeClock()
+        it = _IdleThrottle(idle_fps=10, idle_after_seconds=2.0, clock=clock)
+        for _ in range(5):
+            assert it.frame_done(busy=True, iter_elapsed_s=0.03) == 0.0
+            clock.t += 1.0
+        assert it.throttled is False
+
+    def test_engages_after_idle_window(self):
+        clock = _FakeClock()
+        it = _IdleThrottle(idle_fps=10, idle_after_seconds=2.0, clock=clock)
+        # Quietud sostenida pero todavía dentro de la histéresis → full rate.
+        assert it.frame_done(busy=False, iter_elapsed_s=0.03) == 0.0
+        clock.t += 1.0
+        assert it.frame_done(busy=False, iter_elapsed_s=0.03) == 0.0
+        assert it.throttled is False
+        # Pasada la ventana → duerme lo que falta para 1/idle_fps.
+        clock.t += 1.5
+        sleep = it.frame_done(busy=False, iter_elapsed_s=0.03)
+        assert it.throttled is True
+        assert sleep == pytest.approx(0.1 - 0.03)
+
+    def test_releases_instantly_on_activity(self):
+        clock = _FakeClock()
+        it = _IdleThrottle(idle_fps=10, idle_after_seconds=0.0, clock=clock)
+        assert it.frame_done(busy=False, iter_elapsed_s=0.01) > 0.0
+        assert it.throttled is True
+        # Actividad → cero sleep ese mismo frame + estado reseteado.
+        assert it.frame_done(busy=True, iter_elapsed_s=0.01) == 0.0
+        assert it.throttled is False
+        # La histéresis arranca de cero de nuevo (idle_after=0 acá → duerme
+        # al frame siguiente; con idle_after real esperaría la ventana).
+        it2 = _IdleThrottle(idle_fps=10, idle_after_seconds=2.0, clock=clock)
+        it2.frame_done(busy=False, iter_elapsed_s=0.01)
+        clock.t += 3.0
+        assert it2.frame_done(busy=False, iter_elapsed_s=0.01) > 0.0
+        it2.frame_done(busy=True, iter_elapsed_s=0.01)
+        # Recién throttlea de nuevo tras OTRA ventana completa de quietud.
+        assert it2.frame_done(busy=False, iter_elapsed_s=0.01) == 0.0
+
+    def test_slow_iteration_never_negative_sleep(self):
+        clock = _FakeClock()
+        it = _IdleThrottle(idle_fps=10, idle_after_seconds=0.0, clock=clock)
+        # Iteración más lenta que el período objetivo → sleep 0, no negativo.
+        assert it.frame_done(busy=False, iter_elapsed_s=0.5) == 0.0
+
+    def test_defensive_param_floors(self):
+        it = _IdleThrottle(idle_fps=0.0, idle_after_seconds=-5.0)
+        assert it.idle_fps == 1.0
+        assert it.idle_after_s == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _reset_logging():
     """Reset root logger so basicConfig takes effect again."""
@@ -286,8 +377,10 @@ def _make_pipeline_config(tmpdir: str) -> dict:
         },
         "counter": {
             "counting_zone": {
-                "x_min": 0, "x_max": 640,
-                "y_min": 100, "y_max": 380,
+                "x_min": 0,
+                "x_max": 640,
+                "y_min": 100,
+                "y_max": 380,
             },
             "lines": [
                 {
@@ -372,7 +465,9 @@ def _make_mock_capture(frames):
 @patch("src.mqtt.client.mqtt.Client")
 @patch("src.main.load_model")
 @patch("src.main.build_capture")
-def test_run_pipeline_file_replay_exhausted(mock_build_cap, mock_load_model, mock_mqtt_cls):
+def test_run_pipeline_file_replay_exhausted(
+    mock_build_cap, mock_load_model, mock_mqtt_cls
+):
     """Pipeline should stop cleanly when capture raises StopIteration."""
     mock_mqtt_cls.return_value = MagicMock()
 
@@ -448,19 +543,21 @@ def test_run_pipeline_counting_disabled(mock_build_cap, mock_load_model, mock_mq
 
     # NO se publica ningún counting event vía publish_event("counting", ...).
     counting_publishes = [
-        c for c in mock_mqtt.publish_event.call_args_list
+        c
+        for c in mock_mqtt.publish_event.call_args_list
         if c.args and c.args[0] == "counting"
     ]
     assert len(counting_publishes) == 0, (
-        f"Counting events emitidos con counting_enabled=False: "
-        f"{counting_publishes}"
+        f"Counting events emitidos con counting_enabled=False: " f"{counting_publishes}"
     )
 
 
 @patch("src.mqtt.client.mqtt.Client")
 @patch("src.main.load_model")
 @patch("src.main.build_capture")
-def test_run_pipeline_publishes_counting_events(mock_build_cap, mock_load_model, mock_mqtt_cls):
+def test_run_pipeline_publishes_counting_events(
+    mock_build_cap, mock_load_model, mock_mqtt_cls
+):
     """Pipeline processes multiple frames and calls infer for each."""
     mock_mqtt_cls.return_value = MagicMock()
 
@@ -597,7 +694,8 @@ def test_run_pipeline_publishes_shadow_reconciliation_on_boot(
     client = captured_clients[0]
     publish_calls = client._client.publish.call_args_list
     shadow_calls = [
-        c for c in publish_calls
+        c
+        for c in publish_calls
         if len(c.args) >= 1 and c.args[0] == "$aws/things/test-001/shadow/update"
     ]
     assert shadow_calls, "Expected a shadow reported publish on boot"
@@ -614,7 +712,9 @@ def test_run_pipeline_publishes_shadow_reconciliation_on_boot(
 @patch("src.mqtt.client.mqtt.Client")
 @patch("src.main.load_model")
 @patch("src.main.build_capture")
-def test_run_pipeline_capture_error_continues(mock_build_cap, mock_load_model, mock_mqtt_cls):
+def test_run_pipeline_capture_error_continues(
+    mock_build_cap, mock_load_model, mock_mqtt_cls
+):
     """Pipeline handles capture RuntimeError gracefully and continues."""
     mock_mqtt_cls.return_value = MagicMock()
 
@@ -658,6 +758,7 @@ def test_main_missing_config_exits():
     with patch("sys.argv", ["main.py"]):
         with pytest.raises((SystemExit, FileNotFoundError)):
             from src.main import main
+
             main()
 
 
@@ -676,6 +777,7 @@ def test_main_loads_config_and_runs(mock_load_config, mock_run_pipeline):
 
     with patch("sys.argv", ["main.py", "--config", config_path]):
         from src.main import main
+
         main()
 
     mock_load_config.assert_called_once_with(config_path)

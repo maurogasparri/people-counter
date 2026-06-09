@@ -50,7 +50,10 @@ SKIP = "SKIP"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _result(name: str, status: str, detail: str = "", trace: str = "") -> dict[str, Any]:
+
+def _result(
+    name: str, status: str, detail: str = "", trace: str = ""
+) -> dict[str, Any]:
     return {"name": name, "status": status, "detail": detail, "trace": trace}
 
 
@@ -85,12 +88,15 @@ def _is_root() -> bool:
 # Individual checks — each returns a result dict.
 # ---------------------------------------------------------------------------
 
+
 def check_config(config_path: str) -> dict[str, Any]:
     name = "config_file"
     try:
         from src.config.loader import load_config
     except Exception as exc:  # noqa: BLE001
-        return _result(name, FAIL, f"cannot import loader: {exc}", traceback.format_exc())
+        return _result(
+            name, FAIL, f"cannot import loader: {exc}", traceback.format_exc()
+        )
 
     if not Path(config_path).exists():
         return _result(name, FAIL, f"not found: {config_path}")
@@ -98,7 +104,9 @@ def check_config(config_path: str) -> dict[str, Any]:
     try:
         cfg = load_config(config_path)
     except Exception as exc:  # noqa: BLE001
-        return _result(name, FAIL, f"parse/validate error: {exc}", traceback.format_exc())
+        return _result(
+            name, FAIL, f"parse/validate error: {exc}", traceback.format_exc()
+        )
 
     device_id = cfg.get("device", {}).get("id", "?")
     return _result(name, PASS, f"loaded ({device_id}) from {config_path}")
@@ -121,8 +129,14 @@ def check_calibration(config: dict[str, Any] | None) -> dict[str, Any]:
     except ImportError:
         return _result(name, SKIP, "numpy not installed; cannot inspect npz")
 
-    required = ["camera_matrix_l", "camera_matrix_r", "dist_coeffs_l",
-                "dist_coeffs_r", "R", "T"]
+    required = [
+        "camera_matrix_l",
+        "camera_matrix_r",
+        "dist_coeffs_l",
+        "dist_coeffs_r",
+        "R",
+        "T",
+    ]
     try:
         data = np.load(cal_path, allow_pickle=False)
         keys = set(data.files)
@@ -177,14 +191,19 @@ def check_tls_certs(config: dict[str, Any] | None) -> dict[str, Any]:
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
     except ImportError:
-        return _result(name, SKIP,
-                       "files present; cryptography not installed — skipping expiry check")
+        return _result(
+            name,
+            SKIP,
+            "files present; cryptography not installed — skipping expiry check",
+        )
 
     try:
         with open(paths["cert"], "rb") as f:
             cert = x509.load_pem_x509_certificate(f.read(), default_backend())
     except Exception as exc:  # noqa: BLE001
-        return _result(name, FAIL, f"cannot parse device cert: {exc}", traceback.format_exc())
+        return _result(
+            name, FAIL, f"cannot parse device cert: {exc}", traceback.format_exc()
+        )
 
     # Prefer timezone-aware accessor if available (cryptography >= 42).
     not_after = getattr(cert, "not_valid_after_utc", None)
@@ -192,6 +211,7 @@ def check_tls_certs(config: dict[str, Any] | None) -> dict[str, Any]:
         not_after = cert.not_valid_after  # naive, in UTC
 
     import datetime as _dt
+
     now = _dt.datetime.now(_dt.timezone.utc)
     if not_after.tzinfo is None:
         not_after = not_after.replace(tzinfo=_dt.timezone.utc)
@@ -202,7 +222,9 @@ def check_tls_certs(config: dict[str, Any] | None) -> dict[str, Any]:
     if days_left < 30:
         return _result(name, FAIL, f"device cert expires in {days_left} day(s)")
 
-    return _result(name, PASS, f"certs present; device cert valid for {days_left} day(s)")
+    return _result(
+        name, PASS, f"certs present; device cert valid for {days_left} day(s)"
+    )
 
 
 def check_cameras() -> dict[str, Any]:
@@ -241,7 +263,11 @@ def check_wifi_monitor() -> dict[str, Any]:
     # Fallback: nexmon firmware hint.
     rc_dmesg, out_dmesg, _ = _run(["dmesg"], timeout=10)
     if rc_dmesg == 0 and "nexmon.org" in out_dmesg:
-        return _result(name, FAIL, "nexmon loaded but no *mon interface — bring it up with airmon-ng")
+        return _result(
+            name,
+            FAIL,
+            "nexmon loaded but no *mon interface — bring it up with airmon-ng",
+        )
     return _result(name, FAIL, "no monitor interface and nexmon not detected")
 
 
@@ -277,9 +303,11 @@ def check_disk_space() -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(target)
     except Exception as exc:  # noqa: BLE001
-        return _result(name, FAIL, f"cannot read {target}: {exc}", traceback.format_exc())
+        return _result(
+            name, FAIL, f"cannot read {target}: {exc}", traceback.format_exc()
+        )
 
-    free_gb = usage.free / (1024 ** 3)
+    free_gb = usage.free / (1024**3)
     if usage.free < MIN_FREE_BYTES:
         return _result(name, FAIL, f"{target}: {free_gb:.2f} GB free (< 1 GB)")
     return _result(name, PASS, f"{target}: {free_gb:.2f} GB free")
@@ -333,6 +361,7 @@ def check_systemd_units() -> dict[str, Any]:
 # Runner / output
 # ---------------------------------------------------------------------------
 
+
 def run_all_checks(config_path: str) -> list[dict[str, Any]]:
     """Execute every check in order and return a list of result dicts."""
     results: list[dict[str, Any]] = []
@@ -345,11 +374,14 @@ def run_all_checks(config_path: str) -> list[dict[str, Any]]:
     if cfg_res["status"] == PASS:
         try:
             from src.config.loader import load_config
+
             loaded_cfg = load_config(config_path)
         except Exception:  # noqa: BLE001
             loaded_cfg = None
 
-    results.append(_safe_check("calibration_file", lambda: check_calibration(loaded_cfg)))
+    results.append(
+        _safe_check("calibration_file", lambda: check_calibration(loaded_cfg))
+    )
     results.append(_safe_check("hef_model", lambda: check_hef_model(loaded_cfg)))
     results.append(_safe_check("tls_certs", lambda: check_tls_certs(loaded_cfg)))
     results.append(_safe_check("cameras", check_cameras))
@@ -377,7 +409,9 @@ def format_human(results: list[dict[str, Any]], verbose: bool) -> str:
 
     lines.append("")
     lines.append("=" * 50)
-    lines.append(f"{passed}/{total} checks passed ({skipped} skipped, {len(failed)} failed)")
+    lines.append(
+        f"{passed}/{total} checks passed ({skipped} skipped, {len(failed)} failed)"
+    )
     if failed:
         lines.append("Failures:")
         for r in failed:
@@ -394,11 +428,15 @@ def exit_code(results: list[dict[str, Any]]) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="People Counter pre-flight check")
-    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
-                        help=f"Path to config YAML (default: {DEFAULT_CONFIG_PATH})")
+    parser.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Path to config YAML (default: {DEFAULT_CONFIG_PATH})",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Print full tracebacks for failures")
+    parser.add_argument(
+        "--verbose", action="store_true", help="Print full tracebacks for failures"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(

@@ -5,6 +5,7 @@ from src.wifi_ble.fingerprint import ble_fingerprint, wifi_fingerprint
 
 # --- WiFi ---
 
+
 def test_wifi_fingerprint_stable_across_ssid_and_order_value():
     # Mismos IEs (rates + HT cap), distinto SSID -> MISMO fingerprint (el valor
     # del SSID se excluye porque cambia por red).
@@ -31,6 +32,7 @@ def test_wifi_fingerprint_empty():
 
 
 # --- BLE ---
+
 
 def test_ble_fingerprint_apple_continuity_subtypes():
     # Apple (0x4C): mismos subtipos Continuity con payload distinto -> MISMO fp

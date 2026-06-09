@@ -22,7 +22,7 @@ import threading
 import time
 from collections import deque
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -37,7 +37,7 @@ from src.config.loader import (
 )
 from src.mqtt.buffer import MessageBuffer
 from src.mqtt.client import MQTTClient
-from src.status.led import StatusLED
+from src.status.led import LedState, StatusLED
 from src.status.monitor import HealthMonitor, HealthSignals
 from src.telemetry import collect_telemetry
 from src.tracking.counter import (
@@ -46,7 +46,7 @@ from src.tracking.counter import (
     build_counter,
 )
 from src.tracking.tracker import EuclideanTracker, Track, stationary_track_ids
-from src.vision.calibration import load_calibration, rectify_pair
+from src.vision.calibration import load_calibration, rectify_one
 from src.vision.capture import FileCapture, StereoCapture
 from src.vision.depth import (
     compute_disparity,
@@ -72,6 +72,20 @@ from src.wifi_ble.wifi_probe import ProbeEvent, WiFiProbeCapture
 # para suavizar ruido sin ahogar stalls breves.
 TELEMETRY_WINDOW_SIZE = 100
 
+# Ventana mínima para que el `fps` de telemetría sea un promedio significativo.
+# La telemetría disparada por _first_telem_event sale ~10-15s post-boot (para
+# que el heartbeat llegue a la nube apenas (re)conecta MQTT) — pero a esa
+# altura el pipeline aún calienta (activación del HEF, AE settle, primeros
+# frames lentos) y el fps computado sobre esa ventana cortísima es un
+# transitorio engañoso (sale bajo, ensucia el dashboard). Por debajo de este
+# umbral mandamos fps=null en vez del número de warm-up — mismo patrón que
+# height_m=null bajo el confidence gate. El resto de la telemetría (temps,
+# flags de salud, backlog, mqtt_connected) sale igual: el heartbeat se
+# preserva, solo se suprime el campo no confiable. En una reconexión normal
+# la ventana es larga (>= telem_interval o el tiempo desde el último publish)
+# → fps válido; solo el primer publish del boot cae debajo.
+_TELEM_MIN_FPS_WINDOW_S = 20.0
+
 # El counter usa labels internos 'ingress'/'egress' (config + total_in/out +
 # colores del viewer). El wire MQTT y el schema RDS son canonicos 'in'/'out'
 # (count_events tiene CHECK direction IN ('in','out')). Se mapea en el borde
@@ -89,7 +103,104 @@ _WIRE_DIRECTION = {"ingress": "in", "egress": "out"}
 # crudos y el schema deriva los buckets via GENERATED columns.
 _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS = 900
 
+# Cuánto tiempo de fallo PERSISTENTE de captura/detección se tolera antes de
+# retener el WATCHDOG=1 para que systemd reinicie el servicio (re-init de
+# picamera2/Hailo = única chance de recovery automático). 900s = 3 ciclos de
+# telemetría a 5 min: garantiza que cam_left_ok/cam_right_ok/capture_ok=False
+# lleguen a RDS ANTES del restart. Con WatchdogSec=300, el kill efectivo
+# ocurre ~20 min después del inicio del fallo.
+_PIPELINE_FAIL_RESTART_AFTER_S = 900.0
+
+# Cuánto sostener el LED en BOOT_FAILURE (rojo) cuando el init crashea, antes
+# de dejar morir el proceso. En un crash-loop (RestartSec=10) el operador ve
+# rojo ~5s + LED apagado ~10-15s por ciclo — distinguible de los estados
+# "sanos" (verde/azul) que mostraban los defaults durante el init.
+_BOOT_FAILURE_LED_HOLD_S = 5.0
+
+# Referencia best-effort a las señales/LED del run activo, para que main()
+# pueda mostrar BOOT_FAILURE en el except de init (run_pipeline crea estos
+# objetos internamente y la excepción burbujea fuera de su scope).
+_BOOT_HEALTH: dict[str, Any] = {}
+
 logger = logging.getLogger(__name__)
+
+
+class _IdleThrottle:
+    """FPS adaptativo para escenas vacías (``vision.idle_throttle``).
+
+    Cuando la escena está quieta durante ``idle_after_seconds`` — sin tracks
+    que no sean clutter estacionario, sin ghosts esperando adopción, sin
+    detecciones nuevas y sin nadie mirando el preview — el main loop duerme
+    lo necesario para bajar a ``idle_fps``. Como el productor de captura
+    está backpressured al consumidor, TODA la cadena (grab + rectify +
+    detect prep) baja proporcionalmente. En un deploy real ~95% de los
+    frames son escena vacía: el ahorro de CPU compra margen térmico, no
+    watts (el consumo eléctrico medido es load-independent).
+
+    Vuelta a full rate INSTANTÁNEA: la primera detección no explicada por
+    clutter (o el primer track no-estacionario) marca el frame como busy y
+    el sleep desaparece — el frame que despertó ya se procesó completo, así
+    que no se pierde la observación de entry. Latencia máxima agregada a la
+    primera detección ≈ 1/idle_fps (~100ms), contra ~1s que tarda un cruce.
+
+    El tuning del tracker es frame-based: por eso la condición de busy es
+    deliberadamente conservadora (cualquier duda = full rate) y el toggle
+    es per-site, default OFF. Mientras está throttled, el FPS reportado en
+    telemetría baja a ~idle_fps — esa es la señal del A/B en Grafana; los
+    canaries diarios (stitching_ratio, adoption, death_emit) son la métrica
+    de regresión.
+    """
+
+    def __init__(
+        self,
+        idle_fps: float,
+        idle_after_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.idle_fps = max(1.0, float(idle_fps))
+        self.idle_after_s = max(0.0, float(idle_after_seconds))
+        self._clock = clock
+        self._idle_since: float | None = None
+        self._throttled = False
+
+    @property
+    def throttled(self) -> bool:
+        return self._throttled
+
+    def frame_done(self, *, busy: bool, iter_elapsed_s: float) -> float:
+        """Devuelve cuántos segundos dormir tras esta iteración (0 = full rate).
+
+        Llamar una vez por frame, DESPUÉS del registro de latencia (el sleep
+        no debe inflar ``frame_latencies_ms``).
+        """
+        now = self._clock()
+        if busy:
+            self._idle_since = None
+            if self._throttled:
+                self._throttled = False
+                logger.info("idle_throttle_released")
+            return 0.0
+        if self._idle_since is None:
+            self._idle_since = now
+        if now - self._idle_since < self.idle_after_s:
+            return 0.0
+        if not self._throttled:
+            self._throttled = True
+            logger.info("idle_throttle_engaged idle_fps=%.0f", self.idle_fps)
+        return max(0.0, 1.0 / self.idle_fps - iter_elapsed_s)
+
+
+def _telem_fps(frame_count: int, elapsed_s: float) -> float | None:
+    """FPS para telemetría, o ``None`` si la ventana es demasiado corta.
+
+    Devuelve ``frame_count / elapsed_s`` solo cuando la ventana llega a
+    ``_TELEM_MIN_FPS_WINDOW_S``; por debajo (boot warm-up) devuelve None para
+    no publicar un rate transitorio engañoso. Ver el comentario de la
+    constante.
+    """
+    if elapsed_s < _TELEM_MIN_FPS_WINDOW_S:
+        return None
+    return frame_count / elapsed_s
 
 
 def _all_tracks_height_stable(tracks: dict[int, Track], threshold: int) -> bool:
@@ -180,7 +291,10 @@ def sd_notify(message: str) -> None:
 def setup_logging(config: dict[str, Any]) -> None:
     """Configura logging a partir del config."""
     log_cfg = config.get("logging", {})
-    level = getattr(logging, log_cfg.get("level", "INFO"))
+    # .upper() + default defensivo: _validate ya rechaza levels inválidos en
+    # load_config, pero setup_logging también lo llaman tools que arman el
+    # config a mano — un typo acá no amerita crash.
+    level = getattr(logging, str(log_cfg.get("level", "INFO")).upper(), logging.INFO)
 
     if log_cfg.get("format") == "json":
         fmt = '{"time":"%(asctime)s","level":"%(levelname)s","module":"%(name)s","msg":"%(message)s"}'
@@ -708,6 +822,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         status_led = StatusLED()
         health_monitor = HealthMonitor(led=status_led, signals=health_signals)
         health_monitor.start()
+    # Registrar para el path de crash de init de main() (BOOT_FAILURE en rojo).
+    _BOOT_HEALTH["signals"] = health_signals
+    _BOOT_HEALTH["led"] = status_led
 
     # --- Web viewer en vivo --------------------------------------------------
     # Default ON, puerto 80 (--web-viewer-port 0 deshabilita). Falla de bind
@@ -1280,6 +1397,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     last_vacuum = time.time()
     last_ble_watchdog = time.time()
     last_watchdog = 0.0
+    # Timestamp del comienzo de un fallo PERSISTENTE de captura/detección
+    # (None = pipeline sano). Mientras el fallo dure menos que
+    # _PIPELINE_FAIL_RESTART_AFTER_S el loop sigue pingueando el watchdog de
+    # systemd — el proceso está vivo y la telemetría reporta capture_ok /
+    # cam_*_ok = False a la nube. Pasado ese plazo se RETIENE el ping y
+    # systemd reinicia el servicio (re-init de picamera2/Hailo = única
+    # chance de recovery automático). 900s = 3 ciclos de telemetría a 5 min:
+    # la falla queda reportada en RDS ANTES del restart — sin esto el
+    # restart-loop del watchdog silenciaba la telemetría para siempre y el
+    # device quedaba "dark" justo cuando fallaba la cámara.
+    _pipeline_fail_since: float | None = None
     # Canary del Device Shadow: timestamp del último delta aplicado vía
     # apply_shadow_delta (no del reconcile inicial). None mientras no
     # haya habido pushes — útil en Grafana para distinguir "shadow nunca
@@ -1339,6 +1467,24 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     _scf_enabled = bool(_scf.get("enabled", True))
     _scf_min_frames = int(_scf.get("min_frames", 20))
     _scf_max_move_px = float(_scf.get("max_movement_px", 50.0))
+
+    # FPS adaptativo en idle (vision.idle_throttle). Default OFF fleet-wide;
+    # se prende per-site. Ver el docstring de _IdleThrottle.
+    _it_cfg = vision_cfg.get("idle_throttle", {}) or {}
+    idle_throttle: _IdleThrottle | None = (
+        _IdleThrottle(
+            idle_fps=float(_it_cfg.get("idle_fps", 10.0)),
+            idle_after_seconds=float(_it_cfg.get("idle_after_seconds", 2.0)),
+        )
+        if bool(_it_cfg.get("enabled", False))
+        else None
+    )
+    if idle_throttle is not None:
+        logger.info(
+            "idle_throttle habilitado: idle_fps=%.0f idle_after=%.1fs",
+            idle_throttle.idle_fps,
+            idle_throttle.idle_after_s,
+        )
 
     try:
         while running:
@@ -1498,7 +1644,182 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             "counter_daily_reset",
                             extra={"date": today.isoformat()},
                         )
+                    # Los 3 canaries del árbol diagnóstico son DIARIOS:
+                    # stitching_ratio y death_emit_count viven en el counter
+                    # (reset arriba); adoption_count vive en el tracker y sin
+                    # este reset quedaba como acumulador lifetime.
+                    tracker.reset_daily()
                     _last_reset_date = today
+
+                # Salt del dedup: people-counter-reset.timer (04:00) lo rota
+                # en el SQLite desde OTRO proceso — el engine cachea el salt
+                # en memoria, así que sin este reload la rotación nunca
+                # aplicaba al pipeline vivo. SELECT de 1 fila por minuto.
+                if dedup is not None:
+                    try:
+                        dedup.reload_salt()
+                    except Exception:
+                        logger.exception("dedup reload_salt falló")
+
+            # ===== Mantenimiento per-iteración: telemetría, WiFi/BLE publish,
+            # buffer, BLE watchdog, watchdog de systemd, health signals. =====
+            # Va ANTES de las etapas del pipeline a propósito: los error-paths
+            # de captura/detección hacen `continue`, y cuando este bloque vivía
+            # al final del loop esos `continue` lo salteaban — con una cámara
+            # muerta el device dejaba de publicar telemetría (justo las métricas
+            # cam_*_ok/capture_ok que diagnostican esa falla), el publisher
+            # WiFi/BLE (sano e independiente de visión) dejaba de emitir
+            # ventanas, y el watchdog de systemd mataba el servicio cada 5 min
+            # repitiendo el silencio en cada ciclo. Acá arriba, el housekeeping
+            # corre SIEMPRE, falle o no el frame.
+
+            # --- Telemetría ---
+            # Dos triggers: (a) interval expiró, (b) MQTT acaba de
+            # (re)conectar y _on_mqtt_connected pidió un snapshot
+            # fresco. Limpiar el event al consumir para no re-disparar.
+            now = time.time()
+            telem_due = (
+                now - last_telem >= telem_interval or _first_telem_event.is_set()
+            )
+            if telem_due:
+                _first_telem_event.clear()
+                telem_elapsed = now - telem_fps_start
+                telem = collect_telemetry(
+                    _build_telemetry_state(
+                        frame_latencies_ms,
+                        detection_counts,
+                        detection_window_start_ts,
+                        config.get("vision", {}).get("fps"),
+                        tracker,
+                        mqtt_client,
+                        buffer,
+                        wifi_capture=wifi_capture,
+                        ble_scanner=ble_scanner,
+                        dedup=dedup,
+                        capture=capture,
+                    )
+                )
+                # fps=null si la ventana es demasiado corta para un promedio
+                # confiable (boot warm-up; ver _TELEM_MIN_FPS_WINDOW_S). El
+                # heartbeat sale igual, solo se suprime el fps transitorio.
+                telem["fps"] = _telem_fps(telem_frame_count, telem_elapsed)
+                # counter se construye lazy en el primer frame procesado: si
+                # la captura falla desde el boot queda None — y esta telemetría
+                # es justamente el canal que reporta esa falla, así que tiene
+                # que salir igual.
+                telem["total_in"] = counter.total_in if counter is not None else 0
+                telem["total_out"] = counter.total_out if counter is not None else 0
+                telem["track_stitching_ratio"] = (
+                    counter.stitching_ratio if counter is not None else None
+                )
+                telem["death_emit_count"] = (
+                    counter.death_emit_count if counter is not None else 0
+                )
+                telem["ghost_adoption_count"] = tracker.adoption_count
+                # Canary del Device Shadow — None si nunca llegó un delta
+                # post-boot. La Lambda persist_event lo mapea a la columna
+                # last_shadow_apply_ts (TIMESTAMPTZ, NULLABLE) en RDS.
+                if last_shadow_apply_ts is not None:
+                    telem["last_shadow_apply_ts"] = last_shadow_apply_ts
+                mqtt_client.publish_event("telemetry", telem)
+                _fps_disp = "warmup" if telem["fps"] is None else f"{telem['fps']:.1f}"
+                logger.info(
+                    "telemetry_published mqtt=%s wifi=%s ble=%s fps=%s "
+                    "in=%d out=%d cpu=%s hailo=%s backlog=%s",
+                    telem.get("mqtt_connected"),
+                    telem.get("wifi_probe_ok"),
+                    telem.get("ble_scanner_ok"),
+                    _fps_disp,
+                    telem.get("total_in") or 0,
+                    telem.get("total_out") or 0,
+                    telem.get("cpu_temp_c"),
+                    telem.get("hailo_temp_c"),
+                    telem.get("buffer_backlog_messages"),
+                )
+                last_telem = now
+                telem_frame_count = 0
+                telem_fps_start = now
+                # Resetea las ventanas rolling así el próximo sample es independiente.
+                frame_latencies_ms.clear()
+                detection_counts.clear()
+                detection_window_start_ts = now
+
+            # --- WiFi/BLE: publica resumen de la ventana si tocaba ---
+            # ``maybe_publish`` chequea internamente si pasó probe_interval; cuando
+            # ``wifi_ble.enabled`` es false, ``wifi_ble_publisher`` queda None y
+            # este bloque se saltea entero.
+            if wifi_ble_publisher is not None:
+                try:
+                    wifi_ble_publisher.maybe_publish()
+                except Exception:
+                    logger.exception("wifi_ble publisher tick falló")
+
+            # --- Mantenimiento del buffer (cada 60s, no cada frame) ---
+            if now - last_purge >= 60.0:
+                buffer.purge_old()
+                buffer.enforce_backlog_limit()
+                last_purge = now
+
+            # --- VACUUM diario para reclaim de espacio post-purges ---
+            # SQLite no libera páginas eliminadas hasta VACUUM explícito;
+            # sin esto el archivo crece sin reflejarlo en row count
+            # (semana = ~3-5MB acumulado en producción típica). VACUUM
+            # es I/O heavy (~100-500ms) — daily timing evita impacto en
+            # runtime; cae junto al checkpoint del WAL.
+            if now - last_vacuum >= 86400.0:  # 24h
+                buffer.vacuum()
+                last_vacuum = now
+
+            # --- BLE watchdog ---
+            # ``is_running`` solo dice si el thread está vivo, no si está
+            # progresando — bleak/D-Bus pueden wedgear (call stuck en
+            # internals) y el thread queda alive pero sin advance. El
+            # heartbeat del scanner avanza cada ~0.5s en operación
+            # normal; si pasa >60s sin tick, asumimos wedge y
+            # restarteamos. Recovery transparente sin afectar al
+            # pipeline de visión.
+            if ble_scanner is not None and now - last_ble_watchdog >= 30.0:
+                last_ble_watchdog = now
+                try:
+                    if ble_scanner.is_running and not ble_scanner.is_healthy(60.0):
+                        logger.warning("ble_scanner_wedged_restarting")
+                        try:
+                            ble_scanner.stop()
+                        except Exception:
+                            logger.exception("ble_scanner stop en watchdog falló")
+                        try:
+                            ble_scanner.start()
+                        except Exception:
+                            logger.exception(
+                                "ble_scanner restart falló — BLE queda offline"
+                            )
+                except Exception:
+                    logger.exception("ble_scanner watchdog crash")
+
+            # --- Keepalive del watchdog de systemd (cada 60s; WatchdogSec=300) ---
+            # Escalación ante fallo persistente de captura/detección (ver
+            # _PIPELINE_FAIL_RESTART_AFTER_S): mientras no se cumpla el plazo
+            # el ping sigue saliendo — el loop está vivo y la telemetría
+            # reporta la falla a la nube. Cumplido el plazo, se RETIENE el
+            # ping y systemd reinicia el servicio (re-init de picamera2/Hailo
+            # = única chance de recovery automático).
+            if now - last_watchdog >= 60.0:
+                if (
+                    _pipeline_fail_since is not None
+                    and now - _pipeline_fail_since >= _PIPELINE_FAIL_RESTART_AFTER_S
+                ):
+                    logger.error(
+                        "pipeline_fail_persistente: %.0fs sin captura/detección — "
+                        "retengo WATCHDOG=1 para que systemd reinicie el servicio",
+                        now - _pipeline_fail_since,
+                    )
+                else:
+                    sd_notify("WATCHDOG=1")
+                last_watchdog = now
+
+            # --- Señales de health (las lee el thread del monitor del LED) ---
+            health_signals.last_loop_ts = now
+            health_signals.mqtt_connected = mqtt_client.connected
 
             # --- Gate soft: counting events ---
             # Cuando counting_enabled=false (toggle del shadow) o estamos fuera
@@ -1520,13 +1841,24 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             except RuntimeError as e:
                 logger.error("Error de captura: %s", e)
                 health_signals.capture_ok = False
+                # Arranca el reloj del fallo persistente (lo evalúa el bloque
+                # del watchdog de systemd al tope del loop).
+                if _pipeline_fail_since is None:
+                    _pipeline_fail_since = time.time()
                 time.sleep(0.1)
                 continue
             t_capture_end = time.perf_counter()
 
             # --- Rectificación ---
+            # El ojo derecho se rectifica LAZY: rect_r solo lo consumen SGBM
+            # (frames con detecciones y cache miss, o refresh del panel de
+            # depth del viewer) y el composite del preview (solo con
+            # subscribers). En el ~95% de los frames de un deploy real ese
+            # remap era trabajo tirado — None acá y se materializa en los
+            # dos puntos de consumo.
             if calibration is not None:
-                rect_l, rect_r = rectify_pair(frame_l, frame_r, calibration)
+                rect_l = rectify_one(frame_l, calibration, "left")
+                rect_r = None
             else:
                 rect_l, rect_r = frame_l, frame_r
             t_rectify_end = time.perf_counter()
@@ -1676,9 +2008,14 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     cluster_distance_px=float(detect_cfg["cluster_distance_px"]),
                 )
                 health_signals.detect_ok = True
+                # Captura + detección OK en este frame → el pipeline está
+                # sano; apaga el reloj del fallo persistente.
+                _pipeline_fail_since = None
             except Exception:
                 logger.exception("Detección falló")
                 health_signals.detect_ok = False
+                if _pipeline_fail_since is None:
+                    _pipeline_fail_since = time.time()
                 time.sleep(0.1)
                 continue
 
@@ -1788,6 +2125,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                 and (has_dets_to_query or viewer_depth_due)
                 and not can_use_cache
             ):
+                # Materializar el ojo derecho lazy (este branch ya garantiza
+                # calibration is not None).
+                if rect_r is None:
+                    rect_r = rectify_one(frame_r, calibration, "right")
                 # CLAHE off — el histograma indoor del IMX708 se comporta bien
                 # para el matching SGBM y el costo de CLAHE de ~10ms no vale.
                 disparity = compute_disparity(
@@ -2296,6 +2637,10 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                             recent_counts=_recent_count_flashes,
                             now_mono=_push_mono,
                         )
+                        # Materializar el ojo derecho lazy si nadie lo
+                        # rectificó este frame (preview con escena vacía).
+                        if rect_r is None and calibration is not None:
+                            rect_r = rectify_one(frame_r, calibration, "right")
                         composite = compose_3panel(
                             left_annot,
                             rect_r,
@@ -2310,125 +2655,37 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             frame_latencies_ms.append((time.perf_counter() - t_iter_start) * 1000.0)
             detection_counts.append(len(detections))
 
-            # --- Telemetría ---
-            # Dos triggers: (a) interval expiró, (b) MQTT acaba de
-            # (re)conectar y _on_mqtt_connected pidió un snapshot
-            # fresco. Limpiar el event al consumir para no re-disparar.
-            now = time.time()
-            telem_due = (
-                now - last_telem >= telem_interval or _first_telem_event.is_set()
-            )
-            if telem_due:
-                _first_telem_event.clear()
-                telem_elapsed = now - telem_fps_start
-                telem = collect_telemetry(
-                    _build_telemetry_state(
-                        frame_latencies_ms,
-                        detection_counts,
-                        detection_window_start_ts,
-                        config.get("vision", {}).get("fps"),
-                        tracker,
-                        mqtt_client,
-                        buffer,
-                        wifi_capture=wifi_capture,
-                        ble_scanner=ble_scanner,
-                        dedup=dedup,
-                        capture=capture,
-                    )
+            # --- Idle throttle: FPS adaptativo en escena vacía ---
+            # DESPUÉS del append de latencia (el sleep no debe inflarla).
+            # busy es deliberadamente conservador — cualquier señal de
+            # actividad real mantiene full rate:
+            #   - track vivo que no sea clutter estacionario (un track nuevo
+            #     de una persona entrando NUNCA clasifica estacionario:
+            #     stationary_track_ids exige >= min_frames de historia);
+            #   - ghost esperando adopción (a FPS bajo el IoU de la
+            #     re-detección cae y la capa 1 del rescue fallaría);
+            #   - más detecciones que tracks estacionarios (algo apareció
+            #     que el clutter no explica, aunque todavía no spawneó);
+            #   - alguien mirando el preview (que no vea un stream frenado).
+            if idle_throttle is not None:
+                _stationary_now = stationary_track_ids(
+                    tracks,
+                    counter.counting_zone if counter is not None else None,
+                    _scf_min_frames,
+                    _scf_max_move_px,
                 )
-                telem["fps"] = telem_frame_count / max(telem_elapsed, 1)
-                telem["total_in"] = counter.total_in
-                telem["total_out"] = counter.total_out
-                telem["track_stitching_ratio"] = counter.stitching_ratio
-                telem["death_emit_count"] = counter.death_emit_count
-                telem["ghost_adoption_count"] = tracker.adoption_count
-                # Canary del Device Shadow — None si nunca llegó un delta
-                # post-boot. La Lambda persist_event lo mapea a la columna
-                # last_shadow_apply_ts (TIMESTAMPTZ, NULLABLE) en RDS.
-                if last_shadow_apply_ts is not None:
-                    telem["last_shadow_apply_ts"] = last_shadow_apply_ts
-                mqtt_client.publish_event("telemetry", telem)
-                logger.info(
-                    "telemetry_published mqtt=%s wifi=%s ble=%s fps=%.1f "
-                    "in=%d out=%d cpu=%s hailo=%s backlog=%s",
-                    telem.get("mqtt_connected"),
-                    telem.get("wifi_probe_ok"),
-                    telem.get("ble_scanner_ok"),
-                    float(telem.get("fps") or 0.0),
-                    telem.get("total_in") or 0,
-                    telem.get("total_out") or 0,
-                    telem.get("cpu_temp_c"),
-                    telem.get("hailo_temp_c"),
-                    telem.get("buffer_backlog_messages"),
+                _busy = (
+                    any(tid not in _stationary_now for tid in tracks)
+                    or tracker.ghost_count > 0
+                    or len(all_detections) > len(_stationary_now)
+                    or (viewer is not None and viewer.has_subscribers())
                 )
-                last_telem = now
-                telem_frame_count = 0
-                telem_fps_start = now
-                # Resetea las ventanas rolling así el próximo sample es independiente.
-                frame_latencies_ms.clear()
-                detection_counts.clear()
-                detection_window_start_ts = now
-
-            # --- WiFi/BLE: publica resumen de la ventana si tocaba ---
-            # ``maybe_publish`` chequea internamente si pasó probe_interval; cuando
-            # ``wifi_ble.enabled`` es false, ``wifi_ble_publisher`` queda None y
-            # este bloque se saltea entero.
-            if wifi_ble_publisher is not None:
-                try:
-                    wifi_ble_publisher.maybe_publish()
-                except Exception:
-                    logger.exception("wifi_ble publisher tick falló")
-
-            # --- Mantenimiento del buffer (cada 60s, no cada frame) ---
-            if now - last_purge >= 60.0:
-                buffer.purge_old()
-                buffer.enforce_backlog_limit()
-                last_purge = now
-
-            # --- VACUUM diario para reclaim de espacio post-purges ---
-            # SQLite no libera páginas eliminadas hasta VACUUM explícito;
-            # sin esto el archivo crece sin reflejarlo en row count
-            # (semana = ~3-5MB acumulado en producción típica). VACUUM
-            # es I/O heavy (~100-500ms) — daily timing evita impacto en
-            # runtime; cae junto al checkpoint del WAL.
-            if now - last_vacuum >= 86400.0:  # 24h
-                buffer.vacuum()
-                last_vacuum = now
-
-            # --- BLE watchdog ---
-            # ``is_running`` solo dice si el thread está vivo, no si está
-            # progresando — bleak/D-Bus pueden wedgear (call stuck en
-            # internals) y el thread queda alive pero sin advance. El
-            # heartbeat del scanner avanza cada ~0.5s en operación
-            # normal; si pasa >60s sin tick, asumimos wedge y
-            # restarteamos. Recovery transparente sin afectar al
-            # pipeline de visión.
-            if ble_scanner is not None and now - last_ble_watchdog >= 30.0:
-                last_ble_watchdog = now
-                try:
-                    if ble_scanner.is_running and not ble_scanner.is_healthy(60.0):
-                        logger.warning("ble_scanner_wedged_restarting")
-                        try:
-                            ble_scanner.stop()
-                        except Exception:
-                            logger.exception("ble_scanner stop en watchdog falló")
-                        try:
-                            ble_scanner.start()
-                        except Exception:
-                            logger.exception(
-                                "ble_scanner restart falló — BLE queda offline"
-                            )
-                except Exception:
-                    logger.exception("ble_scanner watchdog crash")
-
-            # --- Keepalive del watchdog de systemd (cada 60s; WatchdogSec=300) ---
-            if now - last_watchdog >= 60.0:
-                sd_notify("WATCHDOG=1")
-                last_watchdog = now
-
-            # --- Señales de health (las lee el thread del monitor del LED) ---
-            health_signals.last_loop_ts = now
-            health_signals.mqtt_connected = mqtt_client.connected
+                _idle_sleep = idle_throttle.frame_done(
+                    busy=_busy,
+                    iter_elapsed_s=time.perf_counter() - t_iter_start,
+                )
+                if _idle_sleep > 0:
+                    time.sleep(_idle_sleep)
 
     finally:
         sd_notify("STOPPING=1")
@@ -2590,7 +2847,26 @@ def main() -> None:
         extra={"device_id": config["device"]["id"]},
     )
 
-    run_pipeline(config, args)
+    try:
+        run_pipeline(config, args)
+    except Exception:
+        # Crash de INIT (load del modelo, open de cámaras, MQTT): sin esto el
+        # LED mostraba los defaults "sanos" (verde) durante cada ciclo del
+        # restart-loop y el operador leía "problema de internet/cloud" frente
+        # a una falla de boot. Sostener el rojo unos segundos antes de morir
+        # — systemd reinicia igual (Restart=always). Los crashes post-boot
+        # (boot_complete=True) no son fallas de boot: se re-raisea directo.
+        signals = _BOOT_HEALTH.get("signals")
+        led = _BOOT_HEALTH.get("led")
+        if signals is not None and not signals.boot_complete:
+            signals.boot_failed = True
+            if led is not None:
+                try:
+                    led.set_state(LedState.BOOT_FAILURE)
+                    time.sleep(_BOOT_FAILURE_LED_HOLD_S)
+                except Exception:
+                    logger.exception("No se pudo señalizar BOOT_FAILURE en el LED")
+        raise
 
 
 if __name__ == "__main__":

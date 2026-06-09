@@ -40,8 +40,9 @@ PASS_ERROR_PCT_AT_3M = 10.0
 PASS_EDGE_CENTER_RATIO = 2.0
 
 
-def analyze_zone(disparity: np.ndarray, fx: float, baseline_mm: float,
-                 cy: int, cx: int, half: int) -> tuple[int, float, float, float]:
+def analyze_zone(
+    disparity: np.ndarray, fx: float, baseline_mm: float, cy: int, cx: int, half: int
+) -> tuple[int, float, float, float]:
     """Computa estadísticas de profundidad dentro de un ROI cuadrado
     centrado en (cy, cx).
 
@@ -65,53 +66,102 @@ def analyze_zone(disparity: np.ndarray, fx: float, baseline_mm: float,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Diagnóstico de depth + validación de calibración")
-    parser.add_argument("--distance", type=float, required=True,
-                        help="Distancia real al target plano en mm")
+    parser = argparse.ArgumentParser(
+        description="Diagnóstico de depth + validación de calibración"
+    )
+    parser.add_argument(
+        "--distance",
+        type=float,
+        required=True,
+        help="Distancia real al target plano en mm",
+    )
     parser.add_argument("--calibration", default="/etc/people-counter/calibration.npz")
-    parser.add_argument("--wls", action="store_true", help="Habilita filtro WLS (off por default)")
-    parser.add_argument("--green", action="store_true",
-                        help="Usa solo channel verde (para cámaras NoIR)")
+    parser.add_argument(
+        "--wls", action="store_true", help="Habilita filtro WLS (off por default)"
+    )
+    parser.add_argument(
+        "--green",
+        action="store_true",
+        help="Usa solo channel verde (para cámaras NoIR)",
+    )
     parser.add_argument("--no-clahe", action="store_true", help="Desactiva CLAHE")
-    parser.add_argument("--downscale", type=int, default=1, choices=[1, 2, 4],
-                        help="Factor de downscale para matching SGBM (1=full, 2=half, 4=quarter)")
-    parser.add_argument("--zone-fraction", type=float, default=0.15,
-                        help="Tamaño de zona como fracción de min(H,W). Default 0.15 = ~15%% por lado")
-    parser.add_argument("--edge-margin", type=float, default=0.10,
-                        help="Offset de zona borde desde la esquina, fracción de min(H,W). Default 0.10")
-    parser.add_argument("--delay-seconds", "--delay", type=int, dest="delay_seconds", default=0,
-                        help="Cuenta regresiva en segundos antes de capturar")
-    parser.add_argument("--meter", choices=("matrix", "centre", "spot"),
-                        default="matrix",
-                        help="Modo de metering AE. Usar 'centre'/'spot' cuando "
-                             "zonas brillantes en la periferia (ventanas, luces) "
-                             "tiren la exposición hacia abajo sobre el centro.")
-    parser.add_argument("--lock-ae", action="store_true",
-                        help="Lockea AE/AWB tras un settle de 1s. Útil para luz "
-                             "variable (luz natural). Default off — AE ajusta a "
-                             "la escena actual, la captura single-frame no se "
-                             "afecta por drift.")
-    parser.add_argument("--max-exposure-us", type=int, default=16000,
-                        help="Cap de exposure time en microsegundos vía "
-                             "FrameDurationLimits. Default 16000us (16ms), "
-                             "mismo que el runtime — diagnostica con la "
-                             "misma distribución de blur que vé el detector. "
-                             "Pasar 0 para deshabilitar.")
-    parser.add_argument("--json", dest="json_path",
-                        help="Escribe los resultados per-zona + veredicto a este "
-                             "path JSON. Permite que el wizard / tooling de CI "
-                             "parsee el score sin scrappear stdout. Schema: "
-                             "{distance_mm, zones: {<name>: {depth_mm, std_mm, "
-                             "err_pct, fill_pct}}, center_threshold_pct, "
-                             "edge_ratio, verdict: 'PASS'|'FAIL', "
-                             "checks: [{name, detail, ok}]}.")
-    parser.add_argument("--output-dir", default="/tmp",
-                        help="Directorio para las imágenes de visualización "
-                             "(diagnose_rect_l.jpg, diagnose_rect_r.jpg, "
-                             "diagnose_depth.jpg). Default /tmp.")
-    parser.add_argument("--quiet", action="store_true",
-                        help="Suprime el output a stdout (igual escribe JSON + "
-                             "imágenes). Modo headless para orquestación.")
+    parser.add_argument(
+        "--downscale",
+        type=int,
+        default=1,
+        choices=[1, 2, 4],
+        help="Factor de downscale para matching SGBM (1=full, 2=half, 4=quarter)",
+    )
+    parser.add_argument(
+        "--zone-fraction",
+        type=float,
+        default=0.15,
+        help="Tamaño de zona como fracción de min(H,W). Default 0.15 = ~15%% por lado",
+    )
+    parser.add_argument(
+        "--edge-margin",
+        type=float,
+        default=0.10,
+        help="Offset de zona borde desde la esquina, fracción de min(H,W). Default 0.10",
+    )
+    parser.add_argument(
+        "--delay-seconds",
+        "--delay",
+        type=int,
+        dest="delay_seconds",
+        default=0,
+        help="Cuenta regresiva en segundos antes de capturar",
+    )
+    parser.add_argument(
+        "--meter",
+        choices=("matrix", "centre", "spot"),
+        default="matrix",
+        help="Modo de metering AE. Usar 'centre'/'spot' cuando "
+        "zonas brillantes en la periferia (ventanas, luces) "
+        "tiren la exposición hacia abajo sobre el centro.",
+    )
+    parser.add_argument(
+        "--lock-ae",
+        action="store_true",
+        help="Lockea AE/AWB tras un settle de 1s. Útil para luz "
+        "variable (luz natural). Default off — AE ajusta a "
+        "la escena actual, la captura single-frame no se "
+        "afecta por drift.",
+    )
+    parser.add_argument(
+        "--max-exposure-us",
+        type=int,
+        default=16000,
+        help="Cap de exposure time en microsegundos vía "
+        "FrameDurationLimits. Default 16000us (16ms), "
+        "mismo que el runtime — diagnostica con la "
+        "misma distribución de blur que vé el detector. "
+        "Pasar 0 para deshabilitar.",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json_path",
+        help="Escribe los resultados per-zona + veredicto a este "
+        "path JSON. Permite que el wizard / tooling de CI "
+        "parsee el score sin scrappear stdout. Schema: "
+        "{distance_mm, zones: {<name>: {depth_mm, std_mm, "
+        "err_pct, fill_pct}}, center_threshold_pct, "
+        "edge_ratio, verdict: 'PASS'|'FAIL', "
+        "checks: [{name, detail, ok}]}.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="/tmp",
+        help="Directorio para las imágenes de visualización "
+        "(diagnose_rect_l.jpg, diagnose_rect_r.jpg, "
+        "diagnose_depth.jpg). Default /tmp.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suprime el output a stdout (igual escribe JSON + "
+        "imágenes). Modo headless para orquestación.",
+    )
     args = parser.parse_args()
 
     def _emit(*a, **kw) -> None:
@@ -129,7 +179,11 @@ def main() -> None:
             "per-device antes de correr diagnose_depth."
         )
     bracket = device_cfg.get("bracket")
-    if not bracket or "camera_left_csi" not in bracket or "camera_right_csi" not in bracket:
+    if (
+        not bracket
+        or "camera_left_csi" not in bracket
+        or "camera_right_csi" not in bracket
+    ):
         parser.error(
             f"bracket.camera_left_csi / bracket.camera_right_csi no "
             f"definidos en {DEFAULT_DEVICE_CONFIG_PATH}."
@@ -187,14 +241,16 @@ def main() -> None:
     _emit("=" * 70)
 
     from src.config.hardware import load_hardware_params
+
     hw = load_hardware_params()
     cap = StereoCapture(
-        cam_left_id=cam_left, cam_right_id=cam_right,
-        resolution=resolution, fps=5,
-        meter_mode=args.meter, lock_ae=args.lock_ae,
-        max_exposure_us=(
-            args.max_exposure_us if args.max_exposure_us > 0 else None
-        ),
+        cam_left_id=cam_left,
+        cam_right_id=cam_right,
+        resolution=resolution,
+        fps=5,
+        meter_mode=args.meter,
+        lock_ae=args.lock_ae,
+        max_exposure_us=(args.max_exposure_us if args.max_exposure_us > 0 else None),
         sensor_raw_size=hw.default_res,
         initial_settle_seconds=hw.ae_initial_settle_seconds,
         resettle_seconds=hw.ae_resettle_seconds,
@@ -203,6 +259,7 @@ def main() -> None:
 
     if args.delay_seconds > 0:
         import time
+
         for i in range(args.delay_seconds, 0, -1):
             print(f"  Capturando en {i}...", end="\r", flush=True)
             time.sleep(1)
@@ -232,7 +289,9 @@ def main() -> None:
     # --- Disparity ---
     sgbm = create_sgbm()
     disparity = compute_disparity(
-        rect_l, rect_r, sgbm=sgbm,
+        rect_l,
+        rect_r,
+        sgbm=sgbm,
         use_wls_filter=args.wls,
         use_green_channel=args.green,
         use_clahe=not args.no_clahe,
@@ -246,19 +305,25 @@ def main() -> None:
 
     # 5 zonas: centro + 4 esquinas (offset del borde de imagen por `margin`)
     zones = {
-        "center":       (h // 2, w // 2),
-        "top-left":     (margin + half, margin + half),
-        "top-right":    (margin + half, w - margin - half),
-        "bottom-left":  (h - margin - half, margin + half),
+        "center": (h // 2, w // 2),
+        "top-left": (margin + half, margin + half),
+        "top-right": (margin + half, w - margin - half),
+        "bottom-left": (h - margin - half, margin + half),
         "bottom-right": (h - margin - half, w - margin - half),
     }
 
     # --- Análisis per-zona ---
     _emit(f"\n{'=' * 70}")
-    _emit(f"PROFUNDIDAD POR ZONA  (distancia real: {args.distance:.0f} mm = {args.distance/1000:.2f} m)")
-    _emit(f"Tamaño de zona: {2*half}×{2*half} px  ({args.zone_fraction*100:.0f}% del lado del frame)")
+    _emit(
+        f"PROFUNDIDAD POR ZONA  (distancia real: {args.distance:.0f} mm = {args.distance/1000:.2f} m)"
+    )
+    _emit(
+        f"Tamaño de zona: {2*half}×{2*half} px  ({args.zone_fraction*100:.0f}% del lado del frame)"
+    )
     _emit("=" * 70)
-    _emit(f"{'Zona':<14s} {'Válidos':>7s} {'Fill%':>7s} {'Prof(mm)':>11s} {'Std(mm)':>9s} {'Error':>9s}")
+    _emit(
+        f"{'Zona':<14s} {'Válidos':>7s} {'Fill%':>7s} {'Prof(mm)':>11s} {'Std(mm)':>9s} {'Error':>9s}"
+    )
     _emit("-" * 70)
 
     results = {}
@@ -270,7 +335,9 @@ def main() -> None:
             continue
         err_pct = (median - args.distance) / args.distance * 100
         results[name] = (median, std, err_pct, fill)
-        print(f"{name:<14s} {n:>7d} {fill:>6.1f}% {median:>10.0f} {std:>8.0f}  {err_pct:>+7.1f}%")
+        print(
+            f"{name:<14s} {n:>7d} {fill:>6.1f}% {median:>10.0f} {std:>8.0f}  {err_pct:>+7.1f}%"
+        )
 
     # --- Análisis de consistencia ---
     _emit(f"\n{'=' * 70}")
@@ -309,12 +376,16 @@ def main() -> None:
     else:
         # interpolar
         t = (d_m - 2.0) / 1.0
-        center_threshold = PASS_ERROR_PCT_AT_2M + t * (PASS_ERROR_PCT_AT_3M - PASS_ERROR_PCT_AT_2M)
+        center_threshold = PASS_ERROR_PCT_AT_2M + t * (
+            PASS_ERROR_PCT_AT_3M - PASS_ERROR_PCT_AT_2M
+        )
 
     checks = []
     if center is not None:
         ok = abs(center[2]) <= center_threshold
-        checks.append(("Error centro", f"{abs(center[2]):.2f}% ≤ {center_threshold:.1f}%", ok))
+        checks.append(
+            ("Error centro", f"{abs(center[2]):.2f}% ≤ {center_threshold:.1f}%", ok)
+        )
     # El ratio borde/centro se muestra solo como INFO — asume una
     # escena de target plano que la mayoría de ambientes reales no
     # tienen. Escenas multi-depth inflan los errores de borde sin
@@ -322,16 +393,20 @@ def main() -> None:
     if not np.isnan(edge_ratio):
         info_ok = edge_ratio <= PASS_EDGE_CENTER_RATIO
         flag = "OK" if info_ok else "INFO"
-        _emit(f"  [{flag}] Ratio bordes/centro: {edge_ratio:.2f}× "
-              f"(referencia {PASS_EDGE_CENTER_RATIO:.1f}× — informativo, "
-              f"solo significativo con target plano)")
+        _emit(
+            f"  [{flag}] Ratio bordes/centro: {edge_ratio:.2f}× "
+            f"(referencia {PASS_EDGE_CENTER_RATIO:.1f}× — informativo, "
+            f"solo significativo con target plano)"
+        )
 
     for name, detail, ok in checks:
         status = "PASS" if ok else "FAIL"
         _emit(f"  [{status}] {name}: {detail}")
 
     overall = all(ok for _, _, ok in checks) if checks else False
-    _emit(f"\nVEREDICTO: {'PASS — calibración correcta para depth' if overall else 'FAIL — recalibrar (más capturas, mejor foco, verificar rigidez)'}")
+    _emit(
+        f"\nVEREDICTO: {'PASS — calibración correcta para depth' if overall else 'FAIL — recalibrar (más capturas, mejor foco, verificar rigidez)'}"
+    )
 
     # --- Output JSON opcional (para orquestación / integración con wizard) ---
     if args.json_path:
@@ -351,19 +426,15 @@ def main() -> None:
             "distance_mm": float(args.distance),
             "zones": zones_json,
             "center_threshold_pct": float(center_threshold),
-            "edge_ratio": (
-                None if np.isnan(edge_ratio) else float(edge_ratio)
-            ),
+            "edge_ratio": (None if np.isnan(edge_ratio) else float(edge_ratio)),
             "verdict": "PASS" if overall else "FAIL",
-            "checks": [
-                {"name": n, "detail": d, "ok": bool(o)}
-                for n, d, o in checks
-            ],
+            "checks": [{"name": n, "detail": d, "ok": bool(o)} for n, d, o in checks],
         }
         json_out = Path(args.json_path)
         json_out.parent.mkdir(parents=True, exist_ok=True)
         json_out.write_text(
-            json.dumps(json_payload, indent=2), encoding="utf-8",
+            json.dumps(json_payload, indent=2),
+            encoding="utf-8",
         )
         _emit(f"\nJSON guardado: {json_out}")
 
@@ -384,8 +455,15 @@ def main() -> None:
             label = f"{results[name][0]:.0f}mm ({results[name][2]:+.1f}%)"
         else:
             label = "sin datos"
-        cv2.putText(depth_vis, label, (x1 + 5, y1 + 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        cv2.putText(
+            depth_vis,
+            label,
+            (x1 + 5, y1 + 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (255, 255, 255),
+            2,
+        )
 
     cv2.imwrite(str(out_dir / "diagnose_depth.jpg"), depth_vis)
     _emit(

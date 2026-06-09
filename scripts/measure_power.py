@@ -39,7 +39,9 @@ def read_rails() -> dict[str, float]:
     try:
         out = subprocess.run(
             ["vcgencmd", "pmic_read_adc"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         ).stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
@@ -76,22 +78,43 @@ def summarize(totals: list[float]) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Mide el consumo del device vía PMIC.")
-    ap.add_argument("--duration", type=float, default=10.0,
-                    help="segundos a medir (0 = hasta Ctrl-C). Default 10.")
-    ap.add_argument("--interval", type=float, default=0.5,
-                    help="segundos entre muestras. Default 0.5.")
-    ap.add_argument("--csv", metavar="PATH",
-                    help="además, vuelca cada muestra a un CSV (modo append).")
-    ap.add_argument("--rails", action="store_true",
-                    help="incluir desglose de potencia promedio por riel.")
-    ap.add_argument("--print-every", type=float, default=5.0,
-                    help="cada cuántos segundos imprimir una línea en vivo. Default 5.")
+    ap.add_argument(
+        "--duration",
+        type=float,
+        default=10.0,
+        help="segundos a medir (0 = hasta Ctrl-C). Default 10.",
+    )
+    ap.add_argument(
+        "--interval",
+        type=float,
+        default=0.5,
+        help="segundos entre muestras. Default 0.5.",
+    )
+    ap.add_argument(
+        "--csv",
+        metavar="PATH",
+        help="además, vuelca cada muestra a un CSV (modo append).",
+    )
+    ap.add_argument(
+        "--rails",
+        action="store_true",
+        help="incluir desglose de potencia promedio por riel.",
+    )
+    ap.add_argument(
+        "--print-every",
+        type=float,
+        default=5.0,
+        help="cada cuántos segundos imprimir una línea en vivo. Default 5.",
+    )
     args = ap.parse_args()
 
     # Sanity: ¿estamos en una Pi con PMIC accesible?
     if not read_rails():
-        print("ERROR: no se pudo leer 'vcgencmd pmic_read_adc' "
-              "(¿corriendo en la RPi5?).", file=sys.stderr)
+        print(
+            "ERROR: no se pudo leer 'vcgencmd pmic_read_adc' "
+            "(¿corriendo en la RPi5?).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     totals: list[float] = []
@@ -109,9 +132,13 @@ def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.__setitem__("flag", True))
 
-    label = f"{args.duration:.0f}s" if args.duration else "continuo (Ctrl-C/SIGTERM corta)"
-    print(f"Midiendo consumo — {label}, cada {args.interval}s. "
-          "Total = placa + Hailo + cámaras (output PMIC).")
+    label = (
+        f"{args.duration:.0f}s" if args.duration else "continuo (Ctrl-C/SIGTERM corta)"
+    )
+    print(
+        f"Midiendo consumo — {label}, cada {args.interval}s. "
+        "Total = placa + Hailo + cámaras (output PMIC)."
+    )
 
     t0 = time.time()
     last_print = t0
@@ -127,13 +154,17 @@ def main() -> None:
                 if not csv_cols:
                     csv_cols = sorted(rails)
                     csv_f.write("timestamp,total_w," + ",".join(csv_cols) + "\n")
-                row = [datetime.now().isoformat(timespec="milliseconds"),
-                       f"{total:.3f}"]
+                row = [
+                    datetime.now().isoformat(timespec="milliseconds"),
+                    f"{total:.3f}",
+                ]
                 row += [f"{rails.get(c, 0.0):.4f}" for c in csv_cols]
                 csv_f.write(",".join(row) + "\n")
             if now - last_print >= args.print_every:
-                print(f"  [{datetime.now():%H:%M:%S}] ahora={total:.2f}W  "
-                      f"({summarize(totals)})")
+                print(
+                    f"  [{datetime.now():%H:%M:%S}] ahora={total:.2f}W  "
+                    f"({summarize(totals)})"
+                )
                 last_print = now
         if args.duration and (now - t0) >= args.duration:
             break

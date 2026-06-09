@@ -110,10 +110,12 @@ class TestPostprocess:
         assert dets[0].bbox[1] < dets[0].bbox[3]  # y1 < y2
 
     def test_confidence_filtering(self):
-        raw = self._make_raw_output([
-            (100, 100, 50, 100, 0.9),  # above threshold
-            (300, 300, 50, 100, 0.3),  # below threshold
-        ])
+        raw = self._make_raw_output(
+            [
+                (100, 100, 50, 100, 0.9),  # above threshold
+                (300, 300, 50, 100, 0.3),  # below threshold
+            ]
+        )
         dets = postprocess(raw, 0.5, 0.45, 1.0, 0, 0, (640, 640))
         assert len(dets) == 1
         assert dets[0].confidence == pytest.approx(0.9, abs=0.01)
@@ -124,19 +126,23 @@ class TestPostprocess:
         assert len(dets) == 0
 
     def test_all_below_threshold(self):
-        raw = self._make_raw_output([
-            (100, 100, 50, 100, 0.1),
-            (300, 300, 50, 100, 0.2),
-        ])
+        raw = self._make_raw_output(
+            [
+                (100, 100, 50, 100, 0.1),
+                (300, 300, 50, 100, 0.2),
+            ]
+        )
         dets = postprocess(raw, 0.5, 0.45, 1.0, 0, 0, (640, 640))
         assert len(dets) == 0
 
     def test_nms_suppression(self):
         # Two highly overlapping detections — NMS should keep only best
-        raw = self._make_raw_output([
-            (320, 320, 100, 200, 0.9),
-            (325, 322, 100, 200, 0.8),  # nearly identical position
-        ])
+        raw = self._make_raw_output(
+            [
+                (320, 320, 100, 200, 0.9),
+                (325, 322, 100, 200, 0.8),  # nearly identical position
+            ]
+        )
         dets = postprocess(raw, 0.5, 0.3, 1.0, 0, 0, (640, 640))
         assert len(dets) == 1  # NMS keeps only the best
 
@@ -171,11 +177,13 @@ class TestPostprocess:
         assert y2 <= 480
 
     def test_multiple_persons(self):
-        raw = self._make_raw_output([
-            (100, 200, 60, 120, 0.9),
-            (400, 200, 60, 120, 0.85),
-            (300, 500, 60, 120, 0.7),
-        ])
+        raw = self._make_raw_output(
+            [
+                (100, 200, 60, 120, 0.9),
+                (400, 200, 60, 120, 0.85),
+                (300, 500, 60, 120, 0.7),
+            ]
+        )
         dets = postprocess(raw, 0.5, 0.45, 1.0, 0, 0, (640, 640))
         assert len(dets) == 3
 
@@ -200,6 +208,7 @@ class TestDetection:
         assert d["confidence"] == 0.85
         assert d["centroid"] == [60.0, 120.0]
 
+
 class TestPostprocessHailoNmsInputSize:
     def test_input_size_parametric(self):
         # Hailo NMS output: list of 80 per-class arrays. Person class has
@@ -209,7 +218,13 @@ class TestPostprocessHailoNmsInputSize:
         raw[0] = np.array([[0.4, 0.4, 0.6, 0.6, 0.9]], dtype=np.float32)
         # input_size=1024 → normalized 0.5 maps to 512 px.
         dets = postprocess_hailo_nms(
-            raw, 0.5, 1.0, 0, 0, (1024, 1024), input_size=(1024, 1024),
+            raw,
+            0.5,
+            1.0,
+            0,
+            0,
+            (1024, 1024),
+            input_size=(1024, 1024),
         )
         assert len(dets) == 1
         cx, cy = dets[0].centroid
@@ -280,7 +295,8 @@ class TestClusterDetections:
         torso = self._det(120, 130, 0.55)
         limb = self._det(80, 130, 0.42)
         out = cluster_detections(
-            [head, torso, limb], max_centroid_distance_px=50,
+            [head, torso, limb],
+            max_centroid_distance_px=50,
         )
         assert len(out) == 1
         assert out[0].confidence == pytest.approx(0.65)
@@ -298,7 +314,8 @@ class TestClusterDetections:
             self._det(515, 510, 0.55),
         ]
         out = cluster_detections(
-            person_a + person_b, max_centroid_distance_px=50,
+            person_a + person_b,
+            max_centroid_distance_px=50,
         )
         assert len(out) == 2
         confs = sorted(d.confidence for d in out)

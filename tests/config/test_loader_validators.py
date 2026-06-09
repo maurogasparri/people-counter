@@ -256,12 +256,16 @@ class TestCounterSection:
         with pytest.raises(ValueError, match="missing section: counter"):
             load_config(write_config(tmp_path, complete_config))
 
-    def test_empty_block_accepted(self, tmp_path, complete_config):
-        """El counter no exige keys a nivel loader — las líneas las valida
-        build_counter en runtime. Un bloque vacío pasa el loader."""
+    def test_empty_block_rejected(self, tmp_path, complete_config):
+        """Cambio deliberado (revisión 2026-06-09): el loader AHORA exige
+        counter.lines. Antes 'las líneas las valida build_counter en
+        runtime' — pero build_counter corre lazy en el primer frame, así
+        que un bloque vacío pasaba el load, el servicio mandaba READY=1 y
+        crasheaba en el primer frame → restart-loop cada 10s, bypaseando
+        el exit-2 amigable de main()."""
         complete_config["counter"] = {}
-        loaded = load_config(write_config(tmp_path, complete_config))
-        assert loaded["counter"] == {}
+        with pytest.raises(ValueError, match="counter.lines"):
+            load_config(write_config(tmp_path, complete_config))
 
 
 # ---------------------------------------------------------------------------

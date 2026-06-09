@@ -33,7 +33,9 @@ class _FlowList(list):
 
 def _flow_list_representer(dumper, data):
     return dumper.represent_sequence(
-        "tag:yaml.org,2002:seq", data, flow_style=True,
+        "tag:yaml.org,2002:seq",
+        data,
+        flow_style=True,
     )
 
 
@@ -47,9 +49,7 @@ _KEYS_PER_SIDE = ("intrinsic_4", "distortion_4", "R_rect_4", "intrinsic_rect_4")
 
 def _mat_to_flow(arr: np.ndarray) -> _FlowList:
     """Matrix 2-D → lista de filas flow-style (cada fila en una línea)."""
-    return _FlowList(
-        _FlowList(float(x) for x in row) for row in arr.astype(float)
-    )
+    return _FlowList(_FlowList(float(x) for x in row) for row in arr.astype(float))
 
 
 def _vec_to_flow(arr: np.ndarray) -> _FlowList:
@@ -76,10 +76,16 @@ def _extract_site_calib(npz_path: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--in", dest="src", type=Path, required=True,
-                        help="YAML viejo con paths a calib.npz")
-    parser.add_argument("--out", type=Path, required=True,
-                        help="YAML nuevo con matrices inline")
+    parser.add_argument(
+        "--in",
+        dest="src",
+        type=Path,
+        required=True,
+        help="YAML viejo con paths a calib.npz",
+    )
+    parser.add_argument(
+        "--out", type=Path, required=True, help="YAML nuevo con matrices inline"
+    )
     args = parser.parse_args()
 
     with args.src.open(encoding="utf-8") as f:
@@ -97,12 +103,16 @@ def main() -> int:
         if npz_path:
             p = Path(npz_path)
             if not p.exists():
-                print(f"[{name}] WARN: calib no existe: {p} — site sin matrices",
-                      file=sys.stderr)
+                print(
+                    f"[{name}] WARN: calib no existe: {p} — site sin matrices",
+                    file=sys.stderr,
+                )
             else:
                 new_site["calibration"] = _extract_site_calib(p)
         sites_out.append(new_site)
-        print(f"[{name}] embebido ({'con' if 'calibration' in new_site else 'sin'} calib)")
+        print(
+            f"[{name}] embebido ({'con' if 'calibration' in new_site else 'sin'} calib)"
+        )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as f:

@@ -1,4 +1,5 @@
 """Tests para src/config/hardware.py — HardwareParams + load_hardware_params."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -44,7 +45,8 @@ class TestFleetDefaults:
 
 class TestLoadHardwareParamsMissing:
     def test_returns_fleet_defaults_when_path_does_not_exist(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Sin archivo de config, devuelve FLEET_DEFAULTS sin raisear.
 
@@ -56,7 +58,8 @@ class TestLoadHardwareParamsMissing:
         assert hw == FLEET_DEFAULTS
 
     def test_returns_fleet_defaults_on_malformed_yaml(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Si el YAML está corrupto, no rompe el tool — fallback a fleet
         defaults para que la tool pueda al menos arrancar y reportar."""
@@ -79,13 +82,16 @@ class TestLoadHardwareParamsOverrides:
     def test_overrides_sensor_keys(self, tmp_path: Path) -> None:
         cfg = tmp_path / "cfg.yaml"
         # Sensor distinto (ej. IMX477) — full_res + focal cambian.
-        self._write(cfg, {
-            "sensor": {
-                "full_res": [4056, 3040],
-                "default_res": [2028, 1520],
-                "nominal_focal_full_px": 2540.0,
+        self._write(
+            cfg,
+            {
+                "sensor": {
+                    "full_res": [4056, 3040],
+                    "default_res": [2028, 1520],
+                    "nominal_focal_full_px": 2540.0,
+                },
             },
-        })
+        )
         hw = load_hardware_params(cfg)
         assert hw.full_res == (4056, 3040)
         assert hw.default_res == (2028, 1520)
@@ -96,13 +102,16 @@ class TestLoadHardwareParamsOverrides:
     def test_overrides_bracket_keys(self, tmp_path: Path) -> None:
         cfg = tmp_path / "cfg.yaml"
         # Bracket custom con baseline distinto + CSI swap.
-        self._write(cfg, {
-            "bracket": {
-                "baseline_mm": 200.0,
-                "camera_left_csi": 1,
-                "camera_right_csi": 0,
+        self._write(
+            cfg,
+            {
+                "bracket": {
+                    "baseline_mm": 200.0,
+                    "camera_left_csi": 1,
+                    "camera_right_csi": 0,
+                },
             },
-        })
+        )
         hw = load_hardware_params(cfg)
         assert hw.baseline_mm == 200.0
         assert hw.camera_left_csi == 1
@@ -110,9 +119,12 @@ class TestLoadHardwareParamsOverrides:
 
     def test_overrides_lens_keys(self, tmp_path: Path) -> None:
         cfg = tmp_path / "cfg.yaml"
-        self._write(cfg, {
-            "lens": {"type": "m12_180deg", "hfov_deg": 180.0},
-        })
+        self._write(
+            cfg,
+            {
+                "lens": {"type": "m12_180deg", "hfov_deg": 180.0},
+            },
+        )
         hw = load_hardware_params(cfg)
         assert hw.hfov_deg == 180.0
         assert hw.lens_type == "m12_180deg"
@@ -120,19 +132,22 @@ class TestLoadHardwareParamsOverrides:
     def test_overrides_charuco_keys(self, tmp_path: Path) -> None:
         cfg = tmp_path / "cfg.yaml"
         # Board distinto (más chico, otro dict).
-        self._write(cfg, {
-            "vision": {
-                "charuco": {
-                    "board_cols": 7,
-                    "board_rows": 5,
-                    "square_mm": 30.0,
-                    "marker_mm": 22.0,
-                    "dict": "DICT_5X5_100",
-                    "legacy_pattern": False,
-                    "dual_pass_accept_threshold": 12,
+        self._write(
+            cfg,
+            {
+                "vision": {
+                    "charuco": {
+                        "board_cols": 7,
+                        "board_rows": 5,
+                        "square_mm": 30.0,
+                        "marker_mm": 22.0,
+                        "dict": "DICT_5X5_100",
+                        "legacy_pattern": False,
+                        "dual_pass_accept_threshold": 12,
+                    },
                 },
             },
-        })
+        )
         hw = load_hardware_params(cfg)
         assert hw.board_cols == 7
         assert hw.board_rows == 5
@@ -145,20 +160,24 @@ class TestLoadHardwareParamsOverrides:
     def test_overrides_ae_lock_keys(self, tmp_path: Path) -> None:
         cfg = tmp_path / "cfg.yaml"
         # Site con luz muy fluctuante necesita settle más largo.
-        self._write(cfg, {
-            "vision": {
-                "ae_lock": {
-                    "initial_settle_seconds": 4.0,
-                    "resettle_seconds": 2.5,
+        self._write(
+            cfg,
+            {
+                "vision": {
+                    "ae_lock": {
+                        "initial_settle_seconds": 4.0,
+                        "resettle_seconds": 2.5,
+                    },
                 },
             },
-        })
+        )
         hw = load_hardware_params(cfg)
         assert hw.ae_initial_settle_seconds == 4.0
         assert hw.ae_resettle_seconds == 2.5
 
     def test_partial_override_keeps_defaults_for_missing_keys(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Overrideando solo una key, el resto queda en FLEET_DEFAULTS."""
         cfg = tmp_path / "cfg.yaml"
@@ -176,34 +195,37 @@ class TestLoadHardwareParamsOverrides:
         """Config completo overrideando todo — caso multi-hardware total
         (otro sensor + otro lens + otro bracket + otro board)."""
         cfg = tmp_path / "cfg.yaml"
-        self._write(cfg, {
-            "sensor": {
-                "full_res": [3280, 2464],
-                "default_res": [1640, 1232],
-                "nominal_focal_full_px": 1680.0,
-            },
-            "lens": {"type": "fisheye_220", "hfov_deg": 220.0},
-            "bracket": {
-                "baseline_mm": 100.0,
-                "camera_left_csi": 2,
-                "camera_right_csi": 3,
-            },
-            "vision": {
-                "charuco": {
-                    "board_cols": 11,
-                    "board_rows": 8,
-                    "square_mm": 25.0,
-                    "marker_mm": 18.0,
-                    "dict": "DICT_6X6_250",
-                    "legacy_pattern": False,
-                    "dual_pass_accept_threshold": 10,
+        self._write(
+            cfg,
+            {
+                "sensor": {
+                    "full_res": [3280, 2464],
+                    "default_res": [1640, 1232],
+                    "nominal_focal_full_px": 1680.0,
                 },
-                "ae_lock": {
-                    "initial_settle_seconds": 5.0,
-                    "resettle_seconds": 3.0,
+                "lens": {"type": "fisheye_220", "hfov_deg": 220.0},
+                "bracket": {
+                    "baseline_mm": 100.0,
+                    "camera_left_csi": 2,
+                    "camera_right_csi": 3,
+                },
+                "vision": {
+                    "charuco": {
+                        "board_cols": 11,
+                        "board_rows": 8,
+                        "square_mm": 25.0,
+                        "marker_mm": 18.0,
+                        "dict": "DICT_6X6_250",
+                        "legacy_pattern": False,
+                        "dual_pass_accept_threshold": 10,
+                    },
+                    "ae_lock": {
+                        "initial_settle_seconds": 5.0,
+                        "resettle_seconds": 3.0,
+                    },
                 },
             },
-        })
+        )
         hw = load_hardware_params(cfg)
         assert hw.full_res == (3280, 2464)
         assert hw.default_res == (1640, 1232)
@@ -228,10 +250,12 @@ class TestLoadHardwareParamsEdgeCases:
         crashear — el resto del config sigue procesándose."""
         cfg = tmp_path / "cfg.yaml"
         cfg.write_text(
-            yaml.safe_dump({
-                "sensor": {"full_res": "not a list"},
-                "bracket": {"baseline_mm": 150.0},
-            }),
+            yaml.safe_dump(
+                {
+                    "sensor": {"full_res": "not a list"},
+                    "bracket": {"baseline_mm": 150.0},
+                }
+            ),
             encoding="utf-8",
         )
         hw = load_hardware_params(cfg)
@@ -239,7 +263,8 @@ class TestLoadHardwareParamsEdgeCases:
         assert hw.baseline_mm == 150.0  # el resto se respeta
 
     def test_charuco_missing_section_uses_defaults(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Config válido pero sin la sección vision.charuco — todos los
         knobs del board caen al fleet default."""
@@ -251,10 +276,13 @@ class TestLoadHardwareParamsEdgeCases:
         hw = load_hardware_params(cfg)
         assert hw.board_cols == FLEET_DEFAULTS.board_cols
         assert hw.aruco_dict == FLEET_DEFAULTS.aruco_dict
-        assert hw.dual_pass_accept_threshold == FLEET_DEFAULTS.dual_pass_accept_threshold
+        assert (
+            hw.dual_pass_accept_threshold == FLEET_DEFAULTS.dual_pass_accept_threshold
+        )
 
     def test_ae_lock_missing_section_uses_defaults(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         cfg = tmp_path / "cfg.yaml"
         cfg.write_text(
@@ -266,18 +294,21 @@ class TestLoadHardwareParamsEdgeCases:
         assert hw.ae_resettle_seconds == FLEET_DEFAULTS.ae_resettle_seconds
 
     def test_non_numeric_scalar_falls_back_without_crash(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Un scalar no-numérico (typo del operador, ej. ``"140mm"``) NO debe
         crashear el setup tool con un traceback — cae al fleet default. Antes
         el ``float(...)`` directo levantaba ValueError sin captura."""
         cfg = tmp_path / "cfg.yaml"
         cfg.write_text(
-            yaml.safe_dump({
-                "bracket": {"baseline_mm": "140mm"},  # string con unidad
-                "lens": {"hfov_deg": "wide"},
-                "vision": {"charuco": {"board_cols": "nine"}},
-            }),
+            yaml.safe_dump(
+                {
+                    "bracket": {"baseline_mm": "140mm"},  # string con unidad
+                    "lens": {"hfov_deg": "wide"},
+                    "vision": {"charuco": {"board_cols": "nine"}},
+                }
+            ),
             encoding="utf-8",
         )
         hw = load_hardware_params(cfg)  # no debe levantar

@@ -207,6 +207,71 @@ class TestStereoCaptureAsync:
         finally:
             cap.close()
 
+    def test_close_does_not_block_on_wedged_stream_thread(self):
+        """Regresión: con el thread productor wedgeado (capture_request
+        colgado, cámara stalleada) el join de close() expira — el
+        executor.shutdown(wait=True) de después esperaba PARA SIEMPRE al
+        future colgado y close() nunca llegaba a cam.stop(); systemd
+        terminaba matando el proceso por TimeoutStopSec en vez del
+        shutdown limpio. Con wait=False cuando el join falló, close()
+        retorna."""
+        from unittest.mock import MagicMock
+
+        cap = _wired_stereo(async_capture=True)
+        # Simular el wedge: thread "vivo" cuyo join no termina.
+        wedged = MagicMock()
+        wedged.is_alive.return_value = True
+        wedged.join.return_value = None
+        cap._stream_thread = wedged
+        executor = MagicMock()
+        cap._executor = executor
+
+        cap.close()  # no debe bloquear
+
+        executor.shutdown.assert_called_once_with(wait=False)
+        assert cap._stream_thread is None
+
+    def test_stream_loop_rate_limits_error_log(self, caplog):
+        """Regresión: una falla persistente de captura (cable CSI muerto)
+        logueaba un traceback completo cada 50ms (~1.7M líneas/día) —
+        wear de microSD + journald saturado. Ahora: traceback solo en el
+        primer error, después 1 línea cada _STREAM_ERROR_LOG_EVERY."""
+        import logging as _logging
+
+        from src.vision.capture import _STREAM_ERROR_LOG_EVERY
+
+        cap = _wired_stereo(async_capture=True)
+
+        def _boom():
+            raise RuntimeError("CSI muerto")
+
+        cap._capture_pair_with_metadata = _boom
+        # Sin esperas reales: el wait del backoff corta al instante salvo
+        # las primeras N iteraciones (evento no seteado). Simulamos N
+        # errores señalando stop después de un cupo de iteraciones.
+        n_iters = _STREAM_ERROR_LOG_EVERY * 2
+        calls = {"n": 0}
+        real_wait = cap._stream_stop.wait
+
+        def _counting_wait(timeout=None):
+            calls["n"] += 1
+            if calls["n"] >= n_iters:
+                cap._stream_stop.set()
+            return real_wait(0)
+
+        cap._stream_stop.wait = _counting_wait
+        with caplog.at_level(_logging.ERROR):
+            cap._stream_loop()  # corre inline hasta que el wait setea stop
+
+        msgs = [
+            r
+            for r in caplog.records
+            if "stereo_stream_capture_failed" in r.getMessage()
+        ]
+        # 1 (primer error, con traceback) + 2 rate-limited (en 400 iteraciones)
+        assert 1 <= len(msgs) <= 4
+        assert len(msgs) < 10  # ni cerca de 1-por-iteración
+
     def test_close_stops_thread(self):
         cap = _wired_stereo(async_capture=True)
         cap.read_with_metadata()

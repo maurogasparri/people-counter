@@ -101,7 +101,8 @@ logger = logging.getLogger("capture_mjpeg")
 
 
 def _load_site_calibration(
-    cal_block: dict[str, Any], half_size: tuple[int, int],
+    cal_block: dict[str, Any],
+    half_size: tuple[int, int],
 ) -> dict[str, tuple[Any, Any]]:
     """Precomputa los maps de rectificación fisheye para un par de lentes.
 
@@ -133,7 +134,12 @@ def _load_site_calibration(
         R = np.array(side_block["R_rect"], dtype=np.float64)
         P = _scale_K(side_block["P_rect"])
         m1, m2 = cv2.fisheye.initUndistortRectifyMap(
-            K, D, R, P, (out_w, out_h), cv2.CV_16SC2,
+            K,
+            D,
+            R,
+            P,
+            (out_w, out_h),
+            cv2.CV_16SC2,
         )
         maps[side] = (m1, m2)
     return maps
@@ -294,8 +300,12 @@ def _capture_site(
             logger.info(
                 "[%s] fuera de horario (now %02dh, ventana %02d-%02d), "
                 "dormido hasta %s (%.0fs)",
-                name, datetime.now().hour, operating_hours[0],  # type: ignore[index]
-                operating_hours[1], wake_at.strftime("%H:%M"), secs,  # type: ignore[index]
+                name,
+                datetime.now().hour,
+                operating_hours[0],  # type: ignore[index]
+                operating_hours[1],
+                wake_at.strftime("%H:%M"),
+                secs,  # type: ignore[index]
             )
             # stop_event.wait(secs) permite Ctrl+C inmediato
             if stop_event.wait(secs):
@@ -331,7 +341,8 @@ def _capture_site(
                 if consecutive_failures > 30:
                     logger.warning(
                         "[%s] %d fallos consecutivos de read — reconectando",
-                        name, consecutive_failures,
+                        name,
+                        consecutive_failures,
                     )
                     break
                 time.sleep(0.1)
@@ -349,11 +360,14 @@ def _capture_site(
                 half_size = (fw // 2, fh)
                 try:
                     rect_maps = _load_site_calibration(
-                        calib_block, half_size,  # type: ignore[arg-type]
+                        calib_block,
+                        half_size,  # type: ignore[arg-type]
                     )
                     logger.info(
                         "[%s] calibración cargada (inline) para half=%dx%d",
-                        name, half_size[0], half_size[1],
+                        name,
+                        half_size[0],
+                        half_size[1],
                     )
                 except Exception as e:
                     stats.last_error = f"calibration load failed: {e!r}"
@@ -371,8 +385,7 @@ def _capture_site(
 
             def _save_processed(kind: str = "") -> None:
                 for side, img in processed:
-                    _save_frame(img, site_dir, name, stats,
-                                kind=kind, side=side)
+                    _save_frame(img, site_dir, name, stats, kind=kind, side=side)
 
             # La detección de movimiento corre sobre la imagen LEFT (o única)
             # ya procesada porque es la vista canónica que alimenta al detector.
@@ -383,19 +396,26 @@ def _capture_site(
                     gray = cv2.cvtColor(motion_view, cv2.COLOR_BGR2GRAY)
                 else:
                     gray = None
-                if gray is not None and prev_gray is not None \
-                        and gray.shape == prev_gray.shape:
+                if (
+                    gray is not None
+                    and prev_gray is not None
+                    and gray.shape == prev_gray.shape
+                ):
                     diff_mean = float(cv2.absdiff(prev_gray, gray).mean())
-                    if (diff_mean > motion_threshold
-                            and now - last_motion_save_t > min_interval):
+                    if (
+                        diff_mean > motion_threshold
+                        and now - last_motion_save_t > min_interval
+                    ):
                         _save_processed(kind="motion")
                         last_motion_save_t = now
                 prev_gray = gray
                 # Background sample independiente del motion — captura el
                 # estado de la escena en momentos sin gente, útil para
                 # medir FP rate del detector después
-                if (background_interval > 0
-                        and now - last_bg_save_t >= background_interval):
+                if (
+                    background_interval > 0
+                    and now - last_bg_save_t >= background_interval
+                ):
                     _save_processed(kind="bg")
                     last_bg_save_t = now
             else:
@@ -411,8 +431,12 @@ def _capture_site(
 
 
 def _save_frame(
-    frame: Any, site_dir: Path, name: str, stats: SiteStats,
-    kind: str = "", side: str = "",
+    frame: Any,
+    site_dir: Path,
+    name: str,
+    stats: SiteStats,
+    kind: str = "",
+    side: str = "",
 ) -> None:
     """Codifica y escribe un JPEG. Filename: ``<ts>[_<kind>][_<side>]_<rand>.jpg``.
 
@@ -459,62 +483,81 @@ def _stats_reporter(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--config", type=Path, default=Path("training_data/sites.yaml"),
+        "--config",
+        type=Path,
+        default=Path("training_data/sites.yaml"),
         help="YAML con la lista de sites (ver docstring para el formato). "
-             "Default training_data/sites.yaml",
+        "Default training_data/sites.yaml",
     )
     parser.add_argument(
-        "--output", type=Path, default=Path("training_data/captures"),
+        "--output",
+        type=Path,
+        default=Path("training_data/captures"),
         help="Carpeta raíz donde se crean los subfolders por site. "
-             "Default training_data/captures",
+        "Default training_data/captures",
     )
     parser.add_argument(
-        "--duration", type=int, default=3600,
+        "--duration",
+        type=int,
+        default=3600,
         help="Duración total en segundos (default 3600 = 1h). 0 = infinito",
     )
     parser.add_argument(
-        "--min-interval", type=float, default=8.0,
+        "--min-interval",
+        type=float,
+        default=8.0,
         help="Mínimo segundos entre frames guardados por site (default 8)",
     )
     parser.add_argument(
-        "--max-interval", type=float, default=25.0,
+        "--max-interval",
+        type=float,
+        default=25.0,
         help="Máximo segundos entre frames por site (default 25)",
     )
     parser.add_argument(
-        "--operating-hours", type=str, default=None,
+        "--operating-hours",
+        type=str,
+        default=None,
         help="Restringir captura a la ventana 'START:END' en hora local. "
-             "Ej. '10:21' = capturar entre 10h y 21h (cerrado a las 21). "
-             "Fuera de esa ventana cada worker duerme hasta el próximo "
-             "START. Default: sin filtro (24/7).",
+        "Ej. '10:21' = capturar entre 10h y 21h (cerrado a las 21). "
+        "Fuera de esa ventana cada worker duerme hasta el próximo "
+        "START. Default: sin filtro (24/7).",
     )
     parser.add_argument(
-        "--motion-trigger", action="store_true",
+        "--motion-trigger",
+        action="store_true",
         help="Guarda frames solo cuando hay cambio significativo entre "
-             "frames consecutivos (cv2.absdiff grayscale). En este modo "
-             "--max-interval se ignora y --min-interval funciona como "
-             "cooldown post-save. Multiplica la chance de capturar gente.",
+        "frames consecutivos (cv2.absdiff grayscale). En este modo "
+        "--max-interval se ignora y --min-interval funciona como "
+        "cooldown post-save. Multiplica la chance de capturar gente.",
     )
     parser.add_argument(
-        "--motion-threshold", type=float, default=5.0,
+        "--motion-threshold",
+        type=float,
+        default=5.0,
         help="mean(absdiff) sobre 0-255 que dispara save en motion mode. "
-             "Default 5.0 — escena estática típica está en 0.5-1.5, "
-             "persona caminando 8-20. Subí si hay falsos por iluminación.",
+        "Default 5.0 — escena estática típica está en 0.5-1.5, "
+        "persona caminando 8-20. Subí si hay falsos por iluminación.",
     )
     parser.add_argument(
-        "--background-interval", type=float, default=0.0,
+        "--background-interval",
+        type=float,
+        default=0.0,
         help="En motion mode, guarda también un frame 'bg' cada N "
-             "segundos independiente del motion (control para medir FP "
-             "rate del detector después). Default 0 = off. Sugerido: "
-             "300-600 (cada 5-10 min). Filename incluye '_bg_'.",
+        "segundos independiente del motion (control para medir FP "
+        "rate del detector después). Default 0 = off. Sugerido: "
+        "300-600 (cada 5-10 min). Filename incluye '_bg_'.",
     )
     parser.add_argument(
-        "--save-side", choices=("left", "right", "both"), default="left",
+        "--save-side",
+        choices=("left", "right", "both"),
+        default="left",
         help="Para sites con sbs: cuál de los dos lentes se guarda. "
-             "Default 'left' — el detector en producción corre sobre "
-             "rect_l, así que entrenar con left maximiza match de "
-             "dominio. 'both' duplica volumen pero los pares L/R son "
-             "casi idénticos a 14 cm de baseline; preferí más sites a "
-             "más ángulos por site. Sites mono ignoran este flag.",
+        "Default 'left' — el detector en producción corre sobre "
+        "rect_l, así que entrenar con left maximiza match de "
+        "dominio. 'both' duplica volumen pero los pares L/R son "
+        "casi idénticos a 14 cm de baseline; preferí más sites a "
+        "más ángulos por site. Sites mono ignoran este flag.",
     )
     args = parser.parse_args()
 
@@ -540,23 +583,27 @@ def main() -> int:
 
     op_str = (
         f"{operating_hours[0]:02d}:00-{operating_hours[1]:02d}:00 hora local"
-        if operating_hours else "24/7"
+        if operating_hours
+        else "24/7"
     )
     if args.motion_trigger:
-        bg_str = (f", bg cada {args.background_interval:.0f}s"
-                  if args.background_interval > 0 else "")
+        bg_str = (
+            f", bg cada {args.background_interval:.0f}s"
+            if args.background_interval > 0
+            else ""
+        )
         mode_str = (
             f"motion-trigger (umbral diff>{args.motion_threshold:.1f}, "
             f"cooldown {args.min_interval:.0f}s{bg_str})"
         )
     else:
-        mode_str = (
-            f"random-interval {args.min_interval:.0f}-{args.max_interval:.0f}s"
-        )
+        mode_str = f"random-interval {args.min_interval:.0f}-{args.max_interval:.0f}s"
     logger.info(
         "Iniciando captura: %d sites, %s, duración %s, horario %s",
-        len(sites), mode_str,
-        f"{args.duration}s" if args.duration else "infinita", op_str,
+        len(sites),
+        mode_str,
+        f"{args.duration}s" if args.duration else "infinita",
+        op_str,
     )
     for s in sites:
         flags = []
@@ -573,6 +620,7 @@ def main() -> int:
     def _sigint(_sig: int, _frame: Any) -> None:
         logger.info("Ctrl+C recibido — cerrando workers...")
         stop_event.set()
+
     signal.signal(signal.SIGINT, _sigint)
 
     all_stats = [SiteStats(name=s["name"]) for s in sites]
@@ -581,10 +629,15 @@ def main() -> int:
         t = threading.Thread(
             target=_capture_site,
             args=(
-                site, args.output, stop_event,
-                args.min_interval, args.max_interval, stats,
+                site,
+                args.output,
+                stop_event,
+                args.min_interval,
+                args.max_interval,
+                stats,
                 operating_hours,
-                args.motion_trigger, args.motion_threshold,
+                args.motion_trigger,
+                args.motion_threshold,
                 args.background_interval,
                 args.save_side,
             ),

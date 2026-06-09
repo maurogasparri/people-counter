@@ -1,4 +1,5 @@
 """Tests del filtro pre-tracker por polígono."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from src.vision.pre_filter import (
 @dataclass
 class _Detection:
     """Stub mínimo con la interfaz que ``filter_detections_by_polygon`` espera."""
+
     centroid: tuple[float, float]
     confidence: float = 0.5
 
@@ -146,10 +148,10 @@ def test_filter_keeps_detections_inside(square_polygon):
 def test_filter_drops_detections_outside(square_polygon):
     """Detecciones cuyo centroide cae fuera se descartan."""
     dets = [
-        _Detection(centroid=(50, 200)),    # afuera izquierda
-        _Detection(centroid=(500, 200)),   # afuera derecha
-        _Detection(centroid=(200, 50)),    # afuera arriba
-        _Detection(centroid=(200, 500)),   # afuera abajo
+        _Detection(centroid=(50, 200)),  # afuera izquierda
+        _Detection(centroid=(500, 200)),  # afuera derecha
+        _Detection(centroid=(200, 50)),  # afuera arriba
+        _Detection(centroid=(200, 500)),  # afuera abajo
     ]
     kept = filter_detections_by_polygon(dets, square_polygon)
     assert kept == []
@@ -158,7 +160,7 @@ def test_filter_drops_detections_outside(square_polygon):
 def test_filter_mixed_inside_outside(square_polygon):
     """Mix inside/outside: solo los inside sobreviven, preservando el orden."""
     dets = [
-        _Detection(centroid=(50, 50), confidence=0.9),    # afuera
+        _Detection(centroid=(50, 50), confidence=0.9),  # afuera
         _Detection(centroid=(250, 250), confidence=0.5),  # adentro
         _Detection(centroid=(500, 250), confidence=0.7),  # afuera
         _Detection(centroid=(150, 300), confidence=0.3),  # adentro
@@ -201,9 +203,9 @@ def test_filter_with_non_rectangular_polygon():
     triangle = [(0.0, 0.0), (400.0, 0.0), (200.0, 400.0)]
     dets = [
         _Detection(centroid=(200, 100)),  # adentro del triángulo
-        _Detection(centroid=(50, 50)),    # adentro (cerca de un vértice)
-        _Detection(centroid=(350, 50)),   # adentro
-        _Detection(centroid=(50, 350)),   # afuera (lateral, fuera del cono)
+        _Detection(centroid=(50, 50)),  # adentro (cerca de un vértice)
+        _Detection(centroid=(350, 50)),  # adentro
+        _Detection(centroid=(50, 350)),  # afuera (lateral, fuera del cono)
         _Detection(centroid=(350, 350)),  # afuera (lateral derecho)
         _Detection(centroid=(200, 450)),  # afuera (debajo del vértice)
     ]
@@ -233,13 +235,15 @@ def test_auto_derived_polygon_filters_periphery():
     preservan."""
     counting_zone = (400.0, 800.0, 250.0, 450.0)  # ej. site retail típico
     poly = derive_polygon_from_counting_zone(
-        counting_zone, margin_px=250.0, frame_size=(1152, 648),
+        counting_zone,
+        margin_px=250.0,
+        frame_size=(1152, 648),
     )
     # poly = (150, 0), (1050, 0), (1050, 648), (150, 648)   tras clamp
     dets = [
-        _Detection(centroid=(600, 350)),   # dentro counting_zone (cuenta)
-        _Detection(centroid=(200, 350)),   # dentro del lead-in (approach OK)
-        _Detection(centroid=(50, 350)),    # afuera (perchero izquierdo) — filtrado
+        _Detection(centroid=(600, 350)),  # dentro counting_zone (cuenta)
+        _Detection(centroid=(200, 350)),  # dentro del lead-in (approach OK)
+        _Detection(centroid=(50, 350)),  # afuera (perchero izquierdo) — filtrado
         _Detection(centroid=(1100, 350)),  # afuera (mostrador derecho) — filtrado
     ]
     kept = filter_detections_by_polygon(dets, poly)

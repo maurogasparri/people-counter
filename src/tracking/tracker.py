@@ -347,10 +347,34 @@ class EuclideanTracker:
 
     @property
     def adoption_count(self) -> int:
-        """Cuántas adopciones de ghost ID se hicieron desde el boot del
-        proceso. Reset implícito al restart del service. Telemetría 5-min
+        """Cuántas adopciones de ghost ID se hicieron en el día (reset en
+        el rollover de medianoche vía ``reset_daily``). Telemetría 5-min
         captura snapshot — Grafana muestra la tasa."""
         return self._adoption_count
+
+    @property
+    def ghost_count(self) -> int:
+        """Cantidad de ghosts vivos en el pool de adopción (capa 1 del rescue).
+
+        Lo consume el idle throttle de main.py: mientras haya un ghost
+        esperando adopción NO se baja el frame rate — la adopción depende de
+        ``adoption_iou_min`` entre el bbox del ghost y la re-detección, y a
+        FPS reducido la persona se desplaza más entre frames → el IoU cae y
+        el rescue fallaría justo cuando más importa.
+        """
+        return len(self._ghosts)
+
+    def reset_daily(self) -> None:
+        """Resetea los canaries diarios del tracker (hoy: adoption_count).
+
+        Lo llama main.py en el rollover de medianoche, junto con
+        ``Counter.reset_daily()``. Los 3 canaries del árbol diagnóstico
+        (stitching_ratio, death_emit_count, adoption_count) son métricas
+        DIARIAS — sin este reset, adoption_count era un acumulador lifetime
+        y tras días de uptime la matriz del runbook comparaba un lifetime
+        contra dos diarios, distorsionando el diagnóstico.
+        """
+        self._adoption_count = 0
 
     def count_by_state(self) -> dict[str, int]:
         """Devuelve un count de los tracks vivos agrupados por estado.
@@ -650,13 +674,7 @@ class EuclideanTracker:
         dist_2d = np.linalg.norm(
             track_refs[:, np.newaxis, :2] - det_arr[np.newaxis, :, :2], axis=2
         )
-
-        if track_refs.shape[1] > 2 and det_arr.shape[1] > 2:
-            depth_delta = np.abs(
-                track_refs[:, np.newaxis, 2] - det_arr[np.newaxis, :, 2]
-            )
-        else:
-            depth_delta = np.zeros_like(dist_2d)
+        depth_delta = self._depth_delta_matrix(track_refs, det_arr, dist_2d)
 
         # Pass 1: gate per-track. PENDING obtiene el re-id gate más
         # ancho para terminar de recuperarse; el resto obtiene el gate
@@ -696,7 +714,7 @@ class EuclideanTracker:
                 self.reid_gate_px,
                 dtype=float,
             )
-            sub_matches, _, _ = self._hungarian_with_gate(
+            sub_matches, _, sub_matched_d = self._hungarian_with_gate(
                 sub_dist,
                 sub_depth,
                 sub_gate,
@@ -707,6 +725,14 @@ class EuclideanTracker:
                 matches.append((t_idx, d_idx))
                 matched_t.add(t_idx)
                 matched_d.add(d_idx)
+            # ``sub_matched_d`` incluye además las detecciones CONSUMIDAS por
+            # el ratio test (rechazadas por ambiguas, sin match explícito).
+            # El pass 1 ya las propaga a matched_d para que no spawneen
+            # tracks duplicados — el pass 2 tiene que hacer lo mismo: dos
+            # tracks leftover cerca de una detección dentro del reid_gate_px
+            # es exactamente el escenario que el ratio test protege.
+            for c_local in sub_matched_d:
+                matched_d.add(unmatched_d[c_local])
             unmatched_t = [i for i in range(n_t) if i not in matched_t]
             unmatched_d = [j for j in range(n_d) if j not in matched_d]
 
@@ -739,13 +765,7 @@ class EuclideanTracker:
         dist_2d = np.linalg.norm(
             track_refs[:, np.newaxis, :2] - det_arr[np.newaxis, :, :2], axis=2
         )
-
-        if track_refs.shape[1] > 2 and det_arr.shape[1] > 2:
-            depth_delta = np.abs(
-                track_refs[:, np.newaxis, 2] - det_arr[np.newaxis, :, 2]
-            )
-        else:
-            depth_delta = np.zeros_like(dist_2d)
+        depth_delta = self._depth_delta_matrix(track_refs, det_arr, dist_2d)
 
         gate = np.full((n_t, 1), self.reid_gate_px, dtype=float)
         matches, matched_t, matched_d = self._hungarian_with_gate(
@@ -760,6 +780,32 @@ class EuclideanTracker:
         # uniformemente ancho acá).
         del track_ids
         return matches, unmatched_t, unmatched_d
+
+    @staticmethod
+    def _depth_delta_matrix(
+        track_refs: np.ndarray,
+        det_arr: np.ndarray,
+        dist_2d: np.ndarray,
+    ) -> np.ndarray:
+        """Matriz |Δz| para el depth gate, con el sentinel ``z == 0.0`` exento.
+
+        ``depth_at_bbox`` devuelve 0.0 cuando el crop del bbox no tiene
+        píxeles de depth válidos (franja izquierda estructural de
+        ``num_disparities`` px del SGBM, motion blur) — significa
+        "desconocido", no es una medición. Tratarlo como real hacía el
+        match IMPOSIBLE en todos los passes (|0 − z_real| con z 1300-3500mm
+        supera cualquier ``max_depth_delta`` razonable) → unmatch
+        determinístico + track duplicado cada vez que una persona cruzaba
+        de zona-sin-depth a zona-con-depth. Con delta 0, el gate 2D sigue
+        decidiendo solo.
+        """
+        if track_refs.shape[1] > 2 and det_arr.shape[1] > 2:
+            t_z = track_refs[:, np.newaxis, 2]
+            d_z = det_arr[np.newaxis, :, 2]
+            delta = np.abs(t_z - d_z)
+            delta[np.broadcast_to((t_z == 0.0) | (d_z == 0.0), delta.shape)] = 0.0
+            return delta
+        return np.zeros_like(dist_2d)
 
     def _hungarian_with_gate(
         self,
@@ -969,7 +1015,11 @@ class EuclideanTracker:
             self._enghost(track)
             logger.debug(
                 "TRACKDBG death tid=%d reason=pending_max_frames disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
-                track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
+                track.track_id,
+                track.disappeared,
+                inside_ka,
+                float(last[0]),
+                float(last[1]),
             )
             return
 
@@ -979,7 +1029,11 @@ class EuclideanTracker:
             self._enghost(track)
             logger.debug(
                 "TRACKDBG death tid=%d reason=max_disappeared disappeared=%d inside_keepalive=%s last_pos=(%.0f,%.0f)",
-                track.track_id, track.disappeared, inside_ka, float(last[0]), float(last[1]),
+                track.track_id,
+                track.disappeared,
+                inside_ka,
+                float(last[0]),
+                float(last[1]),
             )
 
     def _enghost(self, track: Track) -> None:
@@ -993,7 +1047,11 @@ class EuclideanTracker:
             return
         # Buscar el último bbox real en el historial de detecciones.
         last_bbox: Optional[tuple[float, float, float, float]] = None
-        history = track.meta.get("detection_history") if isinstance(track.meta, dict) else None
+        history = (
+            track.meta.get("detection_history")
+            if isinstance(track.meta, dict)
+            else None
+        )
         if history:
             for rec in reversed(history):
                 bbox = rec.get("bbox") if isinstance(rec, dict) else None
@@ -1045,7 +1103,10 @@ class EuclideanTracker:
         self._adoption_count += 1
         logger.debug(
             "TRACKDBG ghost_adopted tid=%d dist=%.1f iou=%.3f age=%d",
-            best_tid, best_dist, best_iou, ghost.age,
+            best_tid,
+            best_dist,
+            best_iou,
+            ghost.age,
         )
         return best_tid
 
@@ -1077,13 +1138,15 @@ class EuclideanTracker:
         if ghost_outside is not None:
             try:
                 ox, oy = float(ghost_outside[0]), float(ghost_outside[1])
-                dist = ((ox - float(centroid[0])) ** 2
-                        + (oy - float(centroid[1])) ** 2) ** 0.5
+                dist = (
+                    (ox - float(centroid[0])) ** 2 + (oy - float(centroid[1])) ** 2
+                ) ** 0.5
                 if dist > self.ghost_outside_invalidate_px:
                     meta["last_outside_pos"] = None
                     logger.debug(
                         "TRACKDBG ghost_outside_invalidated tid=%d dist=%.1f",
-                        ghost.track_id, dist,
+                        ghost.track_id,
+                        dist,
                     )
             except (TypeError, ValueError, IndexError):
                 # outside_pos malformado en el meta — ignorar silenciosamente

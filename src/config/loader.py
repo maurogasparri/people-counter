@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -159,9 +161,7 @@ def load_config(path: str) -> dict[str, Any]:
         get_effective_value(config, "operating_hours", None)
     )
     if schedule_error is not None:
-        raise ValueError(
-            f"Invalid operating_hours en {config_path}: {schedule_error}"
-        )
+        raise ValueError(f"Invalid operating_hours en {config_path}: {schedule_error}")
 
     return config
 
@@ -306,9 +306,11 @@ def _validate(config: dict[str, Any]) -> None:
             "cluster_distance_px",
         ),
         "tracking": (
-            "max_disappeared_frames", "max_distance_px", "state_machine",
+            "max_disappeared_frames",
+            "max_distance_px",
+            "state_machine",
         ),
-        "counter": (),
+        "counter": ("lines",),
         "wifi_ble": (
             "wifi_interface",
             "summary_interval_seconds",
@@ -338,14 +340,42 @@ def _validate(config: dict[str, Any]) -> None:
     if not isinstance(bracket["camera_right_csi"], int):
         raise ValueError("bracket.camera_right_csi must be int")
     if bracket["camera_left_csi"] == bracket["camera_right_csi"]:
-        raise ValueError(
-            "bracket.camera_left_csi and camera_right_csi must differ"
-        )
+        raise ValueError("bracket.camera_left_csi and camera_right_csi must differ")
 
     sgbm = config["vision"]["sgbm"]
     for k in ("num_disparities", "block_size", "downscale"):
         if k not in sgbm:
             raise ValueError(f"config missing key: vision.sgbm.{k}")
+
+    # counter.lines: el Counter se construye LAZY en el primer frame del main
+    # loop (necesita el frame_size) — sin esta validación un config sin líneas
+    # pasaba load_config, el servicio mandaba READY=1 y recién crasheaba con
+    # traceback en el primer frame → restart-loop cada 10s, bypaseando el
+    # exit-2 amigable de main() que existe justamente para configs rotos.
+    # Mismo shape que exige build_counter().
+    lines = config["counter"]["lines"]
+    if not isinstance(lines, list) or not lines:
+        raise ValueError("counter.lines must be a non-empty list")
+    for idx, raw_line in enumerate(lines):
+        if not isinstance(raw_line, dict):
+            raise ValueError(f"counter.lines[{idx}] must be a mapping")
+        for end in ("from", "to"):
+            pt = raw_line.get(end)
+            if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                raise ValueError(f"counter.lines[{idx}].{end} must be an [x, y] pair")
+
+    # logging.level (opcional, default INFO): main hace getattr(logging, level)
+    # — un typo ("DEBG") daba AttributeError y "info" en minúscula devolvía la
+    # FUNCIÓN logging.info; ambos crasheaban DESPUÉS del exit-2 amigable.
+    log_level = config["logging"].get("level")
+    if log_level is not None and (
+        not isinstance(log_level, str)
+        or log_level.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+    ):
+        raise ValueError(
+            "logging.level must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL "
+            f"(got {log_level!r})"
+        )
 
     sm = config["tracking"]["state_machine"]
     for k in ("confirm_frames", "pending_max_frames", "reid_gate_px", "depth_gate_m"):
@@ -357,9 +387,7 @@ def _validate(config: dict[str, Any]) -> None:
     kalman = sm.get("kalman")
     if kalman is not None:
         if not isinstance(kalman, dict):
-            raise ValueError(
-                "config.tracking.state_machine.kalman must be a mapping"
-            )
+            raise ValueError("config.tracking.state_machine.kalman must be a mapping")
         for k in (
             "process_noise",
             "measurement_noise",
@@ -367,8 +395,7 @@ def _validate(config: dict[str, Any]) -> None:
         ):
             if k in kalman and not isinstance(kalman[k], (int, float)):
                 raise ValueError(
-                    "config.tracking.state_machine.kalman."
-                    f"{k} must be a number"
+                    "config.tracking.state_machine.kalman." f"{k} must be a number"
                 )
 
     # Threshold de debounce opcional para line crossing. ``None`` /
@@ -380,9 +407,7 @@ def _validate(config: dict[str, Any]) -> None:
                 "config.counter.min_crossing_movement_px must be null or a number"
             )
         if min_move < 0:
-            raise ValueError(
-                "config.counter.min_crossing_movement_px must be >= 0"
-            )
+            raise ValueError("config.counter.min_crossing_movement_px must be >= 0")
 
     topics = config["mqtt"]["topics"]
     for k in ("counting", "wifi_ble", "telemetry", "shadow"):
@@ -401,8 +426,7 @@ def _validate(config: dict[str, Any]) -> None:
     if low is not None:
         if not isinstance(low, (int, float)) or isinstance(low, bool):
             raise ValueError(
-                "config.detection.low_confidence_threshold "
-                "must be null or a number"
+                "config.detection.low_confidence_threshold " "must be null or a number"
             )
         low_f = float(low)
         if low_f <= 0.0:
@@ -432,8 +456,7 @@ def _validate(config: dict[str, Any]) -> None:
     if new_track is not None:
         if not isinstance(new_track, (int, float)) or isinstance(new_track, bool):
             raise ValueError(
-                "config.detection.new_track_threshold "
-                "must be null or a number"
+                "config.detection.new_track_threshold " "must be null or a number"
             )
         nt_f = float(new_track)
         if nt_f <= 0.0 or nt_f > 1.0:
@@ -492,9 +515,7 @@ def _normalise_best_frame(config: dict[str, Any]) -> None:
 
     retention_days = raw.get("retention_days", BEST_FRAME_DEFAULTS["retention_days"])
     if not isinstance(retention_days, int) or retention_days <= 0:
-        raise ValueError(
-            "config: best_frame.retention_days must be a positive int"
-        )
+        raise ValueError("config: best_frame.retention_days must be a positive int")
 
     buffer_size = raw.get("buffer_size", BEST_FRAME_DEFAULTS["buffer_size"])
     if not isinstance(buffer_size, int) or buffer_size <= 0:
@@ -502,15 +523,11 @@ def _normalise_best_frame(config: dict[str, Any]) -> None:
 
     jpeg_quality = raw.get("jpeg_quality", BEST_FRAME_DEFAULTS["jpeg_quality"])
     if not isinstance(jpeg_quality, int) or not (1 <= jpeg_quality <= 100):
-        raise ValueError(
-            "config: best_frame.jpeg_quality must be an int in [1, 100]"
-        )
+        raise ValueError("config: best_frame.jpeg_quality must be an int in [1, 100]")
 
     output_dir = raw.get("output_dir", BEST_FRAME_DEFAULTS["output_dir"])
     if not isinstance(output_dir, str) or not output_dir:
-        raise ValueError(
-            "config: best_frame.output_dir must be a non-empty string"
-        )
+        raise ValueError("config: best_frame.output_dir must be a non-empty string")
 
     scoring_default = BEST_FRAME_DEFAULTS["scoring"]
     scoring_in = raw.get("scoring") or {}
@@ -552,7 +569,9 @@ def _normalise_best_frame(config: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def merge_cloud_config(config: dict[str, Any], shadow: dict[str, Any]) -> dict[str, Any]:
+def merge_cloud_config(
+    config: dict[str, Any], shadow: dict[str, Any]
+) -> dict[str, Any]:
     """Mergea overrides del AWS IoT Device Shadow al config.
 
     El estado 'desired' del shadow puede contener keys que matchean
@@ -640,9 +659,7 @@ def validate_operating_hours(hours: Any) -> str | None:
         open_minutes = open_parsed[0] * 60 + open_parsed[1]
         close_minutes = close_parsed[0] * 60 + close_parsed[1]
         if close_minutes <= open_minutes:
-            return (
-                f"{day}: end {close_str!r} must be after start {open_str!r}"
-            )
+            return f"{day}: end {close_str!r} must be after start {open_str!r}"
 
     return None
 
@@ -678,7 +695,9 @@ def _parse_hhmm(value: str) -> tuple[int, int] | None:
     return hour, minute
 
 
-def is_within_operating_hours(config: dict[str, Any], day_name: str, hour: int, minute: int) -> bool:
+def is_within_operating_hours(
+    config: dict[str, Any], day_name: str, hour: int, minute: int
+) -> bool:
     """Chequea si la hora actual cae dentro de las operating hours del día dado."""
     hours = get_effective_value(config, "operating_hours", {})
     schedule = hours.get(day_name)
@@ -858,8 +877,10 @@ def apply_shadow_delta(
             cp = Path(config_path)
             # Limpiamos las keys internas que el loader inyecta in-memory
             # (no son parte del YAML del operator) antes de serializar.
-            serializable = {k: v for k, v in new_config.items() if not k.startswith("_")}
-            cp.write_text(
+            serializable = {
+                k: v for k, v in new_config.items() if not k.startswith("_")
+            }
+            content = (
                 "# Auto-managed: este archivo fue actualizado por el último\n"
                 "# Device Shadow apply. La doc canónica con comentarios vive\n"
                 "# en `config/config.example.yaml` del repo. Para auditar\n"
@@ -867,9 +888,34 @@ def apply_shadow_delta(
                 "# en src/config/loader.py.\n"
                 + yaml.safe_dump(
                     serializable, default_flow_style=False, sort_keys=False
-                ),
-                encoding="utf-8",
+                )
             )
+            # Backup del config vigente ANTES de reemplazarlo — es lo que el
+            # mensaje de recovery de main() (config.yaml.bak.*) sugiere
+            # restaurar. Uno solo, sobreescrito por apply: los applies son
+            # esporádicos y no queremos acumular basura en /etc. Best-effort:
+            # si falla, el write atómico de abajo igual protege el archivo.
+            bak = cp.with_suffix(cp.suffix + ".bak.shadow")
+            try:
+                if cp.exists():
+                    shutil.copy2(cp, bak)
+            except OSError:
+                logger.warning("No se pudo crear el backup %s", bak)
+            # Write atómico: tmp en el MISMO directorio + fsync + os.replace.
+            # El write_text directo anterior dejaba el config.yaml truncado
+            # ante un corte de energía mid-write (retail, 363 días/año) →
+            # el próximo boot fallaba la validación → exit 2 → restart-loop
+            # infinito sin intervención. El fsync garantiza que el contenido
+            # esté en disco ANTES del rename (sin él, el rename atómico puede
+            # apuntar a un archivo vacío post-crash).
+            tmp = cp.with_suffix(cp.suffix + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            try:
+                os.write(fd, content.encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, cp)
             logger.info(
                 "shadow_applied_to_yaml",
                 extra={"path": str(cp), "applied": sorted(applied)},
@@ -911,7 +957,9 @@ def build_reported_state(
         if found and isinstance(value, dict):
             _set_dotted(reported, prefix_path, copy.deepcopy(value))
 
-    device_cfg = config.get("device", {}) if isinstance(config.get("device"), dict) else {}
+    device_cfg = (
+        config.get("device", {}) if isinstance(config.get("device"), dict) else {}
+    )
     reported["firmware_version"] = device_cfg.get("firmware_version", "unknown")
     reported["boot_ts"] = int(_time.time())
 

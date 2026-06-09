@@ -22,6 +22,7 @@ deriva un rectángulo automáticamente expandiendo cada lado por un margen.
 
 Ver ``docs/tracker_tuning.md`` patrón 6 (clutter estructural en retail).
 """
+
 from __future__ import annotations
 
 from typing import Optional, Protocol, Sequence
@@ -34,8 +35,7 @@ class _HasCentroid(Protocol):
     """Cualquier objeto que expone ``centroid`` como (x, y)."""
 
     @property
-    def centroid(self) -> tuple[float, float]:
-        ...
+    def centroid(self) -> tuple[float, float]: ...
 
 
 def derive_polygon_from_counting_zone(

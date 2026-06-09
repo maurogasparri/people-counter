@@ -233,6 +233,41 @@ class DedupEngine:
             )
             return salt
 
+    def reload_salt(self) -> bool:
+        """Re-lee el salt desde ``dedup_meta`` y refresca el cache in-memory.
+
+        La rotación diaria corre en un PROCESO EXTERNO
+        (``people-counter-reset.timer`` 04:00 → ``scripts/reset_dedup.py``)
+        que rota el salt en el SQLite — pero este engine cachea ``self._salt``
+        en ``__init__`` y el pipeline corre semanas sin restart: sin este
+        reload la rotación nunca aplicaba al proceso vivo (anulaba la defensa
+        anti-linkability cross-día de ``reset_daily`` y, ante un restart
+        mid-day, desalineaba los hashes nuevos con las filas pre-restart →
+        grupos duplicados). El main loop lo llama con cadencia baja (gate de
+        60s): un SELECT de 1 fila por minuto, costo despreciable.
+
+        Returns:
+            True si el salt cambió. Errores de SQLite se loguean y devuelven
+            False (el cache actual sigue válido hasta el próximo intento).
+        """
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT value FROM dedup_meta WHERE key = 'salt'"
+                ).fetchone()
+        except sqlite3.Error:
+            logger.exception("reload_salt failed")
+            return False
+        if row is None:
+            return False
+        new_salt = row[0]
+        with self._lock:
+            if new_salt == self._salt:
+                return False
+            self._salt = new_salt
+        logger.info("dedup_salt_reloaded")
+        return True
+
     # ----- API publica -----
 
     def process_detection(
@@ -267,8 +302,11 @@ class DedupEngine:
         now = time.time()
 
         # Lock + transacción: serializa los dos productores (WiFi/BLE) que
-        # comparten este DB desde threads distintos.
-        with self._lock, sqlite3.connect(self.db_path) as conn:
+        # comparten este DB desde threads distintos. SIEMPRE vía _connect():
+        # synchronous=NORMAL es per-conexión — una connect() pelada corre con
+        # FULL = un fsync por detección, en el path más caliente (decenas de
+        # probes/seg), sobre microSD, 12h/día.
+        with self._lock, self._connect() as conn:
             # 1. Hash ya conocido para este protocolo? -> update y volver.
             existing = conn.execute(
                 "SELECT group_id FROM hash_groups WHERE hash = ? AND protocol = ?",
@@ -309,8 +347,17 @@ class DedupEngine:
                    (hash, protocol, group_id, first_seen, last_seen, rssi,
                     max_rssi, seqnum, fingerprint)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (mac_hash, protocol, group_id, now, now, rssi, rssi, seqnum,
-                 fingerprint),
+                (
+                    mac_hash,
+                    protocol,
+                    group_id,
+                    now,
+                    now,
+                    rssi,
+                    rssi,
+                    seqnum,
+                    fingerprint,
+                ),
             )
 
             if unified:
@@ -354,11 +401,7 @@ class DedupEngine:
         # Python (mod 4096). Filtro DURO por fingerprint: si el candidato y la
         # deteccion tienen fingerprint conocido y DISTINTO, son dispositivos
         # distintos aunque el seqnum coincida (12 bits → colisiones posibles).
-        if (
-            self.seqnum_stitch_enabled
-            and protocol == "wifi"
-            and seqnum is not None
-        ):
+        if self.seqnum_stitch_enabled and protocol == "wifi" and seqnum is not None:
             rows = conn.execute(
                 """SELECT group_id, seqnum, last_seen, fingerprint FROM hash_groups
                    WHERE protocol = 'wifi'
@@ -387,17 +430,27 @@ class DedupEngine:
         ).fetchall():
             candidates.append((group_id, last_seen))
 
-        # Regla 3: BLE anchor long window — grupo con miembro del otro protocolo
-        # activo en los ultimos N seg, RSSI compatible.
-        if self.ble_anchor_enabled:
-            anchor_protocol = "ble" if protocol == "wifi" else "wifi"
+        # Regla 3: BLE anchoring (long window) — UNIDIRECCIONAL por diseño:
+        # solo una deteccion WiFi nueva se ancla a un grupo con miembro BLE
+        # activo dentro de la ventana (~15 min ≈ vida de una RPA iOS, que es
+        # lo que justifica la ventana larga). La direccion inversa (BLE nueva
+        # → anclar a una WiFi MAC de hasta 15 min atras) NO aplica: las WiFi
+        # MACs rotan cada ~2 min, y con el unico gate de ΔRSSI ≤ 5dBm (rango
+        # tipico -60 ± 5 en un local) sobre-mergeaba telefonos distintos →
+        # subconteo de visitantes BLE-only. El caso legitimo BLE↔WiFi casi
+        # simultaneo lo cubre la regla 2 (ventana corta de 2 s).
+        if self.ble_anchor_enabled and protocol == "wifi":
             for group_id, last_seen in conn.execute(
                 """SELECT group_id, last_seen FROM hash_groups
-                   WHERE protocol = ?
+                   WHERE protocol = 'ble'
                      AND rssi IS NOT NULL
                      AND ABS(rssi - ?) <= ?
                      AND last_seen >= ?""",
-                (anchor_protocol, rssi, self.cross_rssi_delta, now - self.ble_anchor_window),
+                (
+                    rssi,
+                    self.cross_rssi_delta,
+                    now - self.ble_anchor_window,
+                ),
             ).fetchall():
                 candidates.append((group_id, last_seen))
 
@@ -467,6 +520,7 @@ class DedupEngine:
             {"passersby": int, "shoppers": int, "turn_in_rate": float}
         """
         with self._connect() as conn:
+
             def _count(threshold: float) -> int:
                 # COALESCE(max_rssi, rssi): cuenta sobre la RSSI MÁS FUERTE
                 # vista (no la última) → un device que estuvo cerca cuenta como
@@ -657,13 +711,15 @@ class DedupEngine:
                 continue  # eco lejano: se descartaría en rssi_class() anyway
             # group_id es UUID hex (32 chars = 16 bytes). Lo emitimos como-is
             # — la Lambda lo convierte a BYTEA via bytes.fromhex.
-            out.append({
-                "visitor_hash":  group_id,
-                "protocol":      protocol,
-                "rssi_max":      int(rssi_max),
-                "first_seen_ts": float(first_seen),
-                "last_seen_ts":  float(last_seen),
-            })
+            out.append(
+                {
+                    "visitor_hash": group_id,
+                    "protocol": protocol,
+                    "rssi_max": int(rssi_max),
+                    "first_seen_ts": float(first_seen),
+                    "last_seen_ts": float(last_seen),
+                }
+            )
         return out
 
     def get_stitching_ratio(self) -> float | None:
@@ -695,7 +751,7 @@ class DedupEngine:
         que llama reset_daily sigue hasheando consistente después del reset.
         """
         new_salt = secrets.token_hex(16)
-        with self._lock, sqlite3.connect(self.db_path) as conn:
+        with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM hash_groups")
             conn.execute(
                 "INSERT INTO dedup_meta (key, value) VALUES ('salt', ?) "

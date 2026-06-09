@@ -42,7 +42,9 @@ logger = logging.getLogger("record_clips")
 
 def _ensure_ffmpeg() -> None:
     if shutil.which("ffmpeg") is None:
-        sys.exit("ffmpeg no encontrado en PATH. Instalalo (winget install Gyan.FFmpeg).")
+        sys.exit(
+            "ffmpeg no encontrado en PATH. Instalalo (winget install Gyan.FFmpeg)."
+        )
 
 
 def _record_site_realtime(
@@ -90,18 +92,18 @@ def _record_site_realtime(
             break
 
     if len(probe_frames) < 5:
-        logger.error("[%s] probe falló: %d frames en 10s",
-                     name, len(probe_frames))
+        logger.error("[%s] probe falló: %d frames en 10s", name, len(probe_frames))
         cap.release()
         return
 
     span = probe_frames[-1][0] - probe_frames[0][0]
     actual_fps = (len(probe_frames) - 1) / max(span, 0.1)
     h, w = probe_frames[0][1].shape[:2]
-    logger.info("[%s] fps real=%.1f, %dx%d → grabando %ds",
-                name, actual_fps, w, h, duration)
+    logger.info(
+        "[%s] fps real=%.1f, %dx%d → grabando %ds", name, actual_fps, w, h, duration
+    )
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(str(out_path), fourcc, actual_fps, (w, h))
     if not out.isOpened():
         logger.error("[%s] VideoWriter init falló", name)
@@ -127,8 +129,12 @@ def _record_site_realtime(
     size_mb = out_path.stat().st_size / 1e6 if out_path.exists() else 0
     logger.info(
         "[%s] listo: %d frames en %.1fs (%.1f fps) → %s (%.1f MB)",
-        name, n_written, elapsed, n_written / max(elapsed, 1),
-        out_path.name, size_mb,
+        name,
+        n_written,
+        elapsed,
+        n_written / max(elapsed, 1),
+        out_path.name,
+        size_mb,
     )
 
 
@@ -157,20 +163,29 @@ def _record_site(
     # un fragment self-contained, así si ffmpeg se interrumpe (SIGINT,
     # crash de red, etc.) el archivo SIGUE siendo playable.
     cmd = [
-        "ffmpeg", "-y",
-        "-loglevel", "warning",
-        "-i", url,
-        "-t", str(duration),
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "warning",
+        "-i",
+        url,
+        "-t",
+        str(duration),
         *codec_args,
-        "-movflags", "+frag_keyframe+empty_moov",
-        "-f", "mp4",
+        "-movflags",
+        "+frag_keyframe+empty_moov",
+        "-f",
+        "mp4",
         str(out_path),
     ]
     logger.info("[%s] arrancando → %s", name, out_path.name)
     # stdin=PIPE permite mandar 'q' a ffmpeg para shutdown limpio.
     proc = subprocess.Popen(
-        cmd, stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
     )
 
     # Watchdog en otro thread por si stop_event sucede
@@ -201,8 +216,9 @@ def _record_site(
     proc.wait()
     stderr = proc.stderr.read() if proc.stderr else ""
     if proc.returncode != 0 and not stop_event.is_set():
-        logger.warning("[%s] ffmpeg exit %d: %s",
-                       name, proc.returncode, stderr.strip()[:300])
+        logger.warning(
+            "[%s] ffmpeg exit %d: %s", name, proc.returncode, stderr.strip()[:300]
+        )
     else:
         size_mb = out_path.stat().st_size / 1e6 if out_path.exists() else 0
         logger.info("[%s] listo → %s (%.1f MB)", name, out_path.name, size_mb)
@@ -211,29 +227,37 @@ def _record_site(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--config", type=Path, default=Path("training_data/sites.yaml"),
+        "--config",
+        type=Path,
+        default=Path("training_data/sites.yaml"),
         help="Path al sites YAML (default training_data/sites.yaml).",
     )
     parser.add_argument(
-        "--output", type=Path, default=Path("training_data/clips"),
+        "--output",
+        type=Path,
+        default=Path("training_data/clips"),
         help="Carpeta destino (default training_data/clips).",
     )
     parser.add_argument(
-        "--duration", type=int, default=900,
+        "--duration",
+        type=int,
+        default=900,
         help="Segundos a grabar por site (default 900 = 15 min).",
     )
     parser.add_argument(
-        "--encode", action="store_true",
+        "--encode",
+        action="store_true",
         help="Re-encode con libx264 (más chico en disco). Default: "
-             "stream-copy (rápido + lossless, archivos más grandes).",
+        "stream-copy (rápido + lossless, archivos más grandes).",
     )
     parser.add_argument(
-        "--realtime", action="store_true",
+        "--realtime",
+        action="store_true",
         help="Modo recomendado: usa cv2 + auto-detección de fps real "
-             "del stream. El MP4 resultante reproduce a real-time (sin "
-             "aceleración) y cv2.VideoCapture devuelve el fps correcto. "
-             "Default: ffmpeg stream-copy (rápido pero puede grabar "
-             "acelerado si el container declara fps != real fps).",
+        "del stream. El MP4 resultante reproduce a real-time (sin "
+        "aceleración) y cv2.VideoCapture devuelve el fps correcto. "
+        "Default: ffmpeg stream-copy (rápido pero puede grabar "
+        "acelerado si el container declara fps != real fps).",
     )
     args = parser.parse_args()
 
@@ -254,7 +278,9 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     logger.info(
         "Grabando %d sites por %ds, codec=%s",
-        len(sites), args.duration, "x264" if args.encode else "copy",
+        len(sites),
+        args.duration,
+        "x264" if args.encode else "copy",
     )
 
     stop_event = threading.Event()
@@ -262,6 +288,7 @@ def main() -> int:
     def _sigint(_sig: int, _frame: Any) -> None:
         logger.info("Ctrl+C — abortando grabaciones")
         stop_event.set()
+
     signal.signal(signal.SIGINT, _sigint)
 
     workers = []

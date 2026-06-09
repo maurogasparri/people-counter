@@ -1,4 +1,5 @@
 """Tests para el script de provisioning del device."""
+
 import argparse
 import json
 import tempfile
@@ -60,7 +61,10 @@ def test_build_config_generates_yaml():
 
     args = _make_args()
 
-    with patch("provision.CONFIG_TEMPLATE", Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"):
+    with patch(
+        "provision.CONFIG_TEMPLATE",
+        Path(__file__).resolve().parent.parent / "config" / "config.example.yaml",
+    ):
         _build_config(device_dir, args)
 
     config_path = device_dir / "config.yaml"
@@ -90,7 +94,10 @@ def test_build_config_sets_remote_paths():
 
     args = _make_args()
 
-    with patch("provision.CONFIG_TEMPLATE", Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"):
+    with patch(
+        "provision.CONFIG_TEMPLATE",
+        Path(__file__).resolve().parent.parent / "config" / "config.example.yaml",
+    ):
         _build_config(device_dir, args)
 
     import yaml
@@ -119,7 +126,10 @@ def test_create_skip_aws():
     args = _make_args(skip_aws=True)
 
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
-        with patch("provision.CONFIG_TEMPLATE", Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"):
+        with patch(
+            "provision.CONFIG_TEMPLATE",
+            Path(__file__).resolve().parent.parent / "config" / "config.example.yaml",
+        ):
             cmd_create(args)
 
     device_dir = Path(tmpdir) / "store-001-cam-01"
@@ -136,7 +146,10 @@ def test_create_metadata():
     args = _make_args(skip_aws=True, store_name="TestStore")
 
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
-        with patch("provision.CONFIG_TEMPLATE", Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"):
+        with patch(
+            "provision.CONFIG_TEMPLATE",
+            Path(__file__).resolve().parent.parent / "config" / "config.example.yaml",
+        ):
             cmd_create(args)
 
     meta = json.loads((Path(tmpdir) / "store-001-cam-01" / "metadata.json").read_text())
@@ -181,7 +194,10 @@ def test_create_force_overwrites():
     args = _make_args(skip_aws=True, force=True)
 
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
-        with patch("provision.CONFIG_TEMPLATE", Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"):
+        with patch(
+            "provision.CONFIG_TEMPLATE",
+            Path(__file__).resolve().parent.parent / "config" / "config.example.yaml",
+        ):
             cmd_create(args)
 
     assert (device_dir / "config.yaml").exists()
@@ -205,12 +221,16 @@ def test_list_shows_devices(capsys):
     tmpdir = tempfile.mkdtemp()
     device_dir = Path(tmpdir) / "store-001-cam-01"
     device_dir.mkdir()
-    (device_dir / "metadata.json").write_text(json.dumps({
-        "device_id": "store-001-cam-01",
-        "store_id": "store-001",
-        "store_name": "Test Store",
-        "endpoint": "test.iot.amazonaws.com",
-    }))
+    (device_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "device_id": "store-001-cam-01",
+                "store_id": "store-001",
+                "store_name": "Test Store",
+                "endpoint": "test.iot.amazonaws.com",
+            }
+        )
+    )
 
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
         cmd_list(argparse.Namespace())
@@ -288,10 +308,7 @@ def test_deploy_pushes_calibration_when_present(mock_ssh, mock_scp):
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
         cmd_deploy(args)
 
-    npz_calls = [
-        c for c in mock_scp.call_args_list
-        if "calibration.npz" in str(c)
-    ]
+    npz_calls = [c for c in mock_scp.call_args_list if "calibration.npz" in str(c)]
     assert len(npz_calls) == 1
 
 
@@ -316,10 +333,7 @@ def test_deploy_skips_calibration_when_absent(mock_ssh, mock_scp):
     with patch("provision.PROVISION_DIR", Path(tmpdir)):
         cmd_deploy(args)
 
-    npz_calls = [
-        c for c in mock_scp.call_args_list
-        if "calibration.npz" in str(c)
-    ]
+    npz_calls = [c for c in mock_scp.call_args_list if "calibration.npz" in str(c)]
     assert len(npz_calls) == 0
 
 

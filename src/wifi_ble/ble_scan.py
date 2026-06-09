@@ -103,9 +103,7 @@ class BLEScanner:
         """
         thread = self._scan_thread
         return (
-            thread is not None
-            and thread.is_alive()
-            and not self._stop_event.is_set()
+            thread is not None and thread.is_alive() and not self._stop_event.is_set()
         )
 
     def is_healthy(self, timeout_seconds: float = 60.0) -> bool:
@@ -126,11 +124,20 @@ class BLEScanner:
 
     def start(self) -> None:
         """Arranca el scanning BLE asíncrono."""
-        if self._scan_thread is not None:
+        if self._scan_thread is not None and self._scan_thread.is_alive():
             logger.warning("ble_scan_already_running")
             return
 
-        self._stop_event.clear()
+        # Stop-event NUEVO por generación de thread. El thread y su detection
+        # callback capturan ESTE evento (no releen self._stop_event): si un
+        # stop() previo timeouteó el join (thread wedgeado en bleak/D-Bus),
+        # el zombie quedó con SU evento ya set — cuando se des-wedgee sale
+        # solo. Con un evento compartido, el clear() de este restart lo
+        # resucitaba: dos BleakScanner activos (rate doble) y el zombie
+        # tickeando el heartbeat compartido, enmascarando wedges futuros
+        # del thread nuevo (anulaba el watchdog).
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         self._advert_count = 0
         # Heartbeat de arranque: evita el falso "wedged" en la ventana entre que
         # el thread arranca y el loop async toma el control (``await
@@ -140,7 +147,10 @@ class BLEScanner:
         self._last_heartbeat_ts = time.time()
 
         self._scan_thread = threading.Thread(
-            target=self._scan_thread_main, daemon=True, name="ble-scan"
+            target=self._scan_thread_main,
+            args=(stop_event,),
+            daemon=True,
+            name="ble-scan",
         )
         self._scan_thread.start()
         logger.info("ble_scan_started")
@@ -148,25 +158,32 @@ class BLEScanner:
     def stop(self) -> None:
         """Detiene el scanning BLE."""
         self._stop_event.set()
-        if self._scan_thread is not None:
-            self._scan_thread.join(timeout=10.0)
+        thread = self._scan_thread
+        if thread is not None:
+            thread.join(timeout=10.0)
+            if thread.is_alive():
+                # Wedge real: el join expiró con el thread vivo. Su stop_event
+                # quedó set → al des-wedgearse sale solo, y como cada start()
+                # crea un evento nuevo, un restart no puede resucitarlo.
+                # daemon=True → tampoco bloquea el shutdown del proceso.
+                logger.warning("ble_scan_thread_join_timeout_wedged")
             self._scan_thread = None
         logger.info(
             "ble_scan_stopped",
             extra={"count": self._advert_count},
         )
 
-    def _scan_thread_main(self) -> None:
+    def _scan_thread_main(self, stop_event: threading.Event) -> None:
         """Corre el loop async de escaneo en un thread dedicado."""
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(self._scan_async())
+            loop.run_until_complete(self._scan_async(stop_event))
         except Exception:
             logger.exception("BLE scan error")
         finally:
             loop.close()
 
-    async def _scan_async(self) -> None:
+    async def _scan_async(self, stop_event: threading.Event) -> None:
         """Scanning BLE async usando bleak."""
         try:
             from bleak import BleakScanner
@@ -178,7 +195,9 @@ class BLEScanner:
             return
 
         def _detection_callback(device, advertisement_data) -> None:
-            if self._stop_event.is_set():
+            # Evento de ESTA generación (closure) — un callback zombie de un
+            # thread wedgeado ve su evento set y no procesa nada.
+            if stop_event.is_set():
                 return
 
             # Solo contar dispositivos "humanos": address type random (RPA/
@@ -220,12 +239,15 @@ class BLEScanner:
 
         start_time = time.monotonic()
         self._last_heartbeat_ts = time.time()
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
             await asyncio.sleep(0.5)
             # Heartbeat tick: el supervisor externo lee esto para detectar
             # wedges del thread sin afectar al pipeline.
             self._last_heartbeat_ts = time.time()
-            if self.scan_duration > 0 and (time.monotonic() - start_time) >= self.scan_duration:
+            if (
+                self.scan_duration > 0
+                and (time.monotonic() - start_time) >= self.scan_duration
+            ):
                 break
 
         await scanner.stop()

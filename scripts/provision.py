@@ -53,7 +53,9 @@ logger = logging.getLogger("provision")
 
 # Base directories
 PROVISION_DIR = Path(__file__).resolve().parent.parent / "provisioned"
-CONFIG_TEMPLATE = Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"
+CONFIG_TEMPLATE = (
+    Path(__file__).resolve().parent.parent / "config" / "config.example.yaml"
+)
 
 # Remote paths on the device
 REMOTE_CONFIG_DIR = "/etc/people-counter"
@@ -297,11 +299,16 @@ def _issue_cert(device_id: str, cert_dir: Path, policy_name: str) -> None:
 
     result = subprocess.run(
         [
-            "aws", "iot", "create-keys-and-certificate",
+            "aws",
+            "iot",
+            "create-keys-and-certificate",
             "--set-as-active",
-            "--certificate-pem-outfile", str(cert_dir / "device.pem.crt"),
-            "--private-key-outfile", str(cert_dir / "device.pem.key"),
-            "--public-key-outfile", str(cert_dir / "device.pem.pub"),
+            "--certificate-pem-outfile",
+            str(cert_dir / "device.pem.crt"),
+            "--private-key-outfile",
+            str(cert_dir / "device.pem.key"),
+            "--public-key-outfile",
+            str(cert_dir / "device.pem.pub"),
         ],
         check=True,
         capture_output=True,
@@ -312,28 +319,42 @@ def _issue_cert(device_id: str, cert_dir: Path, policy_name: str) -> None:
 
     subprocess.run(
         [
-            "aws", "iot", "attach-policy",
-            "--policy-name", policy_name,
-            "--target", cert_arn,
+            "aws",
+            "iot",
+            "attach-policy",
+            "--policy-name",
+            policy_name,
+            "--target",
+            cert_arn,
         ],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         [
-            "aws", "iot", "attach-thing-principal",
-            "--thing-name", device_id,
-            "--principal", cert_arn,
+            "aws",
+            "iot",
+            "attach-thing-principal",
+            "--thing-name",
+            device_id,
+            "--principal",
+            cert_arn,
         ],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     logger.info("Certificate attached to thing %s", device_id)
 
     subprocess.run(
         [
-            "curl", "-s", "-o", str(cert_dir / "AmazonRootCA1.pem"),
+            "curl",
+            "-s",
+            "-o",
+            str(cert_dir / "AmazonRootCA1.pem"),
             "https://www.amazontrust.com/repository/AmazonRootCA1.pem",
         ],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     logger.info("Root CA downloaded")
 
@@ -348,7 +369,9 @@ def _revoke_certs(device_id: str) -> int:
     """
     result = subprocess.run(
         ["aws", "iot", "list-thing-principals", "--thing-name", device_id],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     principals = json.loads(result.stdout).get("principals", [])
 
@@ -357,31 +380,58 @@ def _revoke_certs(device_id: str) -> int:
         logger.info("Revoking cert %s", cert_id)
 
         subprocess.run(
-            ["aws", "iot", "detach-thing-principal",
-             "--thing-name", device_id, "--principal", arn],
-            check=True, capture_output=True,
+            [
+                "aws",
+                "iot",
+                "detach-thing-principal",
+                "--thing-name",
+                device_id,
+                "--principal",
+                arn,
+            ],
+            check=True,
+            capture_output=True,
         )
 
         # Detachear cada policy attacheada al cert (no asumir solo una)
         pols = subprocess.run(
             ["aws", "iot", "list-attached-policies", "--target", arn],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         for pol in json.loads(pols.stdout).get("policies", []):
             subprocess.run(
-                ["aws", "iot", "detach-policy",
-                 "--policy-name", pol["policyName"], "--target", arn],
-                check=True, capture_output=True,
+                [
+                    "aws",
+                    "iot",
+                    "detach-policy",
+                    "--policy-name",
+                    pol["policyName"],
+                    "--target",
+                    arn,
+                ],
+                check=True,
+                capture_output=True,
             )
 
         subprocess.run(
-            ["aws", "iot", "update-certificate",
-             "--certificate-id", cert_id, "--new-status", "INACTIVE"],
-            check=True, capture_output=True,
+            [
+                "aws",
+                "iot",
+                "update-certificate",
+                "--certificate-id",
+                cert_id,
+                "--new-status",
+                "INACTIVE",
+            ],
+            check=True,
+            capture_output=True,
         )
         subprocess.run(
             ["aws", "iot", "delete-certificate", "--certificate-id", cert_id],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
     return len(principals)
@@ -411,7 +461,9 @@ def _build_config(device_dir: Path, args: argparse.Namespace) -> None:
 
     config_path = device_dir / "config.yaml"
     with open(config_path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        yaml.dump(
+            config, f, default_flow_style=False, sort_keys=False, allow_unicode=True
+        )
 
     logger.info("Config written to %s", config_path)
 
@@ -428,8 +480,14 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     host = f"{args.user}@{args.host}"
 
     # Crear directorios remotos
-    _ssh(host, f"sudo mkdir -p {REMOTE_CONFIG_DIR} {REMOTE_CERT_DIR} {REMOTE_DATA_DIR} {REMOTE_LOG_DIR}")
-    _ssh(host, f"sudo chown -R {args.user}:{args.user} {REMOTE_CONFIG_DIR} {REMOTE_DATA_DIR} {REMOTE_LOG_DIR}")
+    _ssh(
+        host,
+        f"sudo mkdir -p {REMOTE_CONFIG_DIR} {REMOTE_CERT_DIR} {REMOTE_DATA_DIR} {REMOTE_LOG_DIR}",
+    )
+    _ssh(
+        host,
+        f"sudo chown -R {args.user}:{args.user} {REMOTE_CONFIG_DIR} {REMOTE_DATA_DIR} {REMOTE_LOG_DIR}",
+    )
 
     # Copiar config
     _scp(str(device_dir / "config.yaml"), f"{host}:{REMOTE_CONFIG_DIR}/config.yaml")
@@ -441,7 +499,10 @@ def cmd_deploy(args: argparse.Namespace) -> None:
 
     # Setear permisos del cert
     _ssh(host, f"chmod 600 {REMOTE_CERT_DIR}/device.pem.key")
-    _ssh(host, f"chmod 644 {REMOTE_CERT_DIR}/device.pem.crt {REMOTE_CERT_DIR}/AmazonRootCA1.pem")
+    _ssh(
+        host,
+        f"chmod 644 {REMOTE_CERT_DIR}/device.pem.crt {REMOTE_CERT_DIR}/AmazonRootCA1.pem",
+    )
 
     # Pushear calibration.npz si hay backup para este device
     calibration = device_dir / "calibration.npz"
@@ -465,10 +526,16 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     logrotate = config_dir / "logrotate.conf"
     if logrotate.exists():
         _scp(str(logrotate), f"{host}:/tmp/people-counter-logrotate")
-        _ssh(host, "sudo mv /tmp/people-counter-logrotate /etc/logrotate.d/people-counter")
+        _ssh(
+            host,
+            "sudo mv /tmp/people-counter-logrotate /etc/logrotate.d/people-counter",
+        )
 
     _ssh(host, "sudo systemctl daemon-reload")
-    _ssh(host, "sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer")
+    _ssh(
+        host,
+        "sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer",
+    )
     logger.info("Systemd services and logrotate installed")
 
     logger.info("Device %s deployed to %s", device_id, args.host)
@@ -579,14 +646,18 @@ def _scp(local: str, remote: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Provisioning de devices People Counter")
+    parser = argparse.ArgumentParser(
+        description="Provisioning de devices People Counter"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- create ---
     p_create = sub.add_parser("create", help="Provisiona un device nuevo")
     p_create.add_argument("--device-id", required=True, help="ID único del device")
     p_create.add_argument("--store-id", required=True, help="Identificador del store")
-    p_create.add_argument("--store-name", default="", help="Nombre human-readable del store")
+    p_create.add_argument(
+        "--store-name", default="", help="Nombre human-readable del store"
+    )
     p_create.add_argument(
         "--endpoint",
         default="xxxxx.iot.us-east-1.amazonaws.com",
@@ -601,36 +672,49 @@ def main() -> None:
             "asume Environment=dev."
         ),
     )
-    p_create.add_argument("--skip-aws", action="store_true", help="Saltea el registro de AWS IoT")
-    p_create.add_argument("--force", action="store_true", help="Sobreescribe el existente")
+    p_create.add_argument(
+        "--skip-aws", action="store_true", help="Saltea el registro de AWS IoT"
+    )
+    p_create.add_argument(
+        "--force", action="store_true", help="Sobreescribe el existente"
+    )
     # --- metadata de dimensiones (van a la tabla sites/devices en RDS, NO al
     #     config del device) ---
     p_create.add_argument(
-        "--latitude", type=float, default=None,
+        "--latitude",
+        type=float,
+        default=None,
         help="Latitud del local (tabla sites — para el geomap de Grafana)",
     )
     p_create.add_argument(
-        "--longitude", type=float, default=None,
+        "--longitude",
+        type=float,
+        default=None,
         help="Longitud del local (tabla sites)",
     )
     p_create.add_argument(
-        "--timezone", default=None,
+        "--timezone",
+        default=None,
         help="Timezone IANA del local, ej. America/Argentina/Buenos_Aires",
     )
     p_create.add_argument(
-        "--cam-label", default=None,
+        "--cam-label",
+        default=None,
         help="Etiqueta de la cámara, ej. 'puerta principal' (tabla devices)",
     )
     p_create.add_argument(
-        "--skip-db", action="store_true",
+        "--skip-db",
+        action="store_true",
         help="Saltea el seed de sites/devices en RDS (solo IoT + config local)",
     )
     p_create.add_argument(
-        "--stack-name", default=DEFAULT_STACK_NAME,
+        "--stack-name",
+        default=DEFAULT_STACK_NAME,
         help=f"Stack CloudFormation para los outputs de RDS (default {DEFAULT_STACK_NAME})",
     )
     p_create.add_argument(
-        "--region", default=DEFAULT_REGION,
+        "--region",
+        default=DEFAULT_REGION,
         help=f"Región AWS (default {DEFAULT_REGION})",
     )
     p_create.set_defaults(func=cmd_create)

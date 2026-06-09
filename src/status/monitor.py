@@ -11,6 +11,7 @@ eso en el hot path del pipeline. Ambos probes blocking corren además con
 cadencia más lenta que el tick de update del LED (cacheados entre probes), así
 un subprocess lento no clava las actualizaciones del LED ni satura la red.
 """
+
 from __future__ import annotations
 
 import logging
@@ -48,6 +49,10 @@ class HealthSignals:
     mqtt_connected: bool = False
     provisioned: bool = True
     boot_complete: bool = False
+    # Init crasheó: lo setea main() en el except alrededor de run_pipeline
+    # ANTES de morir, así el tick del monitor muestra BOOT_FAILURE (rojo)
+    # en vez del estado engañoso que dan los defaults (verde/NO_CLOUD).
+    boot_failed: bool = False
     calibration_path: Optional[str] = None
 
 
@@ -64,6 +69,13 @@ class HealthMonitor:
             Hailo vía ``hailortcli`` subprocess (default 30 s; cacheado). No
             necesita resolución de 2 s — el die térmico cambia lento — y a 5 s
             de timeout cada tick clavaría el thread monitor.
+        boot_grace_s: Cuánto esperar a que el pipeline declare
+            ``boot_complete`` antes de considerar el init wedgeado y mostrar
+            BOOT_FAILURE (rojo fijo). El init normal (load del HEF + open de
+            cámaras + MQTT) toma 10-30 s; 120 s da margen amplio. Sin este
+            gate, un ``load_model``/``capture.open`` colgado mostraba verde
+            (NO_CLOUD) para siempre — el operador leía "problema de internet"
+            frente a una falla de boot.
     """
 
     def __init__(
@@ -73,12 +85,15 @@ class HealthMonitor:
         poll_interval_s: float = 2.0,
         internet_probe_interval_s: float = 30.0,
         hailo_probe_interval_s: float = 30.0,
+        boot_grace_s: float = 120.0,
     ) -> None:
         self._led = led
         self._signals = signals
         self._poll_interval_s = float(poll_interval_s)
         self._internet_probe_interval_s = float(internet_probe_interval_s)
         self._hailo_probe_interval_s = float(hailo_probe_interval_s)
+        self._boot_grace_s = float(boot_grace_s)
+        self._created_ts = time.time()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_internet_probe = 0.0
@@ -91,7 +106,9 @@ class HealthMonitor:
         if self._thread is not None:
             return
         self._thread = threading.Thread(
-            target=self._run, name="health-monitor", daemon=True,
+            target=self._run,
+            name="health-monitor",
+            daemon=True,
         )
         self._thread.start()
 
@@ -152,7 +169,17 @@ class HealthMonitor:
 
         cloud_connected = bool(s.mqtt_connected)
 
+        # Boot failure: explícito (main marcó boot_failed en el except de
+        # init antes de morir) o implícito (init wedgeado: venció el grace
+        # sin que el pipeline declare boot_complete). Sin este wiring,
+        # decide_state aceptaba boot_failure pero nadie se lo pasaba —
+        # BOOT_FAILURE (rojo) era inalcanzable en producción.
+        boot_failure = s.boot_failed or (
+            not s.boot_complete and (now - self._created_ts) >= self._boot_grace_s
+        )
+
         state = decide_state(
+            boot_failure=boot_failure,
             hardware_ok=hw_ok,
             pipeline_ok=pipeline_ok,
             internet_ok=internet_ok,

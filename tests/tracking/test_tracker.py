@@ -38,6 +38,70 @@ def test_count_by_state_groups_tracks():
     assert counts[CONFIRMED] == 0
 
 
+def test_reset_daily_clears_adoption_count():
+    """adoption_count es un canary DIARIO (como stitching_ratio y
+    death_emit_count del counter) — reset_daily lo vuelve a cero. Regresión:
+    sin esto era un acumulador lifetime y el rollover de medianoche de
+    main.py solo reseteaba los otros dos, distorsionando la matriz
+    diagnóstica del runbook tras días de uptime."""
+    tracker = EuclideanTracker()
+    tracker._adoption_count = 7
+    assert tracker.adoption_count == 7
+    tracker.reset_daily()
+    assert tracker.adoption_count == 0
+
+
+def test_zero_depth_sentinel_does_not_break_matching():
+    """``z == 0.0`` es el sentinel "sin depth" de depth_at_bbox (crop sin
+    píxeles SGBM válidos: franja izquierda de num_disparities px, motion
+    blur) — NO una medición. Regresión: el depth gate lo trataba como real
+    → |0 − 3000| > max_depth_delta (500) = match imposible en todos los
+    passes → la detección spawneaba un track duplicado cada vez que una
+    persona cruzaba de zona-sin-depth a zona-con-depth."""
+    tracker = EuclideanTracker(
+        max_distance=50, max_disappeared=5, confirm_frames=2, max_depth_delta=500.0
+    )
+    # Track con depth real.
+    tracker.update([np.array([100.0, 100.0, 3000.0])])
+    assert len(tracker._tracks) == 1
+    # Mismo lugar (+5px), pero el bbox cayó en zona sin depth → z=0.
+    tracker.update([np.array([105.0, 100.0, 0.0])])
+    assert len(tracker._tracks) == 1  # re-matcheó; sin el fix spawneaba otro
+    # Vuelve la depth real → sigue siendo el mismo track.
+    tracker.update([np.array([110.0, 100.0, 3000.0])])
+    assert len(tracker._tracks) == 1
+    (track,) = tracker._tracks.values()
+    assert len(track.positions) == 3
+
+
+def test_pass2_ambiguous_detection_does_not_spawn_duplicate():
+    """Regresión: el pass 2 de _associate descartaba el set matched_d que
+    devuelve _hungarian_with_gate — perdía las detecciones CONSUMIDAS por
+    el ratio test (rechazadas por ambiguas). Una detección equidistante de
+    dos tracks leftover dentro del reid_gate_px caía a unmatched_d y
+    spawneaba un track nuevo: exactamente lo que el mecanismo de consumo
+    existe para evitar."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        max_disappeared=10,
+        confirm_frames=2,
+        reid_gate_px=200.0,
+        ambiguous_match_ratio=0.8,
+    )
+    # Dos tracks CONFIRMED separados 20px en x.
+    for _ in range(2):
+        tracker.update(
+            [np.array([100.0, 100.0, 3000.0]), np.array([120.0, 100.0, 3000.0])]
+        )
+    assert len(tracker._tracks) == 2
+    # Una sola detección EQUIDISTANTE de ambos (80.6px de cada uno):
+    # más allá de max_distance (pass 1 no matchea) pero dentro del
+    # reid_gate_px del pass 2, donde el ratio test la rechaza por ambigua.
+    tracker.update([np.array([110.0, 180.0, 3000.0])])
+    # Consumida: NO debe spawnear un tercer track.
+    assert len(tracker._tracks) == 2
+
+
 def test_register_new_tracks():
     tracker = EuclideanTracker()
     dets = [np.array([100, 200, 3000]), np.array([300, 200, 3000])]

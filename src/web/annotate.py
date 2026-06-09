@@ -4,6 +4,7 @@ Funciones puras que dibujan sobre frames BGR. Sin estado, sin I/O. Se
 mantienen fuera de ``viewer.py`` así el módulo de streaming queda chico y
 fácil de testear aislado.
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,14 +19,14 @@ logger = logging.getLogger(__name__)
 _COLOR_CONFIRMED = (0, 255, 0)
 _COLOR_PENDING = (0, 165, 255)
 _COLOR_CANDIDATE = (180, 180, 180)
-_COLOR_COUNTING_ZONE = (0, 0, 255)         # rojo
+_COLOR_COUNTING_ZONE = (0, 0, 255)  # rojo
 
 # Paleta de la counting-line por label de dirección. Cualquier otra cosa cae
 # a blanco así que un label exótico igual renderiza visiblemente. Verdes para
 # eventos IN-side, azules para OUT-side — matchea el modelo mental del operador.
 _LINE_COLOR_BY_LABEL = {
-    "ingress": (0, 255, 0),       # verde: IN
-    "egress": (255, 0, 0),        # azul: OUT
+    "ingress": (0, 255, 0),  # verde: IN
+    "egress": (255, 0, 0),  # azul: OUT
     "in": (0, 255, 0),
     "out": (255, 0, 0),
     "enter": (0, 255, 0),
@@ -144,6 +145,7 @@ def annotate_left(
     # Diferir el import así un import circular en init parcial no
     # vuela el módulo viewer.
     from src.tracking.tracker import CONFIRMED, PENDING
+
     base_state_colour = {
         CONFIRMED: _COLOR_CONFIRMED,
         PENDING: _COLOR_PENDING,
@@ -187,8 +189,12 @@ def annotate_left(
                 [[int(p[0]), int(p[1])] for p in trail_pts], dtype=np.int32
             )
             cv2.polylines(
-                out, [trail], isClosed=False, color=display_colour,
-                thickness=1, lineType=cv2.LINE_AA,
+                out,
+                [trail],
+                isClosed=False,
+                color=display_colour,
+                thickness=1,
+                lineType=cv2.LINE_AA,
             )
 
         # Caja de tamaño FIJO centrada en la última detección. El detector
@@ -238,9 +244,16 @@ def annotate_left(
             cy_disp = int(positions[-1][1])
 
         cv2.circle(out, (cx_disp, cy_disp), 10, display_colour, -1)
-        cv2.putText(out, f"#{tid}", (cx_disp + 14, cy_disp - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, display_colour, 2,
-                    cv2.LINE_AA)
+        cv2.putText(
+            out,
+            f"#{tid}",
+            (cx_disp + 14, cy_disp - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            display_colour,
+            2,
+            cv2.LINE_AA,
+        )
         cx, cy = cx_disp, cy_disp  # alias para el label de altura abajo
         # Label de altura — mediana sobre los últimos N samples para
         # suavizar el jitter de ~1-2cm del SGBM frame-a-frame. Si la
@@ -263,15 +276,23 @@ def annotate_left(
                 head_samples.sort()
                 head_mm = head_samples[len(head_samples) // 2]
                 label = f"{head_mm/1000:.2f}m"
-                cv2.putText(out, label, (cx + 14, cy + 24),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.85, display_colour, 2,
-                            cv2.LINE_AA)
+                cv2.putText(
+                    out,
+                    label,
+                    (cx + 14, cy + 24),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.85,
+                    display_colour,
+                    2,
+                    cv2.LINE_AA,
+                )
 
     # Flash +IN/+OUT sobre los tracks que el counter acaba de contar. Se
     # dibuja AL FINAL para quedar arriba del bbox/label/trail.
     if recent_counts:
         if now_mono is None:
             import time
+
             now_mono = time.monotonic()
         _draw_count_flashes(out, recent_counts, now_mono)
 
@@ -316,8 +337,10 @@ def _draw_count_flashes(
         # cortado por el borde superior, lo movemos hacia abajo del
         # centroide (mejor que recortarlo).
         (text_w, text_h), baseline = cv2.getTextSize(
-            text, cv2.FONT_HERSHEY_SIMPLEX,
-            _COUNT_FLASH_FONT_SCALE, _COUNT_FLASH_FONT_THICKNESS,
+            text,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            _COUNT_FLASH_FONT_SCALE,
+            _COUNT_FLASH_FONT_THICKNESS,
         )
         anchor_x = int(pos_x) - text_w // 2
         anchor_y = int(pos_y) - _COUNT_FLASH_Y_OFFSET
@@ -394,16 +417,20 @@ def compose_3panel(
     vacíos se llenan con un placeholder gris oscuro así el composite nunca
     crashea ante input parcial. ``target_height`` chico = stream liviano.
     """
+
     def _panel(img: Optional[np.ndarray], h_target: int) -> np.ndarray:
         if img is None or img.size == 0:
             # Placeholder con el mismo aspect ~16:9 que los paneles reales.
-            return np.full((h_target, max(1, h_target * 16 // 9), 3), 30, dtype=np.uint8)
+            return np.full(
+                (h_target, max(1, h_target * 16 // 9), 3), 30, dtype=np.uint8
+            )
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         h, w = img.shape[:2]
         if h != h_target:
             img = cv2.resize(
-                img, (max(1, round(w * h_target / h)), h_target),
+                img,
+                (max(1, round(w * h_target / h)), h_target),
                 interpolation=cv2.INTER_AREA,
             )
         return img
@@ -472,8 +499,13 @@ def _draw_counter_geometry(frame: np.ndarray, counter: Optional[Any]) -> None:
     if zone is not None:
         try:
             x_min, x_max, y_min, y_max = zone
-            cv2.rectangle(frame, (int(x_min), int(y_min)),
-                          (int(x_max), int(y_max)), _COLOR_COUNTING_ZONE, 4)
+            cv2.rectangle(
+                frame,
+                (int(x_min), int(y_min)),
+                (int(x_max), int(y_max)),
+                _COLOR_COUNTING_ZONE,
+                4,
+            )
         except Exception:
             logger.debug("counting zone overlay failed", exc_info=True)
 
@@ -507,7 +539,8 @@ def _draw_line_with_arrows(frame: np.ndarray, line: Any) -> None:
     else:
         only_label = next(iter(labels.values()), None)
         seg_color = _LINE_COLOR_BY_LABEL.get(
-            only_label or "", _LINE_COLOR_FALLBACK,
+            only_label or "",
+            _LINE_COLOR_FALLBACK,
         )
     cv2.line(frame, (x1, y1), (x2, y2), seg_color, 4)
 

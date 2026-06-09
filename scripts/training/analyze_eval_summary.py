@@ -8,6 +8,7 @@ site y estimar la proyección post-screening del próximo training set.
 Uso:
     python scripts/training/analyze_eval_summary.py <path-al-summary.txt>
 """
+
 import re
 import sys
 from collections import defaultdict
@@ -92,7 +93,8 @@ bg_imgs_with_pos = 0
 for (site, kind), s in stats.items():
     high_confs = [c for c in s["confs"] if c >= 0.50]
     n_imgs_with_high = sum(
-        1 for line in summary.splitlines()
+        1
+        for line in summary.splitlines()
         if (m := line_re.match(line))
         and (fm := fn_re.match(m.group(1)))
         and fm.group(1) == site
@@ -105,12 +107,18 @@ for (site, kind), s in stats.items():
         bg_imgs_with_pos += n_imgs_with_high
 
 print("\nProyección post-screening (conf>=0.50 como cutoff de persona real):")
-print(f"  Motion → positivos esperados: {motion_imgs_with_pos} de {agg['motion'][0]} ({100.0*motion_imgs_with_pos/agg['motion'][0]:.1f}%)")
-print(f"  Bg con persona (promoción): {bg_imgs_with_pos} de {agg['bg'][0]} ({100.0*bg_imgs_with_pos/agg['bg'][0]:.1f}%)")
+print(
+    f"  Motion → positivos esperados: {motion_imgs_with_pos} de {agg['motion'][0]} ({100.0*motion_imgs_with_pos/agg['motion'][0]:.1f}%)"
+)
+print(
+    f"  Bg con persona (promoción): {bg_imgs_with_pos} de {agg['bg'][0]} ({100.0*bg_imgs_with_pos/agg['bg'][0]:.1f}%)"
+)
 print(f"  Bg limpios (negativos finales): {agg['bg'][0] - bg_imgs_with_pos}")
-print(f"  Total positivos v3 (motion + bg-promoted): {motion_imgs_with_pos + bg_imgs_with_pos}")
+print(
+    f"  Total positivos v3 (motion + bg-promoted): {motion_imgs_with_pos + bg_imgs_with_pos}"
+)
 print(f"  Total negativos v3: {agg['bg'][0] - bg_imgs_with_pos}")
 total_pos = motion_imgs_with_pos + bg_imgs_with_pos
-total_neg = agg['bg'][0] - bg_imgs_with_pos
+total_neg = agg["bg"][0] - bg_imgs_with_pos
 ratio = total_pos / total_neg if total_neg else 0
 print(f"  Ratio positivos:negativos = {ratio:.2f}:1")

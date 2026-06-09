@@ -49,7 +49,9 @@ logger = logging.getLogger("rescale_calibration")
 
 
 def rescale_calibration(
-    cal: dict, new_w: int, new_h: int,
+    cal: dict,
+    new_w: int,
+    new_h: int,
 ) -> dict:
     """Devuelve un dict de calibración reescalado matemáticamente a new_w × new_h.
 
@@ -63,7 +65,12 @@ def rescale_calibration(
     sy = new_h / old_h
     logger.info(
         "Rescaling %dx%d → %dx%d (sx=%.4f, sy=%.4f)",
-        old_w, old_h, new_w, new_h, sx, sy,
+        old_w,
+        old_h,
+        new_w,
+        new_h,
+        sx,
+        sy,
     )
 
     # Scale intrinsics. Fisheye K is the standard 3x3 [[fx,0,cx],[0,fy,cy],[0,0,1]].
@@ -92,7 +99,13 @@ def rescale_calibration(
     # output frame size, so re-derive them here.
     new_size = (int(new_w), int(new_h))
     R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
-        K_l, D_l, K_r, D_r, new_size, R, T,
+        K_l,
+        D_l,
+        K_r,
+        D_r,
+        new_size,
+        R,
+        T,
         flags=cv2.CALIB_ZERO_DISPARITY,
         newImageSize=new_size,
         balance=FISHEYE_RECTIFY_BALANCE,
@@ -100,19 +113,38 @@ def rescale_calibration(
 
     # New rectify maps for cv2.remap.
     map_l_x, map_l_y = cv2.fisheye.initUndistortRectifyMap(
-        K_l, D_l, R1, P1, new_size, cv2.CV_32FC1,
+        K_l,
+        D_l,
+        R1,
+        P1,
+        new_size,
+        cv2.CV_32FC1,
     )
     map_r_x, map_r_y = cv2.fisheye.initUndistortRectifyMap(
-        K_r, D_r, R2, P2, new_size, cv2.CV_32FC1,
+        K_r,
+        D_r,
+        R2,
+        P2,
+        new_size,
+        cv2.CV_32FC1,
     )
 
     new_cal = {
-        "camera_matrix_l": K_l, "dist_coeffs_l": D_l,
-        "camera_matrix_r": K_r, "dist_coeffs_r": D_r,
-        "R": R, "T": T,
-        "R1": R1, "R2": R2, "P1": P1, "P2": P2, "Q": Q,
-        "map_l_x": map_l_x, "map_l_y": map_l_y,
-        "map_r_x": map_r_x, "map_r_y": map_r_y,
+        "camera_matrix_l": K_l,
+        "dist_coeffs_l": D_l,
+        "camera_matrix_r": K_r,
+        "dist_coeffs_r": D_r,
+        "R": R,
+        "T": T,
+        "R1": R1,
+        "R2": R2,
+        "P1": P1,
+        "P2": P2,
+        "Q": Q,
+        "map_l_x": map_l_x,
+        "map_l_y": map_l_y,
+        "map_r_x": map_r_x,
+        "map_r_y": map_r_y,
         "image_size": np.array(list(new_size)),
     }
 
@@ -123,25 +155,30 @@ def rescale_calibration(
     baseline_new = float(np.linalg.norm(T))
     logger.info(
         "P1.fx: %.1f → %.1f (ratio %.4f, expected %.4f)",
-        fx_old, fx_new, fx_new / fx_old, sx,
+        fx_old,
+        fx_new,
+        fx_new / fx_old,
+        sx,
     )
     logger.info(
         "Baseline preserved: %.2fmm → %.2fmm (Δ=%.4fmm)",
-        baseline_old, baseline_new, baseline_new - baseline_old,
+        baseline_old,
+        baseline_new,
+        baseline_new - baseline_old,
     )
     return new_cal
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("input",
-                        help="Input calibration .npz (e.g. calibration.npz)")
-    parser.add_argument("--output", required=True,
-                        help="Output .npz path")
-    parser.add_argument("--width", type=int, required=True,
-                        help="Target image width in pixels")
-    parser.add_argument("--height", type=int, required=True,
-                        help="Target image height in pixels")
+    parser.add_argument("input", help="Input calibration .npz (e.g. calibration.npz)")
+    parser.add_argument("--output", required=True, help="Output .npz path")
+    parser.add_argument(
+        "--width", type=int, required=True, help="Target image width in pixels"
+    )
+    parser.add_argument(
+        "--height", type=int, required=True, help="Target image height in pixels"
+    )
     args = parser.parse_args()
 
     if args.width <= 0 or args.height <= 0:

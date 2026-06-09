@@ -376,9 +376,7 @@ def test_track_id_cycles_mod_max():
     )
     ids_seen: list[int] = []
     for i in range(8):
-        tracks = tracker.update(
-            [np.array([100.0 + i * 50.0, 100.0, 3000.0])]
-        )
+        tracks = tracker.update([np.array([100.0 + i * 50.0, 100.0, 3000.0])])
         # Capturar el ID asignado en este spawn antes de que muera.
         ids_seen.extend(tracks.keys())
         # Una vuelta vacía → track va a PENDING (disappeared=1).
@@ -386,13 +384,13 @@ def test_track_id_cycles_mod_max():
         # Otra vuelta vacía → PENDING + 1 > pending_max_frames=1 → LOST.
         tracker.update([])
     # Todos los IDs deben caer en [0, 4) (módulo 4).
-    assert all(0 <= tid < 4 for tid in ids_seen), (
-        f"IDs deben ciclar en [0, 4): {ids_seen}"
-    )
+    assert all(
+        0 <= tid < 4 for tid in ids_seen
+    ), f"IDs deben ciclar en [0, 4): {ids_seen}"
     # Y debe haber al menos un ID repetido (cycling efectivo).
-    assert len(set(ids_seen)) < len(ids_seen), (
-        f"Esperaba IDs repitiéndose (cycling), todos únicos: {ids_seen}"
-    )
+    assert len(set(ids_seen)) < len(
+        ids_seen
+    ), f"Esperaba IDs repitiéndose (cycling), todos únicos: {ids_seen}"
 
 
 def test_track_id_skips_live_collision():
@@ -473,8 +471,7 @@ def test_ambiguous_match_rejected_no_spawn():
     # Ambos tracks PENDING (rejected match + missed).
     for tid in initial_ids:
         assert tracker.tracks[tid].state == PENDING, (
-            f"Track {tid} debería estar PENDING, está "
-            f"{tracker.tracks[tid].state}"
+            f"Track {tid} debería estar PENDING, está " f"{tracker.tracks[tid].state}"
         )
     # No spawn de un tercer track: la detección ambigua se consumió.
     assert len(tracker.tracks) == 2

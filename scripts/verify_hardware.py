@@ -52,8 +52,15 @@ def main() -> None:
 
     rc, out = run(["raspi-config", "nonint", "get_boot_cli"])
     cli_boot = out.strip() == "0"
-    failures += not check("Boot to CLI (headless)", cli_boot,
-                          "CLI" if cli_boot else "desktop — run: sudo raspi-config nonint do_boot_behaviour B1")
+    failures += not check(
+        "Boot to CLI (headless)",
+        cli_boot,
+        (
+            "CLI"
+            if cli_boot
+            else "desktop — run: sudo raspi-config nonint do_boot_behaviour B1"
+        ),
+    )
 
     # --- config.txt ---
     print("\n[config.txt]")
@@ -63,16 +70,33 @@ def main() -> None:
         config_txt = ""
 
     failures += not check("dtparam=pciex1_gen=3", "dtparam=pciex1_gen=3" in config_txt)
-    failures += not check("dtparam=rtc_bbat_vchg", "dtparam=rtc_bbat_vchg" in config_txt)
-    failures += not check("usb_max_current_enable=1", "usb_max_current_enable=1" in config_txt)
+    failures += not check(
+        "dtparam=rtc_bbat_vchg", "dtparam=rtc_bbat_vchg" in config_txt
+    )
+    failures += not check(
+        "usb_max_current_enable=1", "usb_max_current_enable=1" in config_txt
+    )
     failures += not check("camera_auto_detect=0", "camera_auto_detect=0" in config_txt)
-    failures += not check("dtoverlay=imx708,cam0", "dtoverlay=imx708,cam0" in config_txt)
-    failures += not check("dtoverlay=imx708,cam1", "dtoverlay=imx708,cam1" in config_txt)
+    failures += not check(
+        "dtoverlay=imx708,cam0", "dtoverlay=imx708,cam0" in config_txt
+    )
+    failures += not check(
+        "dtoverlay=imx708,cam1", "dtoverlay=imx708,cam1" in config_txt
+    )
     failures += not check("dtparam=audio=off", "dtparam=audio=off" in config_txt)
-    failures += not check("dtparam=act_led_trigger=none", "dtparam=act_led_trigger=none" in config_txt)
-    failures += not check("dtparam=act_led_activelow=off", "dtparam=act_led_activelow=off" in config_txt)
-    failures += not check("dtparam=power_led_trigger=none", "dtparam=power_led_trigger=none" in config_txt)
-    failures += not check("dtparam=power_led_activelow=off", "dtparam=power_led_activelow=off" in config_txt)
+    failures += not check(
+        "dtparam=act_led_trigger=none", "dtparam=act_led_trigger=none" in config_txt
+    )
+    failures += not check(
+        "dtparam=act_led_activelow=off", "dtparam=act_led_activelow=off" in config_txt
+    )
+    failures += not check(
+        "dtparam=power_led_trigger=none", "dtparam=power_led_trigger=none" in config_txt
+    )
+    failures += not check(
+        "dtparam=power_led_activelow=off",
+        "dtparam=power_led_activelow=off" in config_txt,
+    )
     failures += not check("dtparam=eth_led0=4", "dtparam=eth_led0=4" in config_txt)
     failures += not check("dtparam=eth_led1=4", "dtparam=eth_led1=4" in config_txt)
 
@@ -100,12 +124,18 @@ def main() -> None:
     print("\n[Cameras]")
     rc, out = run(["rpicam-hello", "--list-cameras"])
     # Count lines starting with a camera index (e.g. "0 : imx708" or "1 : imx708")
-    cam_count = sum(1 for line in out.splitlines() if line.strip()[:1].isdigit() and "imx708" in line.lower())
+    cam_count = sum(
+        1
+        for line in out.splitlines()
+        if line.strip()[:1].isdigit() and "imx708" in line.lower()
+    )
     failures += not check("IMX708 cameras", cam_count >= 2, f"{cam_count} found")
 
     # --- RTC Battery ---
     print("\n[RTC]")
-    rtc_paths = glob.glob("/sys/devices/platform/soc*/soc*:rpi_rtc/rtc/rtc0/charging_voltage")
+    rtc_paths = glob.glob(
+        "/sys/devices/platform/soc*/soc*:rpi_rtc/rtc/rtc0/charging_voltage"
+    )
     if rtc_paths:
         try:
             voltage = open(rtc_paths[0]).read().strip()
@@ -151,36 +181,44 @@ def main() -> None:
 
     try:
         import cv2
+
         failures += not check("OpenCV", True, cv2.__version__)
     except ImportError:
         failures += not check("OpenCV", False, "not installed")
 
     try:
         import numpy
+
         failures += not check("NumPy", True, numpy.__version__)
     except ImportError:
         failures += not check("NumPy", False, "not installed")
 
     try:
         from picamera2 import Picamera2
+
         failures += not check("picamera2", True)
     except ImportError:
-        failures += not check("picamera2", False, "not installed — sudo apt install python3-picamera2")
+        failures += not check(
+            "picamera2", False, "not installed — sudo apt install python3-picamera2"
+        )
 
     try:
         import hailo_platform
+
         failures += not check("hailo_platform", True, hailo_platform.__version__)
     except ImportError:
         failures += not check("hailo_platform", False, "not installed")
 
     try:
         import scapy
+
         failures += not check("scapy", True)
     except ImportError:
         failures += not check("scapy", False, "pip install scapy")
 
     try:
         import bleak
+
         failures += not check("bleak", True)
     except ImportError:
         failures += not check("bleak", False, "pip install bleak")
@@ -193,13 +231,24 @@ def main() -> None:
         size_mb = os.path.getsize(model_path) / (1024 * 1024)
         failures += not check("YOLOv8n HEF", True, f"{size_mb:.1f} MB")
     else:
-        failures += not check("YOLOv8n HEF", False, "run: PYTHONPATH=. python3 scripts/download_model.py hef")
+        failures += not check(
+            "YOLOv8n HEF",
+            False,
+            "run: PYTHONPATH=. python3 scripts/download_model.py hef",
+        )
 
     # --- Config ---
     print("\n[Config]")
     config_exists = os.path.exists("/etc/people-counter/config.yaml")
-    failures += not check("Device config", config_exists,
-                          "/etc/people-counter/config.yaml" if config_exists else "not found — copy from config.example.yaml")
+    failures += not check(
+        "Device config",
+        config_exists,
+        (
+            "/etc/people-counter/config.yaml"
+            if config_exists
+            else "not found — copy from config.example.yaml"
+        ),
+    )
 
     # --- Services ---
     print("\n[Services]")

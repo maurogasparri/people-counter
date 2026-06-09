@@ -5,7 +5,6 @@ import os
 from src.web.admin_auth import (
     hash_password,
     read_secret,
-    session_token,
     verify_password,
     write_secret,
 )
@@ -40,10 +39,7 @@ def test_read_secret_missing_returns_none(tmp_path):
     assert read_secret(str(tmp_path / "nope")) is None
 
 
-def test_session_token_changes_with_password(tmp_path):
-    p = str(tmp_path / "admin.secret")
-    write_secret("pass-one-aaaa", p)
-    t1 = session_token(read_secret(p))
-    write_secret("pass-two-bbbb", p)
-    t2 = session_token(read_secret(p))
-    assert t1 != t2  # cambiar contraseña invalida las sesiones viejas
+# (session_token se removió de admin_auth: las sesiones ahora son tokens
+# random per-login con expiry server-side en el viewer. La invalidación por
+# cambio de contraseña la cubre test_change_password_invalidates_old_sessions
+# en tests/web/test_viewer.py.)

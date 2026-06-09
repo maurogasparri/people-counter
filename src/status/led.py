@@ -17,6 +17,7 @@ Cascada de prioridad de estados (worst-first), usada por ``decide_state`` en
     BOOT_FAILURE > HARDWARE_FAULT > SOFTWARE_FAULT
         > NO_INTERNET > NO_CLOUD > UNPROVISIONED > OK
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,25 +32,25 @@ class LedState(Enum):
     """Estado lógico del dispositivo expresado por el LED."""
 
     OFF = "off"
-    BOOT_FAILURE = "boot_failure"        # rojo fijo
-    HARDWARE_FAULT = "hardware_fault"    # amarillo fijo
-    SOFTWARE_FAULT = "software_fault"    # amarillo parpadeante
-    NO_INTERNET = "no_internet"          # verde parpadeante
-    NO_CLOUD = "no_cloud"                # verde fijo
-    UNPROVISIONED = "unprovisioned"      # azul parpadeante
-    OK = "ok"                            # azul fijo
+    BOOT_FAILURE = "boot_failure"  # rojo fijo
+    HARDWARE_FAULT = "hardware_fault"  # amarillo fijo
+    SOFTWARE_FAULT = "software_fault"  # amarillo parpadeante
+    NO_INTERNET = "no_internet"  # verde parpadeante
+    NO_CLOUD = "no_cloud"  # verde fijo
+    UNPROVISIONED = "unprovisioned"  # azul parpadeante
+    OK = "ok"  # azul fijo
 
 
 # (red_on, green_on, blue_on, blinking) por estado.
 _PATTERN: dict[LedState, tuple[bool, bool, bool, bool]] = {
-    LedState.OFF:            (False, False, False, False),
-    LedState.BOOT_FAILURE:   (True,  False, False, False),
-    LedState.HARDWARE_FAULT: (True,  True,  False, False),
-    LedState.SOFTWARE_FAULT: (True,  True,  False, True),
-    LedState.NO_INTERNET:    (False, True,  False, True),
-    LedState.NO_CLOUD:       (False, True,  False, False),
-    LedState.UNPROVISIONED:  (False, False, True,  True),
-    LedState.OK:             (False, False, True,  False),
+    LedState.OFF: (False, False, False, False),
+    LedState.BOOT_FAILURE: (True, False, False, False),
+    LedState.HARDWARE_FAULT: (True, True, False, False),
+    LedState.SOFTWARE_FAULT: (True, True, False, True),
+    LedState.NO_INTERNET: (False, True, False, True),
+    LedState.NO_CLOUD: (False, True, False, False),
+    LedState.UNPROVISIONED: (False, False, True, True),
+    LedState.OK: (False, False, True, False),
 }
 
 
@@ -62,7 +63,9 @@ class _GpioBackend(Protocol):
 
 
 def _open_default_backend(
-    pin_red: int, pin_green: int, pin_blue: int,
+    pin_red: int,
+    pin_green: int,
+    pin_blue: int,
 ) -> tuple[_GpioBackend, _GpioBackend, _GpioBackend] | None:
     """Abre los handles ``gpiozero.LED``, o devuelve None si no está disponible.
 
@@ -77,8 +80,12 @@ def _open_default_backend(
     try:
         return LED(pin_red), LED(pin_green), LED(pin_blue)
     except Exception:
-        logger.exception("Falló abrir los pines GPIO del LED (R=%d G=%d B=%d)",
-                         pin_red, pin_green, pin_blue)
+        logger.exception(
+            "Falló abrir los pines GPIO del LED (R=%d G=%d B=%d)",
+            pin_red,
+            pin_green,
+            pin_blue,
+        )
         return None
 
 
@@ -103,9 +110,7 @@ class StatusLED:
         pin_green: int = 18,
         pin_blue: int = 27,
         blink_period_s: float = 1.0,
-        backend: Optional[
-            tuple[_GpioBackend, _GpioBackend, _GpioBackend]
-        ] = None,
+        backend: Optional[tuple[_GpioBackend, _GpioBackend, _GpioBackend]] = None,
     ) -> None:
         self._blink_period_s = float(blink_period_s)
         self._state = LedState.OFF
@@ -119,13 +124,17 @@ class StatusLED:
         self._enabled = backend is not None
 
         self._thread = threading.Thread(
-            target=self._run, name="status-led", daemon=True,
+            target=self._run,
+            name="status-led",
+            daemon=True,
         )
         self._thread.start()
         logger.info(
             "Status LED %s (pins R=%d G=%d B=%d)",
             "activo" if self._enabled else "deshabilitado",
-            pin_red, pin_green, pin_blue,
+            pin_red,
+            pin_green,
+            pin_blue,
         )
 
     def set_state(self, state: LedState) -> None:
@@ -176,8 +185,10 @@ class StatusLED:
                 state = self._state
             r, g, b, blink = _PATTERN[state]
             if blink:
-                self._set_outputs(r, g, b) if on_phase else self._set_outputs(
-                    False, False, False
+                (
+                    self._set_outputs(r, g, b)
+                    if on_phase
+                    else self._set_outputs(False, False, False)
                 )
                 self._tick_event.wait(timeout=half)
             else:

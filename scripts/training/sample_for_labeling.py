@@ -72,17 +72,34 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--captures", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--n-total", type=int, default=250,
-                   help="Total de imgs a muestrear (repartidas entre los sites).")
-    p.add_argument("--motion-ratio", type=float, default=0.85,
-                   help="Fraccion del sample de frames _motion_ (resto _bg_). "
-                        "Bajar (~0.5) para training: mas bg = mas estaticos.")
+    p.add_argument(
+        "--n-total",
+        type=int,
+        default=250,
+        help="Total de imgs a muestrear (repartidas entre los sites).",
+    )
+    p.add_argument(
+        "--motion-ratio",
+        type=float,
+        default=0.85,
+        help="Fraccion del sample de frames _motion_ (resto _bg_). "
+        "Bajar (~0.5) para training: mas bg = mas estaticos.",
+    )
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--exclude-manifest", type=Path, action="append", default=[],
-                   help="Manifest(s) de batches previos a excluir (evita overlap).")
-    p.add_argument("--exclude-window-seconds", type=float, default=0.0,
-                   help="Excluir tambien frames del mismo site dentro de esta "
-                        "ventana de un frame excluido (anti-leakage de rafagas).")
+    p.add_argument(
+        "--exclude-manifest",
+        type=Path,
+        action="append",
+        default=[],
+        help="Manifest(s) de batches previos a excluir (evita overlap).",
+    )
+    p.add_argument(
+        "--exclude-window-seconds",
+        type=float,
+        default=0.0,
+        help="Excluir tambien frames del mismo site dentro de esta "
+        "ventana de un frame excluido (anti-leakage de rafagas).",
+    )
     p.add_argument("--force", action="store_true")
     args = p.parse_args()
 
@@ -97,8 +114,10 @@ def main() -> None:
     exact, excl_by_site = load_exclusions(args.exclude_manifest)
     win = args.exclude_window_seconds
     if exact:
-        print(f"excluyendo {len(exact)} imgs de {len(args.exclude_manifest)} "
-              f"manifest(s)" + (f" + ventana +-{win:.0f}s" if win > 0 else ""))
+        print(
+            f"excluyendo {len(exact)} imgs de {len(args.exclude_manifest)} "
+            f"manifest(s)" + (f" + ventana +-{win:.0f}s" if win > 0 else "")
+        )
 
     def is_excluded(rel: str, site: str, ts: float | None) -> bool:
         if rel in exact:
@@ -139,7 +158,9 @@ def main() -> None:
             shutil.copy2(src, args.output / dst_name)
             manifest.append(f"{dst_name}\t{src.relative_to(args.captures).as_posix()}")
             total += 1
-        print(f"  {site}: {len(picked)} imgs ({len(motion)} motion / {len(bg)} bg disponibles)")
+        print(
+            f"  {site}: {len(picked)} imgs ({len(motion)} motion / {len(bg)} bg disponibles)"
+        )
 
     (args.output / "manifest.txt").write_text(
         "# copia\torigen (relativo a captures/)\n" + "\n".join(manifest) + "\n",

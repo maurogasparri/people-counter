@@ -1,4 +1,5 @@
 """Tests del Lambda persist_event con conexión Postgres y SSM mockeadas."""
+
 from __future__ import annotations
 
 import sys
@@ -39,6 +40,11 @@ def fake_pg(monkeypatch):
 
     fake_psycopg = MagicMock()
     fake_psycopg.connect.return_value = fake_conn
+    # Clases de excepción REALES (no MagicMock attrs): el handler hace
+    # isinstance contra psycopg.IntegrityError/DataError para discriminar
+    # errores de datos del device de los transitorios.
+    fake_psycopg.IntegrityError = type("IntegrityError", (Exception,), {})
+    fake_psycopg.DataError = type("DataError", (Exception,), {})
 
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
@@ -84,12 +90,12 @@ def test_counting_event_inserts(fake_pg):
     # height_class ya no es columna — la categorización vive en la función SQL.
     assert "height_class" not in sql
     assert params[0] == "store-001-cam-01"
-    assert params[1] == "store-001"          # store_id inferido
+    assert params[1] == "store-001"  # store_id inferido
     # params[2] = event_ts (datetime UTC desde event_time o envelope timestamp).
-    assert params[3] == "in"                 # direction
-    assert params[4] == 42                   # track_id
-    assert params[5] == 0.87                 # confidence
-    assert params[6] == 1.75                 # height_m
+    assert params[3] == "in"  # direction
+    assert params[4] == 42  # track_id
+    assert params[5] == 0.87  # confidence
+    assert params[6] == 1.75  # height_m
 
 
 def test_counting_event_legacy_bucket_key_ignored(fake_pg):
@@ -229,7 +235,7 @@ def test_wifi_ble_events_batch_insert(fake_pg):
     rows = call_args[0][1]
     assert "INSERT INTO wifi_ble_events" in sql
     assert "bucket_15min" not in sql  # GENERATED server-side
-    assert "ON CONFLICT" in sql       # idempotencia con MAX rssi_max
+    assert "ON CONFLICT" in sql  # idempotencia con MAX rssi_max
     assert len(rows) == 2
     # Primera fila: visitor_hash es bytes (BYTEA), rssi_max es int.
     row0 = rows[0]
@@ -275,10 +281,20 @@ def test_wifi_ble_bad_visitor_hash_skipped(fake_pg):
             "period_start": 1762962300,
             "period_end": 1762963200,
             "devices": [
-                {"visitor_hash": "ZZ" * 16, "protocol": "wifi", "rssi_max": -55,
-                 "first_seen_ts": 1.0, "last_seen_ts": 2.0},  # ZZ no es hex
-                {"visitor_hash": "bb" * 16, "protocol": "ble", "rssi_max": -68,
-                 "first_seen_ts": 3.0, "last_seen_ts": 4.0},
+                {
+                    "visitor_hash": "ZZ" * 16,
+                    "protocol": "wifi",
+                    "rssi_max": -55,
+                    "first_seen_ts": 1.0,
+                    "last_seen_ts": 2.0,
+                },  # ZZ no es hex
+                {
+                    "visitor_hash": "bb" * 16,
+                    "protocol": "ble",
+                    "rssi_max": -68,
+                    "first_seen_ts": 3.0,
+                    "last_seen_ts": 4.0,
+                },
             ],
         },
     }
@@ -380,3 +396,50 @@ def test_transient_db_error_reraised(fake_pg):
     }
     with pytest.raises(RuntimeError, match="connection lost"):
         handler(event, None)
+
+
+def test_constraint_violation_discarded_without_closing_connection(fake_pg):
+    """Regresión: las violaciones de constraint (CheckViolation por una
+    direction inválida, NotNullViolation por timestamps ausentes) son
+    errores de DATOS del device — el contrato del módulo promete loguear y
+    descartar, pero caían en el except genérico que cierra la conexión warm
+    y re-raisea como transitorio: cada payload malformado forzaba una
+    reconexión IAM completa (3-8s) en la próxima invocación."""
+    from src.cloud import persist_event
+    from src.cloud.persist_event import handler
+
+    fake_pg["cursor"].execute.side_effect = fake_pg["psycopg"].IntegrityError(
+        'new row violates check constraint "count_events_direction_check"'
+    )
+
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "counting",
+        "data": {"direction": "sideways", "track_id": 1},
+    }
+    result = handler(event, None)
+
+    # Descartado (400, sin retry), NO re-raiseado.
+    assert result["statusCode"] == 400
+    # La conexión warm sigue viva — no se cerró ni se reseteó el cache.
+    assert persist_event._pg_conn is not None
+    fake_pg["conn"].close.assert_not_called()
+
+
+def test_data_error_discarded_as_400(fake_pg):
+    """DataError (valor inadaptable / fuera de rango) = error de datos del
+    device → 400 sin retry, misma política que IntegrityError."""
+    from src.cloud.persist_event import handler
+
+    fake_pg["cursor"].execute.side_effect = fake_pg["psycopg"].DataError(
+        "invalid input syntax"
+    )
+
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "counting",
+        "data": {"direction": "in", "track_id": 1},
+    }
+    assert handler(event, None)["statusCode"] == 400

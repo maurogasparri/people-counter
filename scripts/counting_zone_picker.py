@@ -54,7 +54,8 @@ _save_lock = threading.Lock()
 
 
 def _capture_from_cameras(
-    camera: str, resolution: tuple[int, int],
+    camera: str,
+    resolution: tuple[int, int],
 ) -> np.ndarray:
     """Toma un frame BGR único desde picamera2.
 
@@ -102,6 +103,7 @@ def _capture_from_cameras(
         raise RuntimeError(f"No pude abrir cámara(s): {exc}") from exc
 
     from src.config.hardware import load_hardware_params
+
     hw = load_hardware_params()
 
     frames: dict[str, np.ndarray] = {}
@@ -169,8 +171,9 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
-def _format_yaml(x_min: int, x_max: int, y_min: int, y_max: int,
-                 orientation: str, position: int) -> str:
+def _format_yaml(
+    x_min: int, x_max: int, y_min: int, y_max: int, orientation: str, position: int
+) -> str:
     """Renderiza el snippet counter.counting_zone / counter.line."""
     return (
         "counter:\n"
@@ -185,7 +188,9 @@ def _format_yaml(x_min: int, x_max: int, y_min: int, y_max: int,
     )
 
 
-def _validate_payload(data: dict, img_w: int, img_h: int) -> tuple[Optional[dict], Optional[str]]:
+def _validate_payload(
+    data: dict, img_w: int, img_h: int
+) -> tuple[Optional[dict], Optional[str]]:
     """Valida el payload JSON que viene de la UI.
 
     Devuelve ``(cleaned_dict, None)`` en éxito, ``(None, error_message)``
@@ -235,9 +240,12 @@ def _validate_payload(data: dict, img_w: int, img_h: int) -> tuple[Optional[dict
 
     return (
         {
-            "x_min": x_min, "x_max": x_max,
-            "y_min": y_min, "y_max": y_max,
-            "orientation": orientation, "position": position,
+            "x_min": x_min,
+            "x_max": x_max,
+            "y_min": y_min,
+            "y_max": y_max,
+            "orientation": orientation,
+            "position": position,
         },
         None,
     )
@@ -559,9 +567,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         snippet = _format_yaml(
-            cleaned["x_min"], cleaned["x_max"],
-            cleaned["y_min"], cleaned["y_max"],
-            cleaned["orientation"], cleaned["position"],
+            cleaned["x_min"],
+            cleaned["x_max"],
+            cleaned["y_min"],
+            cleaned["y_max"],
+            cleaned["orientation"],
+            cleaned["position"],
         )
 
         try:
@@ -603,24 +614,33 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="Interactive counting zone + virtual line picker."
     )
     parser.add_argument(
-        "--image", type=Path, default=None,
+        "--image",
+        type=Path,
+        default=None,
         help="Use a static image instead of a live camera capture.",
     )
     parser.add_argument(
-        "--camera", choices=["left", "right", "both"], default="left",
+        "--camera",
+        choices=["left", "right", "both"],
+        default="left",
         help="Which camera to use when capturing live (default: left).",
     )
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
-        "--output", type=Path, default=Path("./counting_zone_config.yaml"),
+        "--output",
+        type=Path,
+        default=Path("./counting_zone_config.yaml"),
         help="Where to write the YAML snippet on save.",
     )
     parser.add_argument(
-        "--resolution", type=int, nargs=2, default=None,
+        "--resolution",
+        type=int,
+        nargs=2,
+        default=None,
         help="Capture resolution (W H) when --image is not set. Default: "
-             "reads vision.resolution from /etc/people-counter/config.yaml "
-             "so the counting zone / line use the same coordinate system "
-             "as the runtime.",
+        "reads vision.resolution from /etc/people-counter/config.yaml "
+        "so the counting zone / line use the same coordinate system "
+        "as the runtime.",
     )
     args = parser.parse_args(argv)
 
@@ -637,6 +657,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     DEFAULT_DEVICE_CONFIG_PATH,
                     load_device_config,
                 )
+
                 try:
                     cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
                 except FileNotFoundError:
@@ -656,7 +677,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 args.resolution = [int(res[0]), int(res[1])]
             logger.info(
                 "Capturing live frame (camera=%s, resolution=%dx%d)",
-                args.camera, args.resolution[0], args.resolution[1],
+                args.camera,
+                args.resolution[0],
+                args.resolution[1],
             )
             frame = _capture_from_cameras(
                 args.camera,
@@ -692,7 +715,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"(or http://localhost:{args.port})"
     )
     print("  1. Click-drag to draw the counting zone rectangle.")
-    print("  2. Choose orientation, then click inside the counting zone to place the line.")
+    print(
+        "  2. Choose orientation, then click inside the counting zone to place the line."
+    )
     print("  3. Press Save. YAML snippet is written to:")
     print(f"     {_output_path.resolve()}")
     print("Press Ctrl-C to abort without saving.")

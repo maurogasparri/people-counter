@@ -44,7 +44,10 @@ from ultralytics import YOLO
 
 
 def stratified_sample(
-    captures_dir: Path, n_per_site: int, motion_ratio: float, seed: int,
+    captures_dir: Path,
+    n_per_site: int,
+    motion_ratio: float,
+    seed: int,
 ) -> list[Path]:
     """Sample n_per_site JPGs por cada site_*/, con motion_ratio en _motion_."""
     rng = random.Random(seed)
@@ -63,7 +66,10 @@ def stratified_sample(
 
 
 def run_model(
-    model: YOLO, img_path: Path, conf: float, only_class_id: int | None,
+    model: YOLO,
+    img_path: Path,
+    conf: float,
+    only_class_id: int | None,
 ) -> list[tuple[tuple[float, float, float, float], float, int]]:
     """Devuelve lista de (xyxy_px, conf, cls_id) sobre img_path."""
     res = model.predict(str(img_path), conf=conf, verbose=False)[0]
@@ -76,16 +82,26 @@ def run_model(
     for box, c, cls in zip(xyxy, confs, clss):
         if only_class_id is not None and int(cls) != only_class_id:
             continue
-        dets.append(((float(box[0]), float(box[1]), float(box[2]), float(box[3])), float(c), int(cls)))
+        dets.append(
+            (
+                (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                float(c),
+                int(cls),
+            )
+        )
     return dets
 
 
 def render_pair(
     img_path: Path,
-    dets_a: list, dets_b: list,
-    label_a: str, label_b: str,
-    color_a: tuple[int, int, int], color_b: tuple[int, int, int],
-    out_path: Path, max_side: int = 720,
+    dets_a: list,
+    dets_b: list,
+    label_a: str,
+    label_b: str,
+    color_a: tuple[int, int, int],
+    color_b: tuple[int, int, int],
+    out_path: Path,
+    max_side: int = 720,
 ) -> None:
     """Genera un JPG con dos copias de la imagen side-by-side, cajas pintadas."""
     base = Image.open(img_path).convert("RGB")
@@ -109,10 +125,15 @@ def render_pair(
         for (x1, y1, x2, y2), c, _ in dets:
             draw.rectangle(
                 [x1 * scale, y1 * scale, x2 * scale, y2 * scale],
-                outline=color, width=3,
+                outline=color,
+                width=3,
             )
-            draw.text((x1 * scale + 3, max(0, y1 * scale - 18)),
-                      f"{c:.2f}", fill=color, font=font)
+            draw.text(
+                (x1 * scale + 3, max(0, y1 * scale - 18)),
+                f"{c:.2f}",
+                fill=color,
+                font=font,
+            )
         # header
         draw.rectangle([0, 0, w, 32], fill=(0, 0, 0))
         draw.text((8, 6), f"{label} — {len(dets)} det", fill=color, font=font_big)
@@ -152,12 +173,23 @@ def main() -> None:
     p.add_argument("--label-b", default="B")
     p.add_argument("--conf-a", type=float, default=0.25)
     p.add_argument("--conf-b", type=float, default=0.25)
-    p.add_argument("--coco-only-person", action="store_true",
-                   help="Filtra solo class 0 en el modelo A (asume A = COCO).")
-    p.add_argument("--n-per-site", type=int, default=14,
-                   help="N de imgs por site_* (~14 × 7 sites = 98).")
-    p.add_argument("--motion-ratio", type=float, default=0.8,
-                   help="Fracción del sample que viene de frames _motion_ (resto _bg_).")
+    p.add_argument(
+        "--coco-only-person",
+        action="store_true",
+        help="Filtra solo class 0 en el modelo A (asume A = COCO).",
+    )
+    p.add_argument(
+        "--n-per-site",
+        type=int,
+        default=14,
+        help="N de imgs por site_* (~14 × 7 sites = 98).",
+    )
+    p.add_argument(
+        "--motion-ratio",
+        type=float,
+        default=0.8,
+        help="Fracción del sample que viene de frames _motion_ (resto _bg_).",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
@@ -165,7 +197,9 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     pairs_dir = args.output / "pairs"
 
-    print(f"[sample] estratificando {args.n_per_site} imgs/site × motion {args.motion_ratio}")
+    print(
+        f"[sample] estratificando {args.n_per_site} imgs/site × motion {args.motion_ratio}"
+    )
     sample = stratified_sample(
         args.captures, args.n_per_site, args.motion_ratio, args.seed
     )
@@ -179,16 +213,22 @@ def main() -> None:
     only_a = 0 if args.coco_only_person else None
 
     stats: dict = {
-        "label_a": args.label_a, "label_b": args.label_b,
-        "conf_a": args.conf_a, "conf_b": args.conf_b,
+        "label_a": args.label_a,
+        "label_b": args.label_b,
+        "conf_a": args.conf_a,
+        "conf_b": args.conf_b,
         "n_samples": len(sample),
         "totals_a": {"dets": 0, "imgs_with_dets": 0, "imgs_zero_dets": 0},
         "totals_b": {"dets": 0, "imgs_with_dets": 0, "imgs_zero_dets": 0},
-        "confs_a": [], "confs_b": [],
+        "confs_a": [],
+        "confs_b": [],
         "per_site_a": defaultdict(lambda: {"dets": 0, "imgs": 0, "imgs_with_dets": 0}),
         "per_site_b": defaultdict(lambda: {"dets": 0, "imgs": 0, "imgs_with_dets": 0}),
         "agreement": {
-            "both_zero": 0, "a_only_has": 0, "b_only_has": 0, "both_have": 0,
+            "both_zero": 0,
+            "a_only_has": 0,
+            "b_only_has": 0,
+            "both_have": 0,
         },
         "samples": [],
     }
@@ -234,28 +274,49 @@ def main() -> None:
         pair_name = f"{site}__{img_path.stem}.jpg"
         pair_path = pairs_dir / pair_name
         render_pair(
-            img_path, dets_a, dets_b, args.label_a, args.label_b,
-            (40, 120, 255), (255, 50, 50), pair_path,
+            img_path,
+            dets_a,
+            dets_b,
+            args.label_a,
+            args.label_b,
+            (40, 120, 255),
+            (255, 50, 50),
+            pair_path,
         )
 
-        stats["samples"].append({
-            "site": site, "name": img_path.name, "is_motion": is_motion,
-            "n_a": len(dets_a), "n_b": len(dets_b),
-            "pair_path": f"pairs/{pair_name}",
-        })
+        stats["samples"].append(
+            {
+                "site": site,
+                "name": img_path.name,
+                "is_motion": is_motion,
+                "n_a": len(dets_a),
+                "n_b": len(dets_b),
+                "pair_path": f"pairs/{pair_name}",
+            }
+        )
 
         if i % 10 == 0 or i == len(sample):
-            print(f"[run]   {i}/{len(sample)}  A={stats['totals_a']['dets']}  B={stats['totals_b']['dets']}")
+            print(
+                f"[run]   {i}/{len(sample)}  A={stats['totals_a']['dets']}  B={stats['totals_b']['dets']}"
+            )
 
     # Bucketize confs antes de serializar (defaultdict → dict)
     stats["per_site_a"] = dict(stats["per_site_a"])
     stats["per_site_b"] = dict(stats["per_site_b"])
     stats["conf_buckets_a"] = conf_buckets(stats["confs_a"])
     stats["conf_buckets_b"] = conf_buckets(stats["confs_b"])
-    stats["conf_mean_a"] = round(mean(stats["confs_a"]), 3) if stats["confs_a"] else None
-    stats["conf_mean_b"] = round(mean(stats["confs_b"]), 3) if stats["confs_b"] else None
-    stats["conf_median_a"] = round(median(stats["confs_a"]), 3) if stats["confs_a"] else None
-    stats["conf_median_b"] = round(median(stats["confs_b"]), 3) if stats["confs_b"] else None
+    stats["conf_mean_a"] = (
+        round(mean(stats["confs_a"]), 3) if stats["confs_a"] else None
+    )
+    stats["conf_mean_b"] = (
+        round(mean(stats["confs_b"]), 3) if stats["confs_b"] else None
+    )
+    stats["conf_median_a"] = (
+        round(median(stats["confs_a"]), 3) if stats["confs_a"] else None
+    )
+    stats["conf_median_b"] = (
+        round(median(stats["confs_b"]), 3) if stats["confs_b"] else None
+    )
 
     # Pelar las raw conf lists del JSON pa que no pese tanto
     confs_a = stats.pop("confs_a")
@@ -271,13 +332,19 @@ def main() -> None:
 
 
 def print_summary(stats: dict, label_a: str, label_b: str) -> None:
-    a = stats["totals_a"]; b = stats["totals_b"]; ag = stats["agreement"]
+    a = stats["totals_a"]
+    b = stats["totals_b"]
+    ag = stats["agreement"]
     n = stats["n_samples"]
     print(f"\n=== RESUMEN ({n} imgs) ===")
-    print(f"{label_a:25s}  dets={a['dets']:4d}  imgs_con_det={a['imgs_with_dets']}/{n}  "
-          f"conf_avg={stats['conf_mean_a']}")
-    print(f"{label_b:25s}  dets={b['dets']:4d}  imgs_con_det={b['imgs_with_dets']}/{n}  "
-          f"conf_avg={stats['conf_mean_b']}")
+    print(
+        f"{label_a:25s}  dets={a['dets']:4d}  imgs_con_det={a['imgs_with_dets']}/{n}  "
+        f"conf_avg={stats['conf_mean_a']}"
+    )
+    print(
+        f"{label_b:25s}  dets={b['dets']:4d}  imgs_con_det={b['imgs_with_dets']}/{n}  "
+        f"conf_avg={stats['conf_mean_b']}"
+    )
     print(f"\nAgreement:")
     print(f"  ambos detectaron algo:       {ag['both_have']}/{n}")
     print(f"  ambos vacíos:                {ag['both_zero']}/{n}")
@@ -291,10 +358,13 @@ def write_report(output: Path, stats: dict, label_a: str, label_b: str) -> None:
         f'<figcaption>{s["site"]} · {s["name"]} · '
         f'<b style="color:#4080ff">{label_a}:{s["n_a"]}</b> · '
         f'<b style="color:#ff3232">{label_b}:{s["n_b"]}</b>'
-        f'</figcaption></figure>'
+        f"</figcaption></figure>"
         for s in stats["samples"]
     )
-    a = stats["totals_a"]; b = stats["totals_b"]; ag = stats["agreement"]; n = stats["n_samples"]
+    a = stats["totals_a"]
+    b = stats["totals_b"]
+    ag = stats["agreement"]
+    n = stats["n_samples"]
 
     def _bucket_row(buckets: dict) -> str:
         return " · ".join(f"{k}:{v}" for k, v in buckets.items())

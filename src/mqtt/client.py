@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 RECONNECT_MIN_DELAY = 1  # segundos
 RECONNECT_MAX_DELAY = 60  # segundos
 
+# Replay del outbox. El batch pagina el backlog (un outage multi-día acumula
+# miles de filas — cargarlas todas de una infla memoria y la cola interna de
+# paho); entre batches se espera a que los PUBACKs pendientes bajen del
+# low-water antes de seguir, así el drain avanza al ritmo del broker. Si el
+# broker deja de ACKear por más del timeout, el replay corta y el próximo
+# reconnect retoma donde quedó (las filas siguen sent=0).
+REPLAY_BATCH_SIZE = 200
+REPLAY_INFLIGHT_LOW_WATER = 50
+REPLAY_ACK_DRAIN_TIMEOUT_S = 30.0
+
 
 class MQTTClient:
     """Cliente MQTT para AWS IoT Core con buffering local.
@@ -220,9 +230,7 @@ class MQTTClient:
                 jitter,
             )
         else:
-            logger.info(
-                "MQTT connecting (async) to %s:%d", self.endpoint, self.port
-            )
+            logger.info("MQTT connecting (async) to %s:%d", self.endpoint, self.port)
 
     def disconnect(self) -> None:
         """Desconecta de manera limpia."""
@@ -350,46 +358,85 @@ class MQTTClient:
                 topic, json.dumps(envelope), qos=1, retain=False
             )
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
-                logger.warning(
-                    "Shadow reported publish rc=%d for %s", result.rc, topic
-                )
+                logger.warning("Shadow reported publish rc=%d for %s", result.rc, topic)
             else:
                 logger.debug("Shadow reported published to %s", topic)
         except Exception:
             logger.exception("Shadow reported publish failed: %s", topic)
 
     def replay_buffer(self) -> int:
-        """Reenvía todos los mensajes pendientes del buffer.
+        """Reenvía TODOS los mensajes pendientes del buffer, en batches.
 
         Se llama automáticamente al reconectar. También puede llamarse manual.
+        Pagina por id con ``after_id`` (las filas recién publicadas siguen
+        ``sent=0`` hasta su PUBACK — re-leer solo por ``sent`` haría loop
+        sobre el mismo batch) y entre batches espera a que los ACKs drenen
+        (ver constantes REPLAY_*). Un corte de conexión o un broker que no
+        ACKea interrumpen el drain; el próximo reconnect retoma desde donde
+        quedó porque las filas no enviadas siguen ``sent=0``.
 
         Returns:
             Cantidad de mensajes reenviados.
         """
         with self._replay_lock:
-            pending = self.buffer.get_pending(limit=200)
-            if not pending:
-                return 0
-
-            # Saltear los msg_ids que ya están in-flight (publicados, esperando
-            # PUBACK). En un reconnect rápido un mensaje recién publicado sigue
-            # con sent=0 hasta que llega su PUBACK; sin este filtro se re-
-            # publica (duplicado — QoS 1 lo tolera pero ensucia el tráfico y el
-            # mapeo de _pending_acks). El PUBACK pendiente lo marcará sent.
-            with self._pending_lock:
-                in_flight = set(self._pending_acks.values())
-
-            count = 0
-            for msg_id, topic, payload in pending:
-                if self._stop_event.is_set() or not self._connected:
+            total = 0
+            after_id = 0
+            while not self._stop_event.is_set() and self._connected:
+                pending = self.buffer.get_pending(
+                    limit=REPLAY_BATCH_SIZE, after_id=after_id
+                )
+                if not pending:
                     break
-                if msg_id in in_flight:
-                    continue
-                self._send_buffered_message(msg_id, topic, payload, qos=1)
-                count += 1
 
-            logger.info("Buffer replay: %d messages sent", count)
-            return count
+                # Saltear los msg_ids que ya están in-flight (publicados,
+                # esperando PUBACK). En un reconnect rápido un mensaje recién
+                # publicado sigue con sent=0 hasta que llega su PUBACK; sin
+                # este filtro se re-publica (duplicado — QoS 1 lo tolera pero
+                # ensucia el tráfico y el mapeo de _pending_acks). El PUBACK
+                # pendiente lo marcará sent.
+                with self._pending_lock:
+                    in_flight = set(self._pending_acks.values())
+
+                for msg_id, topic, payload in pending:
+                    if self._stop_event.is_set() or not self._connected:
+                        break
+                    if msg_id in in_flight:
+                        continue
+                    self._send_buffered_message(msg_id, topic, payload, qos=1)
+                    total += 1
+
+                after_id = pending[-1][0]
+                if len(pending) < REPLAY_BATCH_SIZE:
+                    break  # último batch — no quedan filas que paginar
+                if not self._wait_inflight_drain():
+                    logger.warning(
+                        "Buffer replay interrumpido: el broker no drena los "
+                        "ACKs in-flight (%d enviados hasta acá; el próximo "
+                        "reconnect retoma)",
+                        total,
+                    )
+                    break
+
+            logger.info("Buffer replay: %d messages sent", total)
+            return total
+
+    def _wait_inflight_drain(self) -> bool:
+        """Espera a que los PUBACKs pendientes bajen del low-water mark.
+
+        Returns:
+            True si drenó (o el cliente se paró/desconectó — el loop del
+            caller re-chequea esas condiciones); False si expiró el timeout
+            con el broker sin ACKear.
+        """
+        deadline = time.time() + REPLAY_ACK_DRAIN_TIMEOUT_S
+        while time.time() < deadline:
+            if self._stop_event.is_set() or not self._connected:
+                return True
+            with self._pending_lock:
+                if len(self._pending_acks) <= REPLAY_INFLIGHT_LOW_WATER:
+                    return True
+            time.sleep(0.1)
+        return False
 
     # --- Métodos internos ---
 
@@ -402,9 +449,7 @@ class MQTTClient:
     ) -> None:
         """Envía un único mensaje buffereado. Se marca enviado solo al recibir PUBACK."""
         try:
-            result = self._client.publish(
-                topic, json.dumps(payload), qos=qos
-            )
+            result = self._client.publish(topic, json.dumps(payload), qos=qos)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 # Trackea mid -> buffer_msg_id; mark_sent ocurre en _on_publish
                 with self._pending_lock:
@@ -434,9 +479,7 @@ class MQTTClient:
             logger.info("MQTT conectado a %s", self.endpoint)
 
             # Reenvía los mensajes buffereados
-            threading.Thread(
-                target=self.replay_buffer, daemon=True
-            ).start()
+            threading.Thread(target=self.replay_buffer, daemon=True).start()
 
             # Dispara el hook externo on_connected (ej: reconciliación de shadow).
             # Las excepciones acá no deben romper el loop de paho.
@@ -476,6 +519,19 @@ class MQTTClient:
         """Se llama tras un publish exitoso (PUBACK para QoS 1)."""
         with self._pending_lock:
             buf_id = self._pending_acks.pop(mid, None)
+        if buf_id is None:
+            # Race publish→registración: el mid se registra DESPUÉS de que
+            # publish() retorna, y este callback corre en el thread de red de
+            # paho — un PUBACK ultrarrápido puede llegar antes del registro.
+            # Un único retry tras 1ms cubre esa ventana (microsegundos). No
+            # se puede holdear _pending_lock a través del publish(): paho
+            # invoca este callback con sus locks internos tomados y publish()
+            # los necesita → deadlock por inversión de orden. Si el retry
+            # también falla, la fila queda sent=0 y se re-publica en el
+            # próximo replay — duplicado inocuo (ON CONFLICT server-side).
+            time.sleep(0.001)
+            with self._pending_lock:
+                buf_id = self._pending_acks.pop(mid, None)
         if buf_id is not None:
             self.buffer.mark_sent(buf_id)
             logger.debug("MQTT PUBACK received: mid=%d, buffer_id=%d", mid, buf_id)
@@ -504,9 +560,7 @@ class MQTTClient:
         try:
             payload = json.loads(message.payload.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
-            logger.warning(
-                "JSON inválido en topic shadow %s: %s", topic, e
-            )
+            logger.warning("JSON inválido en topic shadow %s: %s", topic, e)
             return
 
         state = payload.get("state", payload)

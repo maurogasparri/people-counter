@@ -11,7 +11,8 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 _spec = importlib.util.spec_from_file_location(
-    "focus_assist_script", _ROOT / "scripts" / "focus_assist.py",
+    "focus_assist_script",
+    _ROOT / "scripts" / "focus_assist.py",
 )
 focus_assist = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(focus_assist)
@@ -30,6 +31,7 @@ class TestFocusScore:
 
     def test_focus_score_on_blurred_frame(self):
         import cv2
+
         blurred = cv2.GaussianBlur(_textured_frame(variance=100), (31, 31), 10)
         score = focus_assist.focus_score(blurred)
         assert score < 50
@@ -101,17 +103,21 @@ class TestEvaluateFocus:
         # Sharp center, but 2 corners are "low-content" (mask=False). The
         # remaining corners are sharp — uniformity should still pass based
         # on the valid corners only.
-        grid = np.array([
-            [500.0, 500.0, 500.0],
-            [500.0, 500.0, 500.0],
-            [500.0, 500.0, 500.0],
-        ])
+        grid = np.array(
+            [
+                [500.0, 500.0, 500.0],
+                [500.0, 500.0, 500.0],
+                [500.0, 500.0, 500.0],
+            ]
+        )
         # Mark 2 corners as invalid (simulate plain wall there)
-        valid = np.array([
-            [False, True, True],
-            [True, True, True],
-            [True, True, False],
-        ])
+        valid = np.array(
+            [
+                [False, True, True],
+                [True, True, True],
+                [True, True, False],
+            ]
+        )
         ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0, valid, valid)
         assert ev["checks"]["uniformity_l"]
         assert ev["uniformity_l_measurable"]
@@ -121,24 +127,28 @@ class TestEvaluateFocus:
         # Flat wall in every corner — uniformity becomes unmeasurable but
         # the check passes by default so the operator isn't blocked.
         grid = np.full((3, 3), 500.0)
-        valid = np.array([
-            [False, True, False],
-            [True, True, True],
-            [False, True, False],
-        ])
+        valid = np.array(
+            [
+                [False, True, False],
+                [True, True, True],
+                [False, True, False],
+            ]
+        )
         ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0, valid, valid)
         assert not ev["uniformity_l_measurable"]
-        assert ev["checks"]["uniformity_l"]   # default-pass
+        assert ev["checks"]["uniformity_l"]  # default-pass
 
     def test_texture_hint_fires_when_corners_invalid_and_scene_not_compact(self):
         # Explicit check that the "agregá textura" hint appears while the
         # session still needs operator action (here: board out of range).
         grid = np.full((3, 3), 500.0)
-        valid = np.array([
-            [False, True, False],
-            [True, True, True],
-            [False, True, False],
-        ])
+        valid = np.array(
+            [
+                [False, True, False],
+                [True, True, True],
+                [False, True, False],
+            ]
+        )
         # Board at 5m — outside target, so all_pass_with_distance=False and
         # hints aren't overridden by the "LISTO" banner.
         ev = focus_assist.evaluate_focus(grid, grid, 5000.0, 5000.0, valid, valid)
@@ -149,11 +159,13 @@ class TestEvaluateFocus:
         # Sharp center, weak corners (below MIN_CORNER_SCORE = 100). The
         # new absolute metric should flag this — the old ratio would have
         # failed here too, but for different reasons.
-        grid = np.array([
-            [50.0, 500.0, 50.0],
-            [500.0, 500.0, 500.0],
-            [50.0, 500.0, 50.0],
-        ])
+        grid = np.array(
+            [
+                [50.0, 500.0, 50.0],
+                [500.0, 500.0, 500.0],
+                [50.0, 500.0, 50.0],
+            ]
+        )
         ev = focus_assist.evaluate_focus(grid, grid, 1500.0, 1500.0)
         assert not ev["checks"]["uniformity_l"]
         assert not ev["checks"]["uniformity_r"]
@@ -163,16 +175,22 @@ class TestEvaluateFocus:
     def test_compact_scene_skips_corner_check(self):
         # Compact scene = board fills the view. Even if corners show zero
         # detail, the check is suppressed and the operator isn't blocked.
-        grid = np.array([
-            [0.0, 500.0, 0.0],
-            [500.0, 500.0, 500.0],
-            [0.0, 500.0, 0.0],
-        ])
+        grid = np.array(
+            [
+                [0.0, 500.0, 0.0],
+                [500.0, 500.0, 500.0],
+                [0.0, 500.0, 0.0],
+            ]
+        )
         ev = focus_assist.evaluate_focus(
-            grid, grid, 1500.0, 1500.0, compact_scene=True,
+            grid,
+            grid,
+            1500.0,
+            1500.0,
+            compact_scene=True,
         )
         assert ev["compact_scene"] is True
-        assert ev["checks"]["uniformity_l"]       # default-pass
+        assert ev["checks"]["uniformity_l"]  # default-pass
         assert ev["checks"]["uniformity_r"]
         assert not ev["uniformity_l_measurable"]  # intentionally unmeasured
         assert ev["all_pass_with_distance"]
@@ -185,7 +203,11 @@ class TestEvaluateFocus:
         # blocks the operator.
         weak_center = np.full((3, 3), 50.0)
         ev = focus_assist.evaluate_focus(
-            weak_center, weak_center, 1500.0, 1500.0, compact_scene=True,
+            weak_center,
+            weak_center,
+            1500.0,
+            1500.0,
+            compact_scene=True,
         )
         assert not ev["checks"]["center_l"]
         assert not ev["all_pass"]
@@ -194,6 +216,7 @@ class TestEvaluateFocus:
 class TestEstimateDistance:
     def test_returns_none_when_no_board(self):
         from src.vision.calibration import create_charuco_board
+
         board = create_charuco_board()
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
         dist, n, bbox, cx = focus_assist.estimate_charuco_distance_mm(blank, board)

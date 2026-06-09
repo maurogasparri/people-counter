@@ -84,41 +84,59 @@ def _parse_exclude_manifest(manifest: Path) -> set[tuple[str, str]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--sources", type=Path, nargs="+", required=True,
+        "--sources",
+        type=Path,
+        nargs="+",
+        required=True,
         help="Una o más carpetas raíz que contienen subdirs por site.",
     )
     parser.add_argument(
-        "--exclude-dir", type=Path, action="append", default=[],
+        "--exclude-dir",
+        type=Path,
+        action="append",
+        default=[],
         help="Dir con frames renombrados (formato sample_for_roboflow.py) "
-             "que deben EXCLUIRSE del calib. Repetible.",
+        "que deben EXCLUIRSE del calib. Repetible.",
     )
     parser.add_argument(
-        "--exclude-manifest", type=Path, action="append", default=[],
+        "--exclude-manifest",
+        type=Path,
+        action="append",
+        default=[],
         help="Manifest .txt con una entry por línea (formato "
-             "NNN_<site>__<orig>.jpg, igual que sample_for_roboflow.py). "
-             "Sirve para excluir aún cuando los archivos originales ya no "
-             "existen — usar training_data/roboflow_uploaded_manifest.txt. "
-             "Repetible.",
+        "NNN_<site>__<orig>.jpg, igual que sample_for_roboflow.py). "
+        "Sirve para excluir aún cuando los archivos originales ya no "
+        "existen — usar training_data/roboflow_uploaded_manifest.txt. "
+        "Repetible.",
     )
     parser.add_argument(
-        "--output", type=Path, required=True,
+        "--output",
+        type=Path,
+        required=True,
         help="Carpeta destino. Se crea si no existe.",
     )
     parser.add_argument(
-        "--total", type=int, default=200,
+        "--total",
+        type=int,
+        default=200,
         help="Total target de imágenes en el calib (default 200).",
     )
     parser.add_argument(
-        "--motion-ratio", type=float, default=0.6,
+        "--motion-ratio",
+        type=float,
+        default=0.6,
         help="Fracción de motion (vs bg) en el calib. Default 0.6 — "
-             "matchea aproximadamente la distribución de inferencia.",
+        "matchea aproximadamente la distribución de inferencia.",
     )
     parser.add_argument(
-        "--seed", type=int, default=7,
+        "--seed",
+        type=int,
+        default=7,
         help="Seed del random sampling (default 7, reproducible).",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Imprime qué se copiaría sin tocar el filesystem.",
     )
     args = parser.parse_args()

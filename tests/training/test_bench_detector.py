@@ -1,4 +1,5 @@
 """Tests para scripts/training/bench_detector.py."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -12,8 +13,7 @@ import pytest
 
 _SPEC = importlib.util.spec_from_file_location(
     "bench_detector",
-    Path(__file__).resolve().parents[2]
-    / "scripts" / "training" / "bench_detector.py",
+    Path(__file__).resolve().parents[2] / "scripts" / "training" / "bench_detector.py",
 )
 bench_detector = importlib.util.module_from_spec(_SPEC)  # type: ignore
 sys.modules["bench_detector"] = bench_detector
@@ -25,13 +25,16 @@ _SPEC.loader.exec_module(bench_detector)  # type: ignore
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("xc,yc,expected", [
-    (640, 360, "center"),   # dead center of a 1280x720 frame
-    (100, 100, "tl"),
-    (1100, 100, "tr"),
-    (100, 600, "bl"),
-    (1100, 600, "br"),
-])
+@pytest.mark.parametrize(
+    "xc,yc,expected",
+    [
+        (640, 360, "center"),  # dead center of a 1280x720 frame
+        (100, 100, "tl"),
+        (1100, 100, "tr"),
+        (100, 600, "bl"),
+        (1100, 600, "br"),
+    ],
+)
 def test_zone_of_classifies_5_regions(xc, yc, expected):
     assert bench_detector._zone_of(xc, yc, 1280, 720) == expected
 
@@ -63,14 +66,11 @@ def _fake_box_set(boxes_xyxy, classes, confidences, w=1280, h=720):
     boxes = MagicMock()
     boxes.__len__ = lambda self: len(boxes_xyxy)
     boxes.xyxy = MagicMock()
-    boxes.xyxy.cpu.return_value.numpy.return_value = np.array(
-        boxes_xyxy, dtype=float)
+    boxes.xyxy.cpu.return_value.numpy.return_value = np.array(boxes_xyxy, dtype=float)
     boxes.cls = MagicMock()
-    boxes.cls.cpu.return_value.numpy.return_value = np.array(
-        classes, dtype=float)
+    boxes.cls.cpu.return_value.numpy.return_value = np.array(classes, dtype=float)
     boxes.conf = MagicMock()
-    boxes.conf.cpu.return_value.numpy.return_value = np.array(
-        confidences, dtype=float)
+    boxes.conf.cpu.return_value.numpy.return_value = np.array(confidences, dtype=float)
     result = MagicMock()
     result.boxes = boxes
     result.orig_shape = (h, w)
@@ -82,9 +82,9 @@ def test_run_bench_aggregates_per_zone(tmp_path):
 
     # Fake ultralytics: 3 frames, with detections at 3 different zones.
     fake_results = [
-        [_fake_box_set([[600, 340, 680, 380]], [0], [0.92])],   # center
-        [_fake_box_set([[50, 50, 150, 150]], [0], [0.55])],     # tl
-        [_fake_box_set([[1100, 600, 1200, 700]], [0], [0.71])], # br
+        [_fake_box_set([[600, 340, 680, 380]], [0], [0.92])],  # center
+        [_fake_box_set([[50, 50, 150, 150]], [0], [0.55])],  # tl
+        [_fake_box_set([[1100, 600, 1200, 700]], [0], [0.71])],  # br
     ]
     fake_model = MagicMock()
     fake_model.predict.side_effect = fake_results
@@ -96,7 +96,9 @@ def test_run_bench_aggregates_per_zone(tmp_path):
     with patch.dict(sys.modules, {"ultralytics": fake_module}):
         report = bench_detector.run_bench(
             weights=tmp_path / "fake.pt",
-            frames_dir=frames, conf=0.25, imgsz=640,
+            frames_dir=frames,
+            conf=0.25,
+            imgsz=640,
         )
 
     s = report["summary"]
@@ -130,7 +132,8 @@ def test_run_bench_handles_empty_detections(tmp_path):
     with patch.dict(sys.modules, {"ultralytics": fake_module}):
         report = bench_detector.run_bench(
             weights=tmp_path / "fake.pt",
-            frames_dir=frames, conf=0.25,
+            frames_dir=frames,
+            conf=0.25,
         )
 
     s = report["summary"]
@@ -149,7 +152,8 @@ def test_run_bench_empty_dir_raises(tmp_path):
         with pytest.raises(SystemExit, match="No images"):
             bench_detector.run_bench(
                 weights=tmp_path / "f.pt",
-                frames_dir=empty, conf=0.25,
+                frames_dir=empty,
+                conf=0.25,
             )
 
 
@@ -160,7 +164,8 @@ def test_run_bench_missing_dir_raises(tmp_path):
         with pytest.raises(SystemExit, match="not found"):
             bench_detector.run_bench(
                 weights=tmp_path / "f.pt",
-                frames_dir=tmp_path / "does-not-exist", conf=0.25,
+                frames_dir=tmp_path / "does-not-exist",
+                conf=0.25,
             )
 
 
@@ -173,21 +178,37 @@ def test_diff_reports_runs_without_error(tmp_path, capsys):
     """Smoke test — diff reads two real JSON files and prints a summary."""
     a = {
         "summary": {
-            "weights": "a.pt", "n_frames": 10, "frames_with_detections": 4,
-            "detection_rate": 0.4, "total_detections": 5,
+            "weights": "a.pt",
+            "n_frames": 10,
+            "frames_with_detections": 4,
+            "detection_rate": 0.4,
+            "total_detections": 5,
             "zone_counts": {"center": 2, "tl": 1, "tr": 1, "bl": 1, "br": 0},
-            "confidence": {"mean": 0.5, "median": 0.5,
-                           "min": 0.3, "max": 0.7, "stdev": 0.1},
+            "confidence": {
+                "mean": 0.5,
+                "median": 0.5,
+                "min": 0.3,
+                "max": 0.7,
+                "stdev": 0.1,
+            },
         },
         "per_frame": [],
     }
     b = {
         "summary": {
-            "weights": "b.pt", "n_frames": 10, "frames_with_detections": 9,
-            "detection_rate": 0.9, "total_detections": 11,
+            "weights": "b.pt",
+            "n_frames": 10,
+            "frames_with_detections": 9,
+            "detection_rate": 0.9,
+            "total_detections": 11,
             "zone_counts": {"center": 5, "tl": 2, "tr": 2, "bl": 1, "br": 1},
-            "confidence": {"mean": 0.78, "median": 0.8,
-                           "min": 0.4, "max": 0.95, "stdev": 0.12},
+            "confidence": {
+                "mean": 0.78,
+                "median": 0.8,
+                "min": 0.4,
+                "max": 0.95,
+                "stdev": 0.12,
+            },
         },
         "per_frame": [],
     }

@@ -93,6 +93,7 @@ def generate_html_report(
     if R is not None:
         try:
             from src.vision.calibration import lens_alignment_metrics
+
             am = lens_alignment_metrics(R, T)
             alignment_html = f"""
 <h2>Alineamiento entre lentes</h2>
@@ -123,8 +124,11 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
         center_threshold = diagnose_zones.get("_center_threshold", 5.0)
 
         center_class = "good" if center_err <= center_threshold else "bad"
-        verdict_pill = _pill("PASS Depth validation", True) if depth_pass \
+        verdict_pill = (
+            _pill("PASS Depth validation", True)
+            if depth_pass
             else _pill("FAIL Depth validation", False)
+        )
 
         # Clasificación de confiabilidad per-zona: la lectura de
         # depth de una zona es confiable cuando std es bajo (SGBM
@@ -155,9 +159,9 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
             if vals is None:
                 edge_rows_html.append(
                     f'<tr class="row-unreliable"><td>{name}</td>'
-                    f'<td colspan=4 class=dim>NO DATA</td>'
+                    f"<td colspan=4 class=dim>NO DATA</td>"
                     f'<td><span class="confidence-tag confidence-unreliable">'
-                    f'⚠ Sin datos</span></td></tr>'
+                    f"⚠ Sin datos</span></td></tr>"
                 )
                 continue
 
@@ -168,44 +172,50 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
                 # Zona del verdict — numbers completos, badge grande VERDICT
                 err_color = "good" if abs_err <= center_threshold else "bad"
                 row_class = "row-center"
-                status_html = ('<span class="badge-verdict">VERDICT</span>')
+                status_html = '<span class="badge-verdict">VERDICT</span>'
                 depth_cell = f"{depth:.0f} mm"
-                err_cell = (
-                    f'<span class="{err_color}">{err_pct:+.2f}%</span>'
-                )
+                err_cell = f'<span class="{err_color}">{err_pct:+.2f}%</span>'
             else:
                 rel = _reliability(std, fill)
                 if rel == "unreliable":
                     row_class = "row-unreliable"
-                    status_html = ('<span class="confidence-tag '
-                                   'confidence-unreliable">⚠ SGBM falló</span>')
-                    depth_cell = '<span class=dim>—</span>'
-                    err_cell = '<span class=dim>—</span>'
+                    status_html = (
+                        '<span class="confidence-tag '
+                        'confidence-unreliable">⚠ SGBM falló</span>'
+                    )
+                    depth_cell = "<span class=dim>—</span>"
+                    err_cell = "<span class=dim>—</span>"
                 elif abs_err <= center_threshold:
                     # Confiable Y cerca del target
                     row_class = "row-reliable"
-                    status_html = ('<span class="confidence-tag '
-                                   'confidence-reliable">✓ Coincide</span>')
+                    status_html = (
+                        '<span class="confidence-tag '
+                        'confidence-reliable">✓ Coincide</span>'
+                    )
                     depth_cell = f"{depth:.0f} mm"
                     err_cell = f'<span class="good">{err_pct:+.2f}%</span>'
                 else:
                     # Confiable (o parcial) pero midiendo otro plano
                     row_class = "row-different"
-                    label = ("● Otro plano (precisión limitada)"
-                             if rel == "partial"
-                             else "● Otro plano")
-                    status_html = (f'<span class="confidence-tag '
-                                   f'confidence-different">{label}</span>')
+                    label = (
+                        "● Otro plano (precisión limitada)"
+                        if rel == "partial"
+                        else "● Otro plano"
+                    )
+                    status_html = (
+                        f'<span class="confidence-tag '
+                        f'confidence-different">{label}</span>'
+                    )
                     depth_cell = f"{depth:.0f} mm"
-                    err_cell = f'<span class=dim>{err_pct:+.2f}%</span>'
+                    err_cell = f"<span class=dim>{err_pct:+.2f}%</span>"
 
             row_html = (
                 f'<tr class="{row_class}"><td>{name}</td>'
-                f'<td>{depth_cell}</td>'
-                f'<td>{std:.0f} mm</td>'
-                f'<td>{err_cell}</td>'
-                f'<td>{fill:.1f}%</td>'
-                f'<td>{status_html}</td></tr>'
+                f"<td>{depth_cell}</td>"
+                f"<td>{std:.0f} mm</td>"
+                f"<td>{err_cell}</td>"
+                f"<td>{fill:.1f}%</td>"
+                f"<td>{status_html}</td></tr>"
             )
             if is_center:
                 center_row_html = row_html
@@ -266,9 +276,11 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
     residuals_html = ""
     outlier_indices: set[int] = set()
     if per_pair_residuals:
-        valid = [r for r in per_pair_residuals
-                 if r["rms"] == r["rms"]  # no es NaN
-                 and r["rms"] != float("inf")]
+        valid = [
+            r
+            for r in per_pair_residuals
+            if r["rms"] == r["rms"] and r["rms"] != float("inf")  # no es NaN
+        ]
         if valid:
             rms_values = sorted(r["rms"] for r in valid)
             median_rms = rms_values[len(rms_values) // 2]
@@ -280,10 +292,24 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
                 is_outlier = (not is_nan) and rms_v > outlier_threshold
                 if is_outlier:
                     outlier_indices.add(int(r["pair_idx"]))
-                cls = "bad" if is_outlier else ("warn" if (not is_nan and rms_v > median_rms * 1.5) else "good")
+                cls = (
+                    "bad"
+                    if is_outlier
+                    else (
+                        "warn" if (not is_nan and rms_v > median_rms * 1.5) else "good"
+                    )
+                )
                 rms_text = f"{rms_v:.2f}" if not is_nan else "—"
-                rms_l_text = f"{r.get('rms_l', float('nan')):.2f}" if r.get('rms_l') == r.get('rms_l') else "—"
-                rms_r_text = f"{r.get('rms_r', float('nan')):.2f}" if r.get('rms_r') == r.get('rms_r') else "—"
+                rms_l_text = (
+                    f"{r.get('rms_l', float('nan')):.2f}"
+                    if r.get("rms_l") == r.get("rms_l")
+                    else "—"
+                )
+                rms_r_text = (
+                    f"{r.get('rms_r', float('nan')):.2f}"
+                    if r.get("rms_r") == r.get("rms_r")
+                    else "—"
+                )
                 rows_html.append(
                     f"<tr><td>{int(r['pair_idx'])}</td><td class='{cls}'>{rms_text}</td>"
                     f"<td>{rms_l_text}</td><td>{rms_r_text}</td><td>{int(r.get('n_corners', 0))}</td></tr>"
@@ -312,21 +338,31 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
             try:
                 img_l = cv2.imread(str(lp))
                 img_r = cv2.imread(str(rp))
-                combined = np.hstack([img_l, img_r]) if (img_l is not None and img_r is not None) else None
+                combined = (
+                    np.hstack([img_l, img_r])
+                    if (img_l is not None and img_r is not None)
+                    else None
+                )
             except Exception:
                 combined = None
-            b64 = _img_to_base64_jpeg(combined, max_w=480, quality=50) if combined is not None else ""
-            img_tag = f'<img src="data:image/jpeg;base64,{b64}"/>' if b64 else '<div class="miss">missing</div>'
-            is_outlier = idx in outlier_indices
-            badge = '<span class="outlier-badge">OUTLIER</span>' if is_outlier else ''
-            tile_cls = "tile outlier" if is_outlier else "tile"
-            corners_text = (
-                f"L={n_l}/R={n_r}" if n_l != n_r else f"{n_l}"
+            b64 = (
+                _img_to_base64_jpeg(combined, max_w=480, quality=50)
+                if combined is not None
+                else ""
             )
+            img_tag = (
+                f'<img src="data:image/jpeg;base64,{b64}"/>'
+                if b64
+                else '<div class="miss">missing</div>'
+            )
+            is_outlier = idx in outlier_indices
+            badge = '<span class="outlier-badge">OUTLIER</span>' if is_outlier else ""
+            tile_cls = "tile outlier" if is_outlier else "tile"
+            corners_text = f"L={n_l}/R={n_r}" if n_l != n_r else f"{n_l}"
             tiles.append(
                 f'<div class="{tile_cls}">'
                 f'<div class="tile-label">#{idx} · {pose_id} — {corners_text} esquinas {badge}</div>'
-                f'{img_tag}</div>'
+                f"{img_tag}</div>"
             )
         captures_html = f"""
 <h2>Capturas ({len(capture_pairs)})</h2>
@@ -337,7 +373,7 @@ Bracket bien armado: pitch/roll &lt;0.5°, yaw &lt;1°, offsets Y/Z &lt;2 mm.</p
     if not baseline_ok:
         baseline_note = (
             f'<div class="alert">⚠ Baseline estimada difiere {baseline_delta:+.1f} mm '
-            f'del diseño ({DESIGN_BASELINE_MM:.0f}mm, tolerancia ±{baseline_tol_mm:.0f}mm).</div>'
+            f"del diseño ({DESIGN_BASELINE_MM:.0f}mm, tolerancia ±{baseline_tol_mm:.0f}mm).</div>"
         )
 
     # Imagen de verificación de rectificación (epipolar), embedded.

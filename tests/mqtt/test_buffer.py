@@ -1,4 +1,5 @@
 """Tests para el buffer de mensajes MQTT."""
+
 import tempfile
 from pathlib import Path
 
@@ -48,6 +49,50 @@ def test_mark_sent_swallows_sqlite_errors(monkeypatch):
     monkeypatch.setattr(sqlite3, "connect", _boom)
     # No debe levantar — devuelve False.
     assert buf.mark_sent(msg_id) is False
+
+
+def test_get_pending_after_id_paginates():
+    """``after_id`` avanza por el backlog sin re-leer filas ya devueltas —
+    es lo que usa el replay para drenar backlogs más grandes que un batch
+    (las filas publicadas siguen sent=0 hasta su PUBACK, así que paginar
+    solo por ``sent`` loopearía sobre el mismo batch)."""
+    tmpdir = tempfile.mkdtemp()
+    db_path = str(Path(tmpdir) / "test.db")
+    buf = MessageBuffer(db_path)
+
+    ids = [buf.enqueue("t", {"i": i}) for i in range(5)]
+
+    first = buf.get_pending(limit=2)
+    assert [r[0] for r in first] == ids[:2]
+    rest = buf.get_pending(limit=10, after_id=first[-1][0])
+    assert [r[0] for r in rest] == ids[2:]
+    # Más allá del último id no hay nada.
+    assert buf.get_pending(limit=10, after_id=ids[-1]) == []
+
+
+def test_purge_old_keeps_unsent():
+    """purge_old solo borra filas ya enviadas. Los unsent viejos son backlog
+    legítimo de un outage — dropearlos por edad era pérdida silenciosa de
+    datos (regla dura: siempre buffear localmente). El bound de disco lo da
+    enforce_backlog_limit, no el purge."""
+    import sqlite3 as _sql
+
+    tmpdir = tempfile.mkdtemp()
+    db_path = str(Path(tmpdir) / "test.db")
+    buf = MessageBuffer(db_path, max_age_hours=1)
+
+    id_unsent = buf.enqueue("t", {"i": 1})
+    id_sent = buf.enqueue("t", {"i": 2})
+    buf.mark_sent(id_sent)
+
+    # Envejecer ambas filas más allá del cutoff de 1h.
+    with _sql.connect(db_path) as conn:
+        conn.execute("UPDATE messages SET created_at = created_at - 7200")
+
+    deleted = buf.purge_old()
+    assert deleted == 1  # solo la sent=1
+    pending = buf.get_pending()
+    assert [r[0] for r in pending] == [id_unsent]
 
 
 def test_count_unsent_reports_backlog():

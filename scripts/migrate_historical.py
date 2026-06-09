@@ -22,6 +22,7 @@ Uso:
   py -3 -m scripts.migrate_historical --csv export_historico.csv
   py -3 -m scripts.migrate_historical --csv x.csv --truncate-staging --batch-size 5000
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,11 +36,23 @@ logger = logging.getLogger("migrate_historical")
 
 # Columnas de la staging (orden canónico). Mantener en sync con el .sql.
 STAGING_COLS = [
-    "store_id", "local_hour",
-    "ins", "outs", "ins_adult", "ins_child",
-    "sales", "returns", "transactions", "items_sale", "items_return",
-    "amount_minor_sale", "amount_minor_return", "currency",
-    "passersby", "shoppers", "visitors",
+    "store_id",
+    "local_hour",
+    "ins",
+    "outs",
+    "ins_adult",
+    "ins_child",
+    "sales",
+    "returns",
+    "transactions",
+    "items_sale",
+    "items_return",
+    "amount_minor_sale",
+    "amount_minor_return",
+    "currency",
+    "passersby",
+    "shoppers",
+    "visitors",
 ]
 
 STAGING_DDL = """
@@ -54,7 +67,12 @@ CREATE TABLE IF NOT EXISTS stg_historical_hourly (
 );
 """
 
-SQL_TRANSFORM = Path(__file__).resolve().parent.parent / "infra" / "sql" / "migrate_historical_rollups.example.sql"
+SQL_TRANSFORM = (
+    Path(__file__).resolve().parent.parent
+    / "infra"
+    / "sql"
+    / "migrate_historical_rollups.example.sql"
+)
 
 
 def _norm(v: str):
@@ -64,26 +82,45 @@ def _norm(v: str):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--csv", required=True, help="CSV agregado (header con columnas del staging).")
-    ap.add_argument("--stack-name", default=os.environ.get("PC_STACK", "people-counter-dev"))
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--csv", required=True, help="CSV agregado (header con columnas del staging)."
+    )
+    ap.add_argument(
+        "--stack-name", default=os.environ.get("PC_STACK", "people-counter-dev")
+    )
     ap.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
-    ap.add_argument("--batch-size", type=int, default=5000, help="Filas por commit (default 5000).")
-    ap.add_argument("--truncate-staging", action="store_true", help="Vaciar la staging antes de cargar.")
-    ap.add_argument("--keep-staging", action="store_true", help="No dropear la staging al terminar.")
-    ap.add_argument("--sql-file", default=str(SQL_TRANSFORM), help="Transform SQL a aplicar.")
+    ap.add_argument(
+        "--batch-size", type=int, default=5000, help="Filas por commit (default 5000)."
+    )
+    ap.add_argument(
+        "--truncate-staging",
+        action="store_true",
+        help="Vaciar la staging antes de cargar.",
+    )
+    ap.add_argument(
+        "--keep-staging", action="store_true", help="No dropear la staging al terminar."
+    )
+    ap.add_argument(
+        "--sql-file", default=str(SQL_TRANSFORM), help="Transform SQL a aplicar."
+    )
     args = ap.parse_args()
 
     rows = list(csv.DictReader(open(args.csv, newline="", encoding="utf-8")))
     if not rows:
-        logger.error("CSV vacío."); return
+        logger.error("CSV vacío.")
+        return
     present = [c for c in STAGING_COLS if c in rows[0]]
     for req in ("store_id", "local_hour"):
         if req not in present:
-            logger.error("Falta la columna obligatoria %r en el CSV.", req); return
+            logger.error("Falta la columna obligatoria %r en el CSV.", req)
+            return
     logger.info("CSV: %d filas, columnas mapeadas: %s", len(rows), present)
 
     from scripts.provision import _rds_connect  # noqa: E402
+
     conn = _rds_connect(args.stack_name, args.region)
     try:
         with conn.cursor() as cur:
@@ -95,12 +132,18 @@ def main() -> None:
             # Carga POR LOTES con commit incremental (footprint chico → no OOM).
             cols_sql = ", ".join(present)
             ph = "(" + ", ".join(["%s"] * len(present)) + ")"
-            insert = (f"INSERT INTO stg_historical_hourly ({cols_sql}) VALUES {ph} "
-                      f"ON CONFLICT (store_id, local_hour) DO UPDATE SET "
-                      + ", ".join(f"{c}=EXCLUDED.{c}" for c in present if c not in ("store_id", "local_hour")))
+            insert = (
+                f"INSERT INTO stg_historical_hourly ({cols_sql}) VALUES {ph} "
+                f"ON CONFLICT (store_id, local_hour) DO UPDATE SET "
+                + ", ".join(
+                    f"{c}=EXCLUDED.{c}"
+                    for c in present
+                    if c not in ("store_id", "local_hour")
+                )
+            )
             loaded = 0
             for i in range(0, len(rows), args.batch_size):
-                chunk = rows[i:i + args.batch_size]
+                chunk = rows[i : i + args.batch_size]
                 for r in chunk:
                     cur.execute(insert, [_norm(r[c]) for c in present])
                 conn.commit()
@@ -119,7 +162,9 @@ def main() -> None:
                 cur.execute("DROP TABLE stg_historical_hourly")
                 conn.commit()
                 logger.info("staging dropeada.")
-        logger.info("Migración OK. ⚠️ NO resetees rollup_state (el refresh del vivo no toca el histórico).")
+        logger.info(
+            "Migración OK. ⚠️ NO resetees rollup_state (el refresh del vivo no toca el histórico)."
+        )
     finally:
         conn.close()
 

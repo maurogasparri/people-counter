@@ -134,7 +134,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/stream":
             self.send_response(200)
             self.send_header(
-                "Content-Type", "multipart/x-mixed-replace; boundary=frame",
+                "Content-Type",
+                "multipart/x-mixed-replace; boundary=frame",
             )
             self.end_headers()
             try:
@@ -184,8 +185,14 @@ def _draw_overlay(vis: np.ndarray, label: str) -> None:
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
     cv2.rectangle(vis, (4, 4), (4 + tw + 10, 4 + th + 12), (0, 0, 0), -1)
     cv2.putText(
-        vis, label, (9, 4 + th + 6),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA,
+        vis,
+        label,
+        (9, 4 + th + 6),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
     )
 
 
@@ -216,8 +223,14 @@ def _draw_counter_overlay(
         y2 = int(zone["y_max"] * sy)
         cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 220, 220), 2)
         cv2.putText(
-            vis, "zone", (x1 + 6, y1 + 22),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 220), 2, cv2.LINE_AA,
+            vis,
+            "zone",
+            (x1 + 6, y1 + 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 220, 220),
+            2,
+            cv2.LINE_AA,
         )
 
     # Counting line (red) + direction labels on each side
@@ -228,23 +241,47 @@ def _draw_counter_overlay(
         cv2.line(vis, (0, ly), (pw, ly), (0, 0, 255), 2)
         # Side A above the line, Side B below (per main.py convention)
         cv2.putText(
-            vis, f"-> {label_a}", (12, ly - 8),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+            vis,
+            f"-> {label_a}",
+            (12, ly - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
         )
         cv2.putText(
-            vis, f"<- {label_b}", (12, ly + 22),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+            vis,
+            f"<- {label_b}",
+            (12, ly + 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
         )
     elif line.get("orientation") == "vertical" and "position" in line:
         lx = int(line["position"] * sx)
         cv2.line(vis, (lx, 0), (lx, ph), (0, 0, 255), 2)
         cv2.putText(
-            vis, f"v {label_a}", (lx + 6, 22),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+            vis,
+            f"v {label_a}",
+            (lx + 6, 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
         )
         cv2.putText(
-            vis, f"^ {label_b}", (lx + 6, ph - 12),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+            vis,
+            f"^ {label_b}",
+            (lx + 6, ph - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
         )
 
 
@@ -252,41 +289,65 @@ def main() -> None:
     global latest_jpeg, shutting_down
 
     parser = argparse.ArgumentParser(description="Stereo live preview")
-    parser.add_argument("--left", type=int, default=0,
-                        help="Left camera index. Default 0.")
-    parser.add_argument("--right", type=int, default=1,
-                        help="Right camera index. Default 1.")
-    parser.add_argument("--resolution", type=int, nargs=2, default=None,
-                        help="Capture resolution. Default: reads "
-                             "vision.resolution from /etc/people-counter/"
-                             "config.yaml (matches the runtime). Pass "
-                             "explicit only for tests / dev workstations.")
-    parser.add_argument("--port", type=int, default=8080,
-                        help="HTTP port for the preview UI. Default 8080.")
-    parser.add_argument("--meter", choices=("matrix", "centre", "spot"),
-                        default="matrix",
-                        help="AE metering mode. Use 'centre' / 'spot' when "
-                             "bright zones in the periphery (windows, lights) "
-                             "drag exposure down on the centre.")
-    parser.add_argument("--lock-ae", action="store_true",
-                        help="Lock AE/AWB on both cameras after a 1s settle "
-                             "(same behaviour as the calibrate wizard and the "
-                             "runtime pipeline). Without lock, each camera "
-                             "runs AE/AWB independently and L/R can drift to "
-                             "different exposure / colour state.")
-    parser.add_argument("--config", default=None,
-                        help="Optional path to the runtime config.yaml. When "
-                             "provided, the preview matches the pipeline's "
-                             "actual setup: takes resolution from config, "
-                             "rectifies frames using the calibration .npz, "
-                             "and draws the counting zone rectangle + counting line + "
-                             "direction labels on the L preview. Use this to "
-                             "verify the runtime layout before launching "
-                             "main.py.")
-    parser.add_argument("--max-exposure-us", type=int, default=16000,
-                        help="Exposure time cap in microseconds via "
-                             "FrameDurationLimits. Default 16000us (16ms), "
-                             "same as the runtime pipeline. Pass 0 to disable.")
+    parser.add_argument(
+        "--left", type=int, default=0, help="Left camera index. Default 0."
+    )
+    parser.add_argument(
+        "--right", type=int, default=1, help="Right camera index. Default 1."
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Capture resolution. Default: reads "
+        "vision.resolution from /etc/people-counter/"
+        "config.yaml (matches the runtime). Pass "
+        "explicit only for tests / dev workstations.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="HTTP port for the preview UI. Default 8080.",
+    )
+    parser.add_argument(
+        "--meter",
+        choices=("matrix", "centre", "spot"),
+        default="matrix",
+        help="AE metering mode. Use 'centre' / 'spot' when "
+        "bright zones in the periphery (windows, lights) "
+        "drag exposure down on the centre.",
+    )
+    parser.add_argument(
+        "--lock-ae",
+        action="store_true",
+        help="Lock AE/AWB on both cameras after a 1s settle "
+        "(same behaviour as the calibrate wizard and the "
+        "runtime pipeline). Without lock, each camera "
+        "runs AE/AWB independently and L/R can drift to "
+        "different exposure / colour state.",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional path to the runtime config.yaml. When "
+        "provided, the preview matches the pipeline's "
+        "actual setup: takes resolution from config, "
+        "rectifies frames using the calibration .npz, "
+        "and draws the counting zone rectangle + counting line + "
+        "direction labels on the L preview. Use this to "
+        "verify the runtime layout before launching "
+        "main.py.",
+    )
+    parser.add_argument(
+        "--max-exposure-us",
+        type=int,
+        default=16000,
+        help="Exposure time cap in microseconds via "
+        "FrameDurationLimits. Default 16000us (16ms), "
+        "same as the runtime pipeline. Pass 0 to disable.",
+    )
     args = parser.parse_args()
 
     # Optional: load runtime config so the preview reflects the pipeline's
@@ -296,6 +357,7 @@ def main() -> None:
     counter_cfg = None
     if args.config:
         from src.config.loader import load_config
+
         runtime_cfg = load_config(args.config)
         vision_cfg = runtime_cfg.get("vision", {})
         # Honour the resolution from config so the counting zone / line scale match
@@ -303,8 +365,10 @@ def main() -> None:
         cfg_res = vision_cfg.get("resolution")
         if cfg_res:
             if args.resolution is not None and tuple(cfg_res) != tuple(args.resolution):
-                print(f"Resolución del config: {cfg_res} (override del CLI "
-                      f"{args.resolution})")
+                print(
+                    f"Resolución del config: {cfg_res} (override del CLI "
+                    f"{args.resolution})"
+                )
             args.resolution = list(cfg_res)
         # Calibration for rectification — without it the counting zone overlay still
         # shows but at the un-rectified frame, which won't match the
@@ -312,12 +376,15 @@ def main() -> None:
         cal_path = vision_cfg.get("calibration_file")
         if cal_path and Path(cal_path).exists():
             from src.vision.calibration import load_calibration
+
             calibration = load_calibration(cal_path)
             print(f"Calibración cargada: {cal_path} (frames serán rectificados)")
         elif cal_path:
-            print(f"⚠ calibration_file en config ({cal_path}) no existe — "
-                  f"frames sin rectificar; counting zone / línea pueden no coincidir "
-                  f"exacto con lo que ve el pipeline.")
+            print(
+                f"⚠ calibration_file en config ({cal_path}) no existe — "
+                f"frames sin rectificar; counting zone / línea pueden no coincidir "
+                f"exacto con lo que ve el pipeline."
+            )
         counter_cfg = runtime_cfg.get("counter")
         if counter_cfg:
             print("Counting zone + línea de conteo se dibujarán sobre el preview L.")
@@ -329,6 +396,7 @@ def main() -> None:
             DEFAULT_DEVICE_CONFIG_PATH,
             load_device_config,
         )
+
         try:
             cfg = load_device_config(DEFAULT_DEVICE_CONFIG_PATH)
         except FileNotFoundError:
@@ -348,15 +416,14 @@ def main() -> None:
     from libcamera import controls as _libcam_controls
 
     from src.config.hardware import load_hardware_params
+
     hw = load_hardware_params()
 
     cam_l = Picamera2(args.left)
     cam_r = Picamera2(args.right)
     w, h = args.resolution
     max_exp = int(args.max_exposure_us) if args.max_exposure_us > 0 else None
-    initial_controls = (
-        {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
-    )
+    initial_controls = {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
     for cam in [cam_l, cam_r]:
         # raw FIJO en el sensor mode canónico del device (sensor.default_res
         # del config). Anclar el mode evita que picamera2 elija Mode 0
@@ -383,13 +450,15 @@ def main() -> None:
     if args.lock_ae:
         for cam in [cam_l, cam_r]:
             metadata = cam.capture_metadata()
-            cam.set_controls({
-                "AeEnable": False,
-                "AwbEnable": False,
-                "ExposureTime": metadata.get("ExposureTime", 30000),
-                "AnalogueGain": metadata.get("AnalogueGain", 1.0),
-                "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
-            })
+            cam.set_controls(
+                {
+                    "AeEnable": False,
+                    "AwbEnable": False,
+                    "ExposureTime": metadata.get("ExposureTime", 30000),
+                    "AnalogueGain": metadata.get("AnalogueGain", 1.0),
+                    "ColourGains": metadata.get("ColourGains", (1.0, 1.0)),
+                }
+            )
 
     ThreadingHTTPServer.allow_reuse_address = True
     try:
@@ -397,8 +466,10 @@ def main() -> None:
     except OSError as e:
         print(f"❌ No se pudo abrir el puerto {args.port}: {e}")
         try:
-            cam_l.stop(); cam_l.close()
-            cam_r.stop(); cam_r.close()
+            cam_l.stop()
+            cam_l.close()
+            cam_r.stop()
+            cam_r.close()
         except Exception:
             pass
         sys.exit(1)
@@ -429,10 +500,12 @@ def main() -> None:
 
         while not shutting_down:
             frame_l = cv2.cvtColor(
-                cam_l.capture_array("main"), cv2.COLOR_RGB2BGR,
+                cam_l.capture_array("main"),
+                cv2.COLOR_RGB2BGR,
             )
             frame_r = cv2.cvtColor(
-                cam_r.capture_array("main"), cv2.COLOR_RGB2BGR,
+                cam_r.capture_array("main"),
+                cv2.COLOR_RGB2BGR,
             )
 
             # Rectificación opcional — cuando --config nos dio una
@@ -441,6 +514,7 @@ def main() -> None:
             # frames raw.
             if calibration is not None:
                 from src.vision.calibration import rectify_pair
+
                 frame_l, frame_r = rectify_pair(frame_l, frame_r, calibration)
 
             src_h, src_w = frame_l.shape[:2]
@@ -456,7 +530,9 @@ def main() -> None:
 
             combined = np.hstack([vis_l, vis_r])
             _, jpeg = cv2.imencode(
-                ".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 75],
+                ".jpg",
+                combined,
+                [cv2.IMWRITE_JPEG_QUALITY, 75],
             )
 
             with jpeg_lock:
@@ -468,8 +544,10 @@ def main() -> None:
     finally:
         shutting_down = True
         try:
-            cam_l.stop(); cam_l.close()
-            cam_r.stop(); cam_r.close()
+            cam_l.stop()
+            cam_l.close()
+            cam_r.stop()
+            cam_r.close()
         except Exception:
             pass
         try:

@@ -1,4 +1,5 @@
 """Tests para src/status/health.py — probes + cascada de decisión de estado."""
+
 from __future__ import annotations
 
 import socket
@@ -53,16 +54,12 @@ def test_hardware_fault_dominates_pipeline_and_below():
 
 
 def test_pipeline_dominates_internet():
-    assert (
-        decide_state(pipeline_ok=False, internet_ok=False)
-        is LedState.SOFTWARE_FAULT
-    )
+    assert decide_state(pipeline_ok=False, internet_ok=False) is LedState.SOFTWARE_FAULT
 
 
 def test_no_internet_dominates_cloud():
     assert (
-        decide_state(internet_ok=False, cloud_connected=False)
-        is LedState.NO_INTERNET
+        decide_state(internet_ok=False, cloud_connected=False) is LedState.NO_INTERNET
     )
 
 
@@ -98,7 +95,7 @@ def test_decide_state_table(kwargs, expected):
 def test_check_disk_ok_above_threshold(monkeypatch):
     class _Usage:
         total = 100 * 1024 * 1024 * 1024  # 100 GB
-        free = 50 * 1024 * 1024 * 1024     # 50 GB free → 50%
+        free = 50 * 1024 * 1024 * 1024  # 50 GB free → 50%
 
     monkeypatch.setattr("shutil.disk_usage", lambda _p: _Usage())
     assert check_disk_ok() is True

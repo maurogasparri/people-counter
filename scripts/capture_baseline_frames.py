@@ -51,19 +51,26 @@ logger = logging.getLogger("capture_baseline_frames")
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--config", required=True,
+        "--config",
+        required=True,
         help="Path al config.yaml (e.g. /etc/people-counter/config.yaml)",
     )
     parser.add_argument(
-        "--num-frames", type=int, default=30,
+        "--num-frames",
+        type=int,
+        default=30,
         help="Cantidad de frames a capturar (default 30)",
     )
     parser.add_argument(
-        "--interval", type=float, default=2.0,
+        "--interval",
+        type=float,
+        default=2.0,
         help="Segundos entre capturas (default 2.0)",
     )
     parser.add_argument(
-        "--output", type=Path, required=True,
+        "--output",
+        type=Path,
+        required=True,
         help="Carpeta de salida (se crea si no existe)",
     )
     args = parser.parse_args()
@@ -92,7 +99,9 @@ def main() -> int:
     cap.open()
     logger.info(
         "Capturando %d frames cada %.1fs hacia %s",
-        args.num_frames, args.interval, args.output,
+        args.num_frames,
+        args.interval,
+        args.output,
     )
 
     try:

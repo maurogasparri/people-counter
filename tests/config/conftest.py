@@ -61,7 +61,15 @@ _COMPLETE_CONFIG: dict = {
             "depth_gate_m": 0.5,
         },
     },
-    "counter": {},
+    "counter": {
+        "lines": [
+            {
+                "from": [0, 240],
+                "to": [640, 240],
+                "labels": {"top_to_bottom": "ingress", "bottom_to_top": "egress"},
+            }
+        ],
+    },
     "wifi_ble": {
         "enabled": True,
         "wifi_interface": "wlan0",

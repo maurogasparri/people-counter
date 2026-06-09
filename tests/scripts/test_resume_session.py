@@ -11,7 +11,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
 _spec = importlib.util.spec_from_file_location(
-    "calibrate_script", _ROOT / "scripts" / "calibrate.py",
+    "calibrate_script",
+    _ROOT / "scripts" / "calibrate.py",
 )
 calibrate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(calibrate)
@@ -19,8 +20,13 @@ _spec.loader.exec_module(calibrate)
 
 def _args(tmp: Path, **overrides) -> argparse.Namespace:
     defaults = dict(
-        columns=9, rows=6, square_length=45.0, marker_length=33.0,
-        dist_near_mm=1000.0, dist_mid_mm=2000.0, dist_far_mm=3000.0,
+        columns=9,
+        rows=6,
+        square_length=45.0,
+        marker_length=33.0,
+        dist_near_mm=1000.0,
+        dist_mid_mm=2000.0,
+        dist_far_mm=3000.0,
         output_dir=str(tmp),
     )
     defaults.update(overrides)
@@ -97,6 +103,7 @@ class TestSessionRoundtrip:
         calibrate._save_session(tmp_path, state, poses, _args(tmp_path))
 
         data = json.loads((tmp_path / "session.json").read_text())
-        skipped = [pid for pid, status in data["pose_status"].items()
-                   if status == "skipped"]
+        skipped = [
+            pid for pid, status in data["pose_status"].items() if status == "skipped"
+        ]
         assert skipped == [poses[3].id]

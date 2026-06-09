@@ -34,11 +34,15 @@ PrivateTmp=true
 # setup, no acá), no escribe /proc/sys ni cgroups, y corre como `pi` sin tocar
 # /home. NO se agregan SystemCallFilter ni MemoryDenyWriteExecute a propósito:
 # romperían Hailo/numpy/scapy (JIT + W^X + syscalls de raw socket).
+# Tampoco ProtectClock: implica DeviceAllow=char-rtc, y CUALQUIER DeviceAllow
+# pasa el cgroup de devices a modo allow-list (systemd.exec(5)) → bloquearía
+# /dev/video* y /dev/media* (picamera2), /dev/dma_heap (libcamera en Pi 5),
+# /dev/hailo0, /dev/gpiochip* (LED) y /dev/rfkill (WiFi). El servicio quedaría
+# en crash-loop al abrir las cámaras.
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-ProtectClock=true
 ProtectHostname=true
 RestrictRealtime=true
 RestrictSUIDSGID=true

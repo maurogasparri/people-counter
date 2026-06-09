@@ -1,4 +1,5 @@
 """Buffer SQLite local para resiliencia de mensajes MQTT."""
+
 import json
 import logging
 import sqlite3
@@ -39,7 +40,8 @@ class MessageBuffer:
                 conn.execute("PRAGMA synchronous=NORMAL")
             except sqlite3.Error:
                 logger.exception("PRAGMA WAL setup failed")
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     topic TEXT NOT NULL,
@@ -47,11 +49,10 @@ class MessageBuffer:
                     created_at REAL NOT NULL,
                     sent INTEGER DEFAULT 0
                 )
-            """)
-            # Acelera get_pending() en buffers grandes después de períodos largos offline.
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sent_id ON messages(sent, id)"
+            """
             )
+            # Acelera get_pending() en buffers grandes después de períodos largos offline.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sent_id ON messages(sent, id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_created_at ON messages(created_at)"
             )
@@ -72,30 +73,46 @@ class MessageBuffer:
         PUBACK. Defensivo ante errores de SQLite: si el write falla (DB locked,
         read-only) NO dejamos que la excepción burbujee al loop de paho —
         logueamos y devolvemos False. El peor caso es que la fila quede
-        ``sent=0`` y se re-publique en el próximo replay (QoS 1 = el broker
-        dedupe), mucho mejor que romper el dispatch de callbacks de paho.
+        ``sent=0`` y se re-publique en el próximo replay — QoS 1 es
+        at-least-once (el broker NO deduplica); el duplicado lo absorben
+        los ON CONFLICT + UNIQUE constraints de persist_event server-side.
+        Mucho mejor que romper el dispatch de callbacks de paho.
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    "UPDATE messages SET sent = 1 WHERE id = ?", (message_id,)
-                )
+                conn.execute("UPDATE messages SET sent = 1 WHERE id = ?", (message_id,))
             return True
         except sqlite3.Error:
             logger.exception("mark_sent failed", extra={"message_id": message_id})
             return False
 
-    def get_pending(self, limit: int = 100) -> list[tuple[int, str, dict]]:
-        """Devuelve los mensajes no enviados, los más viejos primero."""
+    def get_pending(
+        self, limit: int = 100, after_id: int = 0
+    ) -> list[tuple[int, str, dict]]:
+        """Devuelve los mensajes no enviados, los más viejos primero.
+
+        ``after_id`` pagina: solo devuelve filas con id mayor. Lo usa el
+        replay para avanzar por un backlog grande en batches sin re-leer
+        las filas ya publicadas en la misma pasada (siguen ``sent=0``
+        hasta que llega su PUBACK — filtrar solo por ``sent`` loopearía
+        sobre las mismas filas).
+        """
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT id, topic, payload FROM messages WHERE sent = 0 ORDER BY id LIMIT ?",
-                (limit,),
+                "SELECT id, topic, payload FROM messages "
+                "WHERE sent = 0 AND id > ? ORDER BY id LIMIT ?",
+                (after_id, limit),
             ).fetchall()
             return [(r[0], r[1], json.loads(r[2])) for r in rows]
 
     def purge_old(self) -> int:
-        """Borra mensajes más viejos que max_age_hours. Devuelve la cantidad borrada.
+        """Borra mensajes YA ENVIADOS más viejos que max_age_hours.
+
+        Solo toca ``sent=1``: los unsent son backlog legítimo de un outage
+        y dropearlos por edad sería pérdida silenciosa de datos (la regla
+        es "siempre buffear localmente"). El bound de disco para outages
+        multi-día lo da ``enforce_backlog_limit`` (cap explícito, con
+        warning logueado), no esta rutina de housekeeping.
 
         Defensivo ante errores de SQLite: el loop principal llama a esto cada
         60s. Si el DB es read-only (smoke run como ``pi`` con el archivo
@@ -108,7 +125,8 @@ class MessageBuffer:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
-                    "DELETE FROM messages WHERE created_at < ?", (cutoff,)
+                    "DELETE FROM messages WHERE sent = 1 AND created_at < ?",
+                    (cutoff,),
                 )
                 return cursor.rowcount
         except sqlite3.Error:

@@ -49,6 +49,40 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="rssi_shopper_threshold"):
             load_config(write_config(tmp_path, complete_config))
 
+    def test_missing_counter_lines_raises(self, tmp_path, complete_config):
+        """Regresión: el Counter se construye lazy en el primer frame —
+        sin esta validación un config sin counter.lines pasaba load_config,
+        el servicio mandaba READY=1 y crasheaba en el primer frame →
+        restart-loop cada 10s, bypaseando el exit-2 amigable de main()."""
+        complete_config["counter"].pop("lines", None)
+        with pytest.raises(ValueError, match="counter.lines"):
+            load_config(write_config(tmp_path, complete_config))
+
+    def test_empty_counter_lines_raises(self, tmp_path, complete_config):
+        complete_config["counter"]["lines"] = []
+        with pytest.raises(ValueError, match="counter.lines"):
+            load_config(write_config(tmp_path, complete_config))
+
+    def test_malformed_counter_line_raises(self, tmp_path, complete_config):
+        complete_config["counter"]["lines"] = [{"from": [0, 240]}]  # sin 'to'
+        with pytest.raises(ValueError, match=r"counter.lines\[0\].to"):
+            load_config(write_config(tmp_path, complete_config))
+
+    def test_invalid_logging_level_raises(self, tmp_path, complete_config):
+        """Un typo en logging.level crasheaba en setup_logging DESPUÉS del
+        exit-2 amigable (getattr sobre el módulo logging) con traceback
+        crudo. Ahora lo rechaza la validación con mensaje claro."""
+        complete_config["logging"]["level"] = "DEBG"
+        with pytest.raises(ValueError, match="logging.level"):
+            load_config(write_config(tmp_path, complete_config))
+
+    def test_lowercase_logging_level_accepted(self, tmp_path, complete_config):
+        """'info' en minúscula es válido — setup_logging normaliza con
+        .upper() (antes getattr devolvía la FUNCIÓN logging.info)."""
+        complete_config["logging"]["level"] = "info"
+        cfg = load_config(write_config(tmp_path, complete_config))
+        assert cfg["logging"]["level"] == "info"
+
 
 # --- merge_cloud_config ---
 
@@ -270,7 +304,8 @@ class TestApplyShadowDelta:
         assert cfg["cloud_defaults"]["operating_hours"] != new_hours
 
     def test_bare_top_level_key_mapped_to_cloud_defaults(
-        self, complete_config_yaml,
+        self,
+        complete_config_yaml,
     ):
         """AWS IoT publica state.desired al ras del root (sin namespacing
         operator-friendly): {counting_enabled: false}. apply_shadow_delta
@@ -301,10 +336,7 @@ class TestApplyShadowDelta:
             new_cfg, applied = apply_shadow_delta(cfg, delta)
         assert applied == []
         assert new_cfg["mqtt"]["endpoint"] == cfg["mqtt"]["endpoint"]
-        assert any(
-            r.message == "shadow_delta_requires_restart"
-            for r in caplog.records
-        )
+        assert any(r.message == "shadow_delta_requires_restart" for r in caplog.records)
 
     def test_unknown_key_ignored(self, complete_config_yaml, caplog):
         cfg = load_config(complete_config_yaml)
@@ -313,20 +345,13 @@ class TestApplyShadowDelta:
             new_cfg, applied = apply_shadow_delta(cfg, delta)
         assert applied == []
         assert "totally_unknown_thing" not in new_cfg
-        assert any(
-            r.message == "shadow_delta_requires_restart"
-            for r in caplog.records
-        )
+        assert any(r.message == "shadow_delta_requires_restart" for r in caplog.records)
 
     def test_counter_tracker_no_longer_pushable(self, complete_config_yaml):
         """counter.tracker.* dejó de ser pusheable — tuning algorítmico
         requiere SSH + restart, no end user via shadow."""
         cfg = load_config(complete_config_yaml)
-        delta = {
-            "counter": {
-                "tracker": {"confirm_frames": 5, "reid_gate_px": 100.0}
-            }
-        }
+        delta = {"counter": {"tracker": {"confirm_frames": 5, "reid_gate_px": 100.0}}}
         new_cfg, applied = apply_shadow_delta(cfg, delta)
         assert applied == []
         # El config no tiene counter.tracker por default; el push no debe
@@ -398,7 +423,9 @@ class TestShadowDeltaValidation:
     persistir al config.yaml (no se silencian con fail_open/fail_closed)."""
 
     def test_invalid_operating_hours_rejected(
-        self, complete_config_yaml, caplog,
+        self,
+        complete_config_yaml,
+        caplog,
     ):
         cfg = load_config(complete_config_yaml)
         original = cfg["cloud_defaults"]["operating_hours"].copy()
@@ -410,9 +437,7 @@ class TestShadowDeltaValidation:
         assert applied == []
         assert new_cfg["cloud_defaults"]["operating_hours"] == original
         # Log del rechazo.
-        assert any(
-            r.message == "shadow_delta_rejected_invalid" for r in caplog.records
-        )
+        assert any(r.message == "shadow_delta_rejected_invalid" for r in caplog.records)
 
     def test_invalid_counting_enabled_rejected(self, complete_config_yaml, caplog):
         """Un toggle bool con un valor no-bool (ej. string ``"false"``) se
@@ -425,9 +450,7 @@ class TestShadowDeltaValidation:
             new_cfg, applied = apply_shadow_delta(cfg, delta)
         assert applied == []
         assert new_cfg["cloud_defaults"].get("counting_enabled") == original
-        assert any(
-            r.message == "shadow_delta_rejected_invalid" for r in caplog.records
-        )
+        assert any(r.message == "shadow_delta_rejected_invalid" for r in caplog.records)
 
     def test_invalid_external_traffic_enabled_rejected(self, complete_config_yaml):
         """Un entero (0/1) tampoco pasa el contrato estricto bool."""
@@ -469,7 +492,8 @@ class TestBuildReportedState:
             "counter": {
                 "lines": [
                     {
-                        "from": [0, 240], "to": [640, 240],
+                        "from": [0, 240],
+                        "to": [640, 240],
                         "labels": {"top_to_bottom": "ingress"},
                     },
                 ],
@@ -561,7 +585,9 @@ class TestBackwardCompatRenames:
 
     def test_max_disappeared_legacy_name_renamed(self, complete_config, tmp_path):
         cfg = complete_config
-        cfg["tracking"]["max_disappeared"] = cfg["tracking"].pop("max_disappeared_frames")
+        cfg["tracking"]["max_disappeared"] = cfg["tracking"].pop(
+            "max_disappeared_frames"
+        )
         cfg_path = tmp_path / "cfg.yaml"
         cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
         loaded = load_config(str(cfg_path))
@@ -637,7 +663,8 @@ class TestBackwardCompatRenames:
         assert "max_disappeared" not in loaded["tracking"]
 
     def test_config_already_canonical_unchanged(
-        self, complete_config_yaml,
+        self,
+        complete_config_yaml,
     ):
         """Si el config ya está en los nombres canónicos, el load es
         idempotente — no hay renames espurios."""

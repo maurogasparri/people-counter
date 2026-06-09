@@ -1,4 +1,5 @@
 """Tests para el engine de dedup WiFi/BLE con stitching."""
+
 from __future__ import annotations
 
 import tempfile
@@ -37,6 +38,7 @@ def _make_engine(
 # ---------------------------------------------------------------------------
 # Comportamiento basico (compat con la API publica anterior)
 # ---------------------------------------------------------------------------
+
 
 def test_first_detection_is_new():
     engine, _ = _make_engine()
@@ -94,6 +96,7 @@ def test_reset_daily():
 # Traffic counts (RSSI dual-threshold)
 # ---------------------------------------------------------------------------
 
+
 def test_traffic_counts_dual_threshold():
     engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
     engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -70.0)
@@ -143,6 +146,7 @@ def test_traffic_counts_filter_by_protocol():
 # Window summaries
 # ---------------------------------------------------------------------------
 
+
 def test_get_recent_hashes_returns_window():
     engine, _ = _make_engine()
     t0 = time.time()
@@ -156,6 +160,7 @@ def test_get_recent_hashes_returns_window():
 
 # get_window_records (post PR 2: per-device events para el cloud)
 # ---------------------------------------------------------------------------
+
 
 def test_get_window_records_one_per_group():
     """Un record por group_id — múltiples MACs stiched cuentan como 1 visitor."""
@@ -173,8 +178,11 @@ def test_get_window_records_one_per_group():
     # Cada record tiene el shape esperado.
     for r in records:
         assert set(r.keys()) == {
-            "visitor_hash", "protocol", "rssi_max",
-            "first_seen_ts", "last_seen_ts",
+            "visitor_hash",
+            "protocol",
+            "rssi_max",
+            "first_seen_ts",
+            "last_seen_ts",
         }
         assert r["protocol"] in ("wifi", "ble")
         assert isinstance(r["rssi_max"], int)
@@ -241,13 +249,15 @@ def test_get_window_records_emits_continuous_visitor_each_window():
     # del MISMO group (rotación virtual: misma MAC), simulando observación
     # del visitor que sigue presente.
     import time as _t
+
     _t.sleep(0.05)
     engine.process_detection("AA:BB:CC:DD:EE:01", "wifi", -50.0)  # promovió
     win_b_now = time.time() + 0.01
 
     # Ventana B: el group sigue activo (su last_seen cae en B).
     records_b = engine.get_window_records(
-        since_ts=win_a_end, until_ts=win_b_now,
+        since_ts=win_a_end,
+        until_ts=win_b_now,
     )
     assert len(records_b) == 1
     assert records_b[0]["rssi_max"] == -50  # lifetime max — promoción capturada
@@ -266,7 +276,8 @@ def test_get_window_records_visitor_inactive_not_re_emitted():
 
     # Ventana B en el futuro, sin nuevas observaciones del visitor.
     records_b = engine.get_window_records(
-        since_ts=win_a_end + 10, until_ts=win_a_end + 20,
+        since_ts=win_a_end + 10,
+        until_ts=win_a_end + 20,
     )
     assert records_b == []
 
@@ -274,6 +285,7 @@ def test_get_window_records_visitor_inactive_not_re_emitted():
 # ---------------------------------------------------------------------------
 # Seqnum stitching (regla 1)
 # ---------------------------------------------------------------------------
+
 
 def test_seqnum_stitch_continuous_within_window():
     """Dos WiFi MACs con seqnum cercano + RSSI cercano + tiempo cercano -> 1 grupo."""
@@ -349,6 +361,7 @@ def test_seqnum_delta_helper():
 # BLE anchoring (regla 3)
 # ---------------------------------------------------------------------------
 
+
 def test_ble_anchor_links_late_wifi_to_existing_ble_group():
     """Un BLE addr es seen en t=0; 5 min despues aparece una WiFi MAC con
     RSSI cercano. Sin ble_anchor caerian en grupos distintos; con anchor
@@ -361,10 +374,12 @@ def test_ble_anchor_links_late_wifi_to_existing_ble_group():
     # Pero como time.sleep(5min) es prohibitivo, simulamos manipulando el
     # SQLite directo: insertamos una observacion vieja a t=now-300s.
     import sqlite3 as _sqlite3
+
     db = engine.db_path
     fake_t = time.time() - 300.0
     with _sqlite3.connect(db) as conn:
         from src.wifi_ble.hasher import hash_mac
+
         ble_hash = hash_mac("AA:BB:CC:DD:EE:01", "")
         conn.execute(
             """INSERT INTO hash_groups
@@ -377,6 +392,37 @@ def test_ble_anchor_links_late_wifi_to_existing_ble_group():
     r = engine.process_detection("11:22:33:44:55:66", "wifi", -62.0)
     assert r["unified"] is True
     assert r["group_id"] == "fake-ble-group"
+
+
+def test_ble_anchor_is_unidirectional_ble_does_not_join_old_wifi():
+    """Regresión: la regla 3 ancla WiFi nuevas a un grupo BLE vivo — NO al
+    revés. Una BLE RPA nueva 5 min después de una WiFi MAC con RSSI parecido
+    es casi seguro OTRO dispositivo: las WiFi MACs rotan cada ~2 min (la
+    ventana larga se justifica por la vida de ~15 min de las RPA, no de las
+    WiFi) y el único gate acá es ΔRSSI ≤5dBm — en un local con varios
+    teléfonos a -60±5 la versión simétrica sobre-mergeaba (subconteo de
+    visitantes BLE-only). El caso legítimo casi-simultáneo lo cubre la
+    regla 2 (ventana de 2 s)."""
+    engine, _ = _make_engine(seqnum_enabled=False, ble_window=600.0)
+    import sqlite3 as _sqlite3
+
+    from src.wifi_ble.hasher import hash_mac
+
+    db = engine.db_path
+    fake_t = time.time() - 300.0  # WiFi vista hace 5 min
+    with _sqlite3.connect(db) as conn:
+        wifi_hash = hash_mac("11:22:33:44:55:66", "")
+        conn.execute(
+            """INSERT INTO hash_groups
+               (hash, protocol, group_id, first_seen, last_seen, rssi, seqnum)
+               VALUES (?, 'wifi', 'fake-wifi-group', ?, ?, ?, NULL)""",
+            (wifi_hash, fake_t, fake_t, -60.0),
+        )
+
+    # BLE nueva con RSSI cercano a la WiFi vieja → grupo PROPIO.
+    r = engine.process_detection("AA:BB:CC:DD:EE:01", "ble", -62.0)
+    assert r["unified"] is False
+    assert r["group_id"] != "fake-wifi-group"
 
 
 def test_ble_anchor_disabled_means_no_long_window_stitch():
@@ -409,6 +455,7 @@ def test_ble_anchor_disabled_means_no_long_window_stitch():
 # Stitching ratio (telemetria)
 # ---------------------------------------------------------------------------
 
+
 def test_stitching_ratio_no_data_returns_none():
     engine, _ = _make_engine()
     assert engine.get_stitching_ratio() is None
@@ -436,6 +483,7 @@ def test_stitching_ratio_with_seqnum_stitch():
 # ---------------------------------------------------------------------------
 # Self-validation: "1 device en cuarto vacio" no debe ser N personas
 # ---------------------------------------------------------------------------
+
 
 def test_single_device_with_mac_rotations_counts_as_one():
     """Simulacion: un Android emite 10 probes con MAC distinta cada 3s
@@ -489,8 +537,12 @@ def test_fingerprint_stitch_merges_rotation_without_seqnum():
 def test_fingerprint_distinct_no_stitch():
     """Fingerprints distintos -> grupos distintos (no se mergean)."""
     engine, _ = _make_engine(seqnum_enabled=False, ble_anchor_enabled=False)
-    r1 = engine.process_detection("AA:00:00:00:00:01", "wifi", -60.0, fingerprint="fp_a")
-    r2 = engine.process_detection("BB:00:00:00:00:02", "wifi", -61.0, fingerprint="fp_b")
+    r1 = engine.process_detection(
+        "AA:00:00:00:00:01", "wifi", -60.0, fingerprint="fp_a"
+    )
+    r2 = engine.process_detection(
+        "BB:00:00:00:00:02", "wifi", -61.0, fingerprint="fp_b"
+    )
     assert r2["unified"] is False
     assert r1["group_id"] != r2["group_id"]
 
@@ -542,10 +594,7 @@ def test_mac_hashes_stored_with_nonempty_salt():
 
     assert engine._salt  # no vacio
     with _sqlite3.connect(engine.db_path) as conn:
-        stored = {
-            row[0]
-            for row in conn.execute("SELECT hash FROM hash_groups")
-        }
+        stored = {row[0] for row in conn.execute("SELECT hash FROM hash_groups")}
     assert hash_mac(mac, "") not in stored  # NO se guardo sin sal
     assert hash_mac(mac, engine._salt) in stored  # SI con el salt del engine
 
@@ -576,6 +625,56 @@ def test_reset_daily_rotates_salt():
     engine.reset_daily()
     assert engine._salt != salt_before
     assert engine._salt  # sigue siendo no vacio
+
+
+def test_reload_salt_picks_up_external_rotation():
+    """Regresión: el reset diario corre en un PROCESO EXTERNO
+    (people-counter-reset.service crea su propio DedupEngine y llama
+    reset_daily) — rota el salt en el SQLite, pero el engine del pipeline
+    cachea self._salt en __init__. reload_salt() (llamado por main.py con
+    gate de 60s) tiene que adoptar el salt nuevo; sin esto la rotación
+    nunca aplicaba al proceso vivo."""
+    engine, _ = _make_engine()
+    salt_before = engine._salt
+
+    # Simula el proceso externo: OTRO engine sobre el mismo DB rota el salt.
+    external = DedupEngine(
+        engine.db_path,
+        cross_window_seconds=2.0,
+        cross_rssi_delta=5.0,
+        seqnum_stitch_enabled=True,
+        seqnum_stitch_window_seconds=30.0,
+        seqnum_max_delta=100,
+        seqnum_rssi_delta=5.0,
+        ble_anchor_enabled=True,
+        ble_anchor_window_seconds=900.0,
+    )
+    external.reset_daily()
+    assert external._salt != salt_before
+
+    # El engine vivo sigue con el salt viejo hasta el reload.
+    assert engine._salt == salt_before
+    assert engine.reload_salt() is True
+    assert engine._salt == external._salt
+
+    # Sin cambios → no-op.
+    assert engine.reload_salt() is False
+
+
+def test_reload_salt_survives_sqlite_error(monkeypatch):
+    """Un error de SQLite en el reload no debe burbujear al main loop —
+    devuelve False y el cache actual sigue vigente."""
+    import sqlite3 as _sql
+
+    engine, _ = _make_engine()
+    salt_before = engine._salt
+
+    def _boom(*_a, **_k):
+        raise _sql.OperationalError("database is locked")
+
+    monkeypatch.setattr(_sql, "connect", _boom)
+    assert engine.reload_salt() is False
+    assert engine._salt == salt_before
 
 
 def test_concurrent_process_detection_same_mac_no_race():

@@ -13,8 +13,39 @@ from src.wifi_ble.wifi_probe import (
     ProbeEvent,
     WiFiProbeCapture,
     _build_hop_sequence,
+    _is_probe_req_radiotap,
     is_randomized_mac,
 )
+
+
+def _radiotap_frame(fc0: int, rt_len: int = 8) -> bytes:
+    """Frame radiotap mínimo construido a mano: header de ``rt_len`` bytes
+    (versión 0 + len LE + present vacío) seguido del Frame Control 802.11."""
+    header = bytes([0, 0, rt_len & 0xFF, rt_len >> 8]) + b"\x00" * (rt_len - 4)
+    return header + bytes([fc0, 0x00]) + b"\x00" * 22  # FC + resto del MAC hdr
+
+
+def test_is_probe_req_radiotap_prefilter():
+    """Pre-filtro de bytes crudos que evita la disección completa de scapy
+    por frame (el BPF kernel-level no compila en el DLT de nexmon —
+    verificado en hardware). True = probe-req, False = otro frame 802.11,
+    None = no parece radiotap (el caller cae al parse completo)."""
+    # Probe request: type 0 subtype 4 → FC0 = 0x40.
+    assert _is_probe_req_radiotap(_radiotap_frame(0x40)) is True
+    # Beacon (type 0 subtype 8 → 0x80) y data frame (type 2 → 0x08): False.
+    assert _is_probe_req_radiotap(_radiotap_frame(0x80)) is False
+    assert _is_probe_req_radiotap(_radiotap_frame(0x08)) is False
+    # Bits de protocol version ignorados (máscara 0xFC).
+    assert _is_probe_req_radiotap(_radiotap_frame(0x41)) is True
+    # Header radiotap más largo (con campos present): el offset del FC sigue.
+    assert _is_probe_req_radiotap(_radiotap_frame(0x40, rt_len=18)) is True
+    # No parece radiotap (versión != 0) → None (parse completo decide).
+    assert _is_probe_req_radiotap(b"\x01\x00\x08\x00" + b"\x00" * 30) is None
+    # Truncados / degenerados → False o None, nunca crash.
+    assert _is_probe_req_radiotap(b"") is None
+    assert _is_probe_req_radiotap(b"\x00\x00") is None
+    assert _is_probe_req_radiotap(b"\x00\x00\xff\x7f" + b"\x00" * 10) is False
+    assert _is_probe_req_radiotap(b"\x00\x00\x02\x00" + b"\x00" * 10) is False
 
 
 def test_is_randomized_mac():

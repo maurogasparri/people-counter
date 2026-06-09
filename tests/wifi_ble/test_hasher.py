@@ -1,4 +1,5 @@
 """Tests para el hashing de direcciones MAC."""
+
 from src.wifi_ble.hasher import hash_mac
 
 

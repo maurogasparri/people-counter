@@ -1,4 +1,5 @@
 """Tests para StaticSuppressor."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -144,7 +145,9 @@ class TestExemptRoi:
         self._warm_hot_cell(sup, clock, det)
         clock.tick(0.1)
         out = sup.update_and_filter([det])  # default exempt_counting_zone=None
-        assert out == [], "sin exempt_counting_zone, la celda hot se suprime (comportamiento previo)"
+        assert (
+            out == []
+        ), "sin exempt_counting_zone, la celda hot se suprime (comportamiento previo)"
 
 
 class TestNonHotCellsPassFreely:
@@ -189,15 +192,13 @@ class TestMultiCellPerFrame:
         sup, clock = _suppressor(hit_rate_threshold=0.9)
         a = _FakeDet(100, 100)
         b = _FakeDet(110, 110)  # misma celda
-        c = _FakeDet(105, 95)   # misma celda
+        c = _FakeDet(105, 95)  # misma celda
         # 50% de presencia con 3 dets por frame — si contara cada det
         # individualmente saltaría el 0.9; con set deduplica.
         for i in range(11):
             _tick_and_update(sup, clock, [a, b, c] if i % 2 == 0 else [])
         out = _tick_and_update(sup, clock, [a])
-        assert out == [a], (
-            "múltiples dets en la misma celda no deben inflar hit rate"
-        )
+        assert out == [a], "múltiples dets en la misma celda no deben inflar hit rate"
 
 
 class TestEmptyAndNone:

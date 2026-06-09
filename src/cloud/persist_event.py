@@ -416,7 +416,31 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except (ValueError, TypeError) as e:
         logger.warning("persist_event_value_error error=%s", e)
         return {"statusCode": 400, "body": str(e)}
-    except Exception:
+    except Exception as e:
+        # Errores de DATOS del device (CheckViolation, NotNullViolation,
+        # valores inadaptables — subclases de IntegrityError/DataError) NO
+        # son transitorios: el retry de IoT Core falla idéntico. Se loguean
+        # y descartan (400) como promete el contrato del módulo, SIN tirar
+        # la conexión warm — cerrarla forzaba una reconexión IAM completa
+        # (token + TLS, 3-8s) en la próxima invocación, así un device con
+        # firmware buggy degradaba la ingesta de todo el container. La
+        # conexión sigue usable: autocommit=True → no queda transacción
+        # abortada que resetear.
+        try:
+            import psycopg
+
+            is_data_error = isinstance(e, (psycopg.IntegrityError, psycopg.DataError))
+        except (ImportError, TypeError):
+            is_data_error = False
+        if is_data_error:
+            logger.warning(
+                "persist_event_data_rejected type=%s device_id=%s error=%s",
+                event.get("type"),
+                event.get("device_id"),
+                e,
+            )
+            return {"statusCode": 400, "body": str(e)}
+
         # Errores transitorios (conn rota, timeout, deadlock, token expirado).
         # Cerramos la conexion para forzar reconexion + re-raise para retry.
         global _pg_conn

@@ -1,4 +1,5 @@
 """Smoke tests para src/web/annotate.py."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,20 +27,26 @@ class _FakeTrack:
 
 def _two_way_counter() -> Counter:
     return Counter(
-        lines=[Line(
-            from_xy=(50, 150), to_xy=(250, 150),
-            labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
-        )],
+        lines=[
+            Line(
+                from_xy=(50, 150),
+                to_xy=(250, 150),
+                labels={"top_to_bottom": "ingress", "bottom_to_top": "egress"},
+            )
+        ],
         counting_zone={"x_min": 50, "x_max": 250, "y_min": 100, "y_max": 200},
     )
 
 
 def _no_counting_zone_counter() -> Counter:
     return Counter(
-        lines=[Line(
-            from_xy=(0, 240), to_xy=(400, 240),
-            labels={"top_to_bottom": "ingress"},
-        )],
+        lines=[
+            Line(
+                from_xy=(0, 240),
+                to_xy=(400, 240),
+                labels={"top_to_bottom": "ingress"},
+            )
+        ],
     )
 
 
@@ -55,12 +62,12 @@ def test_compose_3panel_single_row_preserves_aspect():
     su aspect ratio. La disparidad (panel c) NO se estira al ancho de L|R
     como hacía el layout viejo de 2 filas — su ancho sale de su propio
     aspect (800/600 -> 160px a h=120), no del ancho del top."""
-    a = np.zeros((300, 400, 3), dtype=np.uint8)   # left  (w/h 1.333) -> 160
-    b = np.zeros((100, 200, 3), dtype=np.uint8)   # right (w/h 2.0)   -> 240
-    c = np.zeros((600, 800, 3), dtype=np.uint8)   # depth (w/h 1.333) -> 160
+    a = np.zeros((300, 400, 3), dtype=np.uint8)  # left  (w/h 1.333) -> 160
+    b = np.zeros((100, 200, 3), dtype=np.uint8)  # right (w/h 2.0)   -> 240
+    c = np.zeros((600, 800, 3), dtype=np.uint8)  # depth (w/h 1.333) -> 160
     out = compose_3panel(a, b, c, target_height=120)
-    assert out.shape[0] == 120                    # fila única, todos a h=120
-    assert out.shape[1] == 160 + 240 + 160        # ancho = suma de aspectos
+    assert out.shape[0] == 120  # fila única, todos a h=120
+    assert out.shape[1] == 160 + 240 + 160  # ancho = suma de aspectos
     assert out.shape[2] == 3
 
 
@@ -92,19 +99,24 @@ def test_annotate_left_draws_counting_zone_and_tracks():
     counter = _two_way_counter()
     tracks = {
         1: _FakeTrack(
-            track_id=1, state=CONFIRMED,
+            track_id=1,
+            state=CONFIRMED,
             positions=[np.array([175.0, 155.0, 0.0])],
-            meta={"detection_history": [
-                {"head_height_mm": 1620.0},
-            ]},
+            meta={
+                "detection_history": [
+                    {"head_height_mm": 1620.0},
+                ]
+            },
         ),
         2: _FakeTrack(
-            track_id=2, state=PENDING,
+            track_id=2,
+            state=PENDING,
             positions=[np.array([100.0, 110.0, 0.0])],
             meta={},
         ),
         3: _FakeTrack(
-            track_id=3, state=CANDIDATE,
+            track_id=3,
+            state=CANDIDATE,
             positions=[np.array([60.0, 60.0, 0.0])],
             meta={},
         ),
@@ -179,10 +191,10 @@ def test_annotate_left_hides_candidate_tracks():
     # las coords centrales (excepto el bottom overlay bar de IN/OUT/FPS
     # que queda fuera del patch).
     cx, cy = 175, 80
-    patch = out[cy - 8:cy + 8, cx - 8:cx + 8, :]
-    assert not patch.any(), (
-        "CANDIDATE tracks no deben renderizarse (son ghosts del detector)"
-    )
+    patch = out[cy - 8 : cy + 8, cx - 8 : cx + 8, :]
+    assert (
+        not patch.any()
+    ), "CANDIDATE tracks no deben renderizarse (son ghosts del detector)"
 
 
 def test_annotate_left_pending_marker_anchors_to_bbox_not_kalman_predict():
@@ -203,12 +215,14 @@ def test_annotate_left_pending_marker_anchors_to_bbox_not_kalman_predict():
         track_id=1,
         state=PENDING,
         positions=[np.array([350.0, 80.0, 0.0])],  # predict del Kalman
-        meta={"detection_history": [
-            {
-                "bbox": [150, 30, 250, 130],  # centro en (200, 80)
-                "head_height_mm": 1700.0,
-            },
-        ]},
+        meta={
+            "detection_history": [
+                {
+                    "bbox": [150, 30, 250, 130],  # centro en (200, 80)
+                    "head_height_mm": 1700.0,
+                },
+            ]
+        },
     )
     track.disappeared = 1  # hysteresis: aún se muestra verde
     out = annotate_left(frame, {1: track}, None)
@@ -219,9 +233,9 @@ def test_annotate_left_pending_marker_anchors_to_bbox_not_kalman_predict():
     patch_at_kalman = out[75:85, 345:355, :]
     has_marker_observed = patch_at_observed.any()
     has_marker_kalman = patch_at_kalman.any()
-    assert has_marker_observed, (
-        "El marker debe estar en el centro del último bbox observado (200, 80)"
-    )
+    assert (
+        has_marker_observed
+    ), "El marker debe estar en el centro del último bbox observado (200, 80)"
     assert not has_marker_kalman, (
         "El marker NO debe estar en la predicción del Kalman (350, 80) — "
         "se dispararía visualmente del sujeto"
@@ -241,23 +255,25 @@ def test_annotate_left_pending_hysteresis_keeps_confirmed_color():
         track_id=1,
         state=PENDING,
         positions=[np.array([175.0, 155.0, 0.0])],
-        meta={"detection_history": [
-            {"head_height_mm": 1620.0},
-        ]},
+        meta={
+            "detection_history": [
+                {"head_height_mm": 1620.0},
+            ]
+        },
     )
     track_recently_pending.disappeared = 1
-    out = annotate_left(
-        frame, {1: track_recently_pending}, counter
-    )
+    out = annotate_left(frame, {1: track_recently_pending}, counter)
     # Buscar un pixel verde (0, 255, 0) cerca del centroide. Si el
     # display fuera naranja, no habría verde puro en esa zona.
     cx, cy = 175, 155
-    patch = out[cy - 5:cy + 5, cx - 5:cx + 5, :]
+    patch = out[cy - 5 : cy + 5, cx - 5 : cx + 5, :]
     # Verde dominante: canal G alto, R/B bajos.
     has_green = (
         (patch[:, :, 1] > 200) & (patch[:, :, 0] < 50) & (patch[:, :, 2] < 50)
     ).any()
-    assert has_green, "Hysteresis: PENDING reciente (disappeared=1) debe mostrarse verde"
+    assert (
+        has_green
+    ), "Hysteresis: PENDING reciente (disappeared=1) debe mostrarse verde"
 
 
 def test_annotate_left_sustained_pending_flips_to_orange():
@@ -270,16 +286,16 @@ def test_annotate_left_sustained_pending_flips_to_orange():
         track_id=1,
         state=PENDING,
         positions=[np.array([175.0, 155.0, 0.0])],
-        meta={"detection_history": [
-            {"head_height_mm": 1620.0},
-        ]},
+        meta={
+            "detection_history": [
+                {"head_height_mm": 1620.0},
+            ]
+        },
     )
     track_long_pending.disappeared = 10  # Bien arriba del threshold (5)
-    out = annotate_left(
-        frame, {1: track_long_pending}, counter
-    )
+    out = annotate_left(frame, {1: track_long_pending}, counter)
     cx, cy = 175, 155
-    patch = out[cy - 5:cy + 5, cx - 5:cx + 5, :]
+    patch = out[cy - 5 : cy + 5, cx - 5 : cx + 5, :]
     # Naranja (BGR 0, 165, 255): R alto, G medio, B bajo.
     has_orange = (
         (patch[:, :, 2] > 200) & (patch[:, :, 1] > 100) & (patch[:, :, 0] < 50)
@@ -313,12 +329,14 @@ def test_annotate_left_draws_track_bbox_from_history():
         track_id=1,
         state=CONFIRMED,
         positions=[np.array([175.0, 155.0, 0.0])],
-        meta={"detection_history": [
-            {
-                "bbox": [150, 130, 200, 180],
-                "head_height_mm": 1620.0,
-            },
-        ]},
+        meta={
+            "detection_history": [
+                {
+                    "bbox": [150, 130, 200, 180],
+                    "head_height_mm": 1620.0,
+                },
+            ]
+        },
     )
     # Sin detections raw — solo el track. El bbox debe aparecer igual.
     out = annotate_left(frame, {1: track}, counter)
@@ -338,17 +356,22 @@ def test_annotate_left_bbox_is_fixed_size_regardless_of_detection():
     entre tracks — solo la posición sigue al sujeto."""
     frame = np.zeros((600, 800, 3), dtype=np.uint8)
     counter = Counter(
-        lines=[Line(
-            from_xy=(0, 300), to_xy=(800, 300),
-            labels={"top_to_bottom": "ingress"},
-        )],
+        lines=[
+            Line(
+                from_xy=(0, 300),
+                to_xy=(800, 300),
+                labels={"top_to_bottom": "ingress"},
+            )
+        ],
     )
     # Última detección con un bbox GRANDE (180×280, centro 400,300). La caja
     # dibujada debe ser igual de chica que la fija, no reflejar ese tamaño.
-    history = [{
-        "bbox": [400 - 90, 300 - 140, 400 + 90, 300 + 140],
-        "head_height_mm": 1700.0,
-    }]
+    history = [
+        {
+            "bbox": [400 - 90, 300 - 140, 400 + 90, 300 + 140],
+            "head_height_mm": 1700.0,
+        }
+    ]
     track = _FakeTrack(
         track_id=1,
         state=CONFIRMED,
@@ -359,13 +382,13 @@ def test_annotate_left_bbox_is_fixed_size_regardless_of_detection():
 
     half = _BBOX_DISPLAY_SIZE_PX // 2  # caja fija centrada en (400,300)
     # Borde top de la caja fija (~y=300-half) dibujado.
-    assert out[300 - half, 400 - half:400 + half, :].any(), (
-        "La caja fija debe tener borde top en y=300-half"
-    )
+    assert out[
+        300 - half, 400 - half : 400 + half, :
+    ].any(), "La caja fija debe tener borde top en y=300-half"
     # Donde estaría el borde del bbox grande del detector (y=160) NO hay caja.
-    assert not out[160, :, :].any(), (
-        "El tamaño del detector (h=280) NO debe reflejarse — la caja es fija"
-    )
+    assert not out[
+        160, :, :
+    ].any(), "El tamaño del detector (h=280) NO debe reflejarse — la caja es fija"
 
 
 def test_annotate_left_bbox_center_follows_latest_position():
@@ -373,10 +396,13 @@ def test_annotate_left_bbox_center_follows_latest_position():
     sujeto se mueve, la caja lo sigue sin lag perceptible."""
     frame = np.zeros((600, 800, 3), dtype=np.uint8)
     counter = Counter(
-        lines=[Line(
-            from_xy=(0, 300), to_xy=(800, 300),
-            labels={"top_to_bottom": "ingress"},
-        )],
+        lines=[
+            Line(
+                from_xy=(0, 300),
+                to_xy=(800, 300),
+                labels={"top_to_bottom": "ingress"},
+            )
+        ],
     )
     # 5 frames caminando de izquierda a derecha; el último centro es cx=600.
     centers_x = [400, 450, 500, 550, 600]
@@ -394,10 +420,12 @@ def test_annotate_left_bbox_center_follows_latest_position():
 
     half = _BBOX_DISPLAY_SIZE_PX // 2
     # Caja fija centrada en x=600 → left edge en x=600-half.
-    col_at_latest = out[300 - half:300 + half, 600 - half, :]
+    col_at_latest = out[300 - half : 300 + half, 600 - half, :]
     # Donde estaría si siguiera la mediana de centros (cx=400).
-    col_at_median = out[300 - half:300 + half, 400 - half, :]
-    assert col_at_latest.any(), "La caja debe tener left edge en x=600-half (último centro)"
+    col_at_median = out[300 - half : 300 + half, 400 - half, :]
+    assert (
+        col_at_latest.any()
+    ), "La caja debe tener left edge en x=600-half (último centro)"
     px_latest = int(col_at_latest.any(axis=-1).sum())
     px_median = int(col_at_median.any(axis=-1).sum())
     assert px_latest > px_median * 2, (
@@ -461,10 +489,13 @@ def _corner_counter() -> Counter:
     Mantiene el counter válido pero su geometría no contamina la región
     donde verificamos los píxeles del flash."""
     return Counter(
-        lines=[Line(
-            from_xy=(10, 10), to_xy=(60, 10),
-            labels={"top_to_bottom": "ingress"},
-        )],
+        lines=[
+            Line(
+                from_xy=(10, 10),
+                to_xy=(60, 10),
+                labels={"top_to_bottom": "ingress"},
+            )
+        ],
         counting_zone={"x_min": 10, "x_max": 60, "y_min": 5, "y_max": 50},
     )
 
@@ -478,15 +509,21 @@ def test_flash_in_writes_green_text_above_position():
 
     baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None)
     flashed = annotate_left(
-        _empty_frame(), {}, counter,
+        _empty_frame(),
+        {},
+        counter,
         recent_counts={7: ("ingress", 100.0, float(pos_x), float(pos_y))},
         now_mono=100.0,
     )
 
     # Diff: pixels nuevos respecto al baseline. Si son verdes → es del flash.
-    diff = (flashed.astype(int) - baseline.astype(int))
-    green_added = ((diff[..., 1] > 80) & (diff[..., 0] < 30) & (diff[..., 2] < 30)).sum()
-    assert green_added > 100, f"Esperaba píxeles verdes nuevos del flash +IN, got {green_added}"
+    diff = flashed.astype(int) - baseline.astype(int)
+    green_added = (
+        (diff[..., 1] > 80) & (diff[..., 0] < 30) & (diff[..., 2] < 30)
+    ).sum()
+    assert (
+        green_added > 100
+    ), f"Esperaba píxeles verdes nuevos del flash +IN, got {green_added}"
 
 
 def test_flash_out_writes_blue_text():
@@ -497,14 +534,18 @@ def test_flash_out_writes_blue_text():
 
     baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None)
     flashed = annotate_left(
-        _empty_frame(), {}, counter,
+        _empty_frame(),
+        {},
+        counter,
         recent_counts={7: ("egress", 100.0, float(pos_x), float(pos_y))},
         now_mono=100.0,
     )
 
-    diff = (flashed.astype(int) - baseline.astype(int))
+    diff = flashed.astype(int) - baseline.astype(int)
     blue_added = ((diff[..., 0] > 80) & (diff[..., 1] < 30) & (diff[..., 2] < 30)).sum()
-    assert blue_added > 100, f"Esperaba píxeles azules nuevos del flash +OUT, got {blue_added}"
+    assert (
+        blue_added > 100
+    ), f"Esperaba píxeles azules nuevos del flash +OUT, got {blue_added}"
 
 
 def test_flash_expires_after_duration():
@@ -515,13 +556,15 @@ def test_flash_expires_after_duration():
 
     baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None)
     expired = annotate_left(
-        _empty_frame(), {}, counter,
+        _empty_frame(),
+        {},
+        counter,
         recent_counts=recent,
         now_mono=100.0 + _COUNT_FLASH_DURATION_S + 0.5,
     )
-    assert np.array_equal(baseline, expired), (
-        "Flash vencido debe dar render bit-idéntico al sin-flash"
-    )
+    assert np.array_equal(
+        baseline, expired
+    ), "Flash vencido debe dar render bit-idéntico al sin-flash"
 
 
 def test_flash_fade_alpha_proportional_to_elapsed():
@@ -530,17 +573,26 @@ def test_flash_fade_alpha_proportional_to_elapsed():
     counter = _corner_counter()
     recent = {7: ("ingress", 100.0, 350.0, 250.0)}
 
-    baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None).astype(int)
+    baseline = annotate_left(_empty_frame(), {}, counter, recent_counts=None).astype(
+        int
+    )
     fresh = annotate_left(
-        _empty_frame(), {}, counter, recent_counts=recent, now_mono=100.0,
+        _empty_frame(),
+        {},
+        counter,
+        recent_counts=recent,
+        now_mono=100.0,
     ).astype(int)
     half = annotate_left(
-        _empty_frame(), {}, counter,
-        recent_counts=recent, now_mono=100.0 + _COUNT_FLASH_DURATION_S / 2.0,
+        _empty_frame(),
+        {},
+        counter,
+        recent_counts=recent,
+        now_mono=100.0 + _COUNT_FLASH_DURATION_S / 2.0,
     ).astype(int)
 
     g_fresh_max = int(np.max(fresh[..., 1] - baseline[..., 1]))
-    g_half_max  = int(np.max(half[..., 1]  - baseline[..., 1]))
+    g_half_max = int(np.max(half[..., 1] - baseline[..., 1]))
     assert g_fresh_max > g_half_max + 20, (
         f"El verde delta al 50% del fade debe ser perceptiblemente más bajo "
         f"que al disparar (fresh={g_fresh_max}, half={g_half_max})"
@@ -553,7 +605,9 @@ def test_flash_none_or_empty_dict_is_noop():
     counter = _two_way_counter()
     baseline = annotate_left(frame, {}, counter, recent_counts=None)
     empty = annotate_left(frame, {}, counter, recent_counts={})
-    assert np.array_equal(baseline, empty), "recent_counts={} y None deben dar el mismo render"
+    assert np.array_equal(
+        baseline, empty
+    ), "recent_counts={} y None deben dar el mismo render"
 
 
 def test_flash_position_clamped_to_frame_top():
@@ -566,4 +620,6 @@ def test_flash_position_clamped_to_frame_top():
     out = annotate_left(frame, {}, counter, recent_counts=recent, now_mono=100.0)
     # No crashea + algún píxel verde aparece en algún lugar del frame.
     green = ((out[..., 1] > 100) & (out[..., 0] < 80) & (out[..., 2] < 80)).sum()
-    assert green > 50, "Aun cerca del borde superior el flash debe renderear (clamped abajo)"
+    assert (
+        green > 50
+    ), "Aun cerca del borde superior el flash debe renderear (clamped abajo)"

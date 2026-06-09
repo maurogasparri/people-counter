@@ -1,4 +1,5 @@
 """Tests del Lambda ingest_pos_transaction con conexion Postgres + boto3 mockeadas."""
+
 from __future__ import annotations
 
 import json
@@ -76,6 +77,35 @@ def _single_tx(**overrides):
 
 
 # =============================================================================
+# Validación de input (regresiones de la revisión 2026-06-09)
+# =============================================================================
+
+
+def test_currency_explicit_null_falls_back_to_default():
+    """``"currency": null`` explícito en el JSON hace que la key EXISTA con
+    None — con el default del .get se persistía str(None)[:3] = "NON" como
+    moneda. Ahora cae al default."""
+    from src.cloud.ingest_pos_transaction import _validate_transaction
+
+    tx = _validate_transaction(_single_tx(currency=None))
+    assert tx["currency"] == "ARS"
+
+
+def test_bool_amount_rejected_as_validation_error():
+    """bool es subclase de int: ``amount_minor: true`` pasaba la validación
+    y reventaba recién en Postgres (boolean vs BIGINT) → 500, y el POS
+    reintentaba un payload que jamás iba a entrar. Ahora es 400."""
+    import pytest as _pytest
+
+    from src.cloud.ingest_pos_transaction import _validate_transaction
+
+    with _pytest.raises(ValueError, match="amount_minor"):
+        _validate_transaction(_single_tx(amount_minor=True))
+    with _pytest.raises(ValueError, match="items"):
+        _validate_transaction(_single_tx(items=False))
+
+
+# =============================================================================
 # Happy paths
 # =============================================================================
 
@@ -96,12 +126,12 @@ def test_single_transaction_inserts(fake_pg):
     assert "INSERT INTO pos_transactions" in sql
     assert "ON CONFLICT (store_id, transaction_id) DO NOTHING" in sql
     assert params[0] == "POS-RECOLETA-20260518-001234"  # transaction_id
-    assert params[1] == "ar-recoleta"                   # store_id
-    assert params[3] == "sale"                          # type
-    assert params[4] == 2                               # items
-    assert params[5] == 4500000                         # amount_minor
-    assert params[6] == "ARS"                           # currency
-    assert params[7] == "credit_card"                   # payment_method
+    assert params[1] == "ar-recoleta"  # store_id
+    assert params[3] == "sale"  # type
+    assert params[4] == 2  # items
+    assert params[5] == 4500000  # amount_minor
+    assert params[6] == "ARS"  # currency
+    assert params[7] == "credit_card"  # payment_method
 
 
 def test_bulk_array_inserts(fake_pg):

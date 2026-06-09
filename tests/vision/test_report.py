@@ -38,7 +38,7 @@ class TestGenerateReport:
         html = generate_html_report(_mock_calibration(off), device_id="D")
         # Alert text mentions the baseline deviation (exact wording short).
         assert "baseline" in html.lower() and "difiere" in html.lower()
-        assert "class=\"alert\"" in html
+        assert 'class="alert"' in html
 
     def test_report_includes_depth_zones(self):
         zones = {
@@ -49,7 +49,9 @@ class TestGenerateReport:
             "_center_err": 0.5,
             "_distance_mm": 2000,
         }
-        html = generate_html_report(_mock_calibration(), diagnose_zones=zones, device_id="D")
+        html = generate_html_report(
+            _mock_calibration(), diagnose_zones=zones, device_id="D"
+        )
         assert "center" in html
         assert "top-left" in html
         assert "Validación de profundidad" in html
@@ -101,7 +103,9 @@ class TestGenerateReport:
             {"pair_idx": 3, "rms_l": 0.6, "rms_r": 0.5, "rms": 0.55, "n_corners": 40},
         ]
         html = generate_html_report(
-            _mock_calibration(), device_id="D", per_pair_residuals=per_pair,
+            _mock_calibration(),
+            device_id="D",
+            per_pair_residuals=per_pair,
         )
         assert "Residual por par" in html
         # Pair 2 should be flagged as outlier
@@ -114,11 +118,18 @@ class TestGenerateReport:
     def test_residual_nan_values_tolerated(self):
         per_pair = [
             {"pair_idx": 0, "rms_l": 0.5, "rms_r": 0.6, "rms": 0.55, "n_corners": 40},
-            {"pair_idx": 1, "rms_l": float("nan"), "rms_r": float("nan"),
-             "rms": float("nan"), "n_corners": 0},
+            {
+                "pair_idx": 1,
+                "rms_l": float("nan"),
+                "rms_r": float("nan"),
+                "rms": float("nan"),
+                "n_corners": 0,
+            },
         ]
         html = generate_html_report(
-            _mock_calibration(), device_id="D", per_pair_residuals=per_pair,
+            _mock_calibration(),
+            device_id="D",
+            per_pair_residuals=per_pair,
         )
         assert "Residual por par" in html
         # Should render without crashing and include the em-dash placeholder

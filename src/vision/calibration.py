@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 # Factory de board ChArUco
 # ---------------------------------------------------------------------------
 
-DEFAULT_BOARD_SIZE = (9, 6)  # (columnas, filas) de cuadros del chessboard — A3 landscape
+DEFAULT_BOARD_SIZE = (
+    9,
+    6,
+)  # (columnas, filas) de cuadros del chessboard — A3 landscape
 DEFAULT_SQUARE_LENGTH = 45.0  # mm
 DEFAULT_MARKER_LENGTH = 33.0  # mm (73% del cuadro — ratio default de calib.io)
 ARUCO_DICT_ID = cv2.aruco.DICT_4X4_100
@@ -84,7 +87,8 @@ def generate_board_image(
 # ``detect_charuco_dual_pass``. Compartido para mantener los outputs
 # determinísticos entre tools.
 _SHARPEN_KERNEL = np.array(
-    [[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32,
+    [[0, -1, 0], [-1, 5, -1], [0, -1, 0]],
+    dtype=np.float32,
 )
 
 
@@ -114,14 +118,20 @@ def detect_charuco_dual_pass(
     ninguno de los dos pasos alcanzó ``min_corners``.
     """
     c_orig, i_orig = detect_charuco_corners(
-        image, board, min_corners=min_corners, lenient=lenient,
+        image,
+        board,
+        min_corners=min_corners,
+        lenient=lenient,
     )
     n_orig = 0 if i_orig is None else len(i_orig)
     if n_orig >= accept_threshold:
         return c_orig, i_orig
     sharp = cv2.filter2D(image, -1, _SHARPEN_KERNEL)
     c_sh, i_sh = detect_charuco_corners(
-        sharp, board, min_corners=min_corners, lenient=lenient,
+        sharp,
+        board,
+        min_corners=min_corners,
+        lenient=lenient,
     )
     n_sh = 0 if i_sh is None else len(i_sh)
     if n_sh > n_orig:
@@ -616,24 +626,36 @@ def lens_alignment_metrics(
 # ---------------------------------------------------------------------------
 
 
+def rectify_one(
+    img: np.ndarray,
+    calibration: dict[str, np.ndarray],
+    side: str,
+) -> np.ndarray:
+    """Rectifica UN solo ojo (``side`` = "left"/"right").
+
+    Permite al hot path rectificar el ojo derecho LAZY: ``rect_r`` solo lo
+    consumen SGBM y el composite del viewer — en el ~95% de los frames de
+    un deploy real (sin detecciones y sin subscribers del preview) el remap
+    del ojo derecho era un cv2.remap por frame tirado.
+    """
+    key = "l" if side == "left" else "r"
+    return cv2.remap(
+        img,
+        calibration[f"map_{key}_x"],
+        calibration[f"map_{key}_y"],
+        cv2.INTER_LINEAR,
+    )
+
+
 def rectify_pair(
     img_l: np.ndarray,
     img_r: np.ndarray,
     calibration: dict[str, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
-    rect_l = cv2.remap(
-        img_l,
-        calibration["map_l_x"],
-        calibration["map_l_y"],
-        cv2.INTER_LINEAR,
+    return (
+        rectify_one(img_l, calibration, "left"),
+        rectify_one(img_r, calibration, "right"),
     )
-    rect_r = cv2.remap(
-        img_r,
-        calibration["map_r_x"],
-        calibration["map_r_y"],
-        cv2.INTER_LINEAR,
-    )
-    return rect_l, rect_r
 
 
 # ---------------------------------------------------------------------------

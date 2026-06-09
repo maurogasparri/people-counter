@@ -16,7 +16,9 @@ class _FakeTrack:
 def test_static_off_counting_zone_track_is_clutter():
     # Fuera de la counting zone (y=620 > 500), sin moverse, suficientes frames.
     tracks = {7: _FakeTrack([(600.0, 620.0)] * 25)}
-    assert stationary_track_ids(tracks, COUNTING_ZONE, min_frames=20, max_movement_px=50) == {7}
+    assert stationary_track_ids(
+        tracks, COUNTING_ZONE, min_frames=20, max_movement_px=50
+    ) == {7}
 
 
 def test_moving_track_not_clutter():
@@ -46,8 +48,8 @@ def test_no_counting_zone_returns_empty():
 
 def test_mixed_only_clutter_flagged():
     tracks = {
-        1: _FakeTrack([(600.0, 620.0)] * 25),                       # clutter
+        1: _FakeTrack([(600.0, 620.0)] * 25),  # clutter
         2: _FakeTrack([(600.0, 600.0 + i * 10.0) for i in range(25)]),  # caminante
-        3: _FakeTrack([(500.0, 300.0)] * 25),                       # parado en counting zone
+        3: _FakeTrack([(500.0, 300.0)] * 25),  # parado en counting zone
     }
     assert stationary_track_ids(tracks, COUNTING_ZONE) == {1}
