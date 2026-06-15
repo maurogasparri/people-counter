@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Recorre los 8 estados del status LED para validación de bench.
+"""Recorre los 6 estados del status LED para validación de bench.
 
-Útil para testear el wiring sobre un breadboard antes del armado final.
-Cada estado estático se sostiene por STATIC_S; los estados que parpadean
-corren por BLINK_S así se ven ~4 ciclos de blink (período default es 1 s).
+3 colores puros (rojo / verde / azul) × 2 modos (fijo / parpadeante). Útil para
+testear el wiring sobre un breadboard antes del armado final. Cada estado
+estático se sostiene por STATIC_S; los estados que parpadean corren por BLINK_S
+así se ven ~4 ciclos de blink (período default es 1 s).
 
 Uso:
     PYTHONPATH=. python3 scripts/test_led.py
@@ -19,9 +20,8 @@ BLINK_S = 4.0
 
 SEQUENCE: list[tuple[LedState, float, str]] = [
     (LedState.OFF, STATIC_S, "OFF              — sin power"),
-    (LedState.BOOT_FAILURE, STATIC_S, "Rojo fijo        — boot failure"),
-    (LedState.HARDWARE_FAULT, STATIC_S, "Amarillo fijo    — hardware fault"),
-    (LedState.SOFTWARE_FAULT, BLINK_S, "Amarillo blink   — software fault"),
+    (LedState.HARDWARE_FAULT, STATIC_S, "Rojo fijo        — hardware/init fault"),
+    (LedState.SOFTWARE_FAULT, BLINK_S, "Rojo blink       — software fault"),
     (LedState.NO_INTERNET, BLINK_S, "Verde blink      — sin internet"),
     (LedState.NO_CLOUD, STATIC_S, "Verde fijo       — sin cloud"),
     (LedState.UNPROVISIONED, BLINK_S, "Azul blink       — sin provisioning"),

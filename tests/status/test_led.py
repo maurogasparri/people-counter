@@ -65,21 +65,26 @@ def test_solid_blue_for_ok():
         led.close()
 
 
-def test_solid_red_for_boot_failure():
+def test_solid_red_for_hardware_fault():
     led, r, g, b = _make_led()
     try:
-        led.set_state(LedState.BOOT_FAILURE)
+        led.set_state(LedState.HARDWARE_FAULT)
+        # Rojo puro fijo (R on, G+B off). Regresión: antes era amarillo (R+G),
+        # que se veía verdoso por el balance de brillo. Sin verde nunca.
         assert _wait_for(lambda: r.is_on and not g.is_on and not b.is_on)
     finally:
         led.close()
 
 
-def test_yellow_solid_for_hardware_fault():
-    led, r, g, b = _make_led()
+def test_software_fault_is_red_not_yellow():
+    led, r, g, b = _make_led(blink_period_s=0.04)
     try:
-        led.set_state(LedState.HARDWARE_FAULT)
-        # Yellow = R + G simultaneously, B off.
-        assert _wait_for(lambda: r.is_on and g.is_on and not b.is_on)
+        led.set_state(LedState.SOFTWARE_FAULT)  # rojo parpadeante
+        # El verde NUNCA debe encenderse (antes era amarillo blink = R+G).
+        time.sleep(0.2)
+        assert not any(g.history)
+        assert not any(b.history)
+        assert any(r.history)  # el rojo sí togglea
     finally:
         led.close()
 
@@ -96,13 +101,12 @@ def test_green_solid_for_no_cloud():
 def test_blink_state_toggles_outputs():
     led, r, g, b = _make_led(blink_period_s=0.04)
     try:
-        led.set_state(LedState.SOFTWARE_FAULT)  # yellow blink
+        led.set_state(LedState.SOFTWARE_FAULT)  # rojo parpadeante
         # Sample the worker for several blink half-periods.
         time.sleep(0.25)
-        # During SOFTWARE_FAULT we expect the worker to have toggled both
-        # R and G between on and off at least once.
+        # During SOFTWARE_FAULT we expect the worker to have toggled R between
+        # on and off at least once (rojo puro — el verde queda apagado).
         assert any(r.history) and any(not v for v in r.history)
-        assert any(g.history) and any(not v for v in g.history)
     finally:
         led.close()
 
@@ -122,7 +126,7 @@ def test_set_state_idempotent_does_not_re_log():
 def test_state_transition_red_to_blue():
     led, r, g, b = _make_led()
     try:
-        led.set_state(LedState.BOOT_FAILURE)
+        led.set_state(LedState.HARDWARE_FAULT)
         assert _wait_for(lambda: r.is_on and not b.is_on)
         led.set_state(LedState.OK)
         assert _wait_for(lambda: b.is_on and not r.is_on)
@@ -191,7 +195,7 @@ def test_concurrent_state_changes_are_safe():
         LedState.OK,
         LedState.NO_INTERNET,
         LedState.HARDWARE_FAULT,
-        LedState.BOOT_FAILURE,
+        LedState.SOFTWARE_FAULT,
     ]
 
     def worker(s: LedState):

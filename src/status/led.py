@@ -1,9 +1,11 @@
 """LED RGB de status para diagnóstico en sitio.
 
-Patrón de 8 estados (apagado / rojo / amarillo / amarillo parpadeante /
-verde parpadeante / verde / azul / azul parpadeante) — el operador del local
-puede interpretar la salud del dispositivo por color/parpadeo del LED sin
-acceso SSH.
+Patrón de 6 estados — 3 colores puros (rojo / verde / azul) × 2 modos (fijo /
+parpadeante) — el operador del local puede interpretar la salud del dispositivo
+por color/parpadeo del LED sin acceso SSH. Se evita el amarillo (R+G) a
+propósito: mezclar canales depende del balance de brillo entre LEDs y tendía a
+verse verdoso (el ojo es mucho más sensible al verde); con colores puros la
+lectura es inequívoca.
 
 Hardware: RGB de 3mm common-cathode sobre el header de GPIO.
     GPIO 17 (pin 11) -> R vía 150 ohm
@@ -14,7 +16,7 @@ Hardware: RGB de 3mm common-cathode sobre el header de GPIO.
 Cascada de prioridad de estados (worst-first), usada por ``decide_state`` en
 ``src/status/health.py``::
 
-    BOOT_FAILURE > HARDWARE_FAULT > SOFTWARE_FAULT
+    HARDWARE_FAULT > SOFTWARE_FAULT
         > NO_INTERNET > NO_CLOUD > UNPROVISIONED > OK
 """
 
@@ -31,10 +33,9 @@ logger = logging.getLogger(__name__)
 class LedState(Enum):
     """Estado lógico del dispositivo expresado por el LED."""
 
-    OFF = "off"
-    BOOT_FAILURE = "boot_failure"  # rojo fijo
-    HARDWARE_FAULT = "hardware_fault"  # amarillo fijo
-    SOFTWARE_FAULT = "software_fault"  # amarillo parpadeante
+    OFF = "off"  # literal apagado (close/shutdown); no es un estado de status
+    HARDWARE_FAULT = "hardware_fault"  # rojo fijo (incluye crash/wedge de init)
+    SOFTWARE_FAULT = "software_fault"  # rojo parpadeante
     NO_INTERNET = "no_internet"  # verde parpadeante
     NO_CLOUD = "no_cloud"  # verde fijo
     UNPROVISIONED = "unprovisioned"  # azul parpadeante
@@ -44,13 +45,12 @@ class LedState(Enum):
 # (red_on, green_on, blue_on, blinking) por estado.
 _PATTERN: dict[LedState, tuple[bool, bool, bool, bool]] = {
     LedState.OFF: (False, False, False, False),
-    LedState.BOOT_FAILURE: (True, False, False, False),
-    LedState.HARDWARE_FAULT: (True, True, False, False),
-    LedState.SOFTWARE_FAULT: (True, True, False, True),
-    LedState.NO_INTERNET: (False, True, False, True),
-    LedState.NO_CLOUD: (False, True, False, False),
-    LedState.UNPROVISIONED: (False, False, True, True),
-    LedState.OK: (False, False, True, False),
+    LedState.HARDWARE_FAULT: (True, False, False, False),  # rojo fijo
+    LedState.SOFTWARE_FAULT: (True, False, False, True),  # rojo parpadeante
+    LedState.NO_INTERNET: (False, True, False, True),  # verde parpadeante
+    LedState.NO_CLOUD: (False, True, False, False),  # verde fijo
+    LedState.UNPROVISIONED: (False, False, True, True),  # azul parpadeante
+    LedState.OK: (False, False, True, False),  # azul fijo
 }
 
 

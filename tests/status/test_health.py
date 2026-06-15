@@ -27,17 +27,17 @@ def test_all_ok_returns_ok():
     assert decide_state() is LedState.OK
 
 
-def test_boot_failure_dominates_everything():
+def test_init_failed_maps_to_hardware_fault_and_dominates():
     assert (
         decide_state(
-            boot_failure=True,
-            hardware_ok=False,
+            init_failed=True,
+            hardware_ok=True,
             pipeline_ok=False,
             internet_ok=False,
             cloud_connected=False,
             provisioned=False,
         )
-        is LedState.BOOT_FAILURE
+        is LedState.HARDWARE_FAULT
     )
 
 
@@ -80,7 +80,7 @@ def test_unprovisioned_lowest_priority_after_cloud():
         ({"internet_ok": False}, LedState.NO_INTERNET),
         ({"cloud_connected": False}, LedState.NO_CLOUD),
         ({"provisioned": False}, LedState.UNPROVISIONED),
-        ({"boot_failure": True}, LedState.BOOT_FAILURE),
+        ({"init_failed": True}, LedState.HARDWARE_FAULT),
     ],
 )
 def test_decide_state_table(kwargs, expected):

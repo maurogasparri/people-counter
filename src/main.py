@@ -111,16 +111,16 @@ _MAX_WIFI_BLE_SUMMARY_INTERVAL_SECONDS = 900
 # ocurre ~20 min después del inicio del fallo.
 _PIPELINE_FAIL_RESTART_AFTER_S = 900.0
 
-# Cuánto sostener el LED en BOOT_FAILURE (rojo) cuando el init crashea, antes
+# Cuánto sostener el LED en HARDWARE_FAULT (rojo) cuando el init crashea, antes
 # de dejar morir el proceso. En un crash-loop (RestartSec=10) el operador ve
 # rojo ~5s + LED apagado ~10-15s por ciclo — distinguible de los estados
 # "sanos" (verde/azul) que mostraban los defaults durante el init.
-_BOOT_FAILURE_LED_HOLD_S = 5.0
+_INIT_FAIL_LED_HOLD_S = 5.0
 
 # Referencia best-effort a las señales/LED del run activo, para que main()
-# pueda mostrar BOOT_FAILURE en el except de init (run_pipeline crea estos
+# pueda mostrar HARDWARE_FAULT en el except de init (run_pipeline crea estos
 # objetos internamente y la excepción burbujea fuera de su scope).
-_BOOT_HEALTH: dict[str, Any] = {}
+_INIT_HEALTH: dict[str, Any] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -822,9 +822,9 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         status_led = StatusLED()
         health_monitor = HealthMonitor(led=status_led, signals=health_signals)
         health_monitor.start()
-    # Registrar para el path de crash de init de main() (BOOT_FAILURE en rojo).
-    _BOOT_HEALTH["signals"] = health_signals
-    _BOOT_HEALTH["led"] = status_led
+    # Registrar para el path de crash de init de main() (HARDWARE_FAULT en rojo).
+    _INIT_HEALTH["signals"] = health_signals
+    _INIT_HEALTH["led"] = status_led
 
     # --- Web viewer en vivo --------------------------------------------------
     # Default ON, puerto 80 (--web-viewer-port 0 deshabilita). Falla de bind
@@ -1441,7 +1441,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # Señaliza a systemd que el startup terminó. Pareado con WatchdogSec en
     # el archivo de unit — pingueamos WATCHDOG=1 dentro del loop de abajo.
     sd_notify("READY=1")
-    health_signals.boot_complete = True
+    health_signals.init_complete = True
 
     # Throttle del live preview: ni el push MJPEG ni la query del tráfico
     # exterior (sqlite) necesitan correr a full FPS. Limitamos el push a
@@ -2853,19 +2853,20 @@ def main() -> None:
         # Crash de INIT (load del modelo, open de cámaras, MQTT): sin esto el
         # LED mostraba los defaults "sanos" (verde) durante cada ciclo del
         # restart-loop y el operador leía "problema de internet/cloud" frente
-        # a una falla de boot. Sostener el rojo unos segundos antes de morir
-        # — systemd reinicia igual (Restart=always). Los crashes post-boot
-        # (boot_complete=True) no son fallas de boot: se re-raisea directo.
-        signals = _BOOT_HEALTH.get("signals")
-        led = _BOOT_HEALTH.get("led")
-        if signals is not None and not signals.boot_complete:
-            signals.boot_failed = True
+        # a una falla de arranque. Mostrar rojo fijo (HARDWARE_FAULT) unos
+        # segundos antes de morir — systemd reinicia igual (Restart=always).
+        # Los crashes post-init (init_complete=True) no son fallas de arranque:
+        # se re-raisea directo.
+        signals = _INIT_HEALTH.get("signals")
+        led = _INIT_HEALTH.get("led")
+        if signals is not None and not signals.init_complete:
+            signals.init_failed = True
             if led is not None:
                 try:
-                    led.set_state(LedState.BOOT_FAILURE)
-                    time.sleep(_BOOT_FAILURE_LED_HOLD_S)
+                    led.set_state(LedState.HARDWARE_FAULT)
+                    time.sleep(_INIT_FAIL_LED_HOLD_S)
                 except Exception:
-                    logger.exception("No se pudo señalizar BOOT_FAILURE en el LED")
+                    logger.exception("No se pudo señalizar HARDWARE_FAULT en el LED")
         raise
 
 

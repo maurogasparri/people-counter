@@ -48,11 +48,13 @@ class HealthSignals:
     detect_ok: bool = True
     mqtt_connected: bool = False
     provisioned: bool = True
-    boot_complete: bool = False
+    # Init del pipeline completado (NO el boot del SO — esto es software): lo
+    # setea main() una vez que el loop produjo su primera iteración.
+    init_complete: bool = False
     # Init crasheó: lo setea main() en el except alrededor de run_pipeline
-    # ANTES de morir, así el tick del monitor muestra BOOT_FAILURE (rojo)
+    # ANTES de morir, así el tick del monitor muestra HARDWARE_FAULT (rojo)
     # en vez del estado engañoso que dan los defaults (verde/NO_CLOUD).
-    boot_failed: bool = False
+    init_failed: bool = False
     calibration_path: Optional[str] = None
 
 
@@ -69,13 +71,13 @@ class HealthMonitor:
             Hailo vía ``hailortcli`` subprocess (default 30 s; cacheado). No
             necesita resolución de 2 s — el die térmico cambia lento — y a 5 s
             de timeout cada tick clavaría el thread monitor.
-        boot_grace_s: Cuánto esperar a que el pipeline declare
-            ``boot_complete`` antes de considerar el init wedgeado y mostrar
-            BOOT_FAILURE (rojo fijo). El init normal (load del HEF + open de
+        init_grace_s: Cuánto esperar a que el pipeline declare
+            ``init_complete`` antes de considerar el init wedgeado y mostrar
+            HARDWARE_FAULT (rojo fijo). El init normal (load del HEF + open de
             cámaras + MQTT) toma 10-30 s; 120 s da margen amplio. Sin este
             gate, un ``load_model``/``capture.open`` colgado mostraba verde
             (NO_CLOUD) para siempre — el operador leía "problema de internet"
-            frente a una falla de boot.
+            frente a una falla de arranque.
     """
 
     def __init__(
@@ -85,14 +87,14 @@ class HealthMonitor:
         poll_interval_s: float = 2.0,
         internet_probe_interval_s: float = 30.0,
         hailo_probe_interval_s: float = 30.0,
-        boot_grace_s: float = 120.0,
+        init_grace_s: float = 120.0,
     ) -> None:
         self._led = led
         self._signals = signals
         self._poll_interval_s = float(poll_interval_s)
         self._internet_probe_interval_s = float(internet_probe_interval_s)
         self._hailo_probe_interval_s = float(hailo_probe_interval_s)
-        self._boot_grace_s = float(boot_grace_s)
+        self._init_grace_s = float(init_grace_s)
         self._created_ts = time.time()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -169,17 +171,18 @@ class HealthMonitor:
 
         cloud_connected = bool(s.mqtt_connected)
 
-        # Boot failure: explícito (main marcó boot_failed en el except de
-        # init antes de morir) o implícito (init wedgeado: venció el grace
-        # sin que el pipeline declare boot_complete). Sin este wiring,
-        # decide_state aceptaba boot_failure pero nadie se lo pasaba —
-        # BOOT_FAILURE (rojo) era inalcanzable en producción.
-        boot_failure = s.boot_failed or (
-            not s.boot_complete and (now - self._created_ts) >= self._boot_grace_s
+        # Falla de init: explícita (main marcó init_failed en el except de
+        # init antes de morir) o implícita (init wedgeado: venció el grace sin
+        # que el pipeline declare init_complete). Se reporta como HARDWARE_FAULT
+        # (rojo fijo) — ver decide_state. Sin este wiring, un crash/wedge de
+        # init mostraba verde (NO_CLOUD) — el operador leía "problema de
+        # internet" frente a una falla de arranque.
+        init_failed = s.init_failed or (
+            not s.init_complete and (now - self._created_ts) >= self._init_grace_s
         )
 
         state = decide_state(
-            boot_failure=boot_failure,
+            init_failed=init_failed,
             hardware_ok=hw_ok,
             pipeline_ok=pipeline_ok,
             internet_ok=internet_ok,

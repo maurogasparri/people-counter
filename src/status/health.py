@@ -124,7 +124,7 @@ def check_internet(
 
 def decide_state(
     *,
-    boot_failure: bool = False,
+    init_failed: bool = False,
     hardware_ok: bool = True,
     pipeline_ok: bool = True,
     internet_ok: bool = True,
@@ -135,11 +135,14 @@ def decide_state(
 
     Worst-first: una sola falla de hardware enmascara problemas downstream,
     porque la primera acción del operador (power cycle, chequear cables) es
-    la misma.
+    la misma. Un crash/wedge del init del pipeline (``init_failed``) se reporta
+    como ``HARDWARE_FAULT``: desde la óptica del operador "el device no arranca"
+    y "el device tiene HW roto" piden la misma acción (power cycle / revisar
+    cables); la distinción fina vive en los logs, no en el LED. (El LED no puede
+    señalizar un fallo previo a su propio init —SO que no bootea, intérprete que
+    no lanza— así que no tiene sentido un estado "boot" dedicado.)
     """
-    if boot_failure:
-        return LedState.BOOT_FAILURE
-    if not hardware_ok:
+    if init_failed or not hardware_ok:
         return LedState.HARDWARE_FAULT
     if not pipeline_ok:
         return LedState.SOFTWARE_FAULT

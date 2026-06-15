@@ -342,19 +342,22 @@ scp pi@people-counter.local:/tmp/test_cam*.jpg .
 El LED RGB es la fuente visual de estado para diagnóstico en sitio sin SSH.
 Cascada worst-first por capa (hardware > pipeline > internet > cloud > OK):
 
+El LED usa 3 colores puros (rojo / verde / azul) × 2 modos (fijo / parpadeante)
+= 6 estados. No hay amarillo: mezclar canales (R+G) se veía verdoso por el
+balance de brillo, así que se usa rojo puro para las fallas.
+
 | LED | Patrón | Significado | Acción del operador |
 |-----|--------|-------------|---------------------|
 | Apagado | — | Sin power (PoE caído / cable desconectado) | Verificar PoE, switch, cable Ethernet |
-| Rojo | Fijo | Boot failure (servicio no levanta) | Power cycle; si persiste, contactar soporte |
-| Amarillo | Fijo | Hardware roto (cámara, Hailo, temp >80°C, disco lleno) | Power cycle; si persiste, reemplazo |
-| Amarillo | Parpadeante | Pipeline stalled o software crasheó | Esperar 1 min al auto-restart; si persiste, power cycle |
+| Rojo | Fijo | Hardware roto **o** el servicio no arranca (cámara, Hailo, temp >80°C, disco lleno, init colgado/crasheado) | Power cycle; si persiste, contactar soporte / reemplazo |
+| Rojo | Parpadeante | Pipeline stalled o software crasheó | Esperar 1 min al auto-restart; si persiste, power cycle |
 | Verde | Parpadeante | Sin internet (ethernet up pero no llega afuera) | Verificar internet del local |
 | Verde | Fijo | Internet OK, AWS IoT no responde | Soporte (problema cloud, no del dispositivo) |
-| Azul | Fijo | **Operación normal** | Ninguna |
 | Azul | Parpadeante | Sin provisioning (certs ausentes) | Re-provisionar (instalación) |
+| Azul | Fijo | **Operación normal** | Ninguna |
 
-Cascada de prioridad (peor estado wins): Off > Rojo > Amarillo fijo > Amarillo
-parpadeante > Verde parpadeante > Verde fijo > Azul parpadeante > Azul fijo.
+Cascada de prioridad (peor estado wins): Off > Rojo fijo > Rojo parpadeante >
+Verde parpadeante > Verde fijo > Azul parpadeante > Azul fijo.
 
 Apagar el LED si molesta en el local (ej. brillo excesivo en una zona oscura,
 restricciones estéticas del retail) en `config.yaml`:

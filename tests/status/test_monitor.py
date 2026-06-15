@@ -52,7 +52,7 @@ def test_evaluate_once_ok(all_probes_ok):
         detect_ok=True,
         mqtt_connected=True,
         provisioned=True,
-        boot_complete=True,
+        init_complete=True,
     )
     monitor = HealthMonitor(led=led, signals=signals)
     assert monitor.evaluate_once() is LedState.OK
@@ -81,47 +81,48 @@ def test_evaluate_once_pipeline_stalled_after_threshold(all_probes_ok):
     assert monitor.evaluate_once() is LedState.SOFTWARE_FAULT
 
 
-def test_boot_failed_flag_shows_boot_failure(all_probes_ok):
-    """main() setea boot_failed en el except de init antes de morir — el
-    tick tiene que mostrar rojo fijo. Regresión: nadie pasaba boot_failure
-    a decide_state, así que BOOT_FAILURE era inalcanzable y un crash de
-    init mostraba verde (NO_CLOUD) — el operador leía 'problema de
-    internet' frente a una falla de boot."""
+def test_init_failed_flag_shows_hardware_fault(all_probes_ok):
+    """main() setea init_failed en el except de init antes de morir — el
+    tick tiene que mostrar rojo fijo. Un crash/wedge de init se reporta como
+    HARDWARE_FAULT (no hay estado 'boot' dedicado: el LED no puede señalizar
+    un fallo previo a su propio init). Regresión: sin este wiring un crash de
+    init mostraba verde (NO_CLOUD) — el operador leía 'problema de internet'
+    frente a una falla de arranque."""
     led = _NullLed()
-    signals = HealthSignals(boot_failed=True)
+    signals = HealthSignals(init_failed=True)
     monitor = HealthMonitor(led=led, signals=signals)
-    assert monitor.evaluate_once() is LedState.BOOT_FAILURE
+    assert monitor.evaluate_once() is LedState.HARDWARE_FAULT
 
 
-def test_boot_grace_expired_without_boot_complete_shows_boot_failure(all_probes_ok):
+def test_init_grace_expired_without_init_complete_shows_hardware_fault(all_probes_ok):
     """Init wedgeado (load_model/capture.open colgados): si venció el grace
-    sin boot_complete, el LED pasa a rojo en vez de quedarse verde para
-    siempre."""
+    sin init_complete, el LED pasa a rojo (HARDWARE_FAULT) en vez de quedarse
+    verde para siempre."""
     led = _NullLed()
-    signals = HealthSignals(boot_complete=False)
-    monitor = HealthMonitor(led=led, signals=signals, boot_grace_s=0.0)
-    assert monitor.evaluate_once() is LedState.BOOT_FAILURE
+    signals = HealthSignals(init_complete=False)
+    monitor = HealthMonitor(led=led, signals=signals, init_grace_s=0.0)
+    assert monitor.evaluate_once() is LedState.HARDWARE_FAULT
 
 
-def test_boot_grace_not_expired_keeps_normal_cascade(all_probes_ok):
+def test_init_grace_not_expired_keeps_normal_cascade(all_probes_ok):
     """Durante el grace (init normal en curso), la cascada sigue normal —
-    no flaggear boot failure mientras el operador espera el arranque."""
+    no flaggear falla de init mientras el operador espera el arranque."""
     led = _NullLed()
-    signals = HealthSignals(boot_complete=False, mqtt_connected=True)
-    monitor = HealthMonitor(led=led, signals=signals, boot_grace_s=120.0)
+    signals = HealthSignals(init_complete=False, mqtt_connected=True)
+    monitor = HealthMonitor(led=led, signals=signals, init_grace_s=120.0)
     state = monitor.evaluate_once()
-    assert state is not LedState.BOOT_FAILURE
+    assert state is not LedState.HARDWARE_FAULT
 
 
-def test_boot_complete_disables_grace_path(all_probes_ok):
-    """Con boot_complete=True el grace nunca dispara, aunque haya pasado."""
+def test_init_complete_disables_grace_path(all_probes_ok):
+    """Con init_complete=True el grace nunca dispara, aunque haya pasado."""
     led = _NullLed()
     signals = HealthSignals(
         last_loop_ts=time.time(),
-        boot_complete=True,
+        init_complete=True,
         mqtt_connected=True,
     )
-    monitor = HealthMonitor(led=led, signals=signals, boot_grace_s=0.0)
+    monitor = HealthMonitor(led=led, signals=signals, init_grace_s=0.0)
     assert monitor.evaluate_once() is LedState.OK
 
 
@@ -231,7 +232,7 @@ def test_start_stop_runs_at_least_one_tick(all_probes_ok):
     signals = HealthSignals(
         last_loop_ts=time.time(),
         mqtt_connected=True,
-        boot_complete=True,
+        init_complete=True,
     )
     monitor = HealthMonitor(led=led, signals=signals, poll_interval_s=0.02)
     monitor.start()
