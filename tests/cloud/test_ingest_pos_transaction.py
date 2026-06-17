@@ -338,3 +338,144 @@ def test_transient_db_error_reraised(fake_pg):
 
     with pytest.raises(RuntimeError, match="connection lost"):
         handler(_apigw_event(_single_tx()), None)
+
+
+# ---------------------------------------------------------------------------
+# Resiliencia de la conexión (Lambda caliente) + helpers de validación.
+# ---------------------------------------------------------------------------
+
+
+def test_get_connection_reuses_healthy_cached(fake_pg):
+    """Conexión cacheada que pasa el health-check (SELECT 1) se reusa."""
+    from src.cloud import ingest_pos_transaction as mod
+
+    mod._pg_conn = fake_pg["conn"]
+    conn = mod._get_connection()
+
+    assert conn is fake_pg["conn"]
+    fake_pg["psycopg"].connect.assert_not_called()
+
+
+def test_get_connection_reconnects_on_stale(fake_pg):
+    """SELECT 1 que falla → cierra la conexión stale y reabre."""
+    from src.cloud import ingest_pos_transaction as mod
+
+    stale = MagicMock()
+    stale.cursor.return_value.__enter__.return_value.execute.side_effect = RuntimeError(
+        "stale connection"
+    )
+    mod._pg_conn = stale
+
+    conn = mod._get_connection()
+
+    stale.close.assert_called_once()
+    assert conn is fake_pg["conn"]
+    fake_pg["psycopg"].connect.assert_called_once()
+
+
+def test_get_connection_swallows_stale_close_failure(fake_pg):
+    """Si el close() de la conexión stale también falla, reconecta igual."""
+    from src.cloud import ingest_pos_transaction as mod
+
+    stale = MagicMock()
+    stale.cursor.return_value.__enter__.return_value.execute.side_effect = RuntimeError(
+        "stale"
+    )
+    stale.close.side_effect = RuntimeError("close failed too")
+    mod._pg_conn = stale
+
+    assert mod._get_connection() is fake_pg["conn"]
+
+
+def test_body_valid_json_but_scalar_400(fake_pg):
+    """Body JSON válido que NO es objeto ni array (un número) → 400. Distinto del
+    JSON inválido: acá json.loads tiene éxito pero el tipo no sirve."""
+    from src.cloud.ingest_pos_transaction import handler
+
+    result = handler(_apigw_event(42), None)
+    assert result["statusCode"] == 400
+
+
+def test_get_connection_sets_sslrootcert_when_present(fake_pg, monkeypatch):
+    """Con CA bundle disponible, conecta con verify-full + sslrootcert."""
+    from src.cloud import ingest_pos_transaction as mod
+
+    monkeypatch.setattr(mod, "_ssl_root_cert", lambda: "/opt/ca.pem")
+    mod._pg_conn = None
+    mod._get_connection()
+
+    kwargs = fake_pg["psycopg"].connect.call_args.kwargs
+    assert kwargs["sslmode"] == "verify-full"
+    assert kwargs["sslrootcert"] == "/opt/ca.pem"
+
+
+def test_ssl_root_cert_from_env(monkeypatch):
+    from src.cloud import ingest_pos_transaction as mod
+
+    monkeypatch.setenv("SSL_ROOT_CERT_PATH", "/custom/ca.pem")
+    monkeypatch.setattr(mod.os.path, "exists", lambda p: p == "/custom/ca.pem")
+    assert mod._ssl_root_cert() == "/custom/ca.pem"
+
+
+def test_ssl_root_cert_from_convention_path(monkeypatch):
+    from src.cloud import ingest_pos_transaction as mod
+
+    monkeypatch.delenv("SSL_ROOT_CERT_PATH", raising=False)
+    monkeypatch.setattr(mod.os.path, "exists", lambda p: p == "/opt/rds-ca-bundle.pem")
+    assert mod._ssl_root_cert() == "/opt/rds-ca-bundle.pem"
+
+
+def test_ssl_root_cert_none_when_absent(monkeypatch):
+    from src.cloud import ingest_pos_transaction as mod
+
+    monkeypatch.delenv("SSL_ROOT_CERT_PATH", raising=False)
+    monkeypatch.setattr(mod.os.path, "exists", lambda _p: False)
+    assert mod._ssl_root_cert() is None
+
+
+def test_parse_event_ts_rejects_unsupported_type():
+    """event_ts que no es numérico ni string ISO → ValueError."""
+    from src.cloud.ingest_pos_transaction import _parse_event_ts
+
+    with pytest.raises(ValueError, match="numerico o ISO"):
+        _parse_event_ts({"not": "a ts"})
+
+
+def test_validate_transaction_rejects_non_dict():
+    """Una transacción que no es objeto JSON → ValueError."""
+    from src.cloud.ingest_pos_transaction import _validate_transaction
+
+    with pytest.raises(ValueError, match="debe ser un objeto"):
+        _validate_transaction("not-a-dict")
+
+
+def test_insert_transactions_empty_is_noop(fake_pg):
+    """Lista vacía → (0, 0) sin tocar el cursor."""
+    from src.cloud.ingest_pos_transaction import _insert_transactions
+
+    assert _insert_transactions(fake_pg["conn"], []) == (0, 0)
+    fake_pg["cursor"].execute.assert_not_called()
+
+
+def test_typeerror_during_insert_returns_400(fake_pg):
+    """Un TypeError fuera de la validación (ej. adaptación psycopg) cae en el
+    except (ValueError, TypeError) del handler → 400 sin retry."""
+    from src.cloud.ingest_pos_transaction import handler
+
+    fake_pg["cursor"].execute.side_effect = TypeError("bad adapt")
+    resp = handler(_apigw_event(_single_tx()), None)
+    assert resp["statusCode"] == 400
+
+
+def test_transient_error_swallows_close_failure(fake_pg):
+    """En el path transitorio, si el close() de la conexión rota también falla,
+    se traga la excepción, resetea el cache y re-raisea el error original."""
+    from src.cloud import ingest_pos_transaction as mod
+    from src.cloud.ingest_pos_transaction import handler
+
+    fake_pg["cursor"].execute.side_effect = RuntimeError("conn lost")
+    fake_pg["conn"].close.side_effect = RuntimeError("close failed too")
+
+    with pytest.raises(RuntimeError, match="conn lost"):
+        handler(_apigw_event(_single_tx()), None)
+    assert mod._pg_conn is None

@@ -5,13 +5,13 @@ con la estructura formal del plan de proyecto. Sirve como input para
 herramientas de project management (MS Project, GanttProject, etc.) y
 como referencia para estimar tareas similares a futuro.
 
-**Período medido**: 2026-04-02 → 2026-06-15 (74 días calendario, ~52
+**Período medido**: 2026-04-02 → 2026-06-17 (76 días calendario, ~53
 activos).
-**Esfuerzo medido**: **177.0h efectivas** en **100 sesiones** (gaps ≥ 1.5h
+**Esfuerzo medido**: **180.2h efectivas** en **101 sesiones** (gaps ≥ 1.5h
 entre commits) + ~40h estimadas del bundle pre-existente que trajo el
-initial commit. **Total ≈ 215-235h**.
+initial commit. **Total ≈ 218-238h**.
 
-> **Regeneración 2026-06-16 (cierre de S10 + S11 + S12)**. La versión
+> **Regeneración 2026-06-16/17 (cierre de S10 + S11 + S12)**. La versión
 > previa de este Gantt estaba congelada al 2026-05-24 (136.9h efectivas).
 > Esta regeneración suma el **delta medido 2026-05-24 → 2026-06-15:
 > +40.1h efectivas** en 119 commits / 30 sesiones, repartidas S10 12.9h ·
@@ -22,9 +22,12 @@ initial commit. **Total ≈ 215-235h**.
 > guards anti-FP, validación E2E del piloto, docs) y **S12** (perf CPU
 > 162%→~50% con `idle_throttle`, sandboxing systemd verificado en HW,
 > revisión cross-proyecto de 19 hallazgos, telemetría de salud Tier
-> 1/2/3, panel admin del viewer, status LED a 6 estados). El antiguo
-> apunte de la "sesión 2026-05-24 tarde (~6h, total acumulado ~143h)"
-> queda subsumido en este delta (la ventana arranca el 2026-05-24).
+> 1/2/3, panel admin del viewer, status LED a 6 estados). Más un **tail
+> de +3.2h el 2026-06-16/17** (cierre de S10 con la regla de alerta
+> `death_emit/total` + reporte de coverage + pasada de hardening de tests:
+> guards del death-emit aislados y resiliencia de las Lambdas a 97-98%).
+> El antiguo apunte de la "sesión 2026-05-24 tarde (~6h, total acumulado
+> ~143h)" queda subsumido en este delta (la ventana arranca el 2026-05-24).
 **Modalidad**: solo developer, sesiones partidas mañana/noche (~3.4h/día
 activo promedio, ~42% de los días con doble turno mañana+tarde-noche
 detectado).
@@ -56,11 +59,11 @@ tracker hardening). Sin doble-conteo de squashed commits.
 
 ### PoC entregado (datos medidos)
 
-- **177.0h efectivas en 74 días calendario** (2026-04-02 → 2026-06-15),
-  ~52 días activos, 100 sesiones partidas mañana/noche detectadas.
+- **180.2h efectivas en 76 días calendario** (2026-04-02 → 2026-06-17),
+  ~53 días activos, 101 sesiones partidas mañana/noche detectadas.
 - **+ ~40-60h estimadas del skeleton bundleado** en el initial commit
   (20 módulos en `src/` + ~130 tests + pyproject + main.py).
-- **Total real del proyecto: ~215-235h hands-on**.
+- **Total real del proyecto: ~218-238h hands-on**.
 
 ### Distribución del esfuerzo medido
 
@@ -86,11 +89,14 @@ predominante.
 | S4 — Profundidad y counting zone | 0.6h | 0.3% |
 | **Total atribuido** | **172.1h** | **100%** |
 
-> La suma atribuida (172.1h) queda ~5h por debajo de las 177.0h efectivas
-> medidas — es el mismo desfase de atribución del corte previo (132.0h
-> atribuidas vs 136.9h efectivas): la asignación proporcional por commit
-> deja fuera fracciones de sesiones con prefijo ambiguo. S10 y S12 entran
-> como filas nuevas (en el corte previo aún no tenían esfuerzo medido).
+> La tabla cubre la ventana medida hasta 2026-06-15 (172.1h atribuidas).
+> Sumando el tail de +3.2h del 2026-06-16/17 (cierre S10 + coverage +
+> hardening de tests, no re-spliteado por sprint) el total efectivo llega a
+> **180.2h**. La suma atribuida queda ~5-8h por debajo del efectivo — es el
+> mismo desfase de atribución del corte previo (132.0h atribuidas vs 136.9h
+> efectivas): la asignación proporcional por commit deja fuera fracciones de
+> sesiones con prefijo ambiguo. S10 y S12 entran como filas nuevas (en el
+> corte previo aún no tenían esfuerzo medido).
 
 ### Hitos del PoC
 
@@ -354,8 +360,9 @@ horas dedicadas explícitamente a pruebas que no son testing inline.**
 | Prueba conexión con AWS | MQTT smoke + shadow round-trip — ya contadas en T09 | (en T09) | — |
 | **Prueba integral (PoC completa)** | tests/test_integration_e2e.py + smoke E2E manual | ~5.0 | M5 |
 
-> Los 727 tests de pytest están en `T18` (cross-cutting) y se ejecutaron a
-> lo largo de todo el desarrollo. Sin contar el bundle de 129 tests
+> Los ~1040 tests de pytest están en `T18` (cross-cutting) y se ejecutaron a
+> lo largo de todo el desarrollo (1039 passed + 2 skipped, 82% coverage al
+> cierre — ver `docs/coverage_report.md`). Sin contar el bundle de 129 tests
 > pre-existentes del T00.
 
 ---
@@ -539,7 +546,8 @@ gantt
     Perf CPU idle_throttle + sandboxing   :done, s12c, 2026-06-09, 1d
     Revisión cross-proyecto (19 fixes)    :done, s12d, 2026-06-09, 1d
     Status LED 6 estados                  :done, s12e, 2026-06-15, 1d
-    Entregables documentales del TFG      :crit, s12f, 2026-06-16, 5d
+    Cierre S10 + coverage + hardening tests :done, s12f, 2026-06-16, 2d
+    Entregables documentales del TFG      :crit, s12g, 2026-06-18, 5d
 
     section Pruebas
     Integral PoC (T18 + E2E)              :done, t18, 2026-05-06, 7d
@@ -550,7 +558,7 @@ gantt
     Higiene del repo (T19)                :done, t19, 2026-05-02, 11d
 
     section Post-cursada
-    Piloto 2 sucursales                   :pilot, after s12f, 28d
+    Piloto 2 sucursales                   :pilot, after s12g, 28d
     Ajustes post-piloto                   :adjust, after pilot, 14d
     Rollout 30 locales                    :rollout, after adjust, 90d
 ```
@@ -573,15 +581,17 @@ semana del      TOTAL    foco principal
 25-May (W22)    13.8h    S10 dashboards (footfall) + alerting SES + refactor schema S9 (per-window, SQL category) + SGBM depth cache
 01-Jun (W23)    16.0h    ← S10 Grafana (5 tableros + rollup SQL + feriados) + telemetría salud Tier 1/2/3 + measure_power + WAL fix dedup + diseño OTA
 08-Jun (W24)     3.8h    panel admin del viewer + revisión cross-proyecto (19 fixes) + perf CPU idle_throttle + sandboxing systemd en HW
-15-Jun (W25)     0.5h    status LED 6 estados + cierre S10 (alert rule death-emit) + regeneración del Gantt
+15-Jun (W25)     3.7h    status LED 6 estados + cierre S10 (alert rule death-emit) + reporte de coverage + hardening de tests + regeneración del Gantt
 ─────────────────────────────────────────────────────────────────────────────
-                171.8h
+                175.0h
 ```
 
 Las semanas W20-W21 concentraron **54.1h (31%) del esfuerzo** — cierre del
 cloud + hardening del tracker + organización del repo. El tramo W22-W25
-(+34.1h) fue cierre de S10 (Grafana + alerting), perf del pipeline edge,
-y el hardening de cierre de S12.
+(+37.3h) fue cierre de S10 (Grafana + alerting), perf del pipeline edge,
+y el hardening de cierre de S12 (coverage + tests). El total por semana
+(175.0h) queda ~5h por debajo de las 180.2h efectivas — desfase de
+atribución (ver nota de la distribución por sprint).
 
 ## Patrón diario detectado
 

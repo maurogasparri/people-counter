@@ -209,6 +209,15 @@ def test_login_and_power_flow(tmp_path):
         # /reboot con cookie → 200 y dispara la acción
         with _post(f"{url}/reboot", cookie=cookie) as r:
             assert r.status == 200
+        # El handler responde 200 + flush ANTES de llamar a _trigger_power
+        # (para que el browser reciba la respuesta antes de que el device se
+        # desconecte), así que la acción corre en el thread del server después
+        # de que el cliente ya leyó el 200. Esperamos a que aparezca en vez de
+        # assertear al toque — sin esto el test tiene una race que aflora según
+        # el scheduling (pasa aislado, falla con la suite completa).
+        deadline = time.time() + 2.0
+        while not triggered and time.time() < deadline:
+            time.sleep(0.01)
         assert triggered == ["reboot"]
     finally:
         viewer.stop()

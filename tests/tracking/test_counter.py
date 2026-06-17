@@ -2279,3 +2279,124 @@ def test_ghost_adoption_preserves_counter_meta_so_resurrected_track_emits():
     assert events[0].track_id == tid_a  # mismo ID preservado
     assert counter.total_in == 1
     assert counter.total_out == 0
+
+
+# ---------------------------------------------------------------------------
+# Aislamiento quirúrgico de los guards de _emit_on_death (capa 3 del rescue).
+#
+# Los tests e2e de arriba (test_min_count_*_blocks_death_emit_*) assertan el
+# OUTCOME (total_in == 0), pero al manejar el track completo el ``height_m``
+# termina en None vía la agregación con confidence gate → es el guard de
+# *confidence* el que corta, NO el guard nombrado en el test. Por eso esas
+# líneas del guard de altura / evidencia quedaban sin ejecutar: los tests
+# pasaban por la razón equivocada (false confidence).
+#
+# Estos tests llaman ``_emit_on_death(snap)`` directo con un snap construido a
+# mano donde todos los guards anteriores pasan y SOLO el target dispara, con
+# un control que confirma que flipear ese único campo cambia el veredicto.
+# ---------------------------------------------------------------------------
+
+
+def _death_snap(**overrides):
+    """Snap completo que pasa TODOS los guards de ``_emit_on_death`` (emitiría
+    un ingress). Cada test override-ea un solo campo para aislar un guard."""
+    snap = {
+        "track_id": 1,
+        "inside": True,
+        "net": [1],
+        "had_outside_pos": True,
+        "visit_x_range": 0.0,
+        "visit_y_range": 200.0,  # > min_visit_range_for_death_emit (80)
+        "real_inside_frames": 5,
+        "height_m": 1.7,
+        "head_depth_m": 1.0,
+        "confidence": 0.9,
+        "last_crossing_pos": (300.0, 300.0),
+        "last_pos": (300.0, 300.0),
+    }
+    snap.update(overrides)
+    return snap
+
+
+def test_death_emit_baseline_snap_emits():
+    """Sanity: el snap base (todos los guards en pass) emite un ingress."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    ev = counter._emit_on_death(_death_snap())
+    assert ev is not None
+    assert ev.direction == "ingress"
+
+
+def test_death_emit_guard_min_real_inside_frames_isolated():
+    """Guard 4 aislado: real_inside_frames < threshold bloquea SOLO por esa
+    razón (control: subir los frames al umbral con el resto idéntico → emite)."""
+    counter = Counter(
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
+        min_real_inside_frames=3,
+    )
+    assert counter._emit_on_death(_death_snap(real_inside_frames=1)) is None
+    assert counter._emit_on_death(_death_snap(real_inside_frames=3)) is not None
+
+
+def test_death_emit_guard_min_count_height_isolated():
+    """Guard 3 aislado: altura medida < threshold bloquea. Conf guard apagado
+    (min_count_confidence=0) para garantizar que el blocker es la altura."""
+    counter = Counter(
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
+        min_count_height_m=1.0,
+        min_count_confidence=0.0,
+    )
+    assert counter._emit_on_death(_death_snap(height_m=0.55)) is None
+    assert counter._emit_on_death(_death_snap(height_m=1.8)) is not None
+
+
+def test_death_emit_height_guard_skipped_when_height_none():
+    """El guard de altura NO filtra tracks sin altura medida (height_m=None):
+    la condición ``snap_height_m is not None`` debe cortar y dejar pasar (a
+    esos los maneja el guard de confidence, no este)."""
+    counter = Counter(
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
+        min_count_height_m=1.0,
+        min_count_confidence=0.0,
+    )
+    assert counter._emit_on_death(_death_snap(height_m=None)) is not None
+
+
+def test_death_emit_guard_min_count_confidence_isolated():
+    """Guard anti-FP sin altura aislado: height_m=None + conf < threshold
+    bloquea (control: conf alta con height None → emite, es humano lejos del
+    piso)."""
+    counter = Counter(
+        lines=[_line_h()],
+        counting_zone=COUNTING_ZONE,
+        min_count_confidence=0.6,
+    )
+    assert counter._emit_on_death(_death_snap(height_m=None, confidence=0.4)) is None
+    assert (
+        counter._emit_on_death(_death_snap(height_m=None, confidence=0.9)) is not None
+    )
+
+
+def test_death_emit_egress_label_for_negative_net():
+    """net<0 produce un egress (rama crossing_label(1, -1) del veredicto)."""
+    counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
+    ev = counter._emit_on_death(_death_snap(net=[-1]))
+    assert ev is not None
+    assert ev.direction == "egress"
+
+
+def test_death_emit_label_loop_handles_zero_and_short_net():
+    """El loop de veredicto cubre línea con net 0 (verdict None) y net más
+    corto que la cantidad de líneas (i >= len(net) → continue). La última
+    línea con net no-nulo gana el label."""
+    counter = Counter(
+        lines=[_line_h(line_y=250), _line_h(line_y=300), _line_h(line_y=350)],
+        counting_zone=COUNTING_ZONE,
+    )
+    # 3 líneas, net de longitud 2 = [0, 1]: línea 0 net 0 (verdict None),
+    # línea 1 ingress, línea 2 sin entrada en net (continue).
+    ev = counter._emit_on_death(_death_snap(net=[0, 1]))
+    assert ev is not None
+    assert ev.direction == "ingress"

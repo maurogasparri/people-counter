@@ -185,7 +185,7 @@
 | Tarea | Horas | Artefactos |
 |---|---:|---|
 | Hardening final del repositorio (ruff sweeps, type hints) | 1.5 | Repo limpio |
-| Coverage final de tests | 0.5 | **Hecho**: `docs/coverage_report.md` — 1008 tests passed, **81% de cobertura total** (núcleo counter/tracker/dedup/calibración 88–98%; bordes de hardware 60–77% cubiertos por validación on-device). Regenerable con `pytest --cov=src`. |
+| Coverage final de tests | 0.5 | **Hecho**: `docs/coverage_report.md` — 1039 tests passed (+2 skipped), **82% de cobertura total** (núcleo counter/tracker/dedup/calibración 88–98%; bordes de hardware 60–77% cubiertos por validación on-device). Pasada de hardening 2026-06-17: guards del death-emit aislados (counter 97%) + resiliencia de las Lambdas (persist_event / ingest_pos 98%) + fix de una race latente en el test del viewer. Regenerable con `pytest --cov=src`. |
 | Provisioning script para nuevas unidades | 1 | `scripts/provision.py` |
 | Dimensionamiento del despliegue (para sección 6.2 TFG) | 2 | Tabla de dimensionamiento |
 | Demo en video | 1.5 | Screencast del sistema completo |

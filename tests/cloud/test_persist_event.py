@@ -443,3 +443,172 @@ def test_data_error_discarded_as_400(fake_pg):
         "data": {"direction": "in", "track_id": 1},
     }
     assert handler(event, None)["statusCode"] == 400
+
+
+# ---------------------------------------------------------------------------
+# Resiliencia de la conexión (Lambda caliente) + helpers SSL/ts.
+# ---------------------------------------------------------------------------
+
+
+def test_get_connection_reuses_healthy_cached(fake_pg):
+    """Conexión cacheada que responde el health-check (SELECT 1) se reusa sin
+    reconectar — el caso normal del Lambda caliente."""
+    from src.cloud import persist_event
+
+    persist_event._pg_conn = fake_pg["conn"]
+    conn = persist_event._get_connection()
+
+    assert conn is fake_pg["conn"]
+    fake_pg["psycopg"].connect.assert_not_called()  # no reabrió
+    fake_pg["conn"].close.assert_not_called()
+
+
+def test_get_connection_reconnects_on_stale(fake_pg):
+    """Conexión cacheada cuyo SELECT 1 falla (token expirado / network blip) se
+    cierra y se reabre. Cubre el path de reconexión del Lambda caliente."""
+    from src.cloud import persist_event
+
+    stale = MagicMock()
+    stale.cursor.return_value.__enter__.return_value.execute.side_effect = RuntimeError(
+        "stale connection"
+    )
+    persist_event._pg_conn = stale
+
+    conn = persist_event._get_connection()
+
+    stale.close.assert_called_once()
+    assert conn is fake_pg["conn"]  # reabrió con psycopg.connect
+    fake_pg["psycopg"].connect.assert_called_once()
+
+
+def test_get_connection_swallows_stale_close_failure(fake_pg):
+    """Si el close() de la conexión stale también falla, se traga la excepción
+    y reconecta igual (no debe propagar)."""
+    from src.cloud import persist_event
+
+    stale = MagicMock()
+    stale.cursor.return_value.__enter__.return_value.execute.side_effect = RuntimeError(
+        "stale"
+    )
+    stale.close.side_effect = RuntimeError("close failed too")
+    persist_event._pg_conn = stale
+
+    conn = persist_event._get_connection()
+
+    assert conn is fake_pg["conn"]
+
+
+def test_get_connection_sets_sslrootcert_when_present(fake_pg, monkeypatch):
+    """Con un CA bundle disponible, la conexión usa sslmode=verify-full +
+    sslrootcert (verificación del cert del server, no solo cifrado)."""
+    from src.cloud import persist_event
+
+    monkeypatch.setattr(persist_event, "_ssl_root_cert", lambda: "/opt/ca.pem")
+    persist_event._pg_conn = None
+    persist_event._get_connection()
+
+    kwargs = fake_pg["psycopg"].connect.call_args.kwargs
+    assert kwargs["sslmode"] == "verify-full"
+    assert kwargs["sslrootcert"] == "/opt/ca.pem"
+
+
+def test_ssl_root_cert_from_env(monkeypatch):
+    """SSL_ROOT_CERT_PATH explícito gana si el archivo existe."""
+    from src.cloud import persist_event
+
+    monkeypatch.setenv("SSL_ROOT_CERT_PATH", "/custom/ca.pem")
+    monkeypatch.setattr(
+        persist_event.os.path, "exists", lambda p: p == "/custom/ca.pem"
+    )
+    assert persist_event._ssl_root_cert() == "/custom/ca.pem"
+
+
+def test_ssl_root_cert_from_convention_path(monkeypatch):
+    """Sin env var, cae a los paths convencionales (Layer /opt o code /var)."""
+    from src.cloud import persist_event
+
+    monkeypatch.delenv("SSL_ROOT_CERT_PATH", raising=False)
+    monkeypatch.setattr(
+        persist_event.os.path, "exists", lambda p: p == "/opt/rds-ca-bundle.pem"
+    )
+    assert persist_event._ssl_root_cert() == "/opt/rds-ca-bundle.pem"
+
+
+def test_ssl_root_cert_none_when_absent(monkeypatch):
+    """Sin env var ni paths convencionales → None (conecta con sslmode=require)."""
+    from src.cloud import persist_event
+
+    monkeypatch.delenv("SSL_ROOT_CERT_PATH", raising=False)
+    monkeypatch.setattr(persist_event.os.path, "exists", lambda _p: False)
+    assert persist_event._ssl_root_cert() is None
+
+
+def test_ts_none_passthrough():
+    """``_ts(None)`` devuelve None (passthrough para timestamps ausentes)."""
+    from src.cloud.persist_event import _ts
+
+    assert _ts(None) is None
+
+
+def test_wifi_ble_all_bad_hashes_inserts_nothing(fake_pg):
+    """Si todos los devices traen visitor_hash inválido, se saltean y no queda
+    ninguna fila → early return sin ejecutar el INSERT (no crashea la ventana)."""
+    from src.cloud.persist_event import _insert_wifi_ble
+
+    _insert_wifi_ble(
+        fake_pg["conn"],
+        {
+            "device_id": "store-001-cam-01",
+            "data": {
+                "period_start": 1762963200.0,
+                "period_end": 1762964100.0,
+                "devices": [
+                    {
+                        "visitor_hash": "ZZZ",  # no es hex válido → se saltea
+                        "protocol": "wifi",
+                        "rssi_max": -50,
+                        "first_seen_ts": 1.0,
+                        "last_seen_ts": 2.0,
+                    }
+                ],
+            },
+        },
+    )
+    fake_pg["cursor"].execute.assert_not_called()
+
+
+def test_value_error_in_insert_returns_400(fake_pg):
+    """Un ValueError/TypeError durante el dispatch = dato inadaptable → 400 sin
+    retry (no es transitorio)."""
+    from src.cloud.persist_event import handler
+
+    fake_pg["cursor"].execute.side_effect = ValueError("bad value")
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "counting",
+        "data": {"direction": "in"},
+    }
+    assert handler(event, None)["statusCode"] == 400
+
+
+def test_transient_error_swallows_close_failure(fake_pg):
+    """En el path transitorio, si el close() de la conexión rota también falla,
+    se traga la excepción, resetea el cache y re-raisea el error original."""
+    from src.cloud import persist_event
+    from src.cloud.persist_event import handler
+
+    # _pg_conn arranca en None (fixture) → _get_connection abre fresh sin
+    # health-check; el INSERT es el único execute y revienta.
+    fake_pg["cursor"].execute.side_effect = RuntimeError("conn lost")
+    fake_pg["conn"].close.side_effect = RuntimeError("close failed too")
+
+    event = {
+        "device_id": "store-001-cam-01",
+        "timestamp": 1762963200.0,
+        "type": "counting",
+        "data": {"direction": "in"},
+    }
+    with pytest.raises(RuntimeError, match="conn lost"):
+        handler(event, None)
+    assert persist_event._pg_conn is None  # reseteado pese al fallo del close

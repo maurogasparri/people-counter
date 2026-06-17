@@ -1,7 +1,7 @@
 # Reporte de coverage de tests
 
 Cobertura de la suite de tests unitarios sobre `src/`. Generado con
-`pytest-cov` (coverage.py) el **2026-06-16**.
+`pytest-cov` (coverage.py) el **2026-06-17**.
 
 ## Cómo regenerarlo
 
@@ -16,27 +16,29 @@ pytest --cov=src --cov-report=term-missing --cov-report=html
 
 | Métrica | Valor |
 |---|---:|
-| Tests ejecutados | **1008 passed**, 2 skipped |
+| Tests ejecutados | **1039 passed**, 2 skipped |
 | Sentencias totales en `src/` | 6740 |
-| Sentencias sin cubrir | 1257 |
-| **Cobertura total** | **81%** |
-| Archivos al 100% | 14 |
-| Tiempo de ejecución | ~59 s |
+| Sentencias sin cubrir | 1203 |
+| **Cobertura total** | **82%** |
+| Archivos al 100% | 15 |
+| Tiempo de ejecución | ~46 s |
 | Plataforma | Python 3.12 (workstation) / target runtime 3.13 (Pi) |
 
 ## Cobertura por módulo
 
-Ordenado de mayor a menor cobertura. Los 14 archivos al 100% (la mayoría de
+Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 `tests/` espejo de helpers puros: `world_coords`, `hasher`, `kalman`,
 `buffer` helpers, `__init__`, etc.) se omiten de la tabla.
 
 | Módulo | Stmts | Cover |
 |---|---:|---:|
 | `vision/static_suppressor.py` | 52 | 98% |
+| `cloud/persist_event.py` | 123 | 98% |
+| `cloud/ingest_pos_transaction.py` | 125 | 98% |
 | `config/hardware.py` | 75 | 97% |
+| `tracking/counter.py` | 449 | 97% |
 | `status/monitor.py` | 73 | 96% |
 | `wifi_ble/fingerprint.py` | 43 | 95% |
-| `tracking/counter.py` | 449 | 94% |
 | `web/admin_auth.py` | 45 | 93% |
 | `vision/calibration.py` | 645 | 92% |
 | `config/loader.py` | 384 | 91% |
@@ -49,8 +51,6 @@ Ordenado de mayor a menor cobertura. Los 14 archivos al 100% (la mayoría de
 | `cloud/query_aggregates.py` | 301 | 87% |
 | `mqtt/client.py` | 220 | 86% |
 | `mqtt/buffer.py` | 83 | 83% |
-| `cloud/persist_event.py` | 123 | 82% |
-| `cloud/ingest_pos_transaction.py` | 125 | 82% |
 | `telemetry.py` | 247 | 82% |
 | `vision/report.py` | 166 | 81% |
 | `web/viewer.py` | 350 | 77% |
@@ -60,7 +60,36 @@ Ordenado de mayor a menor cobertura. Los 14 archivos al 100% (la mayoría de
 | `main.py` | 981 | 62% |
 | `vision/detect.py` | 230 | 61% |
 | `wifi_ble/ble_scan.py` | 101 | 60% |
-| **TOTAL** | **6740** | **81%** |
+| **TOTAL** | **6740** | **82%** |
+
+> **Pasada de hardening de tests (2026-06-17)**. Se cerraron los gaps de
+> mayor riesgo entre el núcleo de decisión y las Lambdas:
+> - **`counter` 94%→97%**: los guards anti-FP del death-emit (capa 3 del
+>   rescue cascade: `min_real_inside_frames`, `min_count_height_m`,
+>   `min_count_confidence`) ahora se ejercitan en aislamiento. Los tests e2e
+>   previos assertaban el outcome (`total_in == 0`) pero un guard anterior
+>   (confidence) cortaba primero → las líneas del guard nombrado nunca
+>   corrían (false confidence). Los nuevos tests llaman `_emit_on_death` con
+>   un snap controlado: pasa todos los guards menos el target, con control que
+>   confirma el aislamiento.
+> - **`persist_event` 82%→98%** y **`ingest_pos_transaction` 82%→98%**: paths
+>   de resiliencia del Lambda caliente (reconexión de conexión stale vía
+>   health-check `SELECT 1`, swallow del close fallido, selección de
+>   `sslmode`/`sslrootcert`) + ramas de validación (event_ts de tipo
+>   inválido, transacción no-dict, batch vacío, error transitorio vs error de
+>   datos). Son Python puro, 100% mockeable — exactamente las rutas de "qué
+>   pasa cuando RDS hipa".
+>
+> En la misma pasada se corrigió una **race latente** en
+> `tests/web/test_viewer.py::test_login_and_power_flow`: el handler `/reboot`
+> responde 200 *antes* de disparar la acción (en el thread del server), y el
+> test assertaba el side-effect al toque. Pasaba aislado y fallaba con la
+> suite completa según el scheduling; ahora espera el efecto con timeout.
+>
+> El total agregado sube poco (81%→82%) porque el denominador está dominado
+> por los bordes de hardware + `main.py` (ver abajo) que no se persiguen por
+> diseño; el valor de la pasada está en llevar los módulos de mayor riesgo a
+> 97-98%, no en el número agregado.
 
 ## Interpretación
 
@@ -98,8 +127,9 @@ La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
 
 ## Conclusión
 
-81% de cobertura total con el **núcleo de decisión (counter/tracker/dedup/
-calibration) por encima del 88%**. El gap hasta el 100% son mayoritariamente
+82% de cobertura total con el **núcleo de decisión (counter/tracker/dedup/
+calibration) por encima del 88%** (counter y las Lambdas de ingesta en
+97-98% tras la pasada de hardening). El gap hasta el 100% son mayoritariamente
 los bordes de hardware, cubiertos por validación on-device en lugar de tests
 unitarios en CI. Para una flota de dispositivos edge desatendidos es el
 trade-off correcto: la red de tests es más densa justo donde un error afecta
