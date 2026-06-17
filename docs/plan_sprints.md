@@ -185,7 +185,7 @@
 | Tarea | Horas | Artefactos |
 |---|---:|---|
 | Hardening final del repositorio (ruff sweeps, type hints) | 1.5 | Repo limpio |
-| Coverage final de tests | 0.5 | Reporte de coverage |
+| Coverage final de tests | 0.5 | **Hecho**: `docs/coverage_report.md` — 1008 tests passed, **81% de cobertura total** (núcleo counter/tracker/dedup/calibración 88–98%; bordes de hardware 60–77% cubiertos por validación on-device). Regenerable con `pytest --cov=src`. |
 | Provisioning script para nuevas unidades | 1 | `scripts/provision.py` |
 | Dimensionamiento del despliegue (para sección 6.2 TFG) | 2 | Tabla de dimensionamiento |
 | Demo en video | 1.5 | Screencast del sistema completo |
