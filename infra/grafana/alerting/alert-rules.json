@@ -1081,6 +1081,113 @@
           "isPaused": false,
           "notification_settings": null,
           "record": null
+        },
+        {
+          "uid": "pc-death-emit-ratio",
+          "folderUID": "alertas-pc",
+          "ruleGroup": "Operación",
+          "title": "Dependencia del death-emit (death_emit / total > 0.3)",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "__DS_UID__",
+              "model": {
+                "datasource": {
+                  "type": "grafana-postgresql-datasource",
+                  "uid": "__DS_UID__"
+                },
+                "editorMode": "code",
+                "format": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200,
+                "rawSql": "SELECT DISTINCT ON (device_id) device_id AS metric, CASE WHEN (total_in + total_out) >= 10 THEN death_emit_count::float / NULLIF(total_in + total_out, 0) ELSE 0 END AS value FROM telemetry t JOIN sites s USING (store_id) WHERE s.status='operational' ORDER BY device_id, event_ts DESC",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0.3
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "keep_firing_for": "0s",
+          "annotations": {
+            "summary": "{{ $labels.metric }}: más del 30% de los counts del día vienen del death-emit (capa 3 del rescue). El tracker fragmenta y depende del fallback — recall del detector flojo. Cruzar con track_stitching_ratio y ghost_adoption_count. (Solo se evalúa con ≥10 counts del día para evitar ruido a bajo tráfico.)"
+          },
+          "labels": {
+            "severity": "warning"
+          },
+          "isPaused": false,
+          "notification_settings": null,
+          "record": null
         }
       ]
     },
