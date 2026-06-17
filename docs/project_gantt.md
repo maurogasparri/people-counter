@@ -5,22 +5,27 @@ con la estructura formal del plan de proyecto. Sirve como input para
 herramientas de project management (MS Project, GanttProject, etc.) y
 como referencia para estimar tareas similares a futuro.
 
-**Período medido**: 2026-04-02 → 2026-05-24 (53 días calendario, 37
+**Período medido**: 2026-04-02 → 2026-06-15 (74 días calendario, ~52
 activos).
-**Esfuerzo medido**: **136.9h efectivas** en **70 sesiones** (gaps ≥ 1.5h
+**Esfuerzo medido**: **177.0h efectivas** en **100 sesiones** (gaps ≥ 1.5h
 entre commits) + ~40h estimadas del bundle pre-existente que trajo el
-initial commit. **Total ≈ 175-180h**.
+initial commit. **Total ≈ 215-235h**.
 
-> **Nota — sesión 2026-05-24 tarde (no reflejada en las 136.9h)**: 9
-> commits adicionales (~6h efectivas) en hardening anti-FP del piloto:
-> guards `min_count_height_m` / `min_real_inside_frames` /
-> `height_confidence_gate` config-driven; filtro pre-tracker
-> `tracking_zone` con 3 modos (polygon, frame_margin_px, auto_margin_px);
-> keepalive condicional a entry real; fix doble-conteo
-> `last_outside_pos`; blur del preview fuera de tracking_zone; `/health`
-> endpoint + auto-reload del MJPEG. **Total acumulado real ≈ 143h**.
-> Se regenerará en el cierre de S11/S12.
-**Modalidad**: solo developer, sesiones partidas mañana/noche (3.7h/día
+> **Regeneración 2026-06-16 (cierre de S10 + S11 + S12)**. La versión
+> previa de este Gantt estaba congelada al 2026-05-24 (136.9h efectivas).
+> Esta regeneración suma el **delta medido 2026-05-24 → 2026-06-15:
+> +40.1h efectivas** en 119 commits / 30 sesiones, repartidas S10 12.9h ·
+> S11 11.6h · S12 7.0h · S9 5.1h · docs 2.3h · S8 0.7h · S5 0.5h. Cubre:
+> cierre de **S10** (5 dashboards Grafana en 2 carpetas + 12 alert rules
+> en 3 grupos + capa de rollup SQL incremental + live tail), **S11**
+> (hardening review-driven del pipeline edge+cloud, SGBM depth cache,
+> guards anti-FP, validación E2E del piloto, docs) y **S12** (perf CPU
+> 162%→~50% con `idle_throttle`, sandboxing systemd verificado en HW,
+> revisión cross-proyecto de 19 hallazgos, telemetría de salud Tier
+> 1/2/3, panel admin del viewer, status LED a 6 estados). El antiguo
+> apunte de la "sesión 2026-05-24 tarde (~6h, total acumulado ~143h)"
+> queda subsumido en este delta (la ventana arranca el 2026-05-24).
+**Modalidad**: solo developer, sesiones partidas mañana/noche (~3.4h/día
 activo promedio, ~42% de los días con doble turno mañana+tarde-noche
 detectado).
 **Métrica de fuente**: timestamps reconstruidos desde el tag local
@@ -35,7 +40,8 @@ tracker hardening). Sin doble-conteo de squashed commits.
 > de error está principalmente en el trabajo previo al primer commit de
 > cada sesión (research, debug manual en la Pi sin commit aún).
 >
-> **Datos medidos vs. proyecciones**. Las **132h del PoC actual** salen
+> **Datos medidos vs. proyecciones**. Las **~172h del PoC actual** (177h
+> efectivas, ~172h una vez atribuidas por sprint) salen
 > de timestamps reales — son datos. El **escenario optimizado** y el
 > **greenfield desde cero** son **proyecciones** basadas en asunciones
 > explícitas. Las proyecciones incluyen un buffer de +15% sobre la
@@ -50,11 +56,11 @@ tracker hardening). Sin doble-conteo de squashed commits.
 
 ### PoC entregado (datos medidos)
 
-- **136.9h efectivas en 53 días calendario** (2026-04-02 → 2026-05-24),
-  37 días activos, 70 sesiones partidas mañana/noche detectadas.
+- **177.0h efectivas en 74 días calendario** (2026-04-02 → 2026-06-15),
+  ~52 días activos, 100 sesiones partidas mañana/noche detectadas.
 - **+ ~40-60h estimadas del skeleton bundleado** en el initial commit
   (20 módulos en `src/` + ~130 tests + pyproject + main.py).
-- **Total real del proyecto: ~175-195h hands-on**.
+- **Total real del proyecto: ~215-235h hands-on**.
 
 ### Distribución del esfuerzo medido
 
@@ -65,18 +71,26 @@ predominante.
 
 | Sprint / bloque | Horas | % del esfuerzo |
 |---|---:|---:|
-| S3 — Calibración estéreo | **29.0h** | **22.0%** |
-| Docs cross-cutting (README/CLAUDE/plan/gantt) | 29.7h | 22.5% |
-| S2 — Captura estéreo y servicios | **23.8h** | **18.0%** |
-| S9 — Servicios cloud y APIs | 10.2h | 7.7% |
-| S8 — Mensajería y telemetría | 7.6h | 5.8% |
-| S6 — Seguimiento y conteo | 7.5h | 5.7% |
-| S5 — Detección neuronal | 7.3h | 5.5% |
-| S11 — Validación y tests | 6.9h | 5.2% |
-| Misc / unmapped (configs, tooling cross) | 7.0h | 5.3% |
-| S7 — Captura WiFi y BLE | 2.5h | 1.9% |
-| S4 — Profundidad y counting zone | 0.6h | 0.4% |
-| **Total** | **132.0h** | **100%** |
+| Docs cross-cutting (README/CLAUDE/plan/gantt) | 32.0h | 18.6% |
+| S3 — Calibración estéreo | **29.0h** | **16.9%** |
+| S2 — Captura estéreo y servicios | **23.8h** | **13.8%** |
+| S11 — Validación y documentación | **18.5h** | **10.7%** |
+| S9 — Servicios cloud y APIs | 15.3h | 8.9% |
+| S10 — Visualización analítica | **12.9h** | **7.5%** |
+| S8 — Mensajería y telemetría | 8.3h | 4.8% |
+| S5 — Detección neuronal | 7.8h | 4.5% |
+| S6 — Seguimiento y conteo | 7.5h | 4.4% |
+| S12 — Cierre del prototipo | **7.0h** | **4.1%** |
+| Misc / unmapped (configs, tooling cross) | 7.0h | 4.1% |
+| S7 — Captura WiFi y BLE | 2.5h | 1.5% |
+| S4 — Profundidad y counting zone | 0.6h | 0.3% |
+| **Total atribuido** | **172.1h** | **100%** |
+
+> La suma atribuida (172.1h) queda ~5h por debajo de las 177.0h efectivas
+> medidas — es el mismo desfase de atribución del corte previo (132.0h
+> atribuidas vs 136.9h efectivas): la asignación proporcional por commit
+> deja fuera fracciones de sesiones con prefijo ambiguo. S10 y S12 entran
+> como filas nuevas (en el corte previo aún no tenían esfuerzo medido).
 
 ### Hitos del PoC
 
@@ -95,7 +109,10 @@ predominante.
 | **M10** | **Repo reorganizado: 508 → 124 commits con prefijo `[S<N>/T<X>]` + sanitización + commit_mapping regenerado** | **✓ Done (05-23)** |
 | **M11** | **Device Shadow activado end-to-end: 3 toggles overridables (operating_hours + counting_enabled + external_traffic_enabled), persist al config.yaml in-place, validación pre-apply, dedup anti-loop, telemetry canary, UI pills de estado** | **✓ Done (05-24)** |
 | **M12** | **Tracker hardening: fix de FP del sitter cerca de la línea por ghost adoption con outside_pos lejano (capa 1 del rescue ahora invalida outside_pos heredado a >150px del adoptante)** | **✓ Done (05-24)** |
-| — | Dashboards funcionales (ECS Fargate Grafana 13 detrás de ALB sobre RDS Postgres) | **⊘ Pendiente** (CFN desplegado + datasource configurado, dashboards no construidos) |
+| **M13** | **S10 cerrado: 5 dashboards Grafana 13 en 2 carpetas por público (Analítica comercial: Panorama/Comparativa/Detalle/Patrones · Operación y flota: Salud de la flota) sobre la capa de rollup SQL incremental + live tail; 12 alert rules versionadas en 3 grupos (Hardware/Operación/Negocio) con contact point email** | **✓ Done (06-16)** |
+| **M14** | **Perf del pipeline edge: CPU 162%→102% (RGB888 sin cvtColor + rect_r lazy + pre-filtro scapy) →~50% en escena vacía con `vision.idle_throttle`, validado E2E en piloto bajo throttle** | **✓ Done (06-09)** |
+| **M15** | **Hardening de cierre S12: sandboxing systemd verificado en HW + revisión cross-proyecto (19 hallazgos fixeados) + telemetría de salud Tier 1/2/3 + panel admin del viewer (reboot/apagar) + status LED a 6 estados** | **✓ Done (06-15)** |
+| — | Entregables documentales del TFG (demo en video, capturas, documento final) | **⊘ Pendiente** (fuera del repo; ver plan_sprints.md S12) |
 
 ### Iteraciones de diseño exploradas
 
@@ -307,7 +324,7 @@ intermedia (05-13 → 05-17).**
 | **Deployment phaseado**: `infra/deploy.ps1` 5 fases (CFN core → push imagen Grafana a ECR + bootstrap SQL → ACM request-certificate + pause DNS validation → CFN deploy Fargate+ALB → pause CNAME final), con validación intermedia por fase y `-StartFromPhase` para resumir interrupciones de red. 2 pauses manuales aceptadas por simplicidad operacional (mejor que CFN bloqueando con timeout de hora+). | T10c | **~3** | 05-13 | 05-17 | T10b | OK |
 | **Lambda persist_event**: diseño del data flow (envelope estándar `{device_id, timestamp, type, data}` → dispatch por tipo → INSERT idempotente en Postgres), auth via `rds.generate_db_auth_token` (token IAM corto, sin password almacenado), packaging con psycopg[binary] manylinux x86_64 para Linux runtime. | T10d | **~1.5** | 05-15 | 05-15 | T10c | OK |
 | **`bootstrap.sql` (schema + 6 views)**: count_events / wifi_ble_summary / telemetry / sales como tablas raw + view multi-cam dedup (`wifi_ble_store_traffic` con MAX por store) + views analíticas (`counting_by_bucket`, `turn_in_rate_by_bucket`, rollups hourly) + view de conversion (`store_hourly_summary` con sales join). | T10e | **~0.5** | 05-15 | 05-15 | T10c | OK |
-| Dashboards funcionales (queries sobre las 6 views de bootstrap.sql) | T10f | — | — | — | T10e | **⊘ Pendiente** (post-piloto, con datos reales) |
+| Dashboards funcionales (5 tableros sobre la capa de rollup + views) — contabilizado en **S10 (12.9h)**, no en Infra | T10f | (S10) | 05-25 | 06-16 | T10e | **OK** (5 dashboards en 2 carpetas + 12 alert rules; ver sección S10) |
 
 > **Total: ~10.5h** distribuidas entre análisis arquitectural (T10a + T10b
 > = ~6h), deployment cuidadoso (T10c = ~3h), y refinamiento de capas
@@ -502,10 +519,27 @@ gantt
     Deployment phaseado del stack (T10c)  :done, t10c, 2026-05-13, 4d
     Lambda IAM auth + psycopg (T10d)      :done, t10d, 2026-05-15, 1d
     Schema + views analíticas (T10e)      :done, t10e, 2026-05-15, 1d
-    Dashboards Grafana (T10f)             :crit, t10f, 2026-05-16, 7d
 
     section WiFi/BLE robusto
     Análisis MAC randomization + stitching (T20) :done, t20, 2026-05-15, 1d
+
+    section S10 — Visualización
+    Rollup SQL + live tail                :done, s10a, 2026-05-25, 7d
+    5 dashboards Grafana (2 carpetas)     :done, s10b, 2026-05-25, 18d
+    Alerting SES + 12 reglas (3 grupos)   :done, s10c, 2026-05-25, 22d
+
+    section S11 — Validación + hardening
+    Hardening review-driven edge+cloud    :done, s11a, 2026-05-28, 4d
+    SGBM depth cache + guards anti-FP     :done, s11b, 2026-05-25, 8d
+    Validación E2E del piloto + docs      :done, s11c, 2026-06-03, 7d
+
+    section S12 — Cierre
+    Telemetría salud Tier 1/2/3           :done, s12a, 2026-06-07, 1d
+    Panel admin del viewer                :done, s12b, 2026-06-08, 1d
+    Perf CPU idle_throttle + sandboxing   :done, s12c, 2026-06-09, 1d
+    Revisión cross-proyecto (19 fixes)    :done, s12d, 2026-06-09, 1d
+    Status LED 6 estados                  :done, s12e, 2026-06-15, 1d
+    Entregables documentales del TFG      :crit, s12f, 2026-06-16, 5d
 
     section Pruebas
     Integral PoC (T18 + E2E)              :done, t18, 2026-05-06, 7d
@@ -516,7 +550,7 @@ gantt
     Higiene del repo (T19)                :done, t19, 2026-05-02, 11d
 
     section Post-cursada
-    Piloto 2 sucursales                   :pilot, after t10f, 28d
+    Piloto 2 sucursales                   :pilot, after s12f, 28d
     Ajustes post-piloto                   :adjust, after pilot, 14d
     Rollout 30 locales                    :rollout, after adjust, 90d
 ```
@@ -535,13 +569,19 @@ semana del      TOTAL    foco principal
 27-Abr (W18)    18.2h    detector + setup tools
 04-May (W19)    19.2h    detector + tracking + runtime
 11-May (W20)    28.0h    ← cloud deployment + dedup WiFi/BLE 4 reglas + counter parallax
-18-May (W21)    20.4h    ← S9 cierre (T9.8 + T9.10 + T9.11) + counter production-grade (rescue cascade) + repo organizado
+18-May (W21)    26.1h    ← S9 cierre + counter production-grade (rescue cascade) + repo organizado + hardening anti-FP del piloto (05-24)
+25-May (W22)    13.8h    S10 dashboards (footfall) + alerting SES + refactor schema S9 (per-window, SQL category) + SGBM depth cache
+01-Jun (W23)    16.0h    ← S10 Grafana (5 tableros + rollup SQL + feriados) + telemetría salud Tier 1/2/3 + measure_power + WAL fix dedup + diseño OTA
+08-Jun (W24)     3.8h    panel admin del viewer + revisión cross-proyecto (19 fixes) + perf CPU idle_throttle + sandboxing systemd en HW
+15-Jun (W25)     0.5h    status LED 6 estados + cierre S10 (alert rule death-emit) + regeneración del Gantt
 ─────────────────────────────────────────────────────────────────────────────
-                132.0h
+                171.8h
 ```
 
-Las dos últimas semanas concentraron **48.4h (37%) del esfuerzo** —
-cierre del cloud + hardening del tracker + organización del repo.
+Las semanas W20-W21 concentraron **54.1h (31%) del esfuerzo** — cierre del
+cloud + hardening del tracker + organización del repo. El tramo W22-W25
+(+34.1h) fue cierre de S10 (Grafana + alerting), perf del pipeline edge,
+y el hardening de cierre de S12.
 
 ## Patrón diario detectado
 
