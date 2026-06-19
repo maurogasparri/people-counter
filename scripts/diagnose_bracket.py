@@ -695,8 +695,10 @@ def _capture_loop(
         "FrameDurationLimits": (max_exposure_us, max_exposure_us),
     }
     for cam in [cam_l, cam_r]:
+        # "RGB888" entrega BGR directo (nombres de formato invertidos en
+        # picamera2/Trixie — ver src/vision/capture.py); sin cvtColor.
         cfg = cam.create_still_configuration(
-            main={"size": (w, h), "format": "BGR888"},
+            main={"size": (w, h), "format": "RGB888"},
             raw={"size": HW.default_res},
             controls=initial_controls,
         )
@@ -738,10 +740,9 @@ def _capture_loop(
     try:
         while not _finish_requested.is_set():
             frame_counter += 1
-            arr_l = cam_l.capture_array("main")
-            arr_r = cam_r.capture_array("main")
-            frame_l = cv2.cvtColor(arr_l, cv2.COLOR_RGB2BGR)
-            frame_r = cv2.cvtColor(arr_r, cv2.COLOR_RGB2BGR)
+            # "RGB888" ya entrega BGR (ver config) — sin cvtColor.
+            frame_l = cam_l.capture_array("main")
+            frame_r = cam_r.capture_array("main")
 
             corners_l, ids_l = detect_charuco_dual_pass(frame_l, board)
             corners_r, ids_r = detect_charuco_dual_pass(frame_r, board)

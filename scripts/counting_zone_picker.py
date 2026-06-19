@@ -116,7 +116,7 @@ def _capture_from_cameras(
             # del IMX708 — la counting zone tiene que dibujarse sobre el
             # mismo FOV que vé el runtime.
             cfg = cam.create_still_configuration(
-                main={"size": resolution, "format": "BGR888"},
+                main={"size": resolution, "format": "RGB888"},
                 raw={"size": hw.default_res},
             )
             cam.configure(cfg)
@@ -126,10 +126,9 @@ def _capture_from_cameras(
         for cam, key in [(cam_left, "left"), (cam_right, "right")]:
             if cam is None:
                 continue
-            raw = cam.capture_array("main")
-            # picamera2 con "BGR888" entrega RGB en builds actuales de RPi
-            # OS; convertimos a BGR para alinear con el resto del codebase.
-            frames[key] = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
+            # "RGB888" entrega BGR directo (nombres de formato invertidos en
+            # picamera2/Trixie — ver src/vision/capture.py); sin cvtColor.
+            frames[key] = cam.capture_array("main")
     finally:
         for cam in (cam_left, cam_right):
             if cam is None:

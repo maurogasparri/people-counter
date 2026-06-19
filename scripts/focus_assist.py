@@ -1564,8 +1564,12 @@ def main() -> None:
     # IMX708 que reduce el HFOV a ~80°.
     raw_size = HW.default_res
     for cam in [cam_l, cam_r]:
+        # Formato "RGB888": en los builds de RPi OS Trixie con los que
+        # shippeamos, los nombres de formato de picamera2 están invertidos —
+        # "RGB888" entrega BGR directo del ISP. Mismo patrón canónico que el
+        # runtime (src/vision/capture.py), sin el cvtColor redundante.
         config = cam.create_still_configuration(
-            main={"size": res, "format": "BGR888"},
+            main={"size": res, "format": "RGB888"},
             raw={"size": raw_size},
             controls=initial_controls,
         )
@@ -1731,8 +1735,9 @@ def main() -> None:
 
     try:
         while not finish_requested:
-            frame_l = cv2.cvtColor(cam_l.capture_array("main"), cv2.COLOR_RGB2BGR)
-            frame_r = cv2.cvtColor(cam_r.capture_array("main"), cv2.COLOR_RGB2BGR)
+            # "RGB888" ya entrega BGR (ver config arriba) — sin cvtColor.
+            frame_l = cam_l.capture_array("main")
+            frame_r = cam_r.capture_array("main")
 
             grid_l, valid_l = focus_grid(frame_l)
             grid_r, valid_r = focus_grid(frame_r)

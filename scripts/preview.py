@@ -428,8 +428,10 @@ def main() -> None:
         # raw FIJO en el sensor mode canónico del device (sensor.default_res
         # del config). Anclar el mode evita que picamera2 elija Mode 0
         # cropeado del IMX708 (HFOV efectivo ~80° en lugar de 120°).
+        # "RGB888" entrega BGR directo (nombres de formato invertidos en
+        # picamera2/Trixie — ver src/vision/capture.py); sin cvtColor.
         config = cam.create_still_configuration(
-            main={"size": (w, h), "format": "BGR888"},
+            main={"size": (w, h), "format": "RGB888"},
             raw={"size": hw.default_res},
             controls=initial_controls,
         )
@@ -499,14 +501,9 @@ def main() -> None:
             time.sleep(0.1)
 
         while not shutting_down:
-            frame_l = cv2.cvtColor(
-                cam_l.capture_array("main"),
-                cv2.COLOR_RGB2BGR,
-            )
-            frame_r = cv2.cvtColor(
-                cam_r.capture_array("main"),
-                cv2.COLOR_RGB2BGR,
-            )
+            # "RGB888" ya entrega BGR (ver config) — sin cvtColor.
+            frame_l = cam_l.capture_array("main")
+            frame_r = cam_r.capture_array("main")
 
             # Rectificación opcional — cuando --config nos dio una
             # calibración, el preview muestra lo que el pipeline
