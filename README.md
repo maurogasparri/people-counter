@@ -22,7 +22,7 @@ Cada unidad consiste en:
 | Raspberry Pi Active Cooler | fan PWM + disipador | Gestión térmica |
 | Raspberry Pi AI HAT+ | 13 TOPS (Hailo-8L) | Inferencia neuronal |
 | 2x Arducam IMX708 | 12MP HDR, 120° HFOV, lente M12, CSI, baseline 14cm | Par estéreo |
-| Waveshare PoE HAT (H) | 25.5W, 802.3at | Alimentación por dupont (2× 5V + 2× GND, no stackeado) |
+| Waveshare PoE HAT (G) | 25.5W, 802.3at | Alimentación PoE, stackeado (orden: AI HAT+ → Pi → Active Cooler → PoE HAT) |
 | LED RGB 3mm | common cathode, 4 patas | Status visual al operador (R/G/B vía GPIO 17/18/27 con 150/100/100Ω) |
 | MicroSD | SanDisk Extreme 64GB | Boot + almacenamiento |
 

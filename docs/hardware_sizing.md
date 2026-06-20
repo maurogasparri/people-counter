@@ -199,7 +199,7 @@ pipeline** (2.2 → 6 W, ~3.8 W).
 1. **Presupuesto eléctrico/térmico: peor caso ≈ caso típico.** Se dimensiona a
    ~6 W constantes (≈7 W de pared), no a "hora pico de tráfico" — el device
    tira lo mismo corra quien corra.
-2. **La PoE HAT (H) 25.5 W tiene amplísimo margen**: pico del device ~10 W
+2. **La PoE HAT (G) 25.5 W tiene amplísimo margen**: pico del device ~10 W
    output / ~11-12 W de pared, ~45% del presupuesto PoE. Holgado para los
    363 días × 12 h.
 

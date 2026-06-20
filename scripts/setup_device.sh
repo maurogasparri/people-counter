@@ -71,7 +71,7 @@ CONFIG_TXT="/boot/firmware/config.txt"
 grep -q "^dtparam=rtc_bbat_vchg" "$CONFIG_TXT" || echo "dtparam=rtc_bbat_vchg=3000000" >> "$CONFIG_TXT"
 # PCIe Gen 3: requerido por el AI HAT+
 grep -q "^dtparam=pciex1_gen=3" "$CONFIG_TXT" || echo "dtparam=pciex1_gen=3" >> "$CONFIG_TXT"
-# USB current: requerido por Waveshare PoE HAT (H) para evitar el prompt de power-supply
+# USB current: requerido por Waveshare PoE HAT (G) para evitar el prompt de power-supply
 grep -q "^usb_max_current_enable=1" "$CONFIG_TXT" || echo "usb_max_current_enable=1" >> "$CONFIG_TXT"
 # Cámaras IMX708: deshabilitar autodetect, forzar overlay por CSI port.
 # Pi 5 requiere ,cam0/,cam1 explícitos — un "dtoverlay=imx708" pelado solo carga una cámara.

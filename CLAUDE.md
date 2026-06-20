@@ -48,9 +48,9 @@ Sistema de conteo de personas de bajo costo para locales comerciales. Visión es
 ## Hardware por unidad
 
 - Raspberry Pi 5 2GB + Active Cooler (RAM dimensionada empíricamente — working set ~270 MB sostenido, peak 281 MB; ver `docs/hardware_sizing.md`)
-- Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — único HAT stackeado
+- Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) — stackeado (vía PCIe)
 - 2× Arducam IMX708 12MP HDR M12 120° HFOV (B0310) vía CSI — par estéreo, baseline 14cm
-- Waveshare PoE HAT (H) 25.5W — alimentación, conectado por dupont (no stackeado)
+- Waveshare PoE HAT (G) 25.5W — alimentación PoE, stackeado (orden: AI HAT+ → Pi → Active Cooler → PoE HAT)
 - LED RGB 3mm common cathode — GPIO 17/18/27 + GND pin 14, resistores 150/100/100Ω
 - SanDisk Extreme 64GB microSD
 
@@ -173,7 +173,7 @@ people-counter/
 - **No transmitir video/imágenes.** Solo metadatos. (El `best_frame` opcional escribe JPGs SOLO a disco local para auditoría del operador — nunca al MQTT.)
 - **No almacenar MACs crudas.** Hashear primero (con sal), siempre.
 - **WiFi = solo probing.** Red = Ethernet.
-- **Stack de HATs**: AI HAT+ es el único stackeado. PoE HAT por dupont.
+- **Stack de HATs**: AI HAT+ (PCIe) y PoE HAT (G) ambos stackeados. Orden físico: AI HAT+ → Pi → Active Cooler → PoE HAT.
 - **No hardcodear config.** Todo en YAML.
 - **Siempre buffear localmente.** Conectividad puede fallar.
 

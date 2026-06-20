@@ -24,14 +24,7 @@ Desde tu PC con Windows:
 Orden recomendado:
 
 1. **Raspberry Pi AI HAT+ 13 TOPS** → stackearlo sobre la Raspberry Pi 5 (GPIO + cable plano PCIe)
-2. **Waveshare PoE HAT (H)** → conectar por dupont — no se stackea. Usar **2× 5V + 2× GND** para repartir corriente sin sobrecargar un solo contacto:
-
-   | Header pin | RPi5 | PoE HAT |
-   |------------|------|---------|
-   | Pin 2      | 5V   | 5V      |
-   | Pin 4      | 5V   | 5V      |
-   | Pin 6      | GND  | GND     |
-   | Pin 9      | GND  | GND     |
+2. **Waveshare PoE HAT (G)** → **se stackea** en el tope del stack (orden físico: AI HAT+ → Pi → Active Cooler → PoE HAT), con standoffs altos que despejen el Active Cooler. La alimentación va por el conector del stack — el (G) reemplaza el cableado dupont de 5V/GND que requería el (H). Instalarlo después del Active Cooler (queda arriba de todo); el LED de status se conecta luego a los pines GPIO de su header de passthrough (paso 5).
 
 3. **Cámaras** → conectar los cables CSI a los puertos CAM0 y CAM1 de la Pi
    - Cámara izquierda (mirando desde la cámara hacia la escena) → CAM1
@@ -39,7 +32,7 @@ Orden recomendado:
    - Orientar ambas igual (el conector flat tiene un lado con contactos expuestos)
    - **Usar Arducam IMX708 120 HFOV con filtro IR** (modelo B0310)
 4. **Raspberry Pi Active Cooler** → clip sobre el SoC de la Pi y conectar el cable PWM al header de 4 pines del fan
-5. **LED RGB de status** (3mm common cathode, 4 patas) → conectar por dupont 2x2 al bloque pin 11/12/13/14 con resistencias en serie con cada ánodo:
+5. **LED RGB de status** (3mm common cathode, 4 patas) → conectar por dupont 2x2 al bloque pin 11/12/13/14 **del header GPIO de passthrough del PoE HAT (G)** (mismos números de pin — el (G) pasa el 40-pin a través) con resistencias en serie con cada ánodo:
 
    | Header pin | GPIO | Pata LED | Resistor en serie |
    |------------|------|----------|-------------------|
