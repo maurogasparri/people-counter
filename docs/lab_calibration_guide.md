@@ -45,21 +45,24 @@ Sin esto, el reporte va a tirar `FAIL` o `WARN` en uniformidad de corners y/o gr
 - Dispositivo RPi5 encendido, con el repo clonado y dependencias instaladas.
 - Laptop o tablet con browser (Chrome/Firefox) en la misma red que el RPi, para la UI web del wizard.
 
-## Paso 0 (opcional) — QC del bracket pre-calibración
+## Verificación de salud de calibración (post-calibración)
 
-Para unidades que vienen de la línea de ensamble, conviene correr
-`diagnose_bracket.py` **antes** del flujo óptico de este lab. Mide
-pitch / yaw / roll / offsets Y-Z entre L y R con thresholds factory
-(0.5° / 1.0° / 0.5° / 2mm / 2mm), sin necesidad de calibración previa
-— solo requiere un board ChArUco frontal a ~1m.
+> El QC de bracket *pre*-calibración se retiró: medir la geometría de un
+> fisheye de 120° con un modelo pinhole sin coeficientes de distorsión
+> (que recién salen de la calibración) produce yaw/offsets fantasma. El
+> case 3D-impreso fija la baseline a 140mm por construcción; la geometría
+> real del bracket la valida el **reporte de calibración** (RMS estéreo +
+> métricas de alineación computadas sobre los extrínsecos reales).
+
+Una vez calibrado, verificá la salud con `diagnose_calibration.py`:
+rectifica un board ChArUco con la calibración guardada y mide el error
+epipolar residual L↔R (sub-píxel = sano; >1px = recalibrar). No necesita
+ground-truth. Sirve como check de campo / periódico para detectar drift
+(bracket movido, lente corrido, térmico):
 
 ```bash
-sudo PYTHONPATH=. python3 scripts/diagnose_bracket.py
+PYTHONPATH=. python3 scripts/diagnose_calibration.py
 ```
-
-Browser-driven igual que el resto. Si el reporte da FAIL en alguna
-métrica, escalá la unidad al sector de ensamble antes de gastar lab
-time en foco + calibración óptica.
 
 ## Paso 1 — Setup físico
 
@@ -131,7 +134,7 @@ Primero foco, después se fija. El esmalte se aplica al final, una vez confirmad
 sudo PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
-Defaults aplicados: target range 1.30–1.70m (lab protocol universal), board definitivo, compact-scene auto-detect.
+Defaults aplicados: target range 1.30–1.70m (lab protocol universal), board definitivo, compact-scene auto-detect. **Default: modo MAPA** — en vez de un frame estático, paseás el board por todo el cuadro y se acumula la nitidez máxima por zona (grilla 3×3); al cubrir las 9 zonas (L y R) evalúa el mapa completo, así el check por zona / simetría tiene board real en cada celda (no fondo). `--static` vuelve al modo de un solo frame. Los pasos de abajo aplican a ambos — girás los rings mirando las barras del frame actual; en modo mapa además barrés el board para cubrir todas las zonas.
 
 1. Abrir `http://<rpi-hostname>:8080` en el browser.
 2. Click "Comenzar" — desbloquea AudioContext y comienza el preview.
@@ -165,11 +168,13 @@ python scripts/calibrate.py wizard --device-id DEV-XXX
 
 Reemplazar `DEV-XXX` con el identificador del dispositivo (va al reporte).
 
-Defaults aplicados: resolución 2304×1296 binned (4× más rápido que full-res en detect, mismo FOV), far=3.0m (cabe en tripod 70–210cm), 20 poses canónicas, tolerance "normal", pose-timeout 180s (tripod-friendly).
+**Modos de captura.** El default es **barrido libre (sweep)**: movés el board libremente por el cuadro y la herramienta auto-selecciona los frames diversos que necesita (gate de novedad + quietud + calidad), guiándote con un mapa de cobertura en vivo (grilla 3×3 × distancias × inclinaciones). Es mucho más fácil de operar en espacios chicos / luz difícil. Para **máxima precisión** con buen espacio + luz, agregá `--guided`: el modo clásico de 20 poses-silueta a 1/2/3m (`--manual` lo hace captura-por-botón). En luz baja: `--max-exposure-us 0` (o `50000`) destapa el shutter y, si hace falta, `--low-light` afloja los gates — aunque lo ideal es **sumar luz al board**. Ambos modos terminan igual: calibran, verifican y generan el **reporte HTML**.
+
+Defaults del modo guiado: resolución 2304×1296 binned (4× más rápido que full-res en detect, mismo FOV), far=3.0m (cabe en tripod 70–210cm), 20 poses canónicas, tolerance "normal", pose-timeout 180s (tripod-friendly).
 
 **Antes de arrancar**, verificá que las cámaras estén bien mapeadas con `focus_assist` — la pill verde "✓ L/R OK" en el panel del browser confirma. Si dice "L/R INVERTIDO", reiniciá pasando `--left/--right` swappeados (el wizard tiene los mismos flags). Calibrar contra un par invertido produce extrínsecos sign-flipped silenciosos.
 
-**Flags compartidos con los otros setup tools** (`focus_assist`, `preview`, `diagnose_depth`, `diagnose_bracket`):
+**Flags compartidos con los otros setup tools** (`focus_assist`, `preview`, `diagnose_depth`, `diagnose_calibration`):
 
 - `--max-exposure-us 16000` (default) — cap de shutter time a 16ms vía `FrameDurationLimits`. Mismo cap que el runtime para que la distribución de motion blur de la captura matchee la que vé el detector en producción. Pasar `0` para deshabilitar.
 - `--lock-ae` — patrón canónico settle 2s → lock provisional → re-settle 1.5s al apretar Comenzar → re-lock final. Útil cuando la escena tiene luz variable (vidrieras, HVAC). Default OFF (AE auto, más simple). Los timings (`initial_settle_seconds`, `resettle_seconds`) se leen de `vision.ae_lock` del config per-device — en sites donde AE necesita más tiempo de convergencia, subir esos valores.

@@ -8,7 +8,7 @@ necesidad de settle AE más largo) se acomoda editando estas keys del
 ``/etc/people-counter/config.yaml``, sin tocar código.
 
 Los setup tools (focus_assist, calibrate, preview, counting_zone_picker,
-diagnose_bracket) leen ``HardwareParams`` al startup; cuando el config
+diagnose_calibration) leen ``HardwareParams`` al startup; cuando el config
 per-device omite una key, cae al valor de ``FLEET_DEFAULTS`` (la flota
 canónica que shippeamos: RPi5 + IMX708 B0310 + bracket 140mm + ChArUco
 A3 9×6/45mm/33mm/DICT_4X4_100).

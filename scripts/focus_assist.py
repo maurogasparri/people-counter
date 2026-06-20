@@ -196,6 +196,17 @@ MIN_ZONE_STD = 8.0  # Bajo este std la zona es casi uniforme (pared
 # ahí no significa nada como indicador de foco, así
 # que la flageamos como "sin contenido".
 
+# Modo mapa de foco (default): varianza Laplaciana mínima para contar una zona
+# "cubierta" (el board pasó por ahí). Bajo a propósito — registra el board aun
+# medio blando; el check de calidad (corner >= MIN_CORNER_SCORE) flagea las
+# zonas blandas aparte. Tuneable con --map-coverage-min.
+FOCUS_MAP_COVERAGE_MIN = 60.0
+ZONE_NAMES = (
+    ("arriba-izq", "arriba-centro", "arriba-der"),
+    ("centro-izq", "centro", "centro-der"),
+    ("abajo-izq", "abajo-centro", "abajo-der"),
+)
+
 
 def focus_grid(
     frame: np.ndarray,
@@ -476,6 +487,70 @@ def evaluate_focus(
         "n_valid_corners_r": n_valid_corners_r,
         "compact_scene": compact_scene,
     }
+
+
+def focus_map_update(
+    map_grid: np.ndarray,
+    covered: np.ndarray,
+    grid: np.ndarray,
+    valid: np.ndarray,
+    cov_min: float,
+) -> None:
+    """Acumula la nitidez máxima por zona (mapa de foco) y marca cobertura.
+
+    Muta ``map_grid`` (max-por-zona donde la zona tiene contenido válido) y
+    ``covered`` (True cuando el max acumulado supera ``cov_min`` — el board
+    pasó por esa zona). Grillas 3×3.
+    """
+    for r in range(3):
+        for c in range(3):
+            if valid[r, c] and grid[r, c] > map_grid[r, c]:
+                map_grid[r, c] = float(grid[r, c])
+            if map_grid[r, c] >= cov_min:
+                covered[r, c] = True
+
+
+def focus_map_missing(covered_l: np.ndarray, covered_r: np.ndarray) -> list:
+    """Nombres de las zonas aún sin cubrir en L o en R (mové el board ahí)."""
+    miss = []
+    for r in range(3):
+        for c in range(3):
+            if not (covered_l[r, c] and covered_r[r, c]):
+                miss.append(ZONE_NAMES[r][c])
+    return miss
+
+
+def _focus_map_grid_html(
+    covered_l: np.ndarray,
+    covered_r: np.ndarray,
+    map_l: np.ndarray,
+    map_r: np.ndarray,
+) -> str:
+    """Mini-grilla 3×3 de cobertura del mapa de foco (verde=cubierta) por cámara."""
+
+    def _one(covered: np.ndarray, mp: np.ndarray, label: str) -> str:
+        cells = ""
+        for r in range(3):
+            row = "".join(
+                '<span style="display:inline-block;width:30px;height:30px;'
+                "margin:1px;border-radius:4px;font-size:10px;color:#fff;"
+                "text-align:center;line-height:30px;background:"
+                + ("#27ae60" if covered[r, c] else "#3a3a42")
+                + f'">{int(mp[r, c]) if covered[r, c] else ""}</span>'
+                for c in range(3)
+            )
+            cells += f"<div>{row}</div>"
+        return (
+            '<div style="display:inline-block;margin-right:16px;vertical-align:top">'
+            f'<div style="color:#888;font-size:11px">{label}</div>{cells}</div>'
+        )
+
+    return (
+        '<div style="margin-top:8px">'
+        + _one(covered_l, map_l, "IZQ")
+        + _one(covered_r, map_r, "DER")
+        + "</div>"
+    )
 
 
 def _ascii(text: str) -> str:
@@ -1533,6 +1608,21 @@ def main() -> None:
         "más alto (más ruido pero cero blur). Setear "
         "0 para deshabilitar el cap.",
     )
+    parser.add_argument(
+        "--static",
+        action="store_true",
+        help="Usa el modo de foco estático clásico (board fijo en una "
+        "posición al target). El DEFAULT es el mapa de foco: pasás el board "
+        "por todo el cuadro y se acumula la nitidez por zona, así el check "
+        "por zona / simetría L-R tiene board real en cada celda (no fondo).",
+    )
+    parser.add_argument(
+        "--map-coverage-min",
+        type=float,
+        default=FOCUS_MAP_COVERAGE_MIN,
+        help=f"(modo mapa) Varianza Laplaciana mínima para contar una zona "
+        f"cubierta. Default {FOCUS_MAP_COVERAGE_MIN:.0f}.",
+    )
     args = parser.parse_args()
     # mount_height_m tiene que estar resuelto antes de _apply_threshold_overrides
     # porque la derivación del target distance lo usa.
@@ -1684,7 +1774,7 @@ def main() -> None:
 
     # Re-settle AE con el board ya posicionado y re-lock — los valores
     # provisionales del startup pudieron diferir de la escena real de
-    # medición. Solo si --lock-ae está activo (matchea diagnose_bracket).
+    # medición. Solo si --lock-ae está activo (matchea calibrate/diagnose_calibration).
     if args.lock_ae:
         print(
             f"[lock-ae] Re-settle con board en escena ({HW.ae_resettle_seconds:.1f}s)...",
@@ -1732,6 +1822,20 @@ def main() -> None:
     last_dist_l_t = 0.0
     last_dist_r: Optional[float] = None
     last_dist_r_t = 0.0
+
+    # Estado del mapa de foco (default). Acumula la nitidez máxima por zona a
+    # medida que el operador pasea el board por el cuadro; cuando las 9 zonas
+    # están cubiertas en L y R, se evalúa el mapa completo (reusa
+    # evaluate_focus). --static vuelve al chequeo de un solo frame estático.
+    use_map = not getattr(args, "static", False)
+    map_cov_min = float(getattr(args, "map_coverage_min", FOCUS_MAP_COVERAGE_MIN))
+    map_l = np.zeros((3, 3))
+    map_r = np.zeros((3, 3))
+    covered_l = np.zeros((3, 3), dtype=bool)
+    covered_r = np.zeros((3, 3), dtype=bool)
+    map_dists: list[float] = []
+    map_ev: Optional[dict] = None
+    map_complete = False
 
     try:
         while not finish_requested:
@@ -1813,6 +1917,30 @@ def main() -> None:
             )
             peaks.update(ev["center_l"], ev["center_r"])
 
+            # Acumular el mapa de foco (default): nitidez máxima por zona +
+            # cobertura. ev (arriba) sigue siendo del frame en vivo, para que
+            # las barras del preview muestren la nitidez actual mientras
+            # enfocás; el VEREDICTO en modo mapa sale del mapa acumulado.
+            if use_map:
+                focus_map_update(map_l, covered_l, grid_l, valid_l, map_cov_min)
+                focus_map_update(map_r, covered_r, grid_r, valid_r, map_cov_min)
+                if eff_dist_l is not None:
+                    map_dists.append(eff_dist_l)
+                elif eff_dist_r is not None:
+                    map_dists.append(eff_dist_r)
+                map_complete = bool(covered_l.all() and covered_r.all())
+                if map_complete:
+                    _md = float(np.median(map_dists)) if map_dists else None
+                    map_ev = evaluate_focus(
+                        map_l,
+                        map_r,
+                        _md,
+                        _md,
+                        covered_l,
+                        covered_r,
+                        compact_scene=False,
+                    )
+
             preview = _compose_preview(
                 frame_l, frame_r, ev, grid_l, grid_r, peaks=peaks
             )
@@ -1821,20 +1949,44 @@ def main() -> None:
                 latest_jpeg = jpeg.tobytes()
 
             # HTML de status
-            if ev["all_pass_with_distance"]:
-                pass_streak += 1
+            map_grid_html = ""
+            if use_map:
+                if (
+                    map_complete
+                    and map_ev
+                    and map_ev["all_pass"]
+                    and map_ev["distance_ok"]
+                ):
+                    color_status = "#2ecc71"
+                    lead = "LISTO — mapa completo y nítido, fijá los lentes"
+                elif map_complete:
+                    color_status = "#e74c3c"
+                    lead = (
+                        map_ev["hints"][0]
+                        if (map_ev and map_ev["hints"])
+                        else "Mapa completo pero hay zonas blandas / distancia fuera de rango"
+                    )
+                else:
+                    color_status = "#f1c40f"
+                    _miss = focus_map_missing(covered_l, covered_r)
+                    _shown = ", ".join(_miss[:4]) + ("…" if len(_miss) > 4 else "")
+                    lead = f"Pasá el board por: {_shown}"
+                map_grid_html = _focus_map_grid_html(covered_l, covered_r, map_l, map_r)
             else:
-                pass_streak = 0
+                if ev["all_pass_with_distance"]:
+                    pass_streak += 1
+                else:
+                    pass_streak = 0
 
-            if ev["all_pass_with_distance"] and pass_streak >= 3:
-                color_status = "#2ecc71"
-                lead = "LISTO — fijá los lentes y pasá a calibración"
-            elif ev["all_pass_with_distance"]:
-                color_status = "#f1c40f"
-                lead = "Muy bien — mantené firme..."
-            else:
-                color_status = "#e74c3c"
-                lead = ev["hints"][0] if ev["hints"] else "Ajustando..."
+                if ev["all_pass_with_distance"] and pass_streak >= 3:
+                    color_status = "#2ecc71"
+                    lead = "LISTO — fijá los lentes y pasá a calibración"
+                elif ev["all_pass_with_distance"]:
+                    color_status = "#f1c40f"
+                    lead = "Muy bien — mantené firme..."
+                else:
+                    color_status = "#e74c3c"
+                    lead = ev["hints"][0] if ev["hints"] else "Ajustando..."
 
             # El análisis peak-vs-current ayuda al operador a
             # notar si el último ajuste overshooteó el mejor foco
@@ -1912,7 +2064,10 @@ def main() -> None:
             # Score normalizado al threshold para el pulso del browser:
             # ratio del centro más débil contra MIN_SCORE. 0 = sin señal,
             # 1.0 = umbral de paso, ≥1.5 = lock holgado.
-            pulse_score = min(ev["center_l"], ev["center_r"]) / max(1.0, MIN_SCORE)
+            if use_map:
+                pulse_score = float((covered_l & covered_r).sum()) / 9.0
+            else:
+                pulse_score = min(ev["center_l"], ev["center_r"]) / max(1.0, MIN_SCORE)
             html = (
                 f'<div data-pulse-score="{pulse_score:.2f}" '
                 f'style="color:{color_status};font-size:18px;font-weight:700">{lead}</div>'
@@ -1920,6 +2075,7 @@ def main() -> None:
                 f"{compact_html}"
                 f"{lr_html}"
                 f"{peak_html}"
+                f"{map_grid_html}"
                 f'<div style="color:#888;font-size:13px;margin-top:6px">'
                 f"ChArUco IZQ:{ncorn_l} esq · DER:{ncorn_r} esq</div>"
             )
@@ -1952,11 +2108,30 @@ def main() -> None:
 
     shutting_down = True
 
+    # En modo mapa, el reporte/veredicto salen del mapa acumulado (no del
+    # último frame). Si el operador finalizó antes de completar, se evalúa lo
+    # que haya quedado cubierto.
+    report_ev = ev
+    report_grid_l, report_grid_r = grid_l, grid_r
+    if use_map and frame_l is not None:
+        if map_ev is None:
+            _md = float(np.median(map_dists)) if map_dists else None
+            try:
+                map_ev = evaluate_focus(
+                    map_l, map_r, _md, _md, covered_l, covered_r, compact_scene=False
+                )
+            except Exception:
+                map_ev = None
+        report_ev = map_ev if map_ev is not None else ev
+        report_grid_l, report_grid_r = map_l, map_r
+
     # Guardar el reporte si tenemos estado
     report_path = None
-    if frame_l is not None and frame_r is not None and grid_l is not None:
+    if frame_l is not None and frame_r is not None and report_ev is not None:
         try:
-            report_path = _save_report(frame_l, frame_r, grid_l, grid_r, ev)
+            report_path = _save_report(
+                frame_l, frame_r, report_grid_l, report_grid_r, report_ev
+            )
             _report_path_global = report_path
         except Exception as e:
             print(f"\nNo se pudo escribir el reporte: {e}")
@@ -1974,7 +2149,9 @@ def main() -> None:
     # lugar de que el stream quede oscuro. Mantener el server vivo
     # por un grace period así el usuario tiene tiempo de leerlo y
     # apretar el link al reporte.
-    verdict = "PASS" if (ev and ev.get("all_pass_with_distance")) else "FAIL"
+    verdict = (
+        "PASS" if (report_ev and report_ev.get("all_pass_with_distance")) else "FAIL"
+    )
     verdict_color = "#2ecc71" if verdict == "PASS" else "#e74c3c"
     report_html = ""
     if report_path is not None:

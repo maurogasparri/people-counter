@@ -5,11 +5,11 @@ con la estructura formal del plan de proyecto. Sirve como input para
 herramientas de project management (MS Project, GanttProject, etc.) y
 como referencia para estimar tareas similares a futuro.
 
-**Período medido**: 2026-04-02 → 2026-06-17 (76 días calendario, ~53
+**Período medido**: 2026-04-02 → 2026-06-19 (78 días calendario, ~54
 activos).
-**Esfuerzo medido**: **180.2h efectivas** en **101 sesiones** (gaps ≥ 1.5h
+**Esfuerzo medido**: **186.7h efectivas** en **103 sesiones** (gaps ≥ 1.5h
 entre commits) + ~40h estimadas del bundle pre-existente que trajo el
-initial commit. **Total ≈ 218-238h**.
+initial commit. **Total ≈ 225-245h**.
 
 > **Regeneración 2026-06-16/17 (cierre de S10 + S11 + S12)**. La versión
 > previa de este Gantt estaba congelada al 2026-05-24 (136.9h efectivas).
@@ -28,6 +28,15 @@ initial commit. **Total ≈ 218-238h**.
 > guards del death-emit aislados y resiliencia de las Lambdas a 97-98%).
 > El antiguo apunte de la "sesión 2026-05-24 tarde (~6h, total acumulado
 > ~143h)" queda subsumido en este delta (la ventana arranca el 2026-05-24).
+>
+> **Update 2026-06-19 (+~6.5h S11)**. Tooling de setup para espacios chicos /
+> luz difícil: `diagnose_bracket` → `diagnose_calibration` (salud post-cal por
+> error epipolar), modo **barrido (sweep)** default en el wizard de calibración
+> + modo **mapa** default en `focus_assist`, ambos con reporte. Validado en HW
+> (barrido → baseline 143.2mm + 0.59px epipolar out-of-sample; mapa de foco
+> PASS). Dos sesiones reales (mediodía 11:48-15:59 ~4.2h + noche 19:54-22:07
+> ~2.2h; el hueco de ~4h de la tarde queda excluido).
+
 **Modalidad**: solo developer, sesiones partidas mañana/noche (~3.4h/día
 activo promedio, ~42% de los días con doble turno mañana+tarde-noche
 detectado).
@@ -59,11 +68,11 @@ tracker hardening). Sin doble-conteo de squashed commits.
 
 ### PoC entregado (datos medidos)
 
-- **180.2h efectivas en 76 días calendario** (2026-04-02 → 2026-06-17),
-  ~53 días activos, 101 sesiones partidas mañana/noche detectadas.
+- **186.7h efectivas en 78 días calendario** (2026-04-02 → 2026-06-19),
+  ~54 días activos, 103 sesiones partidas mañana/noche detectadas.
 - **+ ~40-60h estimadas del skeleton bundleado** en el initial commit
   (20 módulos en `src/` + ~130 tests + pyproject + main.py).
-- **Total real del proyecto: ~218-238h hands-on**.
+- **Total real del proyecto: ~225-245h hands-on**.
 
 ### Distribución del esfuerzo medido
 
@@ -77,7 +86,7 @@ predominante.
 | Docs cross-cutting (README/CLAUDE/plan/gantt) | 32.0h | 18.6% |
 | S3 — Calibración estéreo | **29.0h** | **16.9%** |
 | S2 — Captura estéreo y servicios | **23.8h** | **13.8%** |
-| S11 — Validación y documentación | **18.5h** | **10.7%** |
+| S11 — Validación y documentación | **25.0h** | **14.0%** |
 | S9 — Servicios cloud y APIs | 15.3h | 8.9% |
 | S10 — Visualización analítica | **12.9h** | **7.5%** |
 | S8 — Mensajería y telemetría | 8.3h | 4.8% |
@@ -87,12 +96,14 @@ predominante.
 | Misc / unmapped (configs, tooling cross) | 7.0h | 4.1% |
 | S7 — Captura WiFi y BLE | 2.5h | 1.5% |
 | S4 — Profundidad y counting zone | 0.6h | 0.3% |
-| **Total atribuido** | **172.1h** | **100%** |
+| **Total atribuido** | **178.6h** | **100%** |
 
-> La tabla cubre la ventana medida hasta 2026-06-15 (172.1h atribuidas).
+> La tabla cubre la ventana medida hasta 2026-06-15 + el delta de S11 del
+> 2026-06-19 (tooling de setup, +6.5h ya sumado a la fila S11 → 25.0h; los %
+> de las demás filas quedan ~0.4% altos, dentro del ±error del documento).
 > Sumando el tail de +3.2h del 2026-06-16/17 (cierre S10 + coverage +
 > hardening de tests, no re-spliteado por sprint) el total efectivo llega a
-> **180.2h**. La suma atribuida queda ~5-8h por debajo del efectivo — es el
+> **186.7h**. La suma atribuida queda ~5-8h por debajo del efectivo — es el
 > mismo desfase de atribución del corte previo (132.0h atribuidas vs 136.9h
 > efectivas): la asignación proporcional por commit deja fuera fracciones de
 > sesiones con prefijo ambiguo. S10 y S12 entran como filas nuevas (en el
@@ -118,6 +129,7 @@ predominante.
 | **M13** | **S10 cerrado: 5 dashboards Grafana 13 en 2 carpetas por público (Analítica comercial: Panorama/Comparativa/Detalle/Patrones · Operación y flota: Salud de la flota) sobre la capa de rollup SQL incremental + live tail; 12 alert rules versionadas en 3 grupos (Hardware/Operación/Negocio) con contact point email** | **✓ Done (06-16)** |
 | **M14** | **Perf del pipeline edge: CPU 162%→102% (RGB888 sin cvtColor + rect_r lazy + pre-filtro scapy) →~50% en escena vacía con `vision.idle_throttle`, validado E2E en piloto bajo throttle** | **✓ Done (06-09)** |
 | **M15** | **Hardening de cierre S12: sandboxing systemd verificado en HW + revisión cross-proyecto (19 hallazgos fixeados) + telemetría de salud Tier 1/2/3 + panel admin del viewer (reboot/apagar) + status LED a 6 estados** | **✓ Done (06-15)** |
+| **M16** | **Tooling de setup para espacios chicos / luz difícil: `diagnose_bracket` → `diagnose_calibration` (salud post-cal por error epipolar), modo barrido (sweep) default en calibración + modo mapa default en foco, ambos con reporte. Validado en HW (barrido → baseline 143.2mm + 0.59px epipolar out-of-sample; mapa de foco PASS)** | **✓ Done (06-19)** |
 | — | Entregables documentales del TFG (demo en video, capturas, documento final) | **⊘ Pendiente** (fuera del repo; ver plan_sprints.md S12) |
 
 ### Iteraciones de diseño exploradas
@@ -539,6 +551,7 @@ gantt
     Hardening review-driven edge+cloud    :done, s11a, 2026-05-28, 4d
     SGBM depth cache + guards anti-FP     :done, s11b, 2026-05-25, 8d
     Validación E2E del piloto + docs      :done, s11c, 2026-06-03, 7d
+    Tooling de setup (diagnose_calib + barrido/mapa) :done, s11d, 2026-06-19, 1d
 
     section S12 — Cierre
     Telemetría salud Tier 1/2/3           :done, s12a, 2026-06-07, 1d
@@ -581,16 +594,17 @@ semana del      TOTAL    foco principal
 25-May (W22)    13.8h    S10 dashboards (footfall) + alerting SES + refactor schema S9 (per-window, SQL category) + SGBM depth cache
 01-Jun (W23)    16.0h    ← S10 Grafana (5 tableros + rollup SQL + feriados) + telemetría salud Tier 1/2/3 + measure_power + WAL fix dedup + diseño OTA
 08-Jun (W24)     3.8h    panel admin del viewer + revisión cross-proyecto (19 fixes) + perf CPU idle_throttle + sandboxing systemd en HW
-15-Jun (W25)     3.7h    status LED 6 estados + cierre S10 (alert rule death-emit) + reporte de coverage + hardening de tests + regeneración del Gantt
+15-Jun (W25)    10.2h    status LED 6 estados + cierre S10 + coverage + hardening tests + Gantt · 06-19: tooling de setup (diagnose_calibration + barrido/mapa default + reporte, validado en HW)
 ─────────────────────────────────────────────────────────────────────────────
-                175.0h
+                181.5h
 ```
 
 Las semanas W20-W21 concentraron **54.1h (31%) del esfuerzo** — cierre del
 cloud + hardening del tracker + organización del repo. El tramo W22-W25
-(+37.3h) fue cierre de S10 (Grafana + alerting), perf del pipeline edge,
-y el hardening de cierre de S12 (coverage + tests). El total por semana
-(175.0h) queda ~5h por debajo de las 180.2h efectivas — desfase de
+(+43.8h) fue cierre de S10 (Grafana + alerting), perf del pipeline edge,
+el hardening de cierre de S12 (coverage + tests) y el tooling de setup del
+06-19 (diagnose_calibration + barrido/mapa). El total por semana
+(181.5h) queda ~5h por debajo de las 186.7h efectivas — desfase de
 atribución (ver nota de la distribución por sprint).
 
 ## Patrón diario detectado

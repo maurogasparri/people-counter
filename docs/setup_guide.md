@@ -388,8 +388,12 @@ cd /usr/src/people-counter
 PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
-Abrir **http://people-counter.local:8080**. La UI muestra:
-- Barras de sharpness por cámara (centro + corners absoluto) con zona verde = target
+Abrir **http://people-counter.local:8080**. **Default: modo MAPA** — paseás el
+board por todo el cuadro y se acumula la nitidez máxima por zona (grilla 3×3); el
+panel muestra la cobertura y qué zonas faltan, y al cubrir las 9 (L y R) evalúa el
+mapa completo, así cada zona se mide con board real (no fondo). `--static` = modo
+clásico de un frame con el board fijo al centro. La UI muestra:
+- Barras de sharpness por cámara del frame actual (para enfocar mirando), con zona verde = target
 - Distancia detectada del board (objetivo **1.30–1.70m** por default — lab protocol universal, override con `--target-distance-min-mm` / `--target-distance-max-mm`)
 - Simetría L/R
 - Warnings de iluminación/glare en vivo
@@ -403,7 +407,7 @@ con todas las métricas y los frames finales embebidos.
 porque los bordes ven paredes a distancia no relacionada con el board. Banner
 azul en la UI lo indica. Forzá el modo con `--scene=compact|full` si hace falta.
 
-### 12.2. Calibración estéreo (modo wizard guiado)
+### 12.2. Calibración estéreo (wizard)
 
 Board recomendado para IMX708: **9x6 squares, checker 45mm, marker 33mm, DICT_4X4_100, A3 landscape** (405x270mm impreso, 40 esquinas internas, 27 markers). Ya generado en `calibration/calib.io_charuco_420x297_6x9_45_33_DICT_4X4.pdf`. Imprimir desde Adobe Reader con "Actual size" (NO "Fit to page"), laminar OPP mate sobre PVC rígido 3mm (foam flexa demasiado en A3). Verificar con calibre — un square debe medir exactamente 45.0mm. Si difiere, pasar el valor medido con `--square-mm`.
 
@@ -416,7 +420,13 @@ PYTHONPATH=. python3 scripts/calibrate.py wizard \
   --output /etc/people-counter/calibration.npz
 ```
 
-El wizard tiene 5 fases:
+**Modos**: el wizard arranca por **default en barrido libre** (sweep) — movés el
+board libremente y auto-selecciona los frames diversos con un mapa de cobertura en
+vivo; ideal para espacios chicos / luz difícil (omite solo el gate de cobertura
+por-pose porque usa su propia cobertura). Las fases de abajo describen el modo
+**`--guided`** (20 poses-silueta, más preciso con buen espacio + luz). Ambos
+terminan igual (calibrar → verificar → ground-truth → reporte). El flujo guiado
+tiene 5 fases:
 
 **Fase 0 — Pre-flight**: verifica que el puerto 8080 está libre, los directorios de salida son escribibles, hay >500MB de disco y hace backup de `calibration.npz` si ya existe. Aborta con `❌` si falta algo crítico.
 

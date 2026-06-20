@@ -72,7 +72,7 @@
 |---|---:|---|
 | Pipeline SGBM con post-filtro WLS | 2 | `src/vision/depth.py` + tests |
 | Wizard diagnose_depth | 1 | `scripts/diagnose_depth.py` |
-| Wizard diagnose_bracket (verificación mecánica) | 1 | `scripts/diagnose_bracket.py` |
+| Monitor de salud de calibración (post-cal, error epipolar) | 1 | `scripts/diagnose_calibration.py` |
 | Validación con escena real de laboratorio | 2 | Mapas de profundidad calibrados |
 
 ## S5 — Detección neuronal de personas (14h)
@@ -179,6 +179,7 @@
 | Project gantt interno | 0.5 | `docs/project_gantt.md` |
 | **Procedimiento de migración de datos históricos** | **0.5** | **`scripts/migrate_historical.py` (loader CSV→staging batcheado) + `infra/sql/migrate_historical_rollups.example.sql` (transform staging→tablas base rollup_*). La doc del procedimiento vive como comentario-cabecera en ambos archivos.** |
 | **Hardening anti-FP durante piloto (sesión 2026-05-24)** | **6** | **9 commits sobre `src/tracking/counter.py`, `src/tracking/tracker.py`, `src/vision/pre_filter.py` (NEW), `src/web/annotate.py`, `src/web/viewer.py`, config, runbook, matrix. Incluye: rename `counter.roi → counting_zone`; expone 5 knobs del rescue cascade config-driven; nuevos guards `min_count_height_m` / `min_real_inside_frames` / `height_confidence_gate`; filtro pre-tracker `tracking_zone` con modos `polygon` / `frame_margin_px` / `auto_margin_px`; keepalive condicional a entry real (opción E); fix doble-conteo `last_outside_pos` stale; blur del preview fuera de tracking_zone; `/health` endpoint + auto-reload del MJPEG. 922 tests verde.** |
+| **Tooling de setup para espacios chicos / luz difícil (2026-06-19, ~6.5h)** | **6.5** | **`scripts/diagnose_calibration.py` (NEW, reemplaza `diagnose_bracket` — salud post-cal por error epipolar); `calibrate.py` modo barrido (sweep) default + `focus_assist.py` modo mapa default, ambos con reporte HTML. Tests: diagnose_calibration (12) + sweep (13) + foco-mapa (6) + calibrate --manual (3). Validado en HW: barrido → baseline 143.2mm + 0.59px epipolar out-of-sample; mapa de foco PASS. Docs sincronizadas (README/CLAUDE/lab_guide/setup_guide).** |
 
 ## S12 — Cierre del prototipo (8h)
 

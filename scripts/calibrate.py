@@ -489,6 +489,7 @@ class _GuidedState:
         self.undo_requested = False
         self.skip_requested = False
         self.finish_requested = False
+        self.capture_requested = False  # manual: set por POST /capture
         self.status_html: str = ""
         self.banner_text: str = ""
         self.banner_color: str = "#444"
@@ -544,6 +545,12 @@ _wizard_input_value: str = ""
 # así el operador siempre tiene oportunidad de leer el banner del
 # bloque "número / label / distancia" antes de que cambie.
 _announce_pending = False
+# Modo manual del wizard: cuando True, la captura NO es automática por
+# estabilidad — el operador apreta "Capturar" y no hay auto-skip por timeout.
+_guided_manual_enabled = False
+# Sweep (barrido libre): cuando True, do_GET sirve la página de barrido en vez
+# de la guiada por-pose.
+_sweep_mode = False
 
 
 class _GuidedHandler(BaseHTTPRequestHandler):
@@ -560,6 +567,11 @@ class _GuidedHandler(BaseHTTPRequestHandler):
         elif self.path == "/skip":
             with _guided_state.lock:
                 _guided_state.skip_requested = True
+            self.send_response(204)
+            self.end_headers()
+        elif self.path == "/capture":
+            with _guided_state.lock:
+                _guided_state.capture_requested = True
             self.send_response(204)
             self.end_headers()
         elif self.path == "/finish":
@@ -599,7 +611,8 @@ class _GuidedHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(_guided_html().encode("utf-8"))
+            page = _sweep_html() if _sweep_mode else _guided_html()
+            self.wfile.write(page.encode("utf-8"))
         elif self.path == "/stream":
             self.send_response(200)
             self.send_header(
@@ -655,7 +668,14 @@ class _GuidedHandler(BaseHTTPRequestHandler):
 
 
 def _guided_html() -> str:
-    return """<!DOCTYPE html>
+    _capture_btn = (
+        '<button class="btn btn-capture" '
+        "onclick=\"flushAnnounce();post('/capture')\">Capturar</button>"
+        if _guided_manual_enabled
+        else ""
+    )
+    return (
+        """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Asistente de calibración</title>
 <style>
   *{box-sizing:border-box}
@@ -685,6 +705,8 @@ def _guided_html() -> str:
   .btn-undo:hover{background:#c76e1b}
   .btn-skip{background:#555}
   .btn-skip:hover{background:#444}
+  .btn-capture{background:#27ae60}
+  .btn-capture:hover{background:#1f9952}
   .btn-finish{background:#c0392b}
   .btn-finish:hover{background:#a83224}
   .btn-audio{background:#555}
@@ -728,6 +750,7 @@ def _guided_html() -> str:
     <div id="progress-bar"><div id="progress-fill"></div></div>
     <div id="status" class="stat">Conectando...</div>
     <div class="row">
+      __CAPTURE_BTN__
       <button id="btn-audio" class="btn btn-audio" onclick="toggleAudio()">Audio OFF</button>
       <button class="btn btn-undo" onclick="flushAnnounce();post('/undo')">Deshacer última</button>
       <button class="btn btn-skip" onclick="flushAnnounce();post('/skip')">Saltear pose</button>
@@ -1024,6 +1047,7 @@ async function refresh(){
 setInterval(refresh, 150);
 </script>
 </body></html>"""
+    ).replace("__CAPTURE_BTN__", _capture_btn)
 
 
 def _draw_ghost(
@@ -1294,7 +1318,8 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     session.json, re-fittea el K de bootstrap a partir de las capturas
     existentes si count >= BOOTSTRAP_COUNT.
     """
-    global _shutting_down, _guided_state, _latest_jpeg
+    global _shutting_down, _guided_state, _latest_jpeg, _guided_manual_enabled
+    _guided_manual_enabled = bool(getattr(args, "manual", False))
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1520,7 +1545,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
     # El lock provisional del open() ocurrió cuando el operador acababa de
     # lanzar el script; ahora con todo armado, refresca el lock para que
     # los valores reflejen la escena real de medición. Mismo patrón que
-    # focus_assist y diagnose_bracket.
+    # focus_assist y diagnose_calibration.
     try:
         cap.resettle_and_lock()
     except Exception as e:
@@ -1833,23 +1858,39 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
             # manual puede interrumpir.
             announce_settling = _announce_pending
             announce_audio_lockout = _announce_pending
-            if aligned and stable and not announce_settling:
-                if hold_started_at is None:
-                    hold_started_at = now
-                    # Solo emitir el hint "Mantené quieto" una vez que
-                    # el beep de pose-announce terminó. La captura
-                    # igual puede correr durante esa ventana — solo no
-                    # se promueve al banner.
-                    if not announce_audio_lockout:
-                        _emit_audio("Mantené quieto")
-                hold_progress = min(1.0, (now - hold_started_at) / STABILITY_HOLD_SEC)
-            else:
+            if args.manual:
+                # Captura manual: el operador apreta "Capturar". Sin
+                # countdown de estabilidad ni gate de alineación al ghost
+                # (el gate de calidad de abajo igual rechaza un board no
+                # detectado / L-R desincronizado). El ghost sigue de guía.
                 hold_started_at = None
                 hold_progress = 0.0
+                with state.lock:
+                    should_capture = state.capture_requested
+                    state.capture_requested = False
+            else:
+                if aligned and stable and not announce_settling:
+                    if hold_started_at is None:
+                        hold_started_at = now
+                        # Solo emitir el hint "Mantené quieto" una vez que
+                        # el beep de pose-announce terminó. La captura
+                        # igual puede correr durante esa ventana — solo no
+                        # se promueve al banner.
+                        if not announce_audio_lockout:
+                            _emit_audio("Mantené quieto")
+                    hold_progress = min(
+                        1.0, (now - hold_started_at) / STABILITY_HOLD_SEC
+                    )
+                else:
+                    hold_started_at = None
+                    hold_progress = 0.0
 
-            should_capture = (
-                aligned and stable and not announce_settling and hold_progress >= 1.0
-            )
+                should_capture = (
+                    aligned
+                    and stable
+                    and not announce_settling
+                    and hold_progress >= 1.0
+                )
 
             warnings = live_lighting_warnings(frame_l, frame_r)
 
@@ -1902,9 +1943,10 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
                     _save_session(output_dir, state, poses, args)
                     continue
 
-            # Timeout de auto-skip (configurable vía --pose-timeout-sec)
+            # Timeout de auto-skip (configurable vía --pose-timeout-sec).
+            # En modo manual NO hay auto-skip — el operador skipea con el botón.
             pose_timeout = getattr(args, "pose_timeout_sec", SKIP_POSE_TIMEOUT_SEC)
-            if now - pose_started_at > pose_timeout:
+            if not args.manual and now - pose_started_at > pose_timeout:
                 state.pose_status[state.current_pose_idx] = "skipped"
                 logger.info("Pose %s auto-saltada por timeout", pose.id)
                 _emit_audio("Pose saltada por timeout")
@@ -3014,6 +3056,472 @@ def _run_ground_truth_phase(
     return zones
 
 
+# ---------------------------------------------------------------------------
+# Modo barrido libre (sweep): captura continua con auto-selección por novedad
+# ---------------------------------------------------------------------------
+
+# Tuning del sweep (se afina en hardware; defaults conservadores).
+SWEEP_GRID = 3  # grilla NxN de la posición del board en el cuadro
+SWEEP_NOVELTY_MIN = 0.12  # distancia mínima en el espacio de firma para aceptar
+SWEEP_DIST_BANDS = 3  # bandas de distancia por tamaño aparente del board
+SWEEP_MIN_TILTED = 4  # frames con tilt >= SWEEP_TILT_DEG_MIN requeridos
+SWEEP_TILT_DEG_MIN = 12.0  # grados para considerar una pose "inclinada"
+SWEEP_TARGET_CAPTURES = 18  # capturas para considerar la cobertura completa
+# ~23px a 1152 — tolera el temblor natural de sostener el board a mano.
+SWEEP_STILL_FRAC = (
+    0.02  # desplazamiento máx del centroide (fracción del ancho) p/ "quieto"
+)
+SWEEP_STILL_FRAMES = 2  # frames consecutivos casi-quietos antes de aceptar una captura
+
+
+def _sweep_signature(
+    corners: np.ndarray,
+    image_shape: tuple,
+    rvec: Optional[np.ndarray] = None,
+) -> dict:
+    """Firma de pose normalizada de una detección ChArUco, para los gates de
+    novedad y cobertura del sweep.
+
+    Devuelve dict con ``cx``/``cy`` (centroide normalizado en [0,1]), ``size``
+    (fracción de área del bbox del board sobre el frame — proxy de distancia) y
+    ``tilt`` (grados de inclinación desde ``rvec``; 0 si no se pasa rvec).
+    """
+    h, w = image_shape[:2]
+    pts = np.asarray(corners, dtype=np.float64).reshape(-1, 2)
+    cx = float(pts[:, 0].mean()) / max(w, 1)
+    cy = float(pts[:, 1].mean()) / max(h, 1)
+    bw = float(pts[:, 0].max() - pts[:, 0].min())
+    bh = float(pts[:, 1].max() - pts[:, 1].min())
+    size = (bw * bh) / float(max(w * h, 1))
+    tilt = 0.0
+    if rvec is not None:
+        rv = np.asarray(rvec, dtype=np.float64).reshape(-1)
+        tilt = float(np.degrees(np.hypot(float(rv[0]), float(rv[1]))))
+    return {"cx": cx, "cy": cy, "size": size, "tilt": tilt}
+
+
+def _sweep_novelty_distance(sig: dict, accepted: list) -> float:
+    """Distancia mínima (L2 ponderada) de ``sig`` a las firmas ya aceptadas.
+    ``inf`` si no hay ninguna aceptada. Pondera fuerte la posición (cx,cy),
+    medio el tamaño y el tilt (normalizado a 60°)."""
+    if not accepted:
+        return float("inf")
+
+    def _d(a: dict, b: dict) -> float:
+        ta = min(a["tilt"], 60.0) / 60.0
+        tb = min(b["tilt"], 60.0) / 60.0
+        return (
+            (a["cx"] - b["cx"]) ** 2
+            + (a["cy"] - b["cy"]) ** 2
+            + 0.5 * (a["size"] - b["size"]) ** 2
+            + 0.5 * (ta - tb) ** 2
+        ) ** 0.5
+
+    return min(_d(sig, s) for s in accepted)
+
+
+def _sweep_is_still(
+    recent_centroids: list,
+    max_disp_px: float,
+    min_frames: int,
+) -> bool:
+    """True si el board estuvo casi quieto en los últimos frames: hay al menos
+    ``min_frames`` centroides recientes y el desplazamiento entre cada par
+    consecutivo es < ``max_disp_px``. Evita capturar una pose en pleno
+    movimiento (blur + skew L/R en tránsito)."""
+    if len(recent_centroids) < min_frames:
+        return False
+    recent = recent_centroids[-min_frames:]
+    for (x0, y0), (x1, y1) in zip(recent, recent[1:]):
+        if ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5 >= max_disp_px:
+            return False
+    return True
+
+
+def _sweep_coverage(
+    accepted: list,
+    grid: int = SWEEP_GRID,
+    dist_bands: int = SWEEP_DIST_BANDS,
+    min_tilted: int = SWEEP_MIN_TILTED,
+    tilt_deg_min: float = SWEEP_TILT_DEG_MIN,
+    target: int = SWEEP_TARGET_CAPTURES,
+) -> dict:
+    """Resumen de cobertura del set aceptado: frames por celda de posición
+    (grilla NxN), bandas de distancia ocupadas, frames inclinados y total.
+    ``complete`` = listo para calibrar (todas las celdas + >=2 bandas +
+    suficientes inclinados + total >= target). ``missing`` = hints de lo que
+    falta."""
+    cells = [[0] * grid for _ in range(grid)]
+    bands = [0] * dist_bands
+    n_tilted = 0
+    for s in accepted:
+        gx = min(grid - 1, max(0, int(s["cx"] * grid)))
+        gy = min(grid - 1, max(0, int(s["cy"] * grid)))
+        cells[gy][gx] += 1
+        b = min(dist_bands - 1, max(0, int((max(0.0, s["size"]) ** 0.5) * dist_bands)))
+        bands[b] += 1
+        if s["tilt"] >= tilt_deg_min:
+            n_tilted += 1
+    n = len(accepted)
+    cells_covered = sum(1 for row in cells for c in row if c > 0)
+    bands_covered = sum(1 for c in bands if c > 0)
+    complete = (
+        n >= target
+        and cells_covered >= grid * grid
+        and bands_covered >= 2
+        and n_tilted >= min_tilted
+    )
+    missing: list[str] = []
+    if cells_covered < grid * grid:
+        missing.append(f"{grid * grid - cells_covered} zonas del cuadro")
+    if bands_covered < 2:
+        missing.append("otra distancia (acercá/alejá el board)")
+    if n_tilted < min_tilted:
+        missing.append(f"{min_tilted - n_tilted} poses inclinadas")
+    if n < target:
+        missing.append(f"{max(0, target - n)} capturas más")
+    return {
+        "cells": cells,
+        "bands": bands,
+        "n_tilted": n_tilted,
+        "n": n,
+        "cells_covered": cells_covered,
+        "bands_covered": bands_covered,
+        "complete": complete,
+        "missing": missing,
+    }
+
+
+def _sweep_coverage_html(cov: dict) -> str:
+    """Renderiza el panel de estado del sweep: grilla de cobertura + contadores."""
+    rows_html = ""
+    for row in cov["cells"]:
+        spans = "".join(
+            '<span style="display:inline-block;width:34px;height:34px;margin:2px;'
+            "border-radius:6px;text-align:center;line-height:34px;font-size:13px;"
+            f'color:#fff;background:{"#27ae60" if c > 0 else "#3a3a42"}">'
+            f'{c if c else ""}</span>'
+            for c in row
+        )
+        rows_html += f"<div>{spans}</div>"
+    if cov["complete"]:
+        head = (
+            '<div style="color:#2ecc71;font-size:18px;font-weight:700">'
+            "COBERTURA COMPLETA — apretá Finalizar para calibrar</div>"
+        )
+    else:
+        falta = " · ".join(cov["missing"]) if cov["missing"] else "—"
+        head = (
+            '<div style="color:#f1c40f;font-size:16px;font-weight:600">'
+            f"Barré el board · falta: {falta}</div>"
+        )
+    return (
+        head
+        + f'<div style="margin:10px 0">{rows_html}</div>'
+        + '<div style="color:#888;font-size:13px">'
+        + f'Capturas: {cov["n"]} · zonas {cov["cells_covered"]}/'
+        + f'{SWEEP_GRID * SWEEP_GRID} · distancias {cov["bands_covered"]}/'
+        + f'{SWEEP_DIST_BANDS} · inclinadas {cov["n_tilted"]}/{SWEEP_MIN_TILTED}</div>'
+    )
+
+
+def _sweep_html() -> str:
+    return """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Calibración — barrido libre</title>
+<style>
+  *{box-sizing:border-box}
+  body{background:#0b0b0d;margin:0;color:#eee;
+       font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+       display:flex;flex-direction:column;min-height:100vh}
+  header{padding:10px 20px;background:#141418;border-bottom:1px solid #26262c}
+  header h1{margin:0;font-size:16px;font-weight:600}
+  #stream{max-width:100vw;max-height:55vh;object-fit:contain;display:block;
+          margin:0 auto;background:#000}
+  #panel{flex:1;padding:14px 20px;background:#141418}
+  .btn{padding:12px 22px;font-size:15px;border:none;border-radius:8px;
+       cursor:pointer;font-weight:600;color:#fff;margin-right:10px}
+  .btn-finish{background:#27ae60}
+  .btn-undo{background:#e67e22}
+  .btn-report{background:#3498db}
+  #ov{position:fixed;inset:0;background:rgba(11,11,13,0.95);z-index:99;
+      display:flex;align-items:center;justify-content:center;
+      flex-direction:column;gap:18px;padding:20px;text-align:center}
+</style></head>
+<body>
+  <header><h1>Calibración — barrido libre</h1></header>
+  <div id="ov">
+    <div style="color:#eee;font-size:24px;font-weight:700">Barrido libre</div>
+    <div style="color:#aaa;max-width:480px;line-height:1.6">
+      Apretá <b>Comenzar</b> y movés el board ChArUco lento por todo el cuadro:
+      acercándolo y alejándolo, a cada esquina, e inclinándolo. La herramienta
+      agarra sola los frames diversos que necesita. Terminás cuando la
+      cobertura esté completa (o cuando quieras).
+    </div>
+    <button class="btn btn-finish" style="font-size:18px;padding:14px 36px"
+       onclick="fetch('/start',{method:'POST'});this.parentElement.style.display='none'">
+      Comenzar</button>
+  </div>
+  <img id="stream" src="/stream"/>
+  <div id="panel">
+    <div id="status">Conectando...</div>
+    <div style="margin-top:16px">
+      <button class="btn btn-undo" onclick="fetch('/undo',{method:'POST'})">Deshacer última</button>
+      <button class="btn btn-finish" onclick="if(confirm('Finalizar y calibrar?')){fetch('/finish',{method:'POST'})}">Finalizar</button>
+      <button class="btn btn-report" onclick="window.open('/report','_blank')">Abrir reporte</button>
+    </div>
+  </div>
+<script>
+function refresh(){
+  fetch('/status').then(function(r){return r.text()}).then(function(t){
+    document.getElementById('status').innerHTML=t;
+  }).catch(function(e){});
+}
+setInterval(refresh,250);
+</script>
+</body></html>"""
+
+
+def _run_sweep_capture(args: argparse.Namespace) -> None:
+    """Captura por barrido libre: el operador mueve el board y la herramienta
+    auto-selecciona frames diversos (gate de novedad + el MISMO gate de calidad
+    que el guiado) hasta cubrir la grilla de posición + distancias +
+    inclinaciones. Reemplaza la captura por-pose; el resto del wizard
+    (procesar/calibrar/reporte) sigue igual — globea ``left_*.png`` del output
+    dir. No soporta --resume (limpia las capturas previas al arrancar)."""
+    global _shutting_down, _guided_state, _latest_jpeg, _sweep_mode, _capture_started
+    _sweep_mode = True
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    from src.vision.capture import StereoCapture
+
+    max_exp = getattr(args, "max_exposure_us", 0)
+    cap = StereoCapture(
+        cam_left_id=args.left,
+        cam_right_id=args.right,
+        resolution=tuple(args.resolution),
+        fps=args.fps,
+        meter_mode=getattr(args, "meter", "matrix"),
+        lock_ae=getattr(args, "lock_ae", False),
+        max_exposure_us=max_exp if max_exp and max_exp > 0 else None,
+        sensor_raw_size=HW.default_res,
+        initial_settle_seconds=HW.ae_initial_settle_seconds,
+        resettle_seconds=HW.ae_resettle_seconds,
+    )
+    cap.open()
+
+    dict_id = _resolve_aruco_dict(getattr(args, "aruco_dict", "DICT_4X4_100"))
+    board = create_charuco_board(
+        board_size=(args.columns, args.rows),
+        square_length=args.square_length,
+        marker_length=args.marker_length,
+        dict_id=dict_id,
+        legacy_pattern=args.legacy_pattern,
+    )
+    obj_all = board.getChessboardCorners()
+
+    # K nominal escalada a la resolución de captura — SOLO para el proxy de
+    # tilt (solvePnP grueso sobre frames aceptados); NO entra a la calibración.
+    w_cap, h_cap = int(args.resolution[0]), int(args.resolution[1])
+    scale = w_cap / float(HW.full_res[0])
+    f_nom = HW.nominal_focal_full_px * scale
+    K_nom = np.array(
+        [[f_nom, 0, w_cap / 2.0], [0, f_nom, h_cap / 2.0], [0, 0, 1]],
+        dtype=np.float64,
+    )
+
+    # Sweep no soporta resume: limpiar capturas previas del output dir.
+    for old in list(output_dir.glob("left_*.png")) + list(
+        output_dir.glob("right_*.png")
+    ):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+    state = _GuidedState()
+    state.pose_status = []
+    _guided_state = state
+    _capture_started = False
+
+    ThreadingHTTPServer.allow_reuse_address = True
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), _GuidedHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    logger.info("Barrido libre — preview: http://people-counter.local:%d", args.port)
+    logger.info("Esperando que el operador haga click en Comenzar...")
+    with state.lock:
+        state.status_html = (
+            '<div style="color:#aaa">Apretá Comenzar y barré el board por '
+            "todo el cuadro.</div>"
+        )
+
+    while not _capture_started:
+        if state.finish_requested:
+            logger.info("Cancelado antes de comenzar.")
+            cap.close()
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+            return
+        time.sleep(0.1)
+
+    try:
+        cap.resettle_and_lock()
+    except Exception as e:
+        logger.warning("resettle_and_lock no aplicado: %s", e)
+
+    logger.info("Barrido en curso — Finalizar en la UI cuando la cobertura esté lista.")
+    accepted_sigs: list = []
+    count = 0
+    novelty_min = float(getattr(args, "sweep_novelty", SWEEP_NOVELTY_MIN))
+    last_status_t = 0.0
+    recent_centroids: list = []
+    still_px = SWEEP_STILL_FRAC * w_cap
+    last_reject_log_t = 0.0
+
+    while not _shutting_down:
+        with state.lock:
+            if state.finish_requested:
+                state.finish_requested = False
+                break
+            undo = state.undo_requested
+            state.undo_requested = False
+        if undo and state.captured_pairs:
+            lp, rp, _pid = state.captured_pairs.pop()
+            for p in (lp, rp):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+            if accepted_sigs:
+                accepted_sigs.pop()
+            count = max(0, count - 1)
+            logger.info("UNDO — removida última captura del sweep (quedan %d)", count)
+
+        try:
+            frame_l, frame_r, ts_l, ts_r, _tl, _tr = cap.read_with_metadata()
+            lr_sync_ok = abs(ts_l - ts_r) <= LR_SYNC_MAX_DELTA_NS
+        except Exception:
+            frame_l, frame_r = cap.read()
+            lr_sync_ok = True
+
+        corners_l, ids_l = detect_charuco_dual_pass(frame_l, board, min_corners=4)
+        corners_r, ids_r = detect_charuco_dual_pass(frame_r, board, min_corners=4)
+
+        # Quietud: trackear el centroide del board entre frames. Solo se captura
+        # cuando está casi quieto (no en tránsito) — evita blur + skew L/R de una
+        # pose en movimiento, igual que el hold del modo guiado pero liviano.
+        if corners_l is not None:
+            _cp = corners_l.reshape(-1, 2)
+            recent_centroids.append((float(_cp[:, 0].mean()), float(_cp[:, 1].mean())))
+            recent_centroids[:] = recent_centroids[-SWEEP_STILL_FRAMES:]
+        # NO se limpia ante un None: un parpadeo de detección no debe resetear el
+        # streak de quietud (si el board no se movió en el gap, sigue quieto).
+        still = _sweep_is_still(recent_centroids, still_px, SWEEP_STILL_FRAMES)
+
+        vis_l = frame_l.copy()
+        if corners_l is not None and ids_l is not None:
+            try:
+                cv2.aruco.drawDetectedCornersCharuco(vis_l, corners_l, ids_l)
+            except cv2.error:
+                pass
+        combined = np.hstack([vis_l, frame_r])
+
+        accepted_this = False
+        n_corners_l = len(corners_l) if corners_l is not None else 0
+        if corners_l is not None and ids_l is not None and n_corners_l >= 4:
+            rvec = None
+            try:
+                obj = obj_all[ids_l.flatten()].astype(np.float32)
+                img = corners_l.reshape(-1, 2).astype(np.float32)
+                ok, rvec, _tv = cv2.solvePnP(
+                    obj, img, K_nom, np.zeros(5), flags=cv2.SOLVEPNP_ITERATIVE
+                )
+                if not ok:
+                    rvec = None
+            except cv2.error:
+                rvec = None
+            sig = _sweep_signature(corners_l, frame_l.shape, rvec)
+            if still and _sweep_novelty_distance(sig, accepted_sigs) >= novelty_min:
+                common_n = count_common_corners(ids_l, ids_r)
+                quality = assess_frame_quality(
+                    frame_l,
+                    frame_r,
+                    n_corners_l,
+                    corners_l=corners_l,
+                    corners_r=corners_r,
+                )
+                reject: list[str] = []
+                if not quality["all_pass"]:
+                    reject.extend(quality.get("reasons", ["calidad"]))
+                if common_n < LR_MIN_COMMON_CORNERS:
+                    reject.append(
+                        f"esquinas comunes {common_n}<{LR_MIN_COMMON_CORNERS}"
+                    )
+                if not lr_sync_ok:
+                    reject.append("L/R desincronizadas")
+                if not reject:
+                    ordinal = count
+                    lp = output_dir / f"left_{ordinal:03d}_sweep.png"
+                    rp = output_dir / f"right_{ordinal:03d}_sweep.png"
+                    cv2.imwrite(str(lp), frame_l)
+                    cv2.imwrite(str(rp), frame_r)
+                    with state.lock:
+                        state.captured_pairs.append((lp, rp, f"sweep{ordinal:03d}"))
+                    accepted_sigs.append(sig)
+                    count += 1
+                    accepted_this = True
+                    logger.info(
+                        "[sweep %d] capturada cx=%.2f cy=%.2f size=%.3f "
+                        "tilt=%.0f common=%d",
+                        count,
+                        sig["cx"],
+                        sig["cy"],
+                        sig["size"],
+                        sig["tilt"],
+                        common_n,
+                    )
+                elif time.time() - last_reject_log_t > 2.0:
+                    logger.info(
+                        "sweep: frame estable rechazado — %s", "; ".join(reject)
+                    )
+                    last_reject_log_t = time.time()
+
+        if accepted_this:
+            cv2.rectangle(
+                combined,
+                (0, 0),
+                (combined.shape[1] - 1, combined.shape[0] - 1),
+                (0, 255, 0),
+                8,
+            )
+
+        cov = _sweep_coverage(accepted_sigs)
+        now = time.time()
+        if accepted_this or now - last_status_t > 0.25:
+            panel = _sweep_coverage_html(cov)
+            if not cov["complete"] and corners_l is not None and not still:
+                panel = (
+                    '<div style="color:#e67e22;font-size:14px;margin-bottom:6px">'
+                    "Pará el board un instante para capturar…</div>"
+                ) + panel
+            with state.lock:
+                state.status_html = panel
+            last_status_t = now
+
+        _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 72])
+        with _jpeg_lock:
+            _latest_jpeg = jpeg.tobytes()
+
+    # Liberar cámaras; el server queda vivo (daemon) para que el wizard sirva
+    # la fase de procesamiento/reporte vía /status, igual que el guiado.
+    cap.close()
+    logger.info("Barrido finalizado: %d capturas en %s", count, output_dir)
+
+
 def cmd_wizard(args: argparse.Namespace) -> None:
     """Wizard de calibración one-shot: preflight → captura guiada → calibrar →
     verificar → ground-truth check → reporte."""
@@ -3036,17 +3544,22 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         logger.error("Pre-flight falló. Resolvé los items marcados con ❌ y reintentá.")
         sys.exit(1)
 
-    # Fase 1 — captura guiada
-    args.guided = True
-    args.grid = "rectangular"
-    args.manual = False
-    args.per_cell = 0
-    args.cooldown = 1.5
-    args.count = 20
+    # Fase 1 — captura
     logger.info("=" * 60)
-    logger.info("WIZARD FASE 1/4 — Captura guiada")
+    logger.info("WIZARD FASE 1/4 — Captura")
     logger.info("=" * 60)
-    _run_guided_capture(args)
+    # Barrido libre es el modo DEFAULT; --guided usa el modo por poses-silueta
+    # (más preciso, requiere más espacio + paciencia).
+    use_sweep = not getattr(args, "guided", False)
+    if use_sweep:
+        _run_sweep_capture(args)
+    else:
+        args.grid = "rectangular"
+        args.manual = getattr(args, "manual", False)
+        args.per_cell = 0
+        args.cooldown = 1.5
+        args.count = 20
+        _run_guided_capture(args)
     _set_post_capture_phase(
         "processing",
         "Procesando capturas, analizando cobertura y detectando esquinas "
@@ -3137,7 +3650,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         min_rate * 100,
     )
     if detect_rate < min_rate:
-        offending = "\n".join(f"• {l}" for l in invalid_lines)
+        offending = "\n".join(f"• {ln}" for ln in invalid_lines)
         msg = (
             f"Solo {valid_both} de {len(pairs)} pares ({detect_rate*100:.0f}%) "
             f"sobrevivieron la re-detección. Umbral mínimo: {min_rate*100:.0f}%. "
@@ -3182,7 +3695,16 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     # cuando sabe lo que está haciendo.
     critical_gaps = coverage.get("critical", [])
     force_flag = getattr(args, "force_degenerate_coverage", False)
-    if critical_gaps and not force_flag:
+    # En modo barrido las capturas no siguen la taxonomía de poses (grupos
+    # A/B/C/D, bandas near/mid/far), así que analyze_pose_coverage las ve
+    # "vacías" y este gate por-pose siempre fallaría. El barrido tiene su propia
+    # cobertura (grilla de posición × distancia × tilt) durante la captura, así
+    # que se omite acá — la calidad la validan el RMS + ground-truth.
+    if use_sweep and critical_gaps:
+        logger.info(
+            "Coverage por-pose omitido en modo barrido (usa su propia cobertura)."
+        )
+    if critical_gaps and not force_flag and not use_sweep:
         logger.error("❌ Coverage crítico insuficiente — calibración bloqueada:")
         for c in critical_gaps:
             logger.error("    - %s", c)
@@ -3204,7 +3726,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     soft_warnings = coverage.get("warnings", [])
-    if soft_warnings:
+    if soft_warnings and not use_sweep:
         logger.warning("⚠ Diversidad limitada en el set de capturas:")
         for w in soft_warnings:
             logger.warning("    - %s", w)
@@ -4004,6 +4526,32 @@ def main() -> None:
         "--resume",
         action="store_true",
         help="Continúa una sesión previa del wizard — saltea las poses ya capturadas",
+    )
+    p_wiz.add_argument(
+        "--manual",
+        action="store_true",
+        help="(solo con --guided) Captura 100%% manual: el operador apreta "
+        "'Capturar' en la UI por cada pose (sin auto-captura por estabilidad) "
+        "y sin auto-skip por timeout. El barrido (default) ya es manual por "
+        "naturaleza — capturás moviendo el board y pausando.",
+    )
+    p_wiz.add_argument(
+        "--guided",
+        action="store_true",
+        help="Usa el modo guiado por poses-silueta (el DEFAULT es barrido "
+        "libre). Más preciso pero requiere más espacio + paciencia: matcheás "
+        "~20 siluetas a 1/2/3m. Usar para máxima calidad cuando tenés buen "
+        "espacio y luz. El barrido (default) es mucho más fácil de operar en "
+        "espacios chicos / luz difícil.",
+    )
+    p_wiz.add_argument(
+        "--sweep-novelty",
+        type=float,
+        default=SWEEP_NOVELTY_MIN,
+        dest="sweep_novelty",
+        help=f"(modo barrido) Umbral de novedad para aceptar un frame "
+        f"(distancia en el espacio de firma normalizado). Default "
+        f"{SWEEP_NOVELTY_MIN}. Subir = menos frames más diversos.",
     )
     p_wiz.add_argument(
         "--baseline-tol-mm",

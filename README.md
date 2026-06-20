@@ -126,12 +126,12 @@ El sistema usa **defaults canónicos + override per-device + cloud channel**:
 
 ## Instalación en sitio
 
-Los tools de setup (`focus_assist.py`, `calibrate.py`, `preview.py`, `diagnose_depth.py`)
-leen `/etc/people-counter/config.yaml` para `vision.resolution` y
+Los tools de setup (`focus_assist.py`, `calibrate.py`, `preview.py`, `diagnose_depth.py`,
+`diagnose_calibration.py`) leen `/etc/people-counter/config.yaml` para `vision.resolution` y
 `vision.mounting_height_m` (focus_assist deriva el target distance de ahí).
 Pasar `--resolution` / `--mount-height-m` explícitos solo en dev workstation
-sin config per-device. `diagnose_bracket.py` corre sin config porque hace QC
-de ensamble pre-calibración.
+sin config per-device. `diagnose_calibration.py` además carga la calibración
+`.npz` y captura a la resolución con la que se armaron sus rectify maps.
 
 Todos los setup tools comparten:
 
@@ -149,13 +149,19 @@ Todos los setup tools comparten:
 sudo PYTHONPATH=. python3 scripts/focus_assist.py
 ```
 
-Abre UI en `http://people-counter.local:8080`. Flujo:
+Abre UI en `http://people-counter.local:8080`. **Default: modo MAPA** — paseás
+el board ChArUco por todo el cuadro y la herramienta acumula la nitidez máxima
+por zona (grilla 3×3); el panel muestra la cobertura (verde = cubierta) y qué
+zonas faltan. Cuando las 9 zonas están cubiertas en L y R, evalúa el mapa
+completo. Así cada zona se mide con board real (no fondo) y el check de
+simetría/corners por zona es honesto. `--static` vuelve al modo clásico de un
+solo frame con el board fijo al centro. Flujo:
 1. Pantalla "Comenzar" (posicionar board + activa audio)
-2. Captura en vivo con barras de nitidez central + corners (absoluto) + simetría L/R
+2. Captura en vivo con barras de nitidez (frame actual) + acumulación del mapa
 3. Peak tracker para ajustar el M12 sin pasarse del óptimo
 4. Masking automático de zonas de bajo contraste
-5. Pulso de audio adaptativo (tipo detector — tap corto a 700 Hz que acelera de ~1.2s a ~130ms según mejora el score del centro; silencio cuando el board no está visible). Beeps separados de start y fin de sesión. Toggle en la UI.
-6. Finalizar → reporte HTML auto-abierto en nueva pestaña
+5. Pulso de audio adaptativo (tap corto que acelera según mejora el score; toggle en la UI)
+6. Finalizar → reporte HTML (mapa acumulado) auto-abierto en nueva pestaña
 
 Target de foco: **1.30–1.70m** por default (lab protocol universal — focar a
 1.5m ±20cm peakea el DoF sobre el rango operativo bbox 1.0–3.5m de la flota
@@ -187,7 +193,13 @@ sudo PYTHONPATH=. python3 scripts/calibrate.py wizard \
     --tolerance strict
 ```
 
-Wizard de una sola corrida, **todo desde el browser** (terminal solo para logs):
+Wizard de una sola corrida, **todo desde el browser** (terminal solo para logs).
+**Default: modo BARRIDO (sweep)** — movés el board libremente y la herramienta
+auto-selecciona los frames diversos que necesita (gate de novedad + quietud +
+calidad) con un mapa de cobertura en vivo; mucho más fácil en espacios chicos /
+luz difícil. **`--guided`** usa el modo clásico de 20 poses-silueta (más preciso
+con buen espacio + luz; `--manual` lo hace captura-por-botón). Ambos terminan en
+calibrar → verificar → reporte. El flujo guiado:
 1. Pre-flight (puerto, disco, backup)
 2. Pantalla "Comenzar" (activa audio del browser, posicionar trípode)
 3. Captura guiada con ghost silueta (20 poses), beeps cortos diferenciados por evento
@@ -209,10 +221,12 @@ Flags útiles:
 - `--pose-timeout-sec N`: timeout por pose antes de auto-skip (default 180, tuned para board sobre trípode; bajar a 60 si hand-held)
 - `--tolerance loose|normal|strict`: preset de tolerancia
 - `--align-tol-{loose,tight}-px`: overrides finos de tolerancia
+- `--guided`: modo clásico de 20 poses-silueta (el default es barrido libre); `--manual` lo hace captura-por-botón
+- `--sweep-novelty F`: (modo barrido) umbral de novedad para aceptar un frame (default 0.12)
 - `--dist-near-mm` / `--dist-mid-mm` / `--dist-far-mm`: distancias de las 3 bandas de poses (default 1000/2000/3000mm — lab protocol)
 - `--legacy-pattern` / `--no-legacy-pattern`: enumeración de markers ChArUco (default `--legacy-pattern` matches calib.io)
 - `--resume`: continúa una sesión previa (si no se pasa, descarta y arranca limpio)
-- `--force-degenerate-coverage`: bypass del coverage critical block (banda/grupo faltante)
+- `--force-degenerate-coverage`: bypass del coverage critical block del modo guiado (en barrido el gate por-pose se omite solo — usa su propia cobertura de grilla/distancia/tilt)
 - `--min-detect-rate F`: umbral del pre-calibration sanity gate (default 0.7)
 - `--low-light`: preset PoC para cuarto chico/oscuro — afloja los gates de `assess_frame_quality` (exposure, blur, corner-sharp, L/R balance). El `.npz` resultante **NO es válido para producción**, solo valida que el wizard corra end-to-end
 
@@ -221,23 +235,28 @@ Subcomando aparte para restart limpio:
 python scripts/calibrate.py reset --yes   # borra captures + session.json + .npz
 ```
 
-**Protocolo recomendado para el piloto**: las mismas 20 poses en cada dispositivo
-(el wizard las genera deterministically). Comparabilidad entre unidades para QA,
-mismo procedimiento para entrenar operadores, detección de outliers entre locales.
+**Protocolo recomendado para el piloto**: con buen espacio + luz, `--guided` (las
+mismas 20 poses deterministas en cada dispositivo) da comparabilidad entre unidades
+para QA. En espacios chicos / luz difícil, el barrido (default) es más práctico —
+la cobertura la garantiza su mapa de zonas/distancia/tilt, y se valida igual con el
+RMS + `diagnose_calibration`.
 
-### 3. QC de ensamble del bracket (opcional)
+### 3. Monitor de salud de calibración (post-calibración)
 
 ```bash
-sudo PYTHONPATH=. python3 scripts/diagnose_bracket.py
+PYTHONPATH=. python3 scripts/diagnose_calibration.py
 ```
 
-Tool factory para validar el ensamble físico del bracket estéreo
-**antes** de la calibración óptica. Mide pitch / yaw / roll / offset Y /
-offset Z entre L y R usando solvePnP con K nominal del IMX708 (no
-necesita `.npz` previo). Thresholds factory: pitch ±0.5° / yaw ±1.0° /
-roll ±0.5° / offsets ±2mm. Browser-driven igual que focus/calib, ghost
-del board para alineación, reporte HTML auto-open. Útil para detectar
-brackets mal cortados / cámaras flojas antes de meterlas al wizard.
+Responde "¿la calibración guardada sigue válida o hay que recalibrar?".
+Rectifica un board ChArUco con la calibración del device (`.npz`) y mide el
+**error epipolar** = disparidad vertical residual `|y_L − y_R|` de las
+esquinas correspondientes. Un par bien calibrado da sub-píxel; >1px (default)
+= la geometría estéreo cambió (bracket movido, lente corrido, drift térmico)
+→ recalibrar. No necesita ground-truth (a diferencia de `diagnose_depth`, que
+mide exactitud absoluta en metros y sí requiere distancia conocida). Check de
+campo / periódico. El QC de bracket *pre*-calibración se retiró: medir la
+geometría de un fisheye de 120° con modelo pinhole sin coeficientes de
+distorsión produce yaw/offsets fantasma.
 
 ## Entrenamiento del detector
 
@@ -336,24 +355,25 @@ src/
 tests/               # 1025 funciones de test en 44 archivos espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
-│                          # wizard = pipeline end-to-end browser-driven: start overlay,
-│                          # ghost silueta, pose-announce atómico, tolerance preset,
-│                          # ground-truth en UI, reporte HTML con viz embedded.
-│                          # Flags: --meter centre/spot, --lock-ae, --low-light
-├── focus_assist.py        # Asistente de foco browser-driven: start overlay, barras
-│                          # visuales, peak tracker, masking, beeps en start / fin, reporte auto-open.
-│                          # Corner sharpness absoluta + auto-detección de escena compacta
-│                          # (bbox board/frame >25% → omite check de corners). L/R parity
-│                          # check. Flags: --meter centre/spot, --low-light
+│                          # wizard = pipeline end-to-end browser-driven. Default
+│                          # BARRIDO (sweep): cobertura por novedad/quietud + mapa en vivo.
+│                          # --guided = 20 poses-silueta clásicas. Ambos: ground-truth
+│                          # en UI + reporte HTML. Flags: --guided, --sweep-novelty,
+│                          # --meter, --lock-ae, --low-light
+├── focus_assist.py        # Asistente de foco browser-driven. Default MAPA: paseás el
+│                          # board, acumula nitidez máx por zona (grilla 3×3) + cobertura;
+│                          # evalúa el mapa completo. --static = un solo frame al centro.
+│                          # Peak tracker, masking, L/R parity, reporte auto-open.
+│                          # Flags: --static, --map-coverage-min, --meter, --low-light
 ├── preview.py             # Preview en vivo browser-driven (start overlay, header).
 │                          # Side-by-side L|R con grid + crosshair. Para apuntar el bracket
 │                          # antes de correr foco / calib. Flag --meter centre/spot
 ├── diagnose_depth.py      # Validación de profundidad: 5 zonas con tags de confianza
 │                          # (✓ Coincide / ● Otro plano / ⚠ SGBM falló). Verdict solo
 │                          # por error del centro. Flags: --meter, --lock-ae
-├── diagnose_bracket.py    # QC factory del ensamble del bracket estéreo (pitch/yaw/
-│                          # roll/offset L↔R), browser-driven, no necesita .npz previo.
-│                          # Thresholds factory: ±0.5°/1.0°/0.5°/2mm/2mm.
+├── diagnose_calibration.py # Salud de calibración post-cal: rectifica con la .npz y mide
+│                          # error epipolar L↔R. Veredicto OK / recalibrar (>1px). Sin
+│                          # ground-truth — check de campo/periódico de drift del bracket.
 ├── preflight.py           # Chequeo pre-install (cámaras + Hailo + hardware)
 ├── counting_zone_picker.py          # Seleccionador de counting zone + línea virtual
 ├── provision.py           # Provisioning + disaster recovery: create, deploy, harvest, reprovision, list

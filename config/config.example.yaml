@@ -160,7 +160,7 @@ vision:
                                     # final, cuando el operador apreta
                                     # "Comenzar" con la escena armada
                                     # (focus_assist, calibrate wizard,
-                                    # diagnose_bracket).
+                                    # diagnose_calibration).
 
   # --- Skip SGBM cuando tracks tienen height estable ---
   # SGBM (depth) domina el budget per-frame (~50-70ms con WLS). Cuando
