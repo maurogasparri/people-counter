@@ -12,8 +12,54 @@ from src.vision.capture import (
     CAMERA_STALL_THRESHOLD,
     FileCapture,
     StereoCapture,
+    _build_camera_controls,
     _next_stall,
+    apply_sync_framerate,
 )
+
+
+class TestCameraControls:
+    """Construcción de controls iniciales por cámara (incl. sync por software)."""
+
+    def test_max_exposure_pins_frame_duration_without_sync(self):
+        ctr = _build_camera_controls(max_exposure_us=16000, fps=30, sync_mode=None)
+        assert ctr["FrameDurationLimits"] == (16000, 16000)  # pineado, cap blur
+        assert "SyncMode" not in ctr
+
+    def test_sync_returns_only_syncmode(self):
+        # El FrameRate del sync lo fija apply_sync_framerate (camera-aware, lee
+        # el piso real del sensor); _build sólo pone SyncMode. NO FrameRate ni
+        # FrameDurationLimits (un rango tira el error "variable framerate").
+        ctr = _build_camera_controls(max_exposure_us=16000, fps=30, sync_mode="CLIENT")
+        assert ctr == {"SyncMode": "CLIENT"}
+
+    def test_sync_without_max_exposure_also_only_syncmode(self):
+        ctr = _build_camera_controls(max_exposure_us=None, fps=30, sync_mode="SERVER")
+        assert ctr == {"SyncMode": "SERVER"}
+
+    def test_framerate_when_no_max_exposure(self):
+        ctr = _build_camera_controls(max_exposure_us=None, fps=24, sync_mode=None)
+        assert ctr["FrameRate"] == 24
+        assert "FrameDurationLimits" not in ctr
+
+    def test_apply_sync_framerate_reads_floor_and_sets_achievable_rate(self):
+        class _FakeCam:
+            camera_controls = {"FrameDurationLimits": (17849, 33333, 20000)}
+
+            def __init__(self):
+                self.applied = None
+
+            def set_controls(self, c):
+                self.applied = c
+
+        cam = _FakeCam()
+        apply_sync_framerate([cam, None], headroom=1.05)  # None se saltea
+        assert cam.applied is not None
+        assert abs(cam.applied["FrameRate"] - 1_000_000.0 / (17849 * 1.05)) < 0.01
+
+    def test_camera_sync_attribute_defaults_off_and_coerces(self):
+        assert StereoCapture(0, 1, (640, 480)).camera_sync is False
+        assert StereoCapture(0, 1, (640, 480), camera_sync=True).camera_sync is True
 
 
 def test_next_stall_advances_resets_and_handles_no_ts():

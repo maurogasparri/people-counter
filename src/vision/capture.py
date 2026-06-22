@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -50,6 +50,121 @@ def _next_stall(ts: int, last_ts: int, stall: int) -> int:
     return stall + 1 if ts == last_ts else 0
 
 
+def camera_sync_enabled(config: dict) -> bool:
+    """Lee ``vision.camera_sync.enabled`` del config (default False). Fuente
+    única de verdad para el runtime y TODOS los setup tools (calibrate, foco,
+    preview, diagnose_*) — así prenden/apagan el sync de cámaras de forma
+    consistente desde el mismo YAML."""
+    vision = (config or {}).get("vision") or {}
+    # Default ON fleet-wide (la cámara izq sigue a la der). Apagar explícitamente
+    # con enabled:false. La constructora de StereoCapture igual default-ea a
+    # False, así que los setup tools estáticos que NO leen este flag siguen sin
+    # sync; este default sólo aplica a quien lee el config (runtime/calibrate/preview).
+    return bool((vision.get("camera_sync") or {}).get("enabled", True))
+
+
+def camera_sync_enabled_default() -> bool:
+    """Variante tolerante de :func:`camera_sync_enabled` que carga el config
+    per-device default. Devuelve False si el config no existe (workstation de
+    dev sin /etc/people-counter). Pensada para los setup tools que no siempre
+    tienen el dict de config a mano en el call site."""
+    try:
+        from src.config.loader import (
+            DEFAULT_DEVICE_CONFIG_PATH,
+            load_device_config,
+        )
+
+        return camera_sync_enabled(load_device_config(DEFAULT_DEVICE_CONFIG_PATH))
+    except Exception:  # noqa: BLE001 - best-effort, default seguro
+        return False
+
+
+def converge_camera_sync(
+    cam_left: Any,
+    cam_right: Any,
+    timeout_s: float = 25.0,
+    gap_s: float = 3.0,
+) -> Optional[float]:
+    """Hace converger el sync de dos ``Picamera2`` crudas (para tools que NO
+    usan StereoCapture, p. ej. preview). Captura pares en bursts con GAPS — el
+    IPA de sync necesita pausas en el dequeue para su ajuste inicial de fase; la
+    captura continua lo impide. Corta al bajar de 1ms (~8-12s) o al timeout.
+    Devuelve el último delta (µs) o None. Best-effort."""
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    def _ts(cam):
+        req = cam.capture_request()
+        try:
+            return int(req.get_metadata().get("SensorTimestamp", 0))
+        finally:
+            req.release()
+
+    ex = _TPE(max_workers=2)
+    delta: Optional[float] = None
+    try:
+        deadline = _time.monotonic() + timeout_s
+        while _time.monotonic() < deadline:
+            for _ in range(8):
+                fl = ex.submit(_ts, cam_left)
+                fr = ex.submit(_ts, cam_right)
+                tl, tr = fl.result(), fr.result()
+                if tl and tr:
+                    delta = abs(tl - tr) / 1000.0
+            if delta is not None and delta < 1000.0:
+                break
+            _time.sleep(gap_s)
+    except Exception:  # noqa: BLE001 - best-effort
+        logger.debug("converge_camera_sync fallo", exc_info=True)
+    finally:
+        ex.shutdown(wait=False)
+    if delta is not None:
+        logger.info("camera_sync_converged delta_us=%.1f", delta)
+    return delta
+
+
+def _build_camera_controls(
+    max_exposure_us: Optional[int],
+    fps: int,
+    sync_mode: Any = None,
+) -> dict[str, Any]:
+    """Controls iniciales de una cámara.
+
+    Sin sync: ``max_exposure_us`` cap-ea el shutter vía ``FrameDurationLimits``
+    pineado (ExposureTime ≤ FrameDuration); si no, ``FrameRate``.
+
+    Con sync (``sync_mode`` no None): sólo ``SyncMode``. El ``FrameRate`` NO se
+    fija acá a propósito: el sync exige un rate ALCANZABLE por el sensor (derivar
+    de ``max_exposure_us`` puede pedir más fps de los que el sensor da a esa
+    resolución → el algoritmo NO converge; y un rango en ``FrameDurationLimits``
+    dispara "Sync algorithm enabled with variable framerate"). El rate correcto
+    lo setea :func:`apply_sync_framerate` tras el start, leyendo el piso real del
+    sensor. Requiere config de **video** (ver open())."""
+    if sync_mode is not None:
+        return {"SyncMode": sync_mode}
+    if max_exposure_us is not None:
+        return {"FrameDurationLimits": (max_exposure_us, max_exposure_us)}
+    return {"FrameRate": fps}
+
+
+def apply_sync_framerate(cams: "list | tuple", headroom: float = 1.05) -> None:
+    """Setea un ``FrameRate`` fijo y ALCANZABLE en cada cámara para que el sync
+    converja. Lee el piso real de frame del sensor (``FrameDurationLimits[0]``,
+    depende de resolución/modo) y apunta ~``headroom`` por encima, dándole al
+    algoritmo margen para alinear sin pedir más fps de los que el sensor da
+    (validado en HW: piso 17.8ms → 53fps → converge a ~40µs en ~20s; exposure
+    ~18.1ms, sin tradeoff real de blur). Best-effort: cualquier fallo se ignora."""
+    for cam in cams:
+        if cam is None:
+            continue
+        try:
+            fdl = cam.camera_controls.get("FrameDurationLimits")
+            if fdl and fdl[0]:
+                cam.set_controls({"FrameRate": 1_000_000.0 / (fdl[0] * headroom)})
+        except Exception:  # noqa: BLE001 - best-effort
+            logger.debug("apply_sync_framerate fallo", exc_info=True)
+
+
 class StereoCapture:
     """Maneja la captura simultánea desde las cámaras CSI izquierda y derecha vía picamera2."""
 
@@ -66,6 +181,7 @@ class StereoCapture:
         initial_settle_seconds: float = 2.0,
         resettle_seconds: float = 1.5,
         async_capture: bool = True,
+        camera_sync: bool = False,
     ) -> None:
         """Inicializa la captura estéreo.
 
@@ -116,6 +232,18 @@ class StereoCapture:
                 (~22ms, bloqueante en picamera2) con el cómputo del pipeline
                 → la captura sale del critical path. False = lectura
                 bloqueante clásica (fallback / setup tools).
+            camera_sync: Cuando es True, activa el sync de frames por software de
+                libcamera (``controls.rpi.SyncModeEnum``) — alinea el inicio de
+                exposición de ambas cámaras a ~decenas de µs SIN cableado. La
+                cámara izquierda (la "principal") corre como ``Server`` y la
+                derecha como ``Client`` que ajusta su timing para seguirla.
+                Requiere config de **video** + ``FrameRate`` fijo
+                (ver open() y _build_camera_controls): con still configuration el
+                IPA de sync no ajusta el timing, y con un rango en
+                FrameDurationLimits tira el error "variable framerate". Sin sync
+                (default) las cámaras corren libres y su fase deriva (pares L/R
+                hasta ~un período de frame de desfase). Validado en HW: ~18ms →
+                ~20-70µs. Default False.
         """
         self.cam_left_id = cam_left_id
         self.cam_right_id = cam_right_id
@@ -125,6 +253,7 @@ class StereoCapture:
         self.lock_ae = lock_ae
         self.max_exposure_us = max_exposure_us
         self.sensor_raw_size = sensor_raw_size
+        self.camera_sync = bool(camera_sync)
         self.initial_settle_seconds = float(initial_settle_seconds)
         self.resettle_seconds = float(resettle_seconds)
         self._cam_left = None
@@ -147,6 +276,10 @@ class StereoCapture:
         self._cam_r_last_ts = 0
         self._cam_l_stall = 0
         self._cam_r_stall = 0
+        # Último desfase L/R (µs) cuando el sync está activo. Lo escribe el
+        # stream loop; lo lee el log diferido de convergencia (sin recapturar,
+        # para no competir con el productor por las cámaras).
+        self._last_sync_delta_us: Optional[float] = None
 
     def open(self) -> None:
         """Abre ambos streams de cámara vía picamera2.
@@ -175,16 +308,41 @@ class StereoCapture:
         # compensa con AnalogueGain cuando la luz baja. Sin esto, AE puede
         # subir el shutter hasta ~30ms en interior y generar motion blur OOD
         # del training distribution para personas en movimiento rápido.
-        if self.max_exposure_us is not None:
-            initial_controls = {
-                "FrameDurationLimits": (self.max_exposure_us, self.max_exposure_us),
-            }
-        else:
-            initial_controls = {"FrameRate": self.fps}
-        for cam, name in [
-            (self._cam_left, "left"),
-            (self._cam_right, "right"),
-        ]:
+        # Controls por cámara. Cuando el sync está activo, cada cámara recibe su
+        # rol y el techo de FrameDuration se ensancha para que el sync tenga
+        # margen de ajuste. La cámara IZQUIERDA es el Server (la "principal" del
+        # par); la DERECHA es el Client que ajusta su timing para seguirla. Sin
+        # sync ambas reciben el mismo dict y corren libres (comportamiento hist.).
+        sync_modes: dict[str, Any] = {}
+        _client_mode = None
+        if self.camera_sync:
+            try:
+                from libcamera import controls as _libcam_controls
+
+                _client_mode = _libcam_controls.rpi.SyncModeEnum.Client
+                sync_modes = {
+                    "left": _libcam_controls.rpi.SyncModeEnum.Server,
+                    "right": _libcam_controls.rpi.SyncModeEnum.Client,
+                }
+            except (ImportError, AttributeError) as e:
+                logger.warning(
+                    "camera_sync_unavailable",
+                    extra={"error": str(e)},
+                )
+                self.camera_sync = False
+
+        # Orden de arranque: el Client debe arrancar ANTES que el Server — espera
+        # quieto hasta que el Server le marca el ritmo. Ordenamos por rol (Client
+        # primero) en vez de hardcodear izq/der, así sobrevive un cambio de rol.
+        cam_order = [(self._cam_left, "left"), (self._cam_right, "right")]
+        if self.camera_sync:
+            cam_order.sort(
+                key=lambda cn: 0 if sync_modes.get(cn[1]) == _client_mode else 1
+            )
+        for cam, name in cam_order:
+            initial_controls = _build_camera_controls(
+                self.max_exposure_us, self.fps, sync_modes.get(name)
+            )
             # Formato "RGB888": en los builds de RPi OS Trixie / libcamera con
             # los que shippeamos, los nombres de formato de picamera2 están
             # invertidos empíricamente — "BGR888" entrega RGB y "RGB888"
@@ -193,13 +351,29 @@ class StereoCapture:
             # Verificado en hardware 2026-06-09: diff medio 1.77 (ruido de AE
             # entre capturas) contra el output del pipeline anterior
             # (BGR888 + cvtColor), con los means por canal espejados exactos.
-            config = cam.create_still_configuration(
+            # El sync de cámaras requiere config de VIDEO: con
+            # create_still_configuration el IPA de sync NO ajusta el frame
+            # timing y las cámaras quedan ~un período de frame desfasadas
+            # (validado en HW: still→~18ms estancado; video→converge a ~17µs
+            # en ~12s y queda lockeado; preview converge pero oscila). Sin
+            # sync se mantiene still configuration (comportamiento histórico).
+            make_config = (
+                cam.create_video_configuration
+                if self.camera_sync
+                else cam.create_still_configuration
+            )
+            config = make_config(
                 main={"size": (w, h), "format": "RGB888"},
                 raw={"size": self.sensor_raw_size},
                 controls=initial_controls,
             )
             cam.configure(config)
             cam.start()
+
+        # Sync: fijar el FrameRate alcanzable (piso del sensor + margen) ahora
+        # que las cámaras están corriendo y camera_controls refleja el modo real.
+        if self.camera_sync:
+            apply_sync_framerate((self._cam_left, self._cam_right))
 
         # Setea el modo de AE metering antes del settle, así la exposición
         # lockeada refleja el weighting elegido (matrix/centre/spot).
@@ -241,6 +415,16 @@ class StereoCapture:
             max_workers=2, thread_name_prefix="stereo-cap"
         )
 
+        # Sync de cámaras: hacerlo CONVERGER ahora, ANTES de arrancar el
+        # productor continuo. El IPA de sync hace su ajuste inicial de fase sólo
+        # si el dequeue tiene GAPS — la captura continua sin pausas del productor
+        # lo IMPIDE (validado en HW: continuo desde frame 1 → estancado ~18ms).
+        # Una vez convergido con gaps, el productor continuo lo MANTIENE (holdea
+        # a ~20-40µs). Por eso esta fase bloquea ~8-15s al arranque, sólo con
+        # sync activo (cold-start sigue < 90s). Solo en el runtime (async).
+        if self.camera_sync and self.async_capture:
+            self._converge_sync()
+
         logger.info(
             "stereo_capture_opened",
             extra={
@@ -250,6 +434,37 @@ class StereoCapture:
                 "fps": self.fps,
             },
         )
+
+    def _converge_sync(self, timeout_s: float = 25.0, gap_s: float = 3.0) -> None:
+        """Hace converger el sync de cámaras ANTES de arrancar el productor.
+
+        Captura pares en bursts con GAPS (``gap_s``) — el IPA de sync necesita
+        pausas en el dequeue para su ajuste inicial de fase; la captura continua
+        lo impide. Corta apenas el desfase baja de 1ms (típico ~8-12s) o al
+        ``timeout_s``. El delta queda en ``_last_sync_delta_us`` y se loguea
+        (mensaje, no extra: el formatter JSON del proyecto no serializa extra)."""
+        import time as _time
+
+        if self._executor is None:
+            return
+        deadline = _time.monotonic() + timeout_s
+        delta = None
+        while _time.monotonic() < deadline:
+            for _ in range(8):
+                try:
+                    _, _, tl, tr, _, _ = self._capture_pair_with_metadata()
+                except Exception:  # noqa: BLE001 - best-effort, no romper open()
+                    return
+                if tl and tr:
+                    delta = abs(tl - tr) / 1000.0
+            if delta is not None and delta < 1000.0:
+                break
+            _time.sleep(gap_s)
+        self._last_sync_delta_us = delta
+        if delta is not None:
+            logger.info("camera_sync_converged delta_us=%.1f", delta)
+        else:
+            logger.warning("camera_sync_no_samples")
 
     def _lock_ae_to_current_metadata(self, event: str = "lock") -> None:
         """Lockea AE/AWB en cada cámara con el snapshot actual de metadata.
@@ -479,6 +694,8 @@ class StereoCapture:
                 )
                 self._cam_l_last_ts = ts_l
                 self._cam_r_last_ts = ts_r
+                if self.camera_sync and ts_l and ts_r:
+                    self._last_sync_delta_us = abs(ts_l - ts_r) / 1000.0
                 self._stream_slot = pair
                 self._stream_error = None
             self._slot_ready.set()

@@ -47,7 +47,7 @@ from src.tracking.counter import (
 )
 from src.tracking.tracker import EuclideanTracker, Track, stationary_track_ids
 from src.vision.calibration import load_calibration, rectify_one
-from src.vision.capture import FileCapture, StereoCapture
+from src.vision.capture import FileCapture, StereoCapture, camera_sync_enabled
 from src.vision.depth import (
     compute_disparity,
     create_sgbm,
@@ -375,6 +375,10 @@ def build_capture(config: dict[str, Any], replay_dir: str | None = None):
             # Captura async (thread productor) — saca los ~22ms de captura
             # del critical path. Default True; setear false como fallback.
             async_capture=vision_cfg.get("async_capture", True),
+            # Sync de cámaras por software (libcamera SyncMode): alinea los
+            # frames L/R a ~decenas de µs sin cableado. Default off. Mismo
+            # helper que usan los setup tools → fuente única de verdad.
+            camera_sync=camera_sync_enabled(config),
         )
         if raw_size is not None:
             capture_kwargs["sensor_raw_size"] = tuple(raw_size)

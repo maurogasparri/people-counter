@@ -105,6 +105,27 @@ vision:
                                     # lectura bloqueante clásica (fallback si
                                     # el thread diera problemas).
 
+  camera_sync:                      # Sync de frames L/R por SOFTWARE (libcamera
+                                    # SyncMode) — sin cableado. La cámara izq
+                                    # corre como Client y sigue a la der (Server).
+    enabled: true                   # Default ON fleet-wide. Con las 2× IMX708
+                                    # libres, su fase deriva: ~88% de pares L/R
+                                    # caen <5ms pero ~12% hasta ~un período de
+                                    # frame (~19ms). Activado, alinea ambas a
+                                    # ~40µs (validado HW 2026-06-21, 100% <1ms,
+                                    # p95 50µs). Apagar (false) sólo si un site
+                                    # da problemas. Mejora la
+                                    # profundidad/estatura en sujetos en movimiento
+                                    # (el conteo usa centroide 2D, no se afecta).
+                                    # Feature de RUNTIME (+ calibrate sweep + preview).
+                                    # capture.py usa config de VIDEO + FrameRate del
+                                    # piso del sensor + una fase de convergencia con
+                                    # gaps (~10s, bloqueante) ANTES del productor
+                                    # continuo — el IPA sólo hace el ajuste inicial
+                                    # con gaps; luego el productor lo mantiene a
+                                    # ~20-40µs. Cold-start ~+10s; loguea
+                                    # camera_sync_converged. Ver gotchas en CLAUDE.md.
+
   # --- Semi-Global Block Matching ---
   sgbm:
     num_disparities: auto           # "auto" deriva de mounting_height_m +

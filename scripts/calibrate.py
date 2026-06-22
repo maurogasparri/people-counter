@@ -82,6 +82,16 @@ def _resolve_aruco_dict(name: str) -> int:
     return getattr(cv2.aruco, dict_attr)
 
 
+def _camera_sync_from_config() -> bool:
+    """Lee ``vision.camera_sync.enabled`` del config per-device (default False).
+
+    Tolerante (workstation de dev sin config → False). Delega en el helper
+    compartido de ``capture`` para tener una sola fuente de verdad del flag."""
+    from src.vision.capture import camera_sync_enabled_default
+
+    return camera_sync_enabled_default()
+
+
 # Hardware params canónicos del device — leídos al main(). Inicializado
 # con fleet defaults para que las funciones top-level + argparse defaults
 # tengan valores razonables durante import.
@@ -1338,6 +1348,7 @@ def _run_guided_capture(args: argparse.Namespace) -> None:
         sensor_raw_size=HW.default_res,
         initial_settle_seconds=HW.ae_initial_settle_seconds,
         resettle_seconds=HW.ae_resettle_seconds,
+        camera_sync=_camera_sync_from_config(),
     )
     cap.open()
 
@@ -2378,6 +2389,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
         sensor_raw_size=HW.default_res,
         initial_settle_seconds=HW.ae_initial_settle_seconds,
         resettle_seconds=HW.ae_resettle_seconds,
+        camera_sync=_camera_sync_from_config(),
     )
     cap.open()
 
@@ -2906,6 +2918,7 @@ def _run_ground_truth_phase(
         sensor_raw_size=HW.default_res,
         initial_settle_seconds=HW.ae_initial_settle_seconds,
         resettle_seconds=HW.ae_resettle_seconds,
+        camera_sync=_camera_sync_from_config(),
     )
     try:
         cap.open()
@@ -3308,6 +3321,7 @@ def _run_sweep_capture(args: argparse.Namespace) -> None:
         sensor_raw_size=HW.default_res,
         initial_settle_seconds=HW.ae_initial_settle_seconds,
         resettle_seconds=HW.ae_resettle_seconds,
+        camera_sync=_camera_sync_from_config(),
     )
     cap.open()
 

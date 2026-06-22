@@ -424,19 +424,66 @@ def main() -> None:
     w, h = args.resolution
     max_exp = int(args.max_exposure_us) if args.max_exposure_us > 0 else None
     initial_controls = {"FrameDurationLimits": (max_exp, max_exp)} if max_exp else {}
-    for cam in [cam_l, cam_r]:
+    # Sync de cámaras por software (mismo flag de config que el runtime): alinea
+    # los paneles L|R al mismo instante. left=Client (arranca primero) sigue a
+    # right=Server. El sync EXIGE config de video + FrameRate fijo (un rango en
+    # FrameDurationLimits tira el error "variable framerate"; still no sincroniza).
+    from src.vision.capture import (
+        _build_camera_controls,
+        apply_sync_framerate,
+        camera_sync_enabled,
+        camera_sync_enabled_default,
+        converge_camera_sync,
+    )
+
+    sync = (
+        camera_sync_enabled(runtime_cfg)
+        if runtime_cfg
+        else camera_sync_enabled_default()
+    )
+    sync_modes = (
+        {
+            "left": _libcam_controls.rpi.SyncModeEnum.Server,
+            "right": _libcam_controls.rpi.SyncModeEnum.Client,
+        }
+        if sync
+        else {}
+    )
+    # izq=Server (principal), der=Client. El Client arranca primero (espera al
+    # Server), así que con sync iteramos der→izq.
+    cam_loop = (
+        [(cam_r, "right"), (cam_l, "left")]
+        if sync
+        else [(cam_l, "left"), (cam_r, "right")]
+    )
+    for cam, side in cam_loop:
         # raw FIJO en el sensor mode canónico del device (sensor.default_res
         # del config). Anclar el mode evita que picamera2 elija Mode 0
         # cropeado del IMX708 (HFOV efectivo ~80° en lugar de 120°).
         # "RGB888" entrega BGR directo (nombres de formato invertidos en
         # picamera2/Trixie — ver src/vision/capture.py); sin cvtColor.
-        config = cam.create_still_configuration(
+        if sync:
+            cam_controls = _build_camera_controls(
+                max_exp, getattr(args, "fps", 15), sync_modes[side]
+            )
+            make_config = cam.create_video_configuration
+        else:
+            cam_controls = initial_controls
+            make_config = cam.create_still_configuration
+        config = make_config(
             main={"size": (w, h), "format": "RGB888"},
             raw={"size": hw.default_res},
-            controls=initial_controls,
+            controls=cam_controls,
         )
         cam.configure(config)
         cam.start()
+
+    if sync:
+        apply_sync_framerate((cam_l, cam_r))
+        # Converger ANTES de empezar a streamear: el IPA necesita gaps en el
+        # dequeue para el ajuste inicial de fase (el stream continuo lo impide;
+        # una vez convergido, se mantiene). Bloquea ~10s al arrancar el preview.
+        converge_camera_sync(cam_l, cam_r)
 
     if args.meter != "matrix":
         meter_map = {

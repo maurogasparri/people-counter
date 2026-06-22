@@ -1653,6 +1653,9 @@ def main() -> None:
     # Anclar el mode evita que picamera2 caiga al Mode 0 cropeado del
     # IMX708 que reduce el HFOV a ~80°.
     raw_size = HW.default_res
+    # Sin sync de cámaras: el foco evalúa nitidez por lente, no depende de la
+    # simultaneidad L/R. El sync (libcamera SyncMode) es runtime-only — necesita
+    # una fase de convergencia con gaps incompatible con un tool manual.
     for cam in [cam_l, cam_r]:
         # Formato "RGB888": en los builds de RPi OS Trixie con los que
         # shippeamos, los nombres de formato de picamera2 están invertidos —
