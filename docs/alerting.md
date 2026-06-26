@@ -162,20 +162,12 @@ group_wait: 30s
 group_interval: 5m
 ```
 
-## Costos
-
-- **SES sandbox**: gratis hasta 62.000 emails/mes desde EC2 (no aplica
-  estrictamente a Fargate pero AWS lo cubre en el free tier de SES).
-- **Secrets Manager**: $0.40/mes por secret + $0.05 por 10k API calls.
-  Con 1 secret + restart ocasional → < $0.50/mes.
-- **IAM User + AccessKey**: gratis.
-
-Costo agregado del alerting al stack: **<$1/mes** mientras estamos en
-sandbox + bajo volumen.
-
 ## Histórico
 
 - **2026-05-25** — Setup inicial. SES sandbox, dominio verificado vía
   DKIM, IAM user dedicado, smtpPassword derivado offline. Contact point
-  manual en UI; provisioning YAML pendiente para cuando se agreguen más
-  reglas y queramos IaC pura.
+  email configurado en la org.
+- **Cierre** — Las 12 reglas de alerta quedaron versionadas en
+  `infra/grafana/alerting/alert-rules.json` y se provisionan como código
+  (idempotente) vía `import_alerts.ps1`, que `deploy.ps1` invoca
+  automáticamente en su Phase 6.

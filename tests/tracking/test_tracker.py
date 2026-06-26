@@ -102,6 +102,33 @@ def test_pass2_ambiguous_detection_does_not_spawn_duplicate():
     assert len(tracker._tracks) == 2
 
 
+def test_ambiguous_reject_count_canary():
+    """Canary de observabilidad (TC-03): el ratio test post-Hungarian
+    incrementa ``ambiguous_reject_count`` cuando descarta un match ambiguo
+    (típico de cruces simultáneos en sentidos opuestos disputando detecciones
+    sobre la línea). Es DIARIO — ``reset_daily`` lo vuelve a cero, como
+    ``adoption_count``. NO cambia comportamiento; solo mide la presión de
+    convergencia en producción para cuantificar el sub-conteo bidireccional."""
+    tracker = EuclideanTracker(
+        max_distance=50,
+        max_disappeared=10,
+        confirm_frames=2,
+        reid_gate_px=200.0,
+        ambiguous_match_ratio=0.8,
+    )
+    assert tracker.ambiguous_reject_count == 0
+    for _ in range(2):
+        tracker.update(
+            [np.array([100.0, 100.0, 3000.0]), np.array([120.0, 100.0, 3000.0])]
+        )
+    # Detección equidistante de ambos tracks → rechazo por ambigüedad.
+    tracker.update([np.array([110.0, 180.0, 3000.0])])
+    assert tracker.ambiguous_reject_count > 0
+    # Canary diario → reset_daily lo limpia.
+    tracker.reset_daily()
+    assert tracker.ambiguous_reject_count == 0
+
+
 def test_register_new_tracks():
     tracker = EuclideanTracker()
     dets = [np.array([100, 200, 3000]), np.array([300, 200, 3000])]
@@ -400,7 +427,7 @@ def test_keepalive_counting_zone_does_not_protect_kalman_only_entry():
     extrapolación Kalman (nunca completa una entry-fresca real) NO califica
     para keepalive. Muere normal por timeout pese a estar dentro.
 
-    Modela el caso del piloto donde la campera flickeando generaba detecciones
+    Modela el caso hallado en la validación en las instalaciones donde la campera flickeando generaba detecciones
     intermitentes que el counter rechazaba con ``entry_kalman_skipped``;
     sin este gate, el track persistía indefinidamente por keepalive + ghost
     adoption, generando ruido visual constante.
@@ -597,7 +624,7 @@ def test_ghost_adoption_preserves_id_after_lost():
 
 
 def test_ghost_adoption_invalidates_far_outside_pos():
-    """Regresión del FP observado en piloto 2026-05-24 09:15-09:18 (tid=20).
+    """Regresión del FP observado en la validación en las instalaciones 2026-05-24 09:15-09:18 (tid=20).
 
     Escenario: track muere por Kalman exit con ``last_outside_pos`` lejano
     (extrapolación alucinada, ej. ghost extrapoló a (375, 140) cuando su

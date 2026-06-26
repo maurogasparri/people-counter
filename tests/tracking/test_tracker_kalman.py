@@ -366,7 +366,7 @@ def test_track_id_cycles_mod_max():
     """Con ``max_track_id`` pequeño, los IDs ciclan en lugar de crecer
     monotónicamente — IDs de 0..max-1 se reusan después de que los
     tracks viejos mueren. Garantiza el bound en runs largos (12h/día
-    × 363 días) y evita IDs growing-without-bound."""
+    × 365 días) y evita IDs growing-without-bound."""
     tracker = EuclideanTracker(
         max_distance=200,
         confirm_frames=1,

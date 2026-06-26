@@ -769,7 +769,18 @@ def _auto_num_disparities(
     # estimado solo necesita ser suficiente para dimensionar el rango de
     # búsqueda del SGBM.
     f_px = nominal_focal_full_px * runtime_w / full_w
-    head_max_m = 1.85  # cabeza adulta más alta
+    # head_max_m = tope del gate antropométrico (head_depth.max_head_height_m) +
+    # 5cm de margen, así num_disparities SIEMPRE cubre la banda que el gate
+    # acepta. Antes era 1.85 fijo → si se subía el gate (mounts bajos donde se
+    # quiere medir gente alta) la disparidad no llegaba y la cabeza caía fuera de
+    # rango. Acopla el rango de búsqueda SGBM al gate (default: idéntico al previo).
+    _hd_cfg = config.get("head_depth", {}) or {}
+    _mh = _hd_cfg.get("max_head_height_m", "auto")
+    if isinstance(_mh, str) and _mh.strip().lower() == "auto":
+        gate_max_m = min(1.80, mount_m - 0.30) if mount_m > 0 else 1.80
+    else:
+        gate_max_m = float(_mh)
+    head_max_m = gate_max_m + 0.05  # cabeza adulta más alta cubierta por el gate
     floor_margin_m = 0.5  # un poco más allá del piso así SGBM cubre todo el bg
 
     z_min = max(0.3, mount_m - head_max_m)
@@ -824,7 +835,11 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     health_monitor: HealthMonitor | None = None
     if bool(status_cfg.get("enabled", True)):
         status_led = StatusLED()
-        health_monitor = HealthMonitor(led=status_led, signals=health_signals)
+        health_monitor = HealthMonitor(
+            led=status_led,
+            signals=health_signals,
+            cpu_temp_critical_c=float(status_cfg.get("cpu_temp_critical_c", 80.0)),
+        )
         health_monitor.start()
     # Registrar para el path de crash de init de main() (HARDWARE_FAULT en rojo).
     _INIT_HEALTH["signals"] = health_signals
@@ -929,6 +944,17 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     sgbm = create_sgbm(
         num_disparities=sgbm_num_disp,
         block_size=int(sgbm_cfg["block_size"]),
+        # Knobs de matching cableados al config (default = el de depth.py). Tunear
+        # estos NO afecta el conteo (centroide 2D) — solo la profundidad/estatura.
+        # Útil para atacar la compresión de estatura (ver L1): subir uniqueness
+        # rechaza matches ambiguos del borde de la cabeza (edge-bleed near-camera).
+        p1_factor=int(sgbm_cfg.get("p1_factor", 12)),
+        p2_factor=int(sgbm_cfg.get("p2_factor", 96)),
+        uniqueness_ratio=int(sgbm_cfg.get("uniqueness_ratio", 5)),
+        speckle_window_size=int(sgbm_cfg.get("speckle_window_size", 150)),
+        speckle_range=int(sgbm_cfg.get("speckle_range", 16)),
+        disp12_max_diff=int(sgbm_cfg.get("disp12_max_diff", 2)),
+        pre_filter_cap=int(sgbm_cfg.get("pre_filter_cap", 63)),
     )
     # WLS post-filter (defense-in-depth contra holes en bordes de
     # disparity). Rellena los pixels donde el matcher derecho discrepa
@@ -1079,7 +1105,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     # tracker. Reduce FPs estructurales en sites con clutter intenso
     # (percheros, mostradores, vidrieras con tráfico exterior) sin tocar
     # la counting_zone del counter. Opt-in per-site (default desactivado
-    # para back-compat). Análogo a la TrackingZone del incumbent FFC.
+    # para back-compat). Análogo al concepto de "tracking zone" de sistemas de conteo comerciales.
     # Ver src/vision/pre_filter.py + docs/tracker_tuning.md patrón 6.
     #
     # Tres modos de definición del polígono, mutuamente exclusivos
@@ -1720,6 +1746,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
                     counter.death_emit_count if counter is not None else 0
                 )
                 telem["ghost_adoption_count"] = tracker.adoption_count
+                # Canary de "presión de convergencia" (ver TC-03 en
+                # docs/benchmark_results): rechazos por ambigüedad del tracker,
+                # típicos de cruces simultáneos en sentidos opuestos. Persiste a
+                # RDS vía la columna `ambiguous_reject_count` de la tabla
+                # telemetry (mapeada en persist_event._insert_telemetry) y se
+                # grafica en el panel de salud de la flota.
+                telem["ambiguous_reject_count"] = tracker.ambiguous_reject_count
                 # Canary del Device Shadow — None si nunca llegó un delta
                 # post-boot. La Lambda persist_event lo mapea a la columna
                 # last_shadow_apply_ts (TIMESTAMPTZ, NULLABLE) en RDS.

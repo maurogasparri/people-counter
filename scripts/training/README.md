@@ -98,9 +98,9 @@ cajas — la raíz de por qué la 2da ronda de AL no aportó. (Conteos exactos d
 los datasets reales `people-counter-yolo-v{3,4,5}` en Kaggle.)
 
 **Fuente de las métricas**: `results.csv` + eval final del notebook
-Kaggle (`m.val(split="test")` sobre el val held-out). Logs originales
-en `debug/kaggle_kernel/output/people-counter-v{3,4,5}-train.log`
-(nombres legacy de los runs Kaggle, mapean a v1/v2/v3 nuevo).
+Kaggle (`m.val(split="test")` sobre el val held-out). Logs de los runs
+de Kaggle: `people-counter-v{3,4,5}-train.log` (nombres legacy que
+mapean a v1/v2/v3 nuevo).
 
 ### Lecciones del proceso (citables para TFG)
 

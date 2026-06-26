@@ -8,7 +8,7 @@ cross-platform y ya instalado en cualquier workstation que provisione un
 device (``pip install '.[provisioning]'``).
 
 ⚠ **NO es idempotente para data**: ``bootstrap.sql`` hace ``DROP TABLE IF
-EXISTS`` de las tablas de hechos (``count_events``, ``wifi_ble_summary``,
+EXISTS`` de las tablas de hechos (``count_events``, ``wifi_ble_events``,
 ``telemetry``, ``pos_transactions``). Re-correr este script BORRA esa data.
 Las tablas de dimensiones (``sites``, ``devices``) usan ``CREATE TABLE IF NOT
 EXISTS`` y se preservan. Para migraciones aditivas sobre prod, usar archivos

@@ -209,7 +209,7 @@ header radiotap aunque tcpdump los rotule raro).
 
 Sin estos tres pasos el WiFi queda `soft-blocked` por rfkill en el boot y el
 monitor mode nunca arranca (`ip link set wlan0 up` → *"Operation not possible
-due to RF-kill"*). Descubiertos en el bring-up del piloto:
+due to RF-kill"*). Descubiertos en el bring-up en las instalaciones:
 
 ```bash
 # 1. udev rule — EL FIX CLAVE. El pipeline (people-counter.service) corre como
@@ -301,11 +301,18 @@ sudo cp /usr/src/people-counter/config/wifi-monitor.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/people-counter.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/people-counter-reset.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/people-counter-reset.timer /etc/systemd/system/
+sudo cp /usr/src/people-counter/config/cpu-freq-cap.service /etc/systemd/system/
 sudo cp /usr/src/people-counter/config/logrotate.conf /etc/logrotate.d/people-counter
 
 sudo systemctl daemon-reload
-sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer
+sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer cpu-freq-cap
 ```
+
+`cpu-freq-cap` capa el CPU a 1500 MHz (margen térmico para el gabinete cerrado,
+sin costo de FPS por ser el pipeline Hailo-bound). Es parte del deploy estándar;
+en un mount muy ventilado es innecesario y se puede deshabilitar con
+`sudo systemctl disable --now cpu-freq-cap`. En gabinete cerrado el steady-state
+ronda ~80-82 °C, así que conviene `status_led.cpu_temp_critical_c: 85` en el config.
 
 ## 11. Verificar todo
 

@@ -2,8 +2,8 @@
 
 Documento de soporte para la elección **Raspberry Pi 5 2GB** sobre las
 variantes de 4GB / 8GB. La decisión es empírica: se midió el consumo real
-del pipeline en piloto, se le aplicó un stress test agresivo simulando el
-ambiente de 2GB, y se proyectó el costo por flota.
+del pipeline en operación sobre la unidad de desarrollo, se le aplicó un stress
+test agresivo simulando el ambiente de 2GB, y se evaluó la elección a escala de flota.
 
 Cubre dos dimensiones de "consumo": **RAM** (working set, secciones de abajo
 hasta los guardrails) y **energía eléctrica** (sección [Consumo
@@ -18,12 +18,11 @@ eléctrico](#consumo-eléctrico)).
 | Headroom en Pi 5 2GB | ~1.2 GB libres |
 | Tocó swap durante stress | **0 KB** escritos (`vmstat si=so=0`) |
 | OOM events durante stress | 0 |
-| Ahorro vs Pi 5 4GB | ~USD 10 / device |
 | Decisión | **Pi 5 2GB** |
 
 ## Medición en operación normal
 
-Pi 5 piloto corriendo el pipeline completo (visión + WiFi/BLE + MQTT +
+Pi 5 (unidad de desarrollo) corriendo el pipeline completo (visión + WiFi/BLE + MQTT +
 status LED + preview web), 7h de uptime sostenido a las 10:30 ART del
 2026-05-25:
 
@@ -46,7 +45,7 @@ Top procesos por RSS:
 
 ## Stress test agresivo
 
-Para validar 2GB sin esperar el piloto natural, se simuló el ambiente
+Para validar 2GB sin esperar la operación sostenida natural, se simuló el ambiente
 Pi 5 2GB en el hardware de 8GB físico:
 
 **Setup**:
@@ -90,12 +89,11 @@ Pi 5 2GB en el hardware de 8GB físico:
 
 | Argumento para 2GB | Argumento para 4GB+ |
 |---|---|
-| Working set real ≈ 14% de 2 GB → headroom holgado | Margen para features futuras (multi-cam, sparse stereo, ML on-device extra) |
-| Cero swap activity bajo stress sintético + 7h piloto | Si en producción aparece un corner case raro de leak / spike, 4GB lo absorbe |
-| ~USD 10 / device de ahorro | 2-3% del costo total del kit (~USD 350) — no mueve la aguja |
+| Working set real ≈ 14% de 2 GB → headroom holgado | Margen para features futuras (sparse stereo, ML on-device extra) |
+| Cero swap activity bajo stress sintético + 7h de operación sostenida | Si en producción aparece un corner case raro de leak / spike, 4GB lo absorbe |
 | Demuestra dimensionamiento riguroso para defender el TFG | Más simple operacionalmente (no requiere knobs ni cgroup caps) |
 
-**Cuándo reconsiderar 4GB**: si en piloto sostenido (24-48h, horario operativo
+**Cuándo reconsiderar 4GB**: si en operación sostenida (24-48h, horario operativo
 con tráfico real de WiFi/BLE de un mall lleno) se observa cualquier de:
 
 - `service.memory.peak > 1 GB` (cap `MemoryHigh`).
@@ -201,7 +199,7 @@ pipeline** (2.2 → 6 W, ~3.8 W).
    tira lo mismo corra quien corra.
 2. **La PoE HAT (G) 25.5 W tiene amplísimo margen**: pico del device ~10 W
    output / ~11-12 W de pared, ~45% del presupuesto PoE. Holgado para los
-   363 días × 12 h.
+   365 días × 12 h.
 
 **Gotchas de medición**:
 
@@ -231,7 +229,7 @@ python3 scripts/measure_power.py --duration 0 --csv power_monitor.csv
 
 Este documento es sobre el device edge. Un apunte aparte para el otro lado del
 pipeline: el **RDS Postgres del PoC es `db.t4g.micro` (1 GB RAM)**. Dimensiona
-bien para el **ingest streaming** del piloto (eventos de conteo en tiempo real
+bien para el **ingest streaming** del PoC (eventos de conteo en tiempo real
 + resúmenes WiFi/BLE cada 15 min + telemetría cada 5 min — carga baja y
 constante).
 
@@ -249,10 +247,10 @@ RDS, no es el sizing del edge — es esto.
 
 ## Histórico de la decisión
 
-- **2026-05-25 10:30 ART**: snapshot piloto, working set 290 MB sostenido,
+- **2026-05-25 10:30 ART**: snapshot de la unidad de desarrollo, working set 290 MB sostenido,
   0 swap usage en 7 días.
 - **2026-05-25 11:00 ART**: aplicados los 3 guardrails (memory caps + sysctl
-  + mask audio). Verificado en piloto.
+  + mask audio). Verificado en operación sostenida.
 - **2026-05-25 11:30 ART**: stress test agresivo de 5 min con balloon 6GB
   + 16 streams MJPEG + 8 loopers /health + CPU stressor. Peak del service:
   281 MB. Cero throttles, cero swap escrito, cero OOM.

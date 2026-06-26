@@ -268,7 +268,7 @@ class EuclideanTracker:
         self.ambiguous_match_ratio = float(ambiguous_match_ratio)
         # Bound de los track IDs — los IDs ciclan módulo este valor.
         # Default 65536 (16-bit) es holgadísimo para un device: a 1000
-        # tracks/día × 363 días sigue cabiendo en menos de 6 ciclos/año
+        # tracks/día × 365 días sigue cabiendo en menos de 6 ciclos/año
         # y como tracks vivos simultáneos son ~10 max, las colisiones
         # son prácticamente imposibles. Sirve para (a) UX en el viewer
         # (IDs de 5 dígitos vs growth ilimitado de 7-8 dígitos en runs
@@ -307,7 +307,7 @@ class EuclideanTracker:
         # del ghost → continuidad de identidad cross-gap-de-detección. Cubre
         # el caso "detector pierde N frames, persona reaparece, sin esto se
         # spawnea un track nuevo y se perdía la continuidad del cruce".
-        # Defaults conservadores: IoU 0.3 (no booleano como FFC para evitar
+        # Defaults conservadores: IoU 0.3 (no booleano, para evitar
         # ID-swap entre personas adyacentes), dist 100px (no teleports), 30
         # frames de ventana (~1.5s @ 20fps).
         self.adoption_window_frames = max(0, int(adoption_window_frames))
@@ -322,7 +322,7 @@ class EuclideanTracker:
         # cascade. Threshold más laxo que ``adoption_max_dist_px`` porque
         # outside_pos es del exit observado (puede estar legítimamente lejos
         # del último centroide), pero no debería estar a >150 px del nuevo
-        # centroide del adoptante. Caso real piloto 2026-05-24 09:15-09:18
+        # centroide del adoptante. Caso real hallado en la validación en las instalaciones 2026-05-24 09:15-09:18
         # (tid=20 FP de 1 ingress).
         self.ghost_outside_invalidate_px = max(0.0, float(ghost_outside_invalidate_px))
         self._next_id = 0
@@ -340,6 +340,15 @@ class EuclideanTracker:
         #   >1.3            | 0        | 0          | FRAGMENTACIÓN SIN RESCATE (alarma)
         #   >1.3            | >0       | >0         | tracker flakey, dependés de los rescates
         self._adoption_count: int = 0
+        # Contador acumulativo de rechazos por ambigüedad (canary de
+        # telemetría). El ratio test post-Hungarian descarta un match cuando
+        # el 2do-mejor está dentro del ratio — típico de CONVERGENCIA: dos
+        # personas cruzándose en sentidos opuestos sobre la línea disputan las
+        # mismas detecciones. NO cambia comportamiento; solo mide la "presión
+        # de ambigüedad" en producción para cuantificar el sub-conteo de
+        # cruces simultáneos bidireccionales (ver docs/benchmark_results y
+        # TC-03). Reset diario vía reset_daily.
+        self._ambiguous_reject_count: int = 0
 
     @property
     def tracks(self) -> dict[int, Track]:
@@ -351,6 +360,16 @@ class EuclideanTracker:
         el rollover de medianoche vía ``reset_daily``). Telemetría 5-min
         captura snapshot — Grafana muestra la tasa."""
         return self._adoption_count
+
+    @property
+    def ambiguous_reject_count(self) -> int:
+        """Rechazos por ambigüedad del ratio test post-Hungarian en el día
+        (reset en el rollover vía ``reset_daily``). Señal de "presión de
+        convergencia": sube cuando dos tracks se disputan detecciones sobre la
+        línea (cruces simultáneos en sentidos opuestos). Cuantifica en
+        producción el sub-conteo bidireccional documentado en TC-03 — NO es un
+        fix, es observabilidad. Telemetría 5-min toma snapshot."""
+        return self._ambiguous_reject_count
 
     @property
     def ghost_count(self) -> int:
@@ -365,7 +384,8 @@ class EuclideanTracker:
         return len(self._ghosts)
 
     def reset_daily(self) -> None:
-        """Resetea los canaries diarios del tracker (hoy: adoption_count).
+        """Resetea los canaries diarios del tracker (adoption_count +
+        ambiguous_reject_count).
 
         Lo llama main.py en el rollover de medianoche, junto con
         ``Counter.reset_daily()``. Los 3 canaries del árbol diagnóstico
@@ -375,6 +395,7 @@ class EuclideanTracker:
         contra dos diarios, distorsionando el diagnóstico.
         """
         self._adoption_count = 0
+        self._ambiguous_reject_count = 0
 
     def count_by_state(self) -> dict[str, int]:
         """Devuelve un count de los tracks vivos agrupados por estado.
@@ -872,6 +893,7 @@ class EuclideanTracker:
                 if not ambiguous and second_col < INF / 2 and best > ratio * second_col:
                     ambiguous = True
                 if ambiguous:
+                    self._ambiguous_reject_count += 1
                     consumed_d.add(c)
                     continue
 
@@ -1175,7 +1197,7 @@ class EuclideanTracker:
            tracks que SOLO entraron via Kalman (``entry_kalman_skipped`` log)
            NO califican — el detector flickea sobre clutter estructural
            generando inputs ruidosos, no merecen el rescue de keepalive.
-           Caso piloto 2026-05-24: campera flickeando en silla, tid=9
+           Caso hallado en la validación en las instalaciones 2026-05-24: campera flickeando en silla, tid=9
            reaparecía cada 2-30s con detecciones reales aisladas pero nunca
            completaba una visita real. Sin este gate, el track persistía
            indefinidamente vía keepalive + ghost adoption.

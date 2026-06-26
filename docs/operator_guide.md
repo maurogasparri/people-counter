@@ -336,15 +336,16 @@ comando de arriba no imprima nada.
 sudo systemctl enable --now wifi-monitor
 sudo systemctl enable --now people-counter
 sudo systemctl enable --now people-counter-reset.timer
+sudo systemctl enable --now cpu-freq-cap   # freq-cap térmico (gabinete cerrado)
 ```
 
 Confirmar que están activos:
 
 ```bash
-systemctl is-active wifi-monitor people-counter people-counter-reset.timer
+systemctl is-active wifi-monitor people-counter people-counter-reset.timer cpu-freq-cap
 ```
 
-Las tres líneas deben responder `active`.
+Las cuatro líneas deben responder `active`.
 
 ### 3.6. Tail de logs
 

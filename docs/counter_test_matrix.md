@@ -10,7 +10,7 @@ cartesiano. Sirve para:
 - **Onboarding**: el próximo dev ve el shape del comportamiento + cómo lo
   ejercita la suite.
 - **Trazabilidad regulatoria**: "demostrá que el counter es correcto" se
-  responde con la matriz + ~1040 tests verde + canaries en flota.
+  responde con la matriz + 1084 tests verde (2 skipped) + canaries en flota.
 
 > **NO es exhaustivo combinatorio.** El producto teórico es ~86.000 celdas;
 > la mayoría son trivially equivalent (simetrías horizontal/vertical,

@@ -29,13 +29,14 @@ RPi5 ──MQTT/TLS──► IoT Core ──┬─► Rule "counting"   ─┐
   adentro del stack con DnsValidation, `cloudformation deploy` bloquea
   esperando que el operador agregue los CNAMEs — peor UX que pausar el
   script con un Read-Host explicito.
-- **Lambda fuera de VPC, IAM auth a RDS** — sin VPC connector ($7-14/mo de VPC
-  endpoints). La Lambda usa `rds.generate_db_auth_token` para autenticar como
+- **Lambda fuera de VPC, IAM auth a RDS** — sin VPC connector ni VPC endpoints.
+  La Lambda usa `rds.generate_db_auth_token` para autenticar como
   el DB user `lambda_writer` (sin password almacenado).
-- **Sin Lambda dedup L3** — innecesaria con 1 device/sucursal. El stitching
-  local del device (hash groups con 4 reglas: seqnum continuity + cross-protocol
-  L2 + BLE anchoring + fingerprint continuity) cubre monocam. Reintroducir
-  cuando haya 2+ cams por store.
+- **Sin Lambda de dedup en cloud** — innecesaria: el stitching local del device
+  (hash groups con 4 reglas: seqnum continuity + cross-protocol L2 + BLE
+  anchoring + fingerprint continuity) resuelve la dedup con 1 device/sucursal.
+  Para 2+ unidades por sucursal, la consolidación se resuelve por **agregación
+  MAX** en las vistas `wifi_ble_by_bucket_*` (sin coordinación entre dispositivos).
 - **Payload WiFi/BLE per-device** — el device manda un array `devices[]` (un
   evento por visitor post-stitching) con `rssi_max` crudo + `visitor_hash`
   opaco (UUID random); la categorización passerby/shopper se aplica server-side
@@ -97,9 +98,9 @@ Definidos en [`cloudformation/people-counter.yaml`](cloudformation/people-counte
 | Recurso | Proposito |
 |---|---|
 | `VPC` + 2 public subnets + IGW   | Red para RDS, ALB y tasks ECS (Lambda va fuera de VPC). |
-| `RdsInstance` (db.t4g.micro)     | Postgres 16.6, IAM auth + `rds.force_ssl=1` + `AutoMinorVersionUpgrade=true`, PubliclyAccessible para Lambda + DBeaver. |
+| `RdsInstance` (db.t4g.micro)     | Postgres 16, IAM auth + `rds.force_ssl=1` + `AutoMinorVersionUpgrade=true`, PubliclyAccessible para Lambda + DBeaver. |
 | `RdsMasterSecret`                | Password autogenerado en Secrets Manager (master user `people_counter`). |
-| `RdsSecurityGroup`               | 5432 abierto a `AdminCidr` (DBeaver) + `0.0.0.0/0` (Lambda + Fargate tasks) — TLS + IAM gatekeep. |
+| `RdsSecurityGroup`               | 5432 abierto a `0.0.0.0/0` (Lambda out-of-VPC con egress no fijo + DBeaver + Fargate tasks) — TLS + IAM gatekeep. |
 | `IoTDevicePolicy`                | Connect, publish a los 3 topics, subscribe al shadow propio. |
 | `IoTThingType`                   | `people-counter-${env}` con atributos `store_id`, `firmware_version`. |
 | `IoTTopicRule` x3                | Routing MQTT → Lambda. Error action → CloudWatch Logs. |
@@ -153,13 +154,13 @@ definiciones). El patrón es un **producto cartesiano** de las facts agregadas a
 - **`turn_in_rate_by_bucket_*`** / **`conversion_by_bucket_*`** — `turn_in_rate = ins / passersby`, `conversion = ins / shoppers` (FULL OUTER JOIN preserva buckets de una sola fuente).
 - **`occupancy_by_bucket_*`**, **`visit_duration_by_bucket_*`**, **`metrics_unified_by_bucket_*`** (uso interno de la Lambda), **`data_freshness_by_store`** (último `received_at` cross-fact por sucursal).
 
-**Capa de rollup** (migraciones en `sql/migrations/`): el crudo se agrega vía
+**Capa de rollup** (definida en `bootstrap.sql`): el crudo se agrega vía
 `refresh_rollups()` (incremental por watermark en `rollup_state`, disparada por
 `pg_cron` cada 5 min) a las tablas base `rollup_*`; las views `*_by_bucket_*` son
 un `UNION` del rollup (historia) + live-tail (el bucket abierto se calcula en
-vivo desde el raw, ≤5s de latencia). Las dos migraciones presentes —
-`2026-05-31_rollup_layer.sql` y `2026-05-31b_tz_aware_bucketing.sql` — todavía no
-están consolidadas en `bootstrap.sql`.
+vivo desde el raw, ≤5s de latencia). La capa de rollup ya está consolidada en
+`bootstrap.sql` (las migraciones que la introdujeron se squashearon tras
+aplicarse al PoC).
 
 ### DB users + auth
 
@@ -172,9 +173,11 @@ están consolidadas en `bootstrap.sql`.
 
 ## 4) Deploy
 
-Orchestrado por [`deploy.ps1`](deploy.ps1) en 5 fases con `-StartFromPhase`
-para resumir interrupciones. Tiene 2 pausas manuales (CNAMEs de validacion
-ACM + CNAME final al ALB).
+Orchestrado por [`deploy.ps1`](deploy.ps1) en 6 fases con `-StartFromPhase`
+para resumir interrupciones. Deja el stack configurado de punta a punta: infra
+(CFN) + imagen Grafana + el código real de las 3 Lambdas + Grafana con
+datasource, tableros y alert rules. Las únicas pausas manuales son los CNAMEs de
+DNS (validación ACM de los 2 certs, CNAMEs finales a ALB/API y DKIM de SES).
 
 ### Pre-requisitos
 
@@ -192,26 +195,29 @@ docker info                            # daemon corriendo (push a ECR + bootstra
 
 Fases:
 
-1. **[1/5]** CFN deploy core — VPC + RDS + IoT + Lambda stub + ECR (sin Grafana).
-2. **[2/5]** Push imagen `grafana/grafana:latest` a ECR + bootstrap SQL via `docker run postgres:16 psql`.
-3. **[3/5]** `aws acm request-certificate` (idempotente: reusa cert si ya existe para el FQDN). Printea los CNAMEs de validacion y **pausa con Read-Host**. Una vez agregados al DNS provider, `aws acm wait certificate-validated` polea hasta ISSUED (timeout 75min). Los CNAMEs de validacion deben quedar PERMANENTES en el DNS provider — ACM los re-checkea en cada renewal.
-4. **[4/5]** CFN deploy con `DeployGrafana=true` + el cert ARN como parametro. Crea cluster ECS, task definition, ALB, target group, 2 listeners (443 HTTPS forward + 80 HTTP redirect), 2 SGs y service. CFN espera a que el service estabilice antes de marcar `UPDATE_COMPLETE`. Toda env var de Grafana (incluido el password del RDS via Secrets Manager) ya esta bakeada en la task definition — no hay `update-service` post-deploy.
-5. **[5/5]** Printea el ALB DNS Name y **pausa con Read-Host** para que el operador agregue el CNAME `grafana.<DomainName>` -> ALB DNS Name. Despues hace best-effort de `Resolve-DnsName` para confirmar propagacion (no falla si TTL todavia no propago).
+1. **[1/6]** CFN deploy core — VPC + RDS + IoT + Lambdas (stub) + ECR + SES identity (sin Grafana).
+2. **[2/6]** Push imagen `grafana/grafana:latest` a ECR + bootstrap SQL via `docker run postgres:16 psql`.
+3. **[3/6]** `aws acm request-certificate` para los 2 FQDN (`grafana.<DomainName>` + `api.<DomainName>`), idempotente. Printea los CNAMEs de validacion y **pausa con Read-Host**; despues polea hasta ISSUED. Los CNAMEs de validacion deben quedar PERMANENTES en el DNS provider — ACM los re-checkea en cada renewal.
+4. **[4/6]** CFN deploy con `DeployGrafana=true` + ambos cert ARNs. Crea ECS (cluster, task def, service), ALB + 2 listeners (443 HTTPS + 80 redirect), SGs y el custom domain de la API. Toda env var de Grafana (incluido el password del RDS via Secrets Manager) ya esta bakeada en la task definition. **Al final sube el código real de las 3 Lambdas** (`persist_event`, `ingest_pos_transaction`, `query_aggregates`) con `update-function-code` — cada `cfn deploy` resetea las Lambdas al stub inline, así que el deploy del código va acá, no es paso manual.
+5. **[5/6]** Printea los CNAMEs finales (grafana → ALB, api → API Gateway) y los 3 CNAMEs DKIM de SES, **pausa con Read-Host**, verifica propagacion (best-effort) y deriva la SMTP password de SES para el alerting de Grafana.
+6. **[6/6]** Configura Grafana vía API (admin/admin): crea el datasource Postgres y **importa los tableros + las alert rules** (`grafana/import_dashboards.ps1` + `grafana/import_alerts.ps1`, idempotentes). Espera a que Grafana responda `/api/health` antes de importar.
 
 Tiempo end-to-end ~15-25 min, dominado por validacion DNS (puede tardar segundos o minutos segun el TTL del provider). Phase 4 ~5-8 min para que CFN cree el ALB y el ECS service estabilice.
 
 La URL final `https://grafana.<DomainName>` queda en el output `GrafanaUrl` del stack y `deploy.ps1` la imprime al cierre.
 
-### Deploy del codigo real de Lambda
+### Código de las Lambdas (automático)
 
-CFN crea el Lambda con un stub inline. Para deployar el codigo real:
+El código real de las 3 Lambdas se sube solo en la Phase 4 del deploy (cada
+`cfn deploy` las resetea al stub inline, así que el deploy del código va al final
+de esa fase). Para un redeploy puntual del código sin correr todo el deploy:
 
 ```powershell
 .\scripts\deploy_lambda.ps1 -Environment dev
 ```
 
-Empaqueta `src/cloud/persist_event.py` + `psycopg[binary]` (manylinux x86_64) y
-hace `aws lambda update-function-code`.
+Empaqueta el handler + `psycopg[binary]` (manylinux x86_64) y hace
+`aws lambda update-function-code`.
 
 ### Aprovisionar un device
 
@@ -255,47 +261,9 @@ docker run --rm -e PGPASSWORD=$($secret.password) -e PGSSLMODE=require postgres:
 
 - **Sin conectividad del device** — buffer SQLite local persiste publishes. Replay al reconectar, marca enviado solo tras PUBACK.
 - **Lambda fallida** — IoT Rule loguea a CloudWatch (`/aws/iot/people-counter-rule-errors-${env}`). IoT reintenta 1 vez built-in; despues drop. Alarma `PersistEventLambdaErrorAlarm` dispara con >0 errors / 5min.
-- **RDS** — Multi-AZ desactivado para PoC ($13/mo vs $26). Daily snapshot (`BackupRetentionPeriod` default 7d, configurable). Restore via `aws rds restore-db-instance-to-point-in-time`.
+- **RDS** — Multi-AZ desactivado para PoC. Daily snapshot (`BackupRetentionPeriod` default 7d, configurable). Restore via `aws rds restore-db-instance-to-point-in-time`.
 - **ECS Fargate** — ECS scheduler reinicia el task si crashea. ALB health check (`/api/health` cada 30s) saca de rotacion targets unhealthy. Rolling deploy en cada CFN update (~30s downtime con MinimumHealthyPercent=0 en PoC single-instance; en prod subir a 100% + DesiredCount=2).
 - **Cert ACM** — auto-renewed por AWS si los CNAMEs de validacion siguen presentes en el DNS provider. Si los borrás, el cert muere a los 13 meses. Documentado en `deploy.ps1` Phase 3.
-- **Teardown / re-create** — `aws cloudformation delete-stack` borra todo el stack (ALB + listeners + target group + ECS service + SGs + cluster). El cert ACM NO se borra (vive fuera del stack); para limpieza full hay que correr `aws acm delete-certificate --certificate-arn <arn>` manualmente. ECR esta marcado `EmptyOnDelete: true` para no atascarse en imagenes pendientes.
+- **Teardown / re-create** — [`teardown.ps1`](teardown.ps1) borra el stack y limpia lo que sobrevive al `delete-stack`: force-deletea los 2 secrets (RDS master + SES SMTP) sin recovery window y limpia log groups huérfanos; opcionalmente borra el snapshot final de RDS (`-DeleteSnapshot`, destructivo) y los 2 certs ACM (`-DeleteCert`, que viven fuera del stack). RDS toma un snapshot final por `DeletionPolicy: Snapshot` y ECR se vacía solo (`EmptyOnDelete: true`). Los CNAMEs del DNS provider (grafana, api, DKIM de SES) quedan stale para actualizar tras el redeploy.
 - **Migracion de histórico** — para subir data del sistema anterior hay dos caminos. (a) histórico a nivel EVENTO → insertarlo en las tablas crudas (`count_events` / `wifi_ble_events` / `pos_transactions`) y dejar que `refresh_rollups()` derive los rollups. (b) histórico YA AGREGADO (resúmenes por hora, sin eventos) → `scripts/migrate_historical.py` carga el CSV a una staging POR LOTES (commits incrementales) y corre el transform de `sql/migrate_historical_rollups.example.sql`, que inserta DIRECTO en las tablas base `rollup_*` (idempotente, `ON CONFLICT DO UPDATE`). Ese `.sql` es un template de carga, **no** una migración de schema.
 - **Sizing en bulk-load** — `db.t4g.micro` (1GB) OOM-ea en cargas masivas (~1.5M filas en una sola transacción: re-seed o migración de histórico). Mitigaciones: escalar temporal a `db.t4g.small` (2GB) durante la carga, o batchear los commits (`migrate_historical.py` ya lo hace, `--batch-size`).
-
----
-
-## 7) Costos PoC (1 device, us-east-1)
-
-| Recurso | $/mes | Notas |
-|---|---|---|
-| RDS db.t4g.micro (single-AZ)    | ~$13  | Storage 20GB gp3 incluido. |
-| Fargate task (0.5 vCPU / 1 GB)  | ~$18  | 24/7 single-instance. |
-| ALB                             | ~$16  | $0.0225/h fixed + LCU (PoC = LCU ~$0.5/mo). Costo amortizable agregando services al mismo LB via listener rules. |
-| ACM cert                        | $0    | AWS-managed, auto-renewed mientras los CNAMEs de validacion sigan en el DNS provider. |
-| IoT Core                        | <$1   | $1/M msgs — PoC genera centavos. |
-| Lambda                          | $0    | 1M invocations + 400k GB-s free **forever**. |
-| Secrets Manager                 | $0.40 | 1 secret. |
-| CloudWatch                      | $0    | 5 GB logs + 10 metrics free forever. |
-| **Total estimado**              | **~$35/mo** | Post free tier. |
-
-**Producción (flota)**: migrar RDS a Multi-AZ (~$26 + storage), considerar
-Amazon Managed Grafana (SSO + IAM-integrated, ~$9/user/mo) en vez de OSS, y
-reintroducir Lambda dedup L3 con DynamoDB cuando haya 2+ cams por store.
-Cuando se agregue 2da app (sales API, auth service), reutilizar el mismo ALB
-via listener rules (host-header o path-based) en vez de provisionar otro
-($16/mo de ahorro por service).
-
----
-
-## 8) Proximos pasos
-
-- **Dashboards Grafana — DONE** (S10): 5 tableros por perfil (Panorama,
-  Comparativa, Detalle, Patrones, Salud de flota) sobre las views
-  `*_by_bucket_*`, con mapa de sucursales + feriados + sidecar
-  grafana-image-renderer (export PNG). Pendiente menor: alert rules de los
-  canaries del tracker.
-- **Ingest POS — DONE**: `IngestPosLambda` + API Gateway persisten a la tabla
-  `pos_transactions` (`UNIQUE (store_id, transaction_id)` para idempotencia).
-- Migracion a Route53 delegated subdomain (`tfg.gasparri.com.ar` NS → R53)
-  para que CFN gestione DNS records (ALIAS record al ALB) y el deploy sea
-  100% sin pausa.

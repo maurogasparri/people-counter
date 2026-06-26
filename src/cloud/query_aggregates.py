@@ -827,7 +827,7 @@ def _openapi_spec() -> dict[str, Any]:
                         "site_id": {
                             "type": "string",
                             "description": "Identificador del sitio (sucursal).",
-                            "example": "site_54_21",
+                            "example": "demo-01",
                         },
                         "bucket_start": {
                             "type": "string",
@@ -983,7 +983,7 @@ def _openapi_spec() -> dict[str, Any]:
                                 "format": "date-time",
                                 "description": "ISO 8601 UTC del último dato del sitio.",
                             },
-                            "example": {"site_54_21": "2026-05-25T13:42:18Z"},
+                            "example": {"demo-01": "2026-05-25T13:42:18Z"},
                         },
                         "rows": {
                             "type": "array",
@@ -1023,7 +1023,7 @@ def _openapi_spec() -> dict[str, Any]:
                         "store_id": {
                             "type": "string",
                             "description": "Identificador del sitio donde ocurrió la transacción.",
-                            "example": "site_54_21",
+                            "example": "demo-01",
                         },
                         "event_ts": {
                             "oneOf": [
@@ -1161,7 +1161,7 @@ def _openapi_spec() -> dict[str, Any]:
                                 "(regex `[a-zA-Z0-9_-]+`). Omitir = todos los "
                                 "sitios del sistema."
                             ),
-                            "example": "site_54_21,site_61_05",
+                            "example": "demo-01,demo-02",
                         },
                         {
                             "name": "bucket",

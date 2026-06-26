@@ -163,7 +163,7 @@ dpkg -i "/tmp/$NEXMON_DKMS"
 # --- nexutil: activa monitor mode CON radiotap en el firmware ---
 # Sin nexutil, `iw set type monitor` deja el interface en type=monitor pero el
 # firmware entrega frames Ethernet (DLT EN10MB) y scapy no ve ningún 802.11 →
-# CERO probes capturados (descubierto en el piloto). No hay paquete apt; se
+# CERO probes capturados (descubierto en la validación en las instalaciones). No hay paquete apt; se
 # compila del repo nexmon (solo utilities/ + patches/include vía sparse
 # checkout, sin bajar los blobs de firmware).
 if ! command -v nexutil >/dev/null 2>&1; then
@@ -181,7 +181,7 @@ if ! command -v nexutil >/dev/null 2>&1; then
 fi
 
 # --- Prerequisitos de monitor mode (rfkill / NM / systemd-rfkill) ---
-# Descubiertos en el bring-up del piloto. El device bootea con WiFi
+# Descubiertos en el bring-up en las instalaciones. El device bootea con WiFi
 # soft-blocked por rfkill (default headless), y el monitor mode no arranca
 # por una cadena de causas; las tres piezas de abajo lo resuelven de forma
 # durable.
@@ -256,10 +256,15 @@ cp "$REPO_DIR/config/wifi-monitor.service" /etc/systemd/system/
 cp "$REPO_DIR/config/people-counter.service" /etc/systemd/system/
 cp "$REPO_DIR/config/people-counter-reset.service" /etc/systemd/system/
 cp "$REPO_DIR/config/people-counter-reset.timer" /etc/systemd/system/
+# Freq-cap del CPU (1500 MHz): parte del deploy estándar para gabinetes cerrados,
+# donde el SoC heat-soakea. Sin costo de FPS (el pipeline es Hailo-bound). Se
+# habilita por default; en mounts muy bien ventilados es innecesaria y se puede
+# deshabilitar (ver config/cpu-freq-cap.service y §L2 del reporte de benchmarks).
+cp "$REPO_DIR/config/cpu-freq-cap.service" /etc/systemd/system/
 cp "$REPO_DIR/config/logrotate.conf" /etc/logrotate.d/people-counter
 
 systemctl daemon-reload
-systemctl enable wifi-monitor people-counter people-counter-reset.timer
+systemctl enable wifi-monitor people-counter people-counter-reset.timer cpu-freq-cap
 
 # =========================================================================
 # Done
@@ -273,6 +278,10 @@ info "  2. Run: sudo PYTHONPATH=$REPO_DIR python3 $REPO_DIR/scripts/verify_hardw
 info "  3. Focus: PYTHONPATH=. python3 scripts/focus_assist.py --grid"
 info "  4. Calibrate: PYTHONPATH=. python3 scripts/calibrate.py capture \\"
 info "       --columns 11 --rows 7 --square-length 35 --marker-length 26 --count 30"
+info "  5. (Térmico) El freq-cap (cpu-freq-cap, CPU a 1500 MHz) queda habilitado por"
+info "       default y aplica al boot. En gabinete cerrado el steady-state es ~80-82°C,"
+info "       así que conviene status_led.cpu_temp_critical_c: 85 en config.yaml."
+info "       En un mount muy ventilado podés deshabilitarlo: sudo systemctl disable --now cpu-freq-cap."
 info ""
 read -p "Reboot now? [y/N] " -n 1 -r
 echo

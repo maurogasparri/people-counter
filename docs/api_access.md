@@ -67,11 +67,11 @@ cliente, cubre ambos endpoints.
 {
   "bucket": "15min",
   "data_freshness": {
-    "site_54_21": "2026-05-25T13:42:18Z"
+    "demo-01": "2026-05-25T13:42:18Z"
   },
   "rows": [
     {
-      "site_id": "site_54_21",
+      "site_id": "demo-01",
       "bucket_start": "2026-05-25T10:00:00Z",
       "counts": {
         "in":  {"adult": 12, "child": 0, "unknown": 2, "total": 14},

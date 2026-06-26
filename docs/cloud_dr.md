@@ -32,7 +32,7 @@ Provisionada por `infra/cloudformation/people-counter.yaml`, sección
 | `StorageEncrypted` | `true` | KMS encryption at-rest, gestionado por AWS |
 | `MultiAZ` | parametrizable, default `false` (PoC); `true` en producción | Standby sincrónico en otra AZ — failover automático en ~60s |
 | `BackupRetentionPeriod` | parametrizable, default `0` (PoC); `7-35` en producción | Días de snapshots automáticos retenidos |
-| `PreferredBackupWindow` | `03:00-04:00 UTC` (00:00-01:00 ARG) | Off-hours del piloto |
+| `PreferredBackupWindow` | `03:00-04:00 UTC` (00:00-01:00 ARG) | Off-hours del PoC |
 | `DeletionPolicy` / `UpdateReplacePolicy` | `Snapshot` | Si se borra el stack o se reemplaza la DB, se toma snapshot antes (resguardo CFN) |
 | `EnablePerformanceInsights` | `false` (PoC); recomendado `true` en producción | Métricas extendidas para troubleshooting |
 
@@ -186,13 +186,3 @@ aws rds modify-db-instance \
 > por `ConnectionTimeout` mientras la DB está saturada/reiniciando. Es esperable
 > durante el mantenimiento — silenciar/ignorar mientras dure y verificar que se
 > resuelve sola al terminar. (Ver [`alerting.md`](alerting.md) §canal SNS.)
-
-## Costo aproximado de DR (cuando se activa)
-
-| Item | Costo mensual estimado |
-|---|---|
-| Snapshots automáticos retention 7 días (db.t4g.micro ~20GB) | ~$1-2 |
-| Multi-AZ (standby sincrónico) | +$13 (duplica el costo de la instancia) |
-| Performance Insights (default retention 7 días) | $0 (free tier) |
-| Cross-region snapshot copy | ~$0.5/GB transferido + storage en región destino |
-| **Total DR pleno producción** | ~$15-20/mes adicionales sobre el PoC |

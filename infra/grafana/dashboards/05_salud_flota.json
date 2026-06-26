@@ -768,7 +768,7 @@
           "gridPos": {
             "x": 0,
             "y": 24,
-            "w": 8,
+            "w": 12,
             "h": 10
           },
           "targets": [
@@ -839,9 +839,9 @@
             "uid": "__DS_UID__"
           },
           "gridPos": {
-            "x": 8,
+            "x": 12,
             "y": 24,
-            "w": 8,
+            "w": 12,
             "h": 10
           },
           "targets": [
@@ -908,9 +908,9 @@
             "uid": "__DS_UID__"
           },
           "gridPos": {
-            "x": 16,
-            "y": 24,
-            "w": 8,
+            "x": 0,
+            "y": 34,
+            "w": 12,
             "h": 10
           },
           "targets": [
@@ -918,6 +918,75 @@
               "refId": "A",
               "format": "table",
               "rawSql": "SELECT event_ts AS time, device_id, death_emit_count FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY device_id, time"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "partitionByValues",
+              "options": {
+                "fields": [
+                  "device_id"
+                ],
+                "keepFields": false
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "always",
+                "pointSize": 5
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "palette-classic-by-name"
+              },
+              "displayName": "${__field.labels.device_id}"
+            }
+          },
+          "options": {
+            "legend": {
+              "showLegend": true,
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Rechazos por ambigüedad (convergencia)",
+          "description": "ambiguous_reject_count por dispositivo: rechazos del tracker en cruces simultáneos bidireccionales (TC-03 — drop conservador, sin fusión). Sube en sites con tráfico bidireccional pesado. Acumulado del día (reset diario).",
+          "datasource": {
+            "type": "postgres",
+            "uid": "__DS_UID__"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 34,
+            "w": 12,
+            "h": 10
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "format": "table",
+              "rawSql": "SELECT event_ts AS time, device_id, ambiguous_reject_count FROM telemetry WHERE store_id IN (${sites:sqlstring}) AND $__timeFilter(event_ts) ORDER BY device_id, time"
             }
           ],
           "transformations": [

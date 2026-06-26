@@ -3,7 +3,7 @@
     Deploy completo del stack people-counter en AWS.
 
 .DESCRIPTION
-    Orquesta el deploy en 5 fases del CFN + push de imagen Grafana a ECR +
+    Orquesta el deploy en 6 fases del CFN + push de imagen Grafana a ECR +
     cert ACM con validacion DNS + custom domain. Pausa cuando necesita
     accion manual del usuario (correr SQL desde DBeaver es opcional - lo
     cubre el bootstrap automatico - pero pegar CNAMEs en el DNS provider
@@ -28,7 +28,7 @@
       3 = ACM certs (grafana + api) + pause DNS validation + wait ISSUED
       4 = CFN deploy con DeployGrafana=true + ambos cert ARNs
       5 = pause CNAMEs finales (grafana -> ALB, api -> API GW) + verificacion
-      6 = crear datasource Postgres en Grafana via API (admin/admin)
+      6 = Grafana: datasource Postgres + import de dashboards y alert rules (admin/admin)
 
 .EXAMPLE
     .\infra\deploy.ps1
@@ -458,13 +458,13 @@ if ($StartFromPhase -le 5) {
     Write-Host "[5/6] OK" -ForegroundColor Green
 }
 
-# === [6/6] Datasource Postgres en Grafana via API ===
+# === [6/6] Grafana: datasource Postgres + dashboards + alert rules ===
 # Se hace despues del CNAME (Phase 5) porque pega a https://<grafana fqdn>.
 # Usa admin/admin: funciona en un Grafana fresco antes del primer login. Si
-# ya cambiaste el password, da 401 y se skipea (agregalo manual en la UI).
+# ya cambiaste el password, da 401 y se skipea (configuralo manual en la UI).
 if ($StartFromPhase -le 6) {
     Write-Host ""
-    Write-Host "[6/6] Datasource Postgres en Grafana..." -ForegroundColor Cyan
+    Write-Host "[6/6] Grafana: datasource + dashboards + alert rules..." -ForegroundColor Cyan
 
     $rdsHost   = Get-StackOutput "RdsEndpoint"
     $secretArn = Get-StackOutput "RdsMasterSecretArn"
@@ -501,6 +501,38 @@ if ($StartFromPhase -le 6) {
             if ($code -eq 409) { Write-Host "  datasource ya existia (ok)" -ForegroundColor Green }
             else { Write-Host "  no se pudo crear el datasource (status $code) - agregalo manual en la UI" -ForegroundColor Yellow }
         }
+
+        # --- Dashboards + alert rules (idempotente: overwrite por uid/grupo) ---
+        # Phase 5 hizo force-new-deployment del task de Grafana: esperar a que
+        # responda /api/health (sin auth) antes de importar, asi los imports no
+        # pegan contra una task que todavia esta reiniciando.
+        Write-Host "  Esperando a que Grafana responda /api/health..." -ForegroundColor Cyan
+        $gReady = $false
+        for ($i = 1; $i -le 12; $i++) {
+            try {
+                $hc = Invoke-RestMethod -Uri "$gUrl/api/health" -TimeoutSec 10
+                if ($hc.database -eq "ok") { $gReady = $true; break }
+            } catch { }
+            Start-Sleep 15
+        }
+        if (-not $gReady) {
+            Write-Host "  Grafana no respondio healthy a tiempo. Corre los imports manual:" -ForegroundColor Yellow
+            Write-Host "    infra\grafana\import_dashboards.ps1 -GrafanaUrl $gUrl"
+            Write-Host "    infra\grafana\import_alerts.ps1 -GrafanaUrl $gUrl"
+        } else {
+            # Los scripts resuelven el UID de la datasource 'people-counter' (recien
+            # creada arriba) y usan el mismo auth admin/admin por default. Cada uno
+            # va en su try/catch: un fallo de import no aborta el deploy.
+            foreach ($imp in @("import_dashboards.ps1", "import_alerts.ps1")) {
+                $impPath = Join-Path $SCRIPT_DIR "grafana\$imp"
+                Write-Host "  Importando via $imp ..." -ForegroundColor Cyan
+                try {
+                    & $impPath -GrafanaUrl $gUrl
+                } catch {
+                    Write-Host "  $imp fallo ($($_.Exception.Message)). Corre manual: infra\grafana\$imp -GrafanaUrl $gUrl" -ForegroundColor Yellow
+                }
+            }
+        }
     }
     $ErrorActionPreference = $prevEAP
     Write-Host "[6/6] OK" -ForegroundColor Green
@@ -522,4 +554,4 @@ Write-Host "Proximos pasos:"
 Write-Host "  1. Cambiar password de admin en Grafana"
 Write-Host "  2. Re-provisionar el device (crea thing + cert + config + deploy SSH):"
 Write-Host "     python scripts\provision.py create --device-id store-pilot-01-cam-01 --store-id store-pilot-01 --endpoint $IOT_EP --policy-name people-counter-device-policy-$Environment"
-Write-Host "  (El codigo real de la Lambda persist_event ya se deploya solo en Phase 4, no es paso manual.)"
+Write-Host "  (Las 3 Lambdas se deployan en Phase 4 y Grafana queda configurado -datasource + dashboards + alert rules- en Phase 6; no son pasos manuales.)"

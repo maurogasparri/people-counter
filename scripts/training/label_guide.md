@@ -43,8 +43,8 @@ sesión de labeling.
 
 - **Reflejos** en vidrios/espejos/vitrinas (no son personas reales).
 - **Maniquíes**.
-- **Personas afuera, a través de la vidriera** (ej. site_54_21 tiene mucha
-  gente en la vereda — no entran al conteo del local).
+- **Personas afuera, a través de la vidriera** (ej. un local con vidriera a la
+  calle capta gente en la vereda — no entran al conteo del local).
 - Una persona de la que **solo se ve un fragmento** (un brazo, un pie) sin
   cabeza ni hombros identificables.
 

@@ -33,10 +33,10 @@
 #   buffer           — outbox sqlite local
 #   best_frame       — data active-learning con awareness de GDPR (default OFF)
 #
-# Validación: `src/config/loader.py:load_config()` lee este archivo como defaults,
-# mergea el YAML per-device y valida tipos/rangos. Las keys requeridas faltantes
-# (device.id, device.store_id, mqtt.endpoint) raisean. Errores de tipo/rango
-# raisean con la key ofensora en el mensaje.
+# Validación: `src/config/loader.py:load_config()` lee SOLO el config per-device
+# (/etc/people-counter/config.yaml — este template NO se mergea en runtime) y
+# valida tipos/rangos. Las keys requeridas faltantes (device.id, device.store_id,
+# mqtt.endpoint) raisean. Errores de tipo/rango raisean con la key ofensora.
 # =============================================================================
 
 
@@ -131,7 +131,20 @@ vision:
     num_disparities: auto           # "auto" deriva de mounting_height_m +
                                     # resolución runtime. Int múltiplo de 16
                                     # para override (raro, solo diagnóstico).
-    block_size: 9                   # Impar, 5..15.
+    block_size: 9                   # Impar, 5..15. Más chico = bordes más nítidos
+                                    # (menos edge-bleed) pero más speckle.
+    # Knobs de matching (default = el de depth.py). Tunearlos NO afecta el conteo
+    # (centroide 2D), solo la profundidad/estatura. Palancas contra la compresión
+    # de estatura a mount bajo (edge-bleed near-camera que sesga el head-depth):
+    uniqueness_ratio: 5             # Margen % best vs 2do match. SUBIR (10-15)
+                                    # rechaza matches ambiguos del borde de cabeza.
+    p1_factor: 12                   # Penalty smoothness ±1 disparidad (P1=factor·block²).
+    p2_factor: 96                   # Penalty discontinuidad (P2=factor·block², 8×P1).
+                                    # Bajar P2 = bordes más nítidos (menos bleed).
+    speckle_window_size: 150        # Área máx de blob de ruido a filtrar.
+    speckle_range: 16               # Variación máx de disparidad dentro de un speckle.
+    disp12_max_diff: 2              # Check left-right; bajar rechaza bordes inconsistentes.
+    pre_filter_cap: 63              # Truncation del prefiltro.
     downscale: 4                    # 1=full, 2=half, 4=quarter, 8=eighth.
                                     # 4 es el sweet spot calidad/costo para
                                     # head-height a mount 2.0-3.5m: la
@@ -208,7 +221,7 @@ vision:
                                     # "estable" y skippeable. 8 ≈ 0.4s @
                                     # 20 FPS — la mediana ya absorbe el
                                     # ruido de SGBM con 8 samples. Medido
-                                    # en piloto (A/B 2026-05-30): bajar
+                                    # en las instalaciones (A/B 2026-05-30): bajar
                                     # 20→8 sube el cache hit durante
                                     # cruces de ~55% a ~79% (el track se
                                     # estabiliza antes de cruzar la línea)
@@ -245,8 +258,8 @@ vision:
   # en telemetría baja a ~idle_fps mientras está throttled — esa es la
   # señal para verificarlo en Grafana; los canaries diarios
   # (track_stitching_ratio / ghost_adoption_count / death_emit_count) son
-  # la métrica de regresión. Default OFF fleet-wide; validado E2E en el
-  # piloto (2026-06-09): CPU ~102%→~50% en escena vacía, wake instantáneo,
+  # la métrica de regresión. Default OFF fleet-wide; validado de extremo a
+  # extremo en las instalaciones (2026-06-09): CPU ~102%→~50% en escena vacía, wake instantáneo,
   # 9 cruces contados y persistidos en RDS bajo throttle.
   idle_throttle:
     enabled: false
@@ -283,10 +296,9 @@ detection:
   model_path: /usr/src/people-counter/models/people-counter-detector.hef
                                     # HEF compilado para Hailo-8L. people-counter-detector
                                     # es un YOLOv8n fine-tuneado cenital sobre
-                                    # dataset multi-site con hard negatives
-                                    # explícitos, entrenado en Kaggle T4 con
-                                    # datos curados desde Roboflow. Ver
-                                    # scripts/training/.
+                                    # dataset multi-site, etiquetado en
+                                    # X-AnyLabeling + active learning y entrenado
+                                    # en Kaggle T4. Ver scripts/training/.
   confidence_threshold: 0.20        # Piso del score de detección de person/head.
                                     # Tuneado para people-counter-detector — corta
                                     # FPs del modelo (alucinaciones en piso vacío)
@@ -454,7 +466,7 @@ counter:
   # comportamiento legacy). Valores típicos para 30 fps a 1m/s ≈ 10
   # px/frame: 2.0–3.0 filtra jitter del tracker cerca de la línea sin
   # rechazar movimiento normal. Activar per-site solo si se observa
-  # doble-conteo por jitter en el piloto.
+  # doble-conteo por jitter en operación.
   min_crossing_movement_px: 0.0
 
   # Filtro anti-FP no-humanos por altura. Si la MEDIANA de head_height_mm
@@ -464,7 +476,7 @@ counter:
   # — preferimos preservar recall en casos donde la altura falla por
   # motion blur / oclusiones. 0.0 = filtro desactivado (back-compat).
   # 1.0 filtra perros + objetos < 1m sin perder niños de 4+ años;
-  # 0.7 más conservador. Caso real piloto 2026-05-24: perro caminando
+  # 0.7 más conservador. Caso real en las instalaciones 2026-05-24: perro caminando
   # cruzaba la línea y disparaba IN; campera en silla con SGBM noise
   # también. Ver docs/tracker_tuning.md patrón 5.
   min_count_height_m: 0.0
@@ -475,7 +487,7 @@ counter:
   # debajo de este umbral, el counter NO emite el conteo. Eje ORTOGONAL a
   # height_confidence_gate: ese gatea SOLO la demografía cuando HAY altura (el
   # conteo se mantiene); este decide contar-o-no cuando NO hay altura.
-  # Caso real piloto: de lunes a jueves 10:30-18:30 el único "tráfico" es un
+  # Caso real en las instalaciones: de lunes a jueves 10:30-18:30 el único "tráfico" es un
   # perro (+ tracks fantasma sobre clutter). Análisis de 831 count_events
   # (2026-06-01): todo evento con altura medida tiene conf >= 0.5 y es humano;
   # el perro/fantasma sale SIEMPRE sin altura y con conf <= 0.56. Una persona
@@ -492,7 +504,7 @@ counter:
   # (campera, sombra, objeto fijo). 0 = filtro desactivado (back-compat).
   # 2 filtra single-frame entries sin perder caminantes normales; 3 más
   # estricto pero podría perder caminantes muy rápidos al borde del FOV.
-  # Caso piloto 2026-05-24 15:23 tid=67: 1 frame al borde y_min + 247 px
+  # Caso en las instalaciones 2026-05-24 15:23 tid=67: 1 frame al borde y_min + 247 px
   # de extrapolación Kalman → ingress espurio. Ver docs/tracker_tuning.md.
   min_real_inside_frames: 0
 
@@ -520,15 +532,6 @@ counter:
   # el guard rechaza crossers reales que tuvieron poca observación.
   # Ver docs/tracker_tuning.md para el lookup table de síntomas.
   min_visit_range_for_death_emit: 80.0
-
-  # U-turn cancellation usa la counting zone como zona de cancelación: cuando un
-  # evento de cruce cae dentro de la counting zone y existe un evento opuesto
-  # reciente (≤5s, hardcoded) también dentro de la counting zone, ambos se cancelan
-  # mutuamente. Captura "persona dudó en la entrada, cruzó y volvió
-  # enseguida" así como fragmentación de track cerca de la línea
-  # (track A cruza IN, jitter parte el track, track B cruza OUT) sin
-  # contabilizar IN+OUT espurios. Activo automáticamente cuando hay
-  # counting zone configurada — sin params extra.
 
 
 # =============================================================================
@@ -607,14 +610,14 @@ mqtt:
   ca_path: "/etc/people-counter/certs/AmazonRootCA1.pem"
   port: 8883                        # Puerto TLS de AWS IoT Core.
   shadow_enabled: true              # Device Shadow (config cloud→device:
-                                    # operating_hours, counting_enabled vía
-                                    # CLOUD_OVERRIDABLE). FUERA DE SCOPE por
-                                    # ahora → false: el device no suscribe al
-                                    # delta ni publica reported-state, corre
-                                    # 100% con el config local. Poner true
-                                    # cuando se implemente el push de config
-                                    # desde la nube. Key opcional: si falta,
-                                    # el runtime asume false.
+                                    # operating_hours + counting_enabled +
+                                    # external_traffic_enabled vía
+                                    # CLOUD_OVERRIDABLE). true = el device
+                                    # suscribe al delta, valida y persiste los
+                                    # toggles al config.yaml local, y publica
+                                    # reported-state. false = corre 100% con el
+                                    # config local (sin push desde la nube).
+                                    # Key opcional: si falta, se asume false.
   startup_jitter_seconds: 10.0      # Anti thundering-herd. Cuando la
                                     # flota entera bootea simultáneamente
                                     # tras un outage (incident regional,
@@ -659,6 +662,13 @@ telemetry:
 
 status_led:
   enabled: true                     # LED RGB de status por GPIO.
+  cpu_temp_critical_c: 80.0         # Umbral CPU para hardware_fault. Default 80
+                                    # (soft-throttle del Pi5). Subir a 85 (hard-
+                                    # throttle) SOLO en sitios con gabinete cerrado
+                                    # mal ventilado donde el device opera estable en
+                                    # la banda 80-85 y el aviso a 80 es cry-wolf. La
+                                    # temp igual va en telemetría (no se pierde
+                                    # observabilidad). Fix real = ventilar el gabinete.
 
 
 # =============================================================================
@@ -702,13 +712,16 @@ cloud_defaults:
 # encontrás queriendo cambiar algo, tenés un defecto de hardware, un build
 # no-estándar, o un malentendido — investigá antes de editar.
 bracket:
-  baseline_mm: 140                  # Distancia mecánica entre los centros de
-                                    # los lentes L↔R. Determinada por el corte
-                                    # del bracket en fab. El baseline del
-                                    # .npz de calibración tiene que matchear
-                                    # esto dentro de ±5mm — la divergencia
-                                    # indica calibración degenerada o
-                                    # bracket dañado.
+  baseline_mm: 140                  # Distancia mecánica nominal entre los
+                                    # centros de los lentes L↔R (corte del
+                                    # bracket en fab). El baseline óptico del
+                                    # .npz suele diferir del nominal (pupila de
+                                    # entrada del fisheye + tolerancias del
+                                    # case): medido ~144-146mm. Es INFORMATIVO,
+                                    # no un gate de calidad — el verdict de
+                                    # calibración lo decide el ground-truth de
+                                    # profundidad. --baseline-tol-mm (default
+                                    # 15mm) solo caza un solve degenerado.
   camera_left_csi: 0                # Índice del CSI bus para el lens IZQUIERDO
                                     # (mirando desde la cámara hacia la escena).
   camera_right_csi: 1               # Índice del CSI bus para el lens DERECHO.
@@ -799,7 +812,7 @@ height:
                                     # en mounts muy bajos.
 
 
-# --- Tracker + state machine (tuning de algo, fleet-uniform tras piloto) ----
+# --- Tracker + state machine (tuning de algo, fleet-uniform tras la validación en las instalaciones) ----
 tracking:
   # Tracking zone: filtro pre-tracker por polígono ("modo estricto").
   # Descarta detecciones cuyo centroide cae FUERA del polígono ANTES de
@@ -807,7 +820,7 @@ tracking:
   # counter). Reduce FPs estructurales en sites con clutter intenso
   # (percheros en tiendas de ropa, mostradores, vidrieras con tráfico
   # exterior visible) sin tocar la counting_zone semántica del counter.
-  # Análogo a la TrackingZone del incumbent FFC.
+  # Análogo al concepto de "tracking zone" de sistemas de conteo comerciales.
   #
   # IMPORTANTE: la tracking_zone debe ser MÁS AMPLIA que counter.counting_zone
   # para preservar el lead-in del approach (capture de detecciones reales
@@ -870,7 +883,7 @@ tracking:
                                     # si la cambiás.
   state_machine:
     confirm_frames: 3               # Hits para promover CANDIDATE -> CONFIRMED.
-                                    # SUBIDO a 3 (de 2) en el piloto: FPs de
+                                    # SUBIDO a 3 (de 2) en las instalaciones: FPs de
                                     # clutter flickery (el detector dispara sobre
                                     # estructura fija ~15-20% de los frames)
                                     # confirmaban en 2 frames y spawneaban tracks
@@ -981,8 +994,8 @@ tracking:
                                     # identidad). 0 deshabilita la adopción.
     adoption_iou_min: 0.3           # IoU mínimo entre el bbox del ghost y
                                     # el bbox del candidato nuevo para
-                                    # permitir adopción. Más estricto que el
-                                    # incumbent FFC (que usa booleano puro)
+                                    # permitir adopción. Más estricto que un
+                                    # gate booleano puro
                                     # — anti ID-swap entre personas
                                     # adyacentes. Subir a 0.4-0.5 si hay
                                     # swaps visibles en cruces densos.
@@ -1000,7 +1013,7 @@ tracking:
                                     # (no se hereda). Protege contra
                                     # ghosts muertos por Kalman alucinado
                                     # lejos del centroide real. Subir solo
-                                    # si tests específicos del piloto
+                                    # si tests específicos posteriores
                                     # muestran outside_pos legítimo lejos.
     kalman:                         # Filtro Kalman de velocidad constante
                                     # sobre el estado [cx, cy, vx, vy] de

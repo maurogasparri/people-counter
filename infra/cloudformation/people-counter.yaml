@@ -937,7 +937,7 @@ Resources:
 
   # Sin VPC Connector — los tasks corren en public subnets con
   # AssignPublicIp=ENABLED, conectan a RDS por endpoint publico (mismo
-  # modelo que Lambda persist_event). Evita NAT/VPC endpoints (~$30/mo).
+  # modelo que Lambda persist_event). Evita NAT/VPC endpoints.
 
   GrafanaCluster:
     Type: AWS::ECS::Cluster
@@ -1306,9 +1306,9 @@ Resources:
         - {Key: Environment, Value: !Ref Environment}
 
   # NOTA: el CNAME final `${GrafanaSubdomain}.${DomainName}` -> `${GrafanaAlb.DNSName}`
-  # se agrega manualmente al DNS provider externo (gasparri.com.ar no esta en
-  # Route53). `deploy.ps1` printea el ALB DNS Name + cert validation records
-  # y pausa con Read-Host hasta confirmacion del operador.
+  # se agrega manualmente al DNS provider externo del PoC. `deploy.ps1` printea
+  # el ALB DNS Name + cert validation records y pausa con Read-Host hasta
+  # confirmacion del operador.
 
   # =========================================================================
   # SNS + CloudWatch alarms
@@ -1518,7 +1518,7 @@ Outputs:
 
   GrafanaAlbHostedZoneId:
     Condition: DeployGrafanaCondition
-    Description: Hosted zone ID del ALB - util si en el futuro el DNS migra a Route53 (ALIAS record en vez de CNAME)
+    Description: Hosted zone ID del ALB - util para crear un ALIAS record al ALB (en vez de CNAME) si el DNS lo soporta
     Value: !GetAtt GrafanaAlb.CanonicalHostedZoneID
 
   GrafanaUrl:

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS stg_historical_hourly (
     -- counting (footfall)
     ins         BIGINT,
     outs        BIGINT,
-    ins_adult   BIGINT,                        -- NULL si el incumbente no medía altura
+    ins_adult   BIGINT,                        -- NULL si la fuente histórica no medía altura
     ins_child   BIGINT,
     -- POS (opcional)
     sales               BIGINT,
@@ -99,7 +99,7 @@ ON CONFLICT (store_id, bucket_day) DO UPDATE SET
 
 -- NOTA ocupación: occupancy_by_bucket_* hace cumsum sobre el grano de 15min.
 -- Con histórico solo horario NO se puede reconstruir → las vistas de ocupación
--- no tendrán histórico (esperado si el incumbente no la medía). Si tuvieras
+-- no tendrán histórico (esperado si la fuente histórica no la medía). Si tuvieras
 -- grano 15min, poblá rollup_counting_15min análogamente y la ocupación sale.
 
 -- -----------------------------------------------------------------------------

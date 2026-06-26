@@ -52,7 +52,7 @@ def _is_probe_req_radiotap(raw: bytes) -> bool | None:
     Existe porque el ~99% de los frames del canal (beacons, data) NO son
     probe-reqs, y el descarte previo era ``RadioTap(bytes(pkt))`` — disección
     COMPLETA de scapy por frame, en el thread de sniff, medido ~10% de un
-    core en el piloto. El filtro BPF kernel-level NO es opción acá: nexmon
+    core en las instalaciones. El filtro BPF kernel-level NO es opción acá: nexmon
     reporta el netdev como Ethernet (DLT EN10MB) y libpcap rechaza los
     primitivos 802.11 (``Failed to compile filter`` — verificado en hardware
     2026-06-09).
@@ -413,7 +413,7 @@ class WiFiProbeCapture:
     # de bloquear el pipeline (cámara/MQTT) esperando, hacemos el setup en un
     # thread y reintentamos pacientemente hasta este deadline. WiFi probing es
     # no-crítico: si no logra, el pipeline degrada (telemetría wifi=None).
-    # Deadline generoso: en la Pi piloto el radio CYW43455 tardó ~5min reales
+    # Deadline generoso: en la Pi de las instalaciones el radio CYW43455 tardó ~5min reales
     # tras el boot en aceptar el unblock (el rfkill queda soft-blocked hasta que
     # el firmware termina de levantar). Como el setup es async (no bloquea el
     # pipeline), un deadline largo no cuesta nada y cubre boots lentos.

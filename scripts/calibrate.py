@@ -3259,6 +3259,7 @@ def _sweep_html() -> str:
   #ov{position:fixed;inset:0;background:rgba(11,11,13,0.95);z-index:99;
       display:flex;align-items:center;justify-content:center;
       flex-direction:column;gap:18px;padding:20px;text-align:center}
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style></head>
 <body>
   <header><h1>Calibración — barrido libre</h1></header>
@@ -3277,16 +3278,113 @@ def _sweep_html() -> str:
   <img id="stream" src="/stream"/>
   <div id="panel">
     <div id="status">Conectando...</div>
-    <div style="margin-top:16px">
+    <div id="actions" style="margin-top:16px">
       <button class="btn btn-undo" onclick="fetch('/undo',{method:'POST'})">Deshacer última</button>
       <button class="btn btn-finish" onclick="if(confirm('Finalizar y calibrar?')){fetch('/finish',{method:'POST'})}">Finalizar</button>
       <button class="btn btn-report" onclick="window.open('/report','_blank')">Abrir reporte</button>
     </div>
   </div>
 <script>
+// Estado del prompt post-captura. lastRenderedPhase/PromptType evitan re-render
+// en cada poll (que borraría el <input> de ground-truth y le robaría el focus).
+let lastRenderedPhase='', lastRenderedPromptType='', promptSubmitted=false, finalizedSeen=false;
+function showSpinner(msg){
+  document.getElementById('status').innerHTML =
+    '<div style="color:#3fb6f0;font-size:18px;font-weight:600;margin-bottom:10px">'
+    + '<span style="display:inline-block;width:16px;height:16px;border:2px solid #3fb6f0;'
+    + 'border-top-color:transparent;border-radius:50%;vertical-align:middle;'
+    + 'margin-right:10px;animation:spin 0.9s linear infinite"></span>' + msg + '</div>';
+}
+function sendInput(val){
+  promptSubmitted = true;
+  showSpinner('Procesando...');
+  fetch('/wizard-input', {method:'POST', body: val, headers: {'Content-Type':'text/plain'}});
+}
+function submitGt(){
+  const el = document.getElementById('gt-dist');
+  const val = el ? el.value : '';
+  promptSubmitted = true;
+  showSpinner(val
+      ? 'Capturando y analizando profundidad... (puede tardar hasta 15 segundos)'
+      : 'Salteando validación...');
+  fetch('/wizard-input', {method:'POST', body: val, headers: {'Content-Type':'text/plain'}});
+}
 function refresh(){
-  fetch('/status').then(function(r){return r.text()}).then(function(t){
-    document.getElementById('status').innerHTML=t;
+  fetch('/status').then(function(r){return r.text()}).then(function(html){
+    // Fases post-captura (procesar / prompt / complete) traen data-phase. El
+    // barrido en vivo no, así que se vuelca tal cual (comportamiento original).
+    const phaseMatch = html.match(/data-phase="([^"]+)"/);
+    if (!phaseMatch) { document.getElementById('status').innerHTML = html; return; }
+    const thisPhase = phaseMatch[1];
+    const thisPromptType = (html.match(/data-prompt-type="([^"]+)"/) || [,''])[1];
+    const shouldRender = (
+      thisPhase !== lastRenderedPhase || thisPromptType !== lastRenderedPromptType
+    );
+    if (shouldRender) {
+      document.getElementById('status').innerHTML = html;
+      lastRenderedPhase = thisPhase;
+      lastRenderedPromptType = thisPromptType;
+      promptSubmitted = false;
+    }
+    // Ocultar el stream y la fila de acciones una vez que terminó el barrido.
+    const stream = document.getElementById('stream');
+    if (stream) stream.style.display = 'none';
+    const actions = document.getElementById('actions');
+    if (actions) actions.style.display = 'none';
+    // Prompt interactivo: inyectar los controles que postean a /wizard-input.
+    // Solo al primer sight y mientras el operador no haya enviado todavía.
+    if (thisPhase === 'prompt'
+        && !document.getElementById('prompt-ctrls')
+        && !promptSubmitted) {
+      const ctrls = document.createElement('div');
+      ctrls.id = 'prompt-ctrls';
+      ctrls.style.cssText = 'display:flex;gap:10px;margin-top:14px;flex-wrap:wrap';
+      const mkBtn = (text, style, onClick) => {
+        const b = document.createElement('button');
+        b.className = 'btn';
+        b.style.cssText = style;
+        b.textContent = text;
+        b.addEventListener('click', onClick);
+        return b;
+      };
+      if (thisPromptType === 'diversity') {
+        ctrls.appendChild(mkBtn(
+            'Cancelar y recapturar',
+            'width:auto;flex:1;background:#c0392b', () => sendInput('no')));
+        ctrls.appendChild(mkBtn(
+            'Continuar igual',
+            'width:auto;flex:1;background:#27ae60', () => sendInput('si')));
+      } else if (thisPromptType === 'ground_truth') {
+        const input = document.createElement('input');
+        input.id = 'gt-dist';
+        input.type = 'text';
+        input.inputMode = 'numeric';
+        input.pattern = '[0-9]*';
+        input.placeholder = 'Distancia en mm (ej 2000)';
+        input.style.cssText = 'flex:1 1 160px;padding:10px;font-size:15px;'
+            + 'border-radius:6px;border:1px solid #555;background:#1a1a1e;color:#eee';
+        ctrls.appendChild(input);
+        ctrls.appendChild(mkBtn(
+            'Validar', 'width:auto;flex:0 0 auto;background:#3fb6f0', submitGt));
+        ctrls.appendChild(mkBtn(
+            'Saltear', 'width:auto;flex:0 0 auto;background:#555', () => sendInput('')));
+      }
+      document.getElementById('status').appendChild(ctrls);
+    }
+    // Auto-abrir el reporte al completar (path de éxito).
+    if (thisPhase === 'complete' && !finalizedSeen) {
+      finalizedSeen = true;
+      if (/data-has-report="1"/.test(html)) {
+        const w = window.open('/report', '_blank');
+        if (!w) {
+          const note = document.createElement('div');
+          note.style.cssText = 'color:#f1c40f;font-size:12px;margin-top:8px';
+          note.textContent =
+              'El navegador bloqueó el popup — usá el botón "Abrir reporte".';
+          document.getElementById('status').appendChild(note);
+        }
+      }
+    }
   }).catch(function(e){});
 }
 setInterval(refresh,250);
@@ -3881,7 +3979,7 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         per_pair_residuals=per_pair,
         epipolar_image=epi_path,
         ground_truth_image=gt_image,
-        baseline_tol_mm=getattr(args, "baseline_tol_mm", 5.0),
+        baseline_tol_mm=getattr(args, "baseline_tol_mm", 15.0),
     )
     report_name = f"calibration_report_{args.device_id}_{ts:%Y%m%d_%H%M%S}.html"
     report_path = save_report(html, calib_out.parent / report_name)
@@ -3964,13 +4062,31 @@ def cmd_wizard(args: argparse.Namespace) -> None:
         )
     logger.info("=" * 60)
 
-    if abs(baseline_mm - 140.0) > 5.0:
+    # Baseline: INFORMATIVO, no gate de calidad. El baseline óptico (distancia
+    # entre las pupilas de entrada de los lentes) difiere legítimamente del
+    # nominal mecánico (140mm) por la geometría del fisheye M12 + tolerancias de
+    # impresión del case — medido repetidamente en ~146mm. La autoridad del
+    # verdict es el ground-truth de profundidad (mide el efecto real del baseline
+    # contra una distancia con cinta, independiente del número). El bound amplio
+    # `--baseline-tol-mm` sólo caza un solve degenerado (poses poco diversas).
+    baseline_delta = baseline_mm - 140.0
+    baseline_degenerate = abs(baseline_delta) > args.baseline_tol_mm
+    if baseline_degenerate:
         logger.warning(
-            "⚠ Baseline estimada fuera de tolerancia (%.2fmm vs diseño 140mm, Δ %+.2fmm). "
-            "La baseline se estima del set de capturas — si son pocas o poco "
-            "diversas el solver converge con error.",
+            "⚠ Baseline %.2fmm muy lejos del diseño 140mm (Δ%+.2fmm > ±%.0fmm) — "
+            "posible solve degenerado (poses poco diversas / board mal medido). "
+            "Revisá la cobertura del barrido.",
             baseline_mm,
-            baseline_mm - 140.0,
+            baseline_delta,
+            args.baseline_tol_mm,
+        )
+    else:
+        logger.info(
+            "Baseline %.2fmm (diseño mecánico 140mm, Δ%+.2fmm) — informativo; el "
+            "óptico difiere del mecánico por la pupila del lente + tolerancias. El "
+            "verdict lo decide el ground-truth de profundidad.",
+            baseline_mm,
+            baseline_delta,
         )
 
     # Apuntar el endpoint /report del capture-UI al reporte guardado
@@ -3980,10 +4096,13 @@ def cmd_wizard(args: argparse.Namespace) -> None:
     global _report_path_for_http
     _report_path_for_http = report_path
 
+    # Verdict = ground-truth de profundidad (autoridad métrica). Si el operador
+    # lo saltea, el baseline queda como única red de seguridad — pero sólo para
+    # cazar un solve degenerado (bound amplio), no como gate de calidad fino.
     overall_pass = True
     if diagnose_zones and diagnose_zones.get("_pass") is False:
         overall_pass = False
-    if abs(baseline_mm - 140.0) > 5.0:
+    elif not diagnose_zones and baseline_degenerate:
         overall_pass = False
     verdict = "PASS" if overall_pass else "FAIL"
 
@@ -4570,14 +4689,16 @@ def main() -> None:
     p_wiz.add_argument(
         "--baseline-tol-mm",
         type=float,
-        default=5.0,
-        help="Tolerancia ± en mm para el check de baseline vs "
-        "diseño (140mm) en el reporte. Default 5mm "
-        "(matchea el QA target de fabricación del "
-        "bracket). Subir cuando un device conocido tiene "
-        "drift mayor y querés que el reporte salga PASS — "
-        "ojo, la rectificación absorbe el drift, no es "
-        "un gate de calidad real (el depth check sí).",
+        default=15.0,
+        help="Bound de SANIDAD del baseline vs diseño mecánico "
+        "(140mm) para detectar un solve degenerado (poses "
+        "poco diversas / board mal medido). Default 15mm. "
+        "NO es un gate de calidad: el verdict lo da el "
+        "ground-truth de profundidad. El baseline ÓPTICO "
+        "difiere legítimamente del mecánico (pupila del "
+        "lente fisheye + tolerancias de impresión; medido "
+        "~146mm). Achicalo sólo si querés cazar drift fino "
+        "y conocés el óptico esperado de tu bracket.",
     )
     p_wiz.add_argument(
         "--force-degenerate-coverage",

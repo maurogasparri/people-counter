@@ -77,6 +77,6 @@ Para mejorar el modelo deployed sin labeling al azar:
 2. Repetir pasos 4-7 de arriba sobre ese batch.
 
 **Histórico**: v1 (294 imgs) → v2 con active learning (+250 imgs,
-mAP50 0.80→0.96, deployed) → v3 (2da iter AL +250 imgs, descartada,
+mAP50 0.80→0.96, deployed) → v3 (2da iter AL +196 imgs, descartada,
 rendimientos decrecientes). Tabla completa en
 `scripts/training/README.md`.

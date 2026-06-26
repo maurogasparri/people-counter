@@ -16,8 +16,8 @@ vistas y los paneles:
   - rssi_max distribuido en shopper (>=-55) / passerby (>=-75) / weak.
   - Ventas POS con mix de prendas (remera/jean) y ~1.4 unidades por ticket.
 
-NO toca el piloto real: opera SOLO sobre store_ids con el prefijo dado. Por
-default purga la data demo previa antes de re-sembrar (idempotente). El piloto
+NO toca el PoC real: opera SOLO sobre store_ids con el prefijo dado. Por
+default purga la data demo previa antes de re-sembrar (idempotente). El PoC
 (``store-pilot-01``) nunca se ve afectado.
 
 Conexión: reusa ``scripts.provision._rds_connect`` (master user vía Secrets
@@ -357,6 +357,41 @@ def gen_telemetry(rng: random.Random, tel_days, sites):
                     else:
                         backlog = rng.randint(0, 3)
                     err = rng.choice(ERROR_SAMPLES) if rng.random() < 0.004 else None
+                    # --- Salud de hardware + pipeline (columnas agregadas post-S8;
+                    # valores de flota SANA con jitter realista) ---
+                    open_hour = hour in HOUR_WEIGHTS
+                    hw = HOUR_WEIGHTS.get(hour, 0.0)
+                    throttled = (
+                        0 if rng.random() > 0.06 else 0x50000
+                    )  # sano; a veces sticky soft
+                    arm_clock = (
+                        2400 if rng.random() > 0.05 else rng.choice([1800, 1500])
+                    )
+                    fan = rng.randint(2200, 3900)
+                    power = round(rng.uniform(4.0, 5.3), 2)
+                    ext5v = round(rng.uniform(5.0, 5.15), 2)
+                    fs_ro = False
+                    svc_restarts = 0 if rng.random() > 0.05 else rng.randint(1, 2)
+                    clock_sync = rng.random() > 0.02
+                    cam_l = rng.random() > 0.01
+                    cam_r = rng.random() > 0.01
+                    lat_p50 = round(rng.uniform(28, 42), 1)
+                    lat_p95 = round(lat_p50 + rng.uniform(12, 30), 1)
+                    det_rate = round(hw * rng.uniform(20, 55), 1)
+                    trk_conf = rng.randint(0, 5) if open_hour else 0
+                    trk_pend = rng.randint(0, 2) if open_hour else 0
+                    secs_reconnect = round(
+                        rng.uniform(300, 86400) if mqtt_ok else rng.uniform(0, 60)
+                    )
+                    wifi_rate = round(
+                        rng.uniform(10, 30) + hw * rng.uniform(30, 110), 1
+                    )
+                    uptime = float(hour * 3600 + minute * 60 + rng.randint(0, 250000))
+                    # Presión de convergencia (TC-03, canary nuevo): mayormente baja;
+                    # algún pico en momentos de cruces simultáneos bidireccionales.
+                    ambiguous = (
+                        rng.randint(0, 2) if rng.random() > 0.15 else rng.randint(3, 12)
+                    )
                     yield (
                         dev,
                         sid,
@@ -378,6 +413,26 @@ def gen_telemetry(rng: random.Random, tel_days, sites):
                         backlog,  # buffer_backlog_messages
                         disconnects,  # mqtt_disconnect_count
                         err,  # error
+                        # --- columnas de salud agregadas ---
+                        uptime,
+                        throttled,
+                        arm_clock,
+                        fan,
+                        power,
+                        ext5v,
+                        fs_ro,
+                        svc_restarts,
+                        clock_sync,
+                        cam_l,
+                        cam_r,
+                        lat_p50,
+                        lat_p95,
+                        det_rate,
+                        trk_conf,
+                        trk_pend,
+                        secs_reconnect,
+                        wifi_rate,
+                        ambiguous,
                     )
 
 
@@ -433,6 +488,13 @@ def main() -> None:
     ap.add_argument(
         "--dry-run", action="store_true", help="Generar y contar filas SIN insertar."
     )
+    ap.add_argument(
+        "--no-rollup-refresh",
+        action="store_true",
+        help="NO resetear el watermark ni correr refresh_rollups() tras el seed. "
+        "Por default el seeder refresca los rollups (si no, quedan stale: la data "
+        "nueva tiene received_at < watermark de pg_cron y refresh_rollups la saltea).",
+    )
     args = ap.parse_args()
 
     start = date.fromisoformat(args.start)
@@ -448,9 +510,11 @@ def main() -> None:
         args.prefix,
     )
 
-    # Telemetry anclada al presente real (no al futuro): últimos N días hasta hoy.
-    today = datetime.now(EVENT_TZ).date()
-    tel_end = min(end, today)
+    # Telemetry: últimos N días hasta ``--end`` (que default-ea a hoy). Honrar el
+    # --end explícito permite extender la demo a una fecha futura (ej. cerrar el mes
+    # para una presentación) sin tocar el default "sin futuro".
+    today = datetime.now(EVENT_TZ).date()  # noqa: F841  (reservado por si se re-capea)
+    tel_end = end
     tel_days = (
         [
             tel_end - timedelta(days=d)
@@ -485,7 +549,7 @@ def main() -> None:
             like = args.prefix + "%"
             if not args.no_purge or args.purge_only:
                 logger.info(
-                    "Purgando data demo previa (store_id LIKE %r) — el piloto NO se toca…",
+                    "Purgando data demo previa (store_id LIKE %r) — el PoC NO se toca…",
                     like,
                 )
                 # Solo tablas crudas. Los rollups NO se purgan acá a propósito: en el
@@ -610,6 +674,25 @@ def main() -> None:
                         "buffer_backlog_messages",
                         "mqtt_disconnect_count",
                         "error",
+                        "uptime_s",
+                        "throttled_flags",
+                        "arm_clock_mhz",
+                        "fan_rpm",
+                        "power_w",
+                        "ext5v_v",
+                        "fs_readonly",
+                        "service_restarts",
+                        "clock_synchronized",
+                        "cam_left_ok",
+                        "cam_right_ok",
+                        "frame_latency_p50_ms",
+                        "frame_latency_p95_ms",
+                        "detection_rate_per_min",
+                        "tracker_confirmed_count",
+                        "tracker_pending_count",
+                        "seconds_since_last_reconnect",
+                        "wifi_probe_rate_per_min",
+                        "ambiguous_reject_count",
                     ),
                     gen_telemetry(random.Random(args.seed), tel_days, sites),
                 )
@@ -621,6 +704,33 @@ def main() -> None:
             nc + nw + np_ + nt,
             len(sites),
         )
+        if not args.no_rollup_refresh:
+            # Tras el re-seed los rollups quedan stale: las filas nuevas tienen
+            # received_at ≈ ahora, pero el watermark de pg_cron pudo avanzar durante
+            # la transacción (que dura varios min) → refresh_rollups() las saltearía.
+            # Reseteamos el watermark a epoch para forzar el reprocesamiento y
+            # corremos el backfill acá mismo, así el re-seed deja los rollups
+            # consistentes sin depender del próximo tick de pg_cron. Idempotente. Si
+            # falla, el seed YA está commiteado (no se pierde data): se loguea cómo
+            # refrescar a mano. La agregación spillea a disco (sin OOM en el micro);
+            # el output de rollups es chico.
+            try:
+                logger.info(
+                    "Reseteando watermark + backfill de rollups (refresh_rollups)…"
+                )
+                conn.autocommit = True
+                with conn.cursor() as rcur:
+                    rcur.execute(
+                        "UPDATE rollup_state SET last_refreshed_at = 'epoch'::timestamptz"
+                    )
+                    rcur.execute("CALL refresh_rollups()")
+                logger.info("  rollups refrescados hasta la fecha del seed.")
+            except Exception:
+                logger.exception(
+                    "Seed OK pero el refresh de rollups falló. Refrescar a mano: "
+                    "UPDATE rollup_state SET last_refreshed_at='epoch'; "
+                    "CALL refresh_rollups();"
+                )
     except Exception:
         conn.rollback()
         logger.exception("FALLÓ — rollback, no se insertó nada.")

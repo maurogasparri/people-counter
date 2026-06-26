@@ -162,6 +162,24 @@ def test_check_cpu_temp_ok_fails_open_when_unreadable(monkeypatch):
     assert check_cpu_temp_ok() is True
 
 
+def test_check_cpu_temp_ok_respects_custom_threshold(tmp_path, monkeypatch):
+    # 82 °C: por encima del default (80) pero por debajo de un override de 85
+    # (caso gabinete cerrado: opera estable en la banda de soft-throttle).
+    f = tmp_path / "temp"
+    f.write_text("82000\n")
+
+    real_open = open
+
+    def _fake_open(path, *a, **k):
+        if str(path) == "/sys/class/thermal/thermal_zone0/temp":
+            return real_open(f, *a, **k)
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", _fake_open)
+    assert check_cpu_temp_ok() is False  # default 80 → fault
+    assert check_cpu_temp_ok(85.0) is True  # override 85 → ok
+
+
 # ---------------------------------------------------------------------------
 # check_hailo_temp_ok
 # ---------------------------------------------------------------------------

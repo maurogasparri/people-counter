@@ -10,7 +10,7 @@
 --
 -- Este archivo es el SCHEMA CANÓNICO consolidado: incorpora el end-state de
 -- todas las migraciones de `migrations/` hasta 2026-05-28 inclusive (ya
--- aplicadas a la DB del piloto y squasheadas acá). Un deploy fresco desde este
+-- aplicadas a la DB del PoC y squasheadas acá). Un deploy fresco desde este
 -- bootstrap produce el mismo estado que correr todas esas migraciones en orden.
 -- `migrations/` solo conserva las migraciones PENDIENTES de aplicar a la DB
 -- viva (hoy ninguna; ver migrations/README.md).
@@ -188,6 +188,13 @@ CREATE TABLE IF NOT EXISTS telemetry (
     -- "tracker perfecto" / "fragmentación rescatada por adopción" /
     -- "fragmentación rescatada por death-emit" / "fragmentación sin rescate".
     ghost_adoption_count          INT,
+    -- Presión de convergencia: rechazos por ambigüedad del tracker en el día
+    -- (cruces simultáneos en sentidos opuestos disputando detecciones sobre la
+    -- línea → el ratio test rechaza+consume y dropea conservador, sin fusión).
+    -- Cuantifica el sub-conteo bidireccional caracterizado en TC-03 (limitación
+    -- documentada, sin fix cero-riesgo). Sube en sites con tráfico bidireccional
+    -- pesado. Ver tracker.ambiguous_reject_count.
+    ambiguous_reject_count        INT,
     -- Canary del Device Shadow: timestamp del último delta aplicado vía
     -- apply_shadow_delta (cloud_defaults.{operating_hours, counting_enabled,
     -- external_traffic_enabled} pushados desde AWS). NULL hasta que el device
@@ -231,7 +238,7 @@ CREATE TABLE IF NOT EXISTS pos_transactions (
     payment_method  TEXT,                                   -- nullable: NULL o 'mixed' para batches
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     -- Buckets generados server-side desde event_ts (el POS no conoce nuestro shadow).
-    -- Mismos nombres que count_events/wifi_ble_summary -> JOINs por nombre de columna.
+    -- Mismos nombres que count_events/wifi_ble_events -> JOINs por nombre de columna.
     bucket_15min    TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 900) * 900)) STORED,
     bucket_hour     TIMESTAMPTZ  GENERATED ALWAYS AS (to_timestamp(floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 3600) * 3600)) STORED,
     bucket_day      DATE         GENERATED ALWAYS AS ((TIMESTAMP 'epoch' + floor(extract(epoch FROM (event_ts - TIMESTAMPTZ 'epoch')) / 86400) * INTERVAL '1 day')::date) STORED,
@@ -555,43 +562,56 @@ BEGIN
 
     -- ===== wifi_ble (bucket por last_seen_ts) =====
     SELECT last_refreshed_at INTO wm FROM rollup_state WHERE source='wifi_ble';
+    -- Agregación MAX entre devices de una misma sucursal (multi-cam sin coordinación
+    -- entre dispositivos): cada unidad asigna su propio visitor_hash, así que se toma el
+    -- máximo por device, NO la unión, para no doble-contar la misma persona vista por 2
+    -- cámaras. Mono-device (PoC) = idéntico al conteo directo.
     INSERT INTO rollup_wifi_ble_day (store_id,bucket_day,passersby,shoppers,visitors)
-    SELECT e.store_id, lday(e.last_seen_ts,s.timezone),
-        COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')),
-        COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max)='shopper'),
-        COUNT(DISTINCT visitor_hash)
-    FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
-    WHERE e.last_seen_ts BETWEEN (SELECT min(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) - INTERVAL '1 day'
-                             AND (SELECT max(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) + INTERVAL '1 day'
-      AND (e.store_id, lday(e.last_seen_ts,s.timezone)) IN
-          (SELECT e2.store_id, lday(e2.last_seen_ts,s2.timezone) FROM wifi_ble_events e2 JOIN sites s2 ON s2.store_id=e2.store_id WHERE e2.received_at>wm)
-    GROUP BY e.store_id, lday(e.last_seen_ts,s.timezone)
+    SELECT store_id, bucket_day, MAX(d_pass), MAX(d_shop), MAX(d_vis) FROM (
+        SELECT e.store_id AS store_id, lday(e.last_seen_ts,s.timezone) AS bucket_day, e.device_id AS device_id,
+            COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')) AS d_pass,
+            COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max)='shopper') AS d_shop,
+            COUNT(DISTINCT visitor_hash) AS d_vis
+        FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
+        WHERE e.last_seen_ts BETWEEN (SELECT min(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) - INTERVAL '1 day'
+                                 AND (SELECT max(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) + INTERVAL '1 day'
+          AND (e.store_id, lday(e.last_seen_ts,s.timezone)) IN
+              (SELECT e2.store_id, lday(e2.last_seen_ts,s2.timezone) FROM wifi_ble_events e2 JOIN sites s2 ON s2.store_id=e2.store_id WHERE e2.received_at>wm)
+        GROUP BY e.store_id, lday(e.last_seen_ts,s.timezone), e.device_id
+    ) per_dev
+    GROUP BY store_id, bucket_day
     ON CONFLICT (store_id,bucket_day) DO UPDATE SET passersby=EXCLUDED.passersby,shoppers=EXCLUDED.shoppers,visitors=EXCLUDED.visitors;
 
     INSERT INTO rollup_wifi_ble_hour (store_id,bucket_hour,passersby,shoppers,visitors)
-    SELECT e.store_id, lhour(e.last_seen_ts,s.timezone),
-        COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')),
-        COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max)='shopper'),
-        COUNT(DISTINCT visitor_hash)
-    FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
-    WHERE e.last_seen_ts BETWEEN (SELECT min(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) - INTERVAL '1 day'
-                             AND (SELECT max(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) + INTERVAL '1 day'
-      AND (e.store_id, lday(e.last_seen_ts,s.timezone)) IN
-          (SELECT e2.store_id, lday(e2.last_seen_ts,s2.timezone) FROM wifi_ble_events e2 JOIN sites s2 ON s2.store_id=e2.store_id WHERE e2.received_at>wm)
-    GROUP BY e.store_id, lhour(e.last_seen_ts,s.timezone)
+    SELECT store_id, bucket_hour, MAX(d_pass), MAX(d_shop), MAX(d_vis) FROM (
+        SELECT e.store_id AS store_id, lhour(e.last_seen_ts,s.timezone) AS bucket_hour, e.device_id AS device_id,
+            COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')) AS d_pass,
+            COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max)='shopper') AS d_shop,
+            COUNT(DISTINCT visitor_hash) AS d_vis
+        FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
+        WHERE e.last_seen_ts BETWEEN (SELECT min(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) - INTERVAL '1 day'
+                                 AND (SELECT max(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) + INTERVAL '1 day'
+          AND (e.store_id, lday(e.last_seen_ts,s.timezone)) IN
+              (SELECT e2.store_id, lday(e2.last_seen_ts,s2.timezone) FROM wifi_ble_events e2 JOIN sites s2 ON s2.store_id=e2.store_id WHERE e2.received_at>wm)
+        GROUP BY e.store_id, lhour(e.last_seen_ts,s.timezone), e.device_id
+    ) per_dev
+    GROUP BY store_id, bucket_hour
     ON CONFLICT (store_id,bucket_hour) DO UPDATE SET passersby=EXCLUDED.passersby,shoppers=EXCLUDED.shoppers,visitors=EXCLUDED.visitors;
 
     INSERT INTO rollup_wifi_ble_15min (store_id,bucket_15min,passersby,shoppers,visitors)
-    SELECT e.store_id, l15(e.last_seen_ts,s.timezone),
-        COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')),
-        COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max)='shopper'),
-        COUNT(DISTINCT visitor_hash)
-    FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
-    WHERE e.last_seen_ts BETWEEN (SELECT min(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) - INTERVAL '1 day'
-                             AND (SELECT max(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) + INTERVAL '1 day'
-      AND (e.store_id, lday(e.last_seen_ts,s.timezone)) IN
-          (SELECT e2.store_id, lday(e2.last_seen_ts,s2.timezone) FROM wifi_ble_events e2 JOIN sites s2 ON s2.store_id=e2.store_id WHERE e2.received_at>wm)
-    GROUP BY e.store_id, l15(e.last_seen_ts,s.timezone)
+    SELECT store_id, bucket_15min, MAX(d_pass), MAX(d_shop), MAX(d_vis) FROM (
+        SELECT e.store_id AS store_id, l15(e.last_seen_ts,s.timezone) AS bucket_15min, e.device_id AS device_id,
+            COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')) AS d_pass,
+            COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max)='shopper') AS d_shop,
+            COUNT(DISTINCT visitor_hash) AS d_vis
+        FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
+        WHERE e.last_seen_ts BETWEEN (SELECT min(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) - INTERVAL '1 day'
+                                 AND (SELECT max(last_seen_ts) FROM wifi_ble_events WHERE received_at>wm) + INTERVAL '1 day'
+          AND (e.store_id, lday(e.last_seen_ts,s.timezone)) IN
+              (SELECT e2.store_id, lday(e2.last_seen_ts,s2.timezone) FROM wifi_ble_events e2 JOIN sites s2 ON s2.store_id=e2.store_id WHERE e2.received_at>wm)
+        GROUP BY e.store_id, l15(e.last_seen_ts,s.timezone), e.device_id
+    ) per_dev
+    GROUP BY store_id, bucket_15min
     ON CONFLICT (store_id,bucket_15min) DO UPDATE SET passersby=EXCLUDED.passersby,shoppers=EXCLUDED.shoppers,visitors=EXCLUDED.visitors;
 
     DELETE FROM rollup_wifi_engagement_day
@@ -753,39 +773,48 @@ CREATE OR REPLACE VIEW wifi_ble_by_bucket_15min AS
     FROM rollup_wifi_ble_15min r JOIN sites s ON s.store_id=r.store_id
    WHERE lday((r.bucket_15min AT TIME ZONE 'UTC') AT TIME ZONE s.timezone, s.timezone) <> lday(now(), s.timezone)
   UNION ALL
-  SELECT e.store_id, l15(e.last_seen_ts,s.timezone),
-         COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')),
-         COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) = 'shopper'),
-         COUNT(DISTINCT visitor_hash)
-    FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
-   WHERE e.last_seen_ts >= now() - INTERVAL '2 days' AND e.last_seen_ts < now() + INTERVAL '1 day' AND lday(e.last_seen_ts,s.timezone) = lday(now(), s.timezone)
-   GROUP BY e.store_id, l15(e.last_seen_ts,s.timezone);
+  SELECT store_id, bucket_15min, MAX(d_pass), MAX(d_shop), MAX(d_vis) FROM (
+    SELECT e.store_id AS store_id, l15(e.last_seen_ts,s.timezone) AS bucket_15min, e.device_id AS device_id,
+           COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')) AS d_pass,
+           COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) = 'shopper') AS d_shop,
+           COUNT(DISTINCT visitor_hash) AS d_vis
+      FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
+     WHERE e.last_seen_ts >= now() - INTERVAL '2 days' AND e.last_seen_ts < now() + INTERVAL '1 day' AND lday(e.last_seen_ts,s.timezone) = lday(now(), s.timezone)
+     GROUP BY e.store_id, l15(e.last_seen_ts,s.timezone), e.device_id
+  ) per_dev
+  GROUP BY store_id, bucket_15min;
 
 CREATE OR REPLACE VIEW wifi_ble_by_bucket_hour AS
   SELECT r.store_id, r.bucket_hour, r.passersby, r.shoppers, r.visitors
     FROM rollup_wifi_ble_hour r JOIN sites s ON s.store_id=r.store_id
    WHERE lday((r.bucket_hour AT TIME ZONE 'UTC') AT TIME ZONE s.timezone, s.timezone) <> lday(now(), s.timezone)
   UNION ALL
-  SELECT e.store_id, lhour(e.last_seen_ts,s.timezone),
-         COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')),
-         COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) = 'shopper'),
-         COUNT(DISTINCT visitor_hash)
-    FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
-   WHERE e.last_seen_ts >= now() - INTERVAL '2 days' AND e.last_seen_ts < now() + INTERVAL '1 day' AND lday(e.last_seen_ts,s.timezone) = lday(now(), s.timezone)
-   GROUP BY e.store_id, lhour(e.last_seen_ts,s.timezone);
+  SELECT store_id, bucket_hour, MAX(d_pass), MAX(d_shop), MAX(d_vis) FROM (
+    SELECT e.store_id AS store_id, lhour(e.last_seen_ts,s.timezone) AS bucket_hour, e.device_id AS device_id,
+           COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')) AS d_pass,
+           COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) = 'shopper') AS d_shop,
+           COUNT(DISTINCT visitor_hash) AS d_vis
+      FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
+     WHERE e.last_seen_ts >= now() - INTERVAL '2 days' AND e.last_seen_ts < now() + INTERVAL '1 day' AND lday(e.last_seen_ts,s.timezone) = lday(now(), s.timezone)
+     GROUP BY e.store_id, lhour(e.last_seen_ts,s.timezone), e.device_id
+  ) per_dev
+  GROUP BY store_id, bucket_hour;
 
 CREATE OR REPLACE VIEW wifi_ble_by_bucket_day AS
   SELECT r.store_id, r.bucket_day, r.passersby, r.shoppers, r.visitors
     FROM rollup_wifi_ble_day r JOIN sites s ON s.store_id=r.store_id
    WHERE r.bucket_day <> lday(now(), s.timezone)
   UNION ALL
-  SELECT e.store_id, lday(e.last_seen_ts,s.timezone),
-         COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')),
-         COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) = 'shopper'),
-         COUNT(DISTINCT visitor_hash)
-    FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
-   WHERE e.last_seen_ts >= now() - INTERVAL '2 days' AND e.last_seen_ts < now() + INTERVAL '1 day' AND lday(e.last_seen_ts,s.timezone) = lday(now(), s.timezone)
-   GROUP BY e.store_id, lday(e.last_seen_ts,s.timezone);
+  SELECT store_id, bucket_day, MAX(d_pass), MAX(d_shop), MAX(d_vis) FROM (
+    SELECT e.store_id AS store_id, lday(e.last_seen_ts,s.timezone) AS bucket_day, e.device_id AS device_id,
+           COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) IN ('passerby','shopper')) AS d_pass,
+           COUNT(DISTINCT visitor_hash) FILTER (WHERE rssi_class(rssi_max) = 'shopper') AS d_shop,
+           COUNT(DISTINCT visitor_hash) AS d_vis
+      FROM wifi_ble_events e JOIN sites s ON s.store_id=e.store_id
+     WHERE e.last_seen_ts >= now() - INTERVAL '2 days' AND e.last_seen_ts < now() + INTERVAL '1 day' AND lday(e.last_seen_ts,s.timezone) = lday(now(), s.timezone)
+     GROUP BY e.store_id, lday(e.last_seen_ts,s.timezone), e.device_id
+  ) per_dev
+  GROUP BY store_id, bucket_day;
 
 -- --- pos: transacciones agregadas (bucket por event_ts) ---
 CREATE OR REPLACE VIEW pos_by_bucket_15min AS

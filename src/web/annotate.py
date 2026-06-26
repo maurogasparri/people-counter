@@ -157,7 +157,7 @@ def annotate_left(
         # (CONFIRMED o re-id en PENDING desde CONFIRMED).
     }
     # Fuentes más grandes así el operador puede leer el overlay
-    # mientras camina bajo las cámaras durante un check de piloto (el
+    # mientras camina bajo las cámaras durante un check de validación en las instalaciones (el
     # live viewer está pensado para debug on-site, no para archivar).
     for tid, track in tracks.items():
         state = getattr(track, "state", None)

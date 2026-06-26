@@ -1,0 +1,26 @@
+# Capa la frecuencia máxima del CPU a 1500 MHz: margen térmico sin costo de FPS.
+#
+# El pipeline es Hailo-bound, no CPU-bound, así que capar el CPU a 1500 MHz NO
+# reduce el FPS, pero baja de forma notable la temperatura del SoC (el DVFS
+# reduce el voltaje al bajar la frecuencia). Es una medida permanente, no un
+# parche temporal: como no cuesta rendimiento, se deja habilitada para tener
+# margen frente al umbral de soft-throttle (~84°C) del Pi5, sobre todo en
+# gabinetes cerrados donde el SoC heat-soakea bajo carga.
+#
+# Medido: sin el cap, el device en gabinete cerrado heat-soakea a 84°C bajo
+# carga y throttlea; con el cap se estabiliza en ~80°C de promedio (máx 81°C)
+# y el throttling desaparece. El freq-cap por sí solo alcanza para mantenerlo
+# fuera de la zona de throttling (ampliar las ranuras del gabinete es una
+# medida adicional opcional). Forma parte del deploy; en mounts muy bien
+# ventilados es simplemente innecesaria.
+[Unit]
+Description=Cap CPU max freq 1500MHz (margen termico, sin costo de FPS)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "echo 1500000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

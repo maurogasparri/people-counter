@@ -203,7 +203,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                  wifi_probe_ok, ble_scanner_ok,
                  wifi_ble_stitching_ratio,
                  track_stitching_ratio, death_emit_count,
-                 ghost_adoption_count,
+                 ghost_adoption_count, ambiguous_reject_count,
                  last_shadow_apply_ts,
                  throttled_flags, arm_clock_mhz, fan_rpm, power_w, ext5v_v,
                  fs_readonly, service_restarts, clock_synchronized,
@@ -221,7 +221,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                     %s, %s,
                     %s,
                     %s, %s,
-                    %s,
+                    %s, %s,
                     %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s,
@@ -256,6 +256,7 @@ def _insert_telemetry(conn, event: dict[str, Any]) -> None:
                 data.get("track_stitching_ratio"),
                 data.get("death_emit_count"),
                 data.get("ghost_adoption_count"),
+                data.get("ambiguous_reject_count"),
                 (
                     _ts(data.get("last_shadow_apply_ts"))
                     if data.get("last_shadow_apply_ts") is not None

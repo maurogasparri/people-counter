@@ -5,7 +5,7 @@ Descarta detecciones cuyo centroide cae fuera del polígono de
 (percheros, mostradores, vidrieras con tráfico exterior) sin tocar la
 ``counting_zone`` semántica del counter.
 
-Análogo conceptualmente al ``pointPolygonTest`` del incumbent FFC, pero:
+Análogo conceptualmente a un ``pointPolygonTest`` (OpenCV), pero:
 
 - **Opt-in per-site**: default OFF (back-compat). El pipeline post-gate
   funciona bien en sites limpios y conserva el lead-in del approach,

@@ -144,3 +144,31 @@ def test_is_still_uses_only_last_min_frames():
     # primer salto grande, pero los últimos 3 quietos → True
     pts = [(0.0, 0.0), (500.0, 500.0), (100.0, 100.0), (101.0, 100.0), (100.5, 100.5)]
     assert cal._sweep_is_still(pts, 5.0, 3) is True
+
+
+# --------------------------------------------------------------------------
+# _sweep_html — handler de prompt post-captura (regresión: el sweep no
+# renderizaba el input de ground-truth porque su refresh() era recortado)
+# --------------------------------------------------------------------------
+
+
+def test_sweep_html_renders_ground_truth_prompt():
+    html = cal._sweep_html()
+    # Parsea data-phase y data-prompt-type (sin esto no detecta el prompt).
+    assert 'data-phase="' in html
+    assert "data-prompt-type" in html
+    # Inyecta los controles del prompt y el input de ground-truth + botones.
+    assert "prompt-ctrls" in html
+    assert "ground_truth" in html
+    assert "gt-dist" in html
+    assert "submitGt" in html
+    # Postea la respuesta del operador de vuelta al backend.
+    assert "/wizard-input" in html
+
+
+def test_sweep_html_handles_diversity_and_complete():
+    html = cal._sweep_html()
+    # Prompt de diversidad (Continuar / Cancelar) y auto-open del reporte.
+    assert "diversity" in html
+    assert "sendInput" in html
+    assert "data-has-report" in html

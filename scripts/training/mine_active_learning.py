@@ -24,7 +24,7 @@ Uso:
     python scripts/training/mine_active_learning.py \\
         --captures training_data/captures \\
         --output training_data/label_al_01 \\
-        --v3 debug/kaggle_kernel/output/people-counter-v3/weights/best.pt \\
+        --v3 models/training/people-counter-detector.pt \\
         --v1 models/training/people-counter-detector/people-counter-detector.pt \\
         --pool-sample 2000 --n-total 250 \\
         --exclude-manifest training_data/label_val_01/manifest.txt \\

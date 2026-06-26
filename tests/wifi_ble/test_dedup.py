@@ -719,7 +719,7 @@ def test_wal_mode_enabled():
 
 
 def test_read_during_open_write_does_not_lock():
-    """Regresión (FPS-killer del piloto): una lectura del publisher
+    """Regresión (FPS-killer hallado en la validación en las instalaciones): una lectura del publisher
     (get_window_records) mientras un productor mantiene una transacción de
     escritura abierta NO debe tirar 'database is locked'. WAL deja leer el
     último snapshot commiteado sin bloqueo mutuo."""

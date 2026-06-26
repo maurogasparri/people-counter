@@ -329,7 +329,7 @@ class Counter:
     # ambos guardrails se distingue "walking → lost → Kalman cruza" del
     # "drift estacionario" (residual velocity, sin movimiento real):
     #   - MAX_KALMAN_CROSS_FRAMES: ≤ ~0.75s @ 20fps sin detección — matchea
-    #     ByteTrackMaxTimeLost del incumbent (FFC).
+    #     el MaxTimeLost de ByteTrack.
     #   - MIN_KALMAN_CROSS_DISPLACEMENT_PX: desplazamiento decisivo (px) en la
     #     dirección del cruce desde la última posición REAL. El drift residual
     #     con velocity_decay alto no alcanza este umbral.
@@ -374,13 +374,13 @@ class Counter:
     DEFAULT_MIN_VISIT_RANGE_FOR_DEATH_EMIT = 80.0
 
     # Mínimo de frames con detección REAL inside la counting zone antes del
-    # emit. Caso piloto 2026-05-24 15:23 (tid=67): track de campera flickeando
+    # emit. Caso hallado en la validación en las instalaciones 2026-05-24 15:23 (tid=67): track de campera flickeando
     # cuyo detector dispara UN solo frame al borde del counting zone (y=204
     # = y_min) y luego Kalman extrapola 247 px en 589 ms hasta outside abajo,
     # disparando IN espurio. Con un humano real caminando a velocidad normal
     # el detector dispara 3-5+ frames inside; 1 solo frame es señal de
     # flickering del detector sobre clutter (campera, sombra, objeto fijo).
-    # Default 0 = filtro desactivado (back-compat). Piloto recomienda 2.
+    # Default 0 = filtro desactivado (back-compat). La validación en las instalaciones recomienda 2.
     # Sites con detector muy estable y FPs raros pueden subir a 3.
     DEFAULT_MIN_REAL_INSIDE_FRAMES = 0
 
@@ -390,7 +390,7 @@ class Counter:
     # preferimos preservar recall en casos donde SGBM falla (motion blur,
     # oclusiones). Default 0.0 = filtro desactivado (back-compat). Tuneable
     # per-site: 1.0 filtra perros + objetos < 1m; 0.7 más conservador.
-    # Caso real piloto 2026-05-24: perro caminando por el local cruzaba la
+    # Caso real hallado en la validación en las instalaciones 2026-05-24: perro caminando por el local cruzaba la
     # línea y disparaba IN; campera en silla con SGBM noise también.
     DEFAULT_MIN_COUNT_HEIGHT_M = 0.0
 
@@ -400,9 +400,9 @@ class Counter:
     # threshold, el counter NO emite el conteo. Eje ortogonal al
     # height_confidence_gate (ese gatea SOLO la demografía cuando HAY altura; el
     # conteo se mantiene). Acá, sin altura, decide contar o no.
-    # Caso real piloto: de lunes a jueves 10:30-18:30 el único "tráfico" es un
+    # Caso real hallado en la validación en las instalaciones: de lunes a jueves 10:30-18:30 el único "tráfico" es un
     # perro (+ tracks fantasma sobre clutter). Análisis de 831 count_events del
-    # piloto (2026-06-01): TODO evento con altura medida tiene conf >= 0.5 y es
+    # PoC (2026-06-01): TODO evento con altura medida tiene conf >= 0.5 y es
     # humano; el perro/fantasma sale SIEMPRE sin altura y con conf <= 0.56. Una
     # persona real sin altura (SGBM falló por blur/oclusión) trae conf alta y
     # pasa → recall preservado. Default 0.60 (cubre el perro tope ~0.56);
@@ -426,7 +426,7 @@ class Counter:
         Args:
             lines: Al menos una línea de conteo axis-aligned.
             counting_zone: Counting zone rectangular opcional gateando la región
-                contada. Lo que el incumbent (FFC) llama TrackingZone — la
+                contada — la "tracking zone", la
                 región física del gate.
             min_crossing_movement_px: Threshold de debounce — si el
                 track se movió menos que este valor (en pixels) entre
@@ -481,7 +481,7 @@ class Counter:
                 usa ``DEFAULT_MIN_COUNT_CONFIDENCE = 0.60``. ``0.0`` lo
                 desactiva (back-compat: cualquier track sin altura cuenta).
                 Bajar a 0.50 para priorizar recall. Validado contra 831
-                count_events del piloto (2026-06-01).
+                count_events del PoC (2026-06-01).
             height_confidence_gate: Threshold de mediana de YOLO confidence
                 del track para que los campos demográficos (height_class,
                 height_m, head_depth_m) se reporten en el CountEvent.
@@ -587,7 +587,7 @@ class Counter:
     def counting_zone(self) -> Optional[tuple[float, float, float, float]]:
         """Counting zone como ``(x_min, x_max, y_min, y_max)`` o ``None`` si unset.
 
-        Es lo que el incumbent (FFC) llama TrackingZone — la región física del
+        Es la "tracking zone" — la región física del
         gate donde el counter mide entradas/salidas. En nuestro sistema se usa
         como gate semántico POST-tracker (no filtra detecciones pre-tracker)."""
         return self._counting_zone
@@ -1027,7 +1027,7 @@ class Counter:
             # afuera, y la entry-fresca le snapshotearía sides[] +
             # configuraría was_inside=True habilitando el zigzag clásico
             # sobre la línea + EXIT por Kalman emitiendo count espurio.
-            # Bug observado en piloto 2026-05-24 09:47-09:54 (tid=35):
+            # Bug observado en la validación en las instalaciones 2026-05-24 09:47-09:54 (tid=35):
             # entry is_real=False -> 9 crosses zigzag en 6 min -> exit
             # Kalman -> COUNT IN falso. Si la persona realmente está
             # adentro, va a venir un frame is_real=True en 1-3 ticks y
@@ -1250,7 +1250,7 @@ class Counter:
             # Refrescar ``last_outside_pos`` a la posición de salida
             # cuando el track ya tiene evidencia legítima de approach
             # (``had_outside_pos=True``) O cuando el exit es real. Sin
-            # esto, un exit Kalman tras un cruce real (caso piloto
+            # esto, un exit Kalman tras un cruce real (caso hallado en la validación en las instalaciones
             # 2026-05-24 14:57:55 tid=316) deja el meta con el
             # ``last_outside_pos`` del approach del ciclo anterior
             # (ej. arriba). Si el track re-entra desde abajo, la entry-
@@ -1291,7 +1291,7 @@ class Counter:
             # Guard de evidencia mínima — defensa contra single-frame entries
             # en el borde del counting zone (detector flickea 1 vez sobre
             # clutter, Kalman extrapola el resto de la "visita"). Caso real
-            # piloto 2026-05-24 15:23 tid=67: 1 frame al borde + 247 px de
+            # validación en las instalaciones 2026-05-24 15:23 tid=67: 1 frame al borde + 247 px de
             # extrapolación Kalman → ingress espurio.
             if label and self.min_real_inside_frames > 0:
                 real_frames = int(meta.get("real_inside_frames", 0))
@@ -1310,8 +1310,8 @@ class Counter:
             # MEDIANA de head_height_mm del track durante la visita es
             # menor que ``min_count_height_m`` y la medición existe (no
             # None), el counter rechaza el emit. None = sin medición SGBM
-            # confiable -> pasa (recall sobre precisión). Caso piloto
-            # 2026-05-24: perro caminando, campera en silla.
+            # confiable -> pasa (recall sobre precisión). Caso hallado en la validación
+            # en las instalaciones 2026-05-24: perro caminando, campera en silla.
             if label and self.min_count_height_m > 0:
                 track_height_m = _aggregate_height_m_from_track(track)
                 if (
@@ -1330,8 +1330,8 @@ class Counter:
             # Guard anti-FP no-humano SIN altura (perro / track fantasma sobre
             # clutter). Complementa min_count_height_m: si SGBM NO le sacó altura
             # al track (mediana None) Y la mediana de confidence cae bajo
-            # ``min_count_confidence``, el emit se rechaza. El perro real del
-            # piloto sale sin altura y con conf <=0.56; una persona sin altura
+            # ``min_count_confidence``, el emit se rechaza. El perro real de la
+            # validación en las instalaciones sale sin altura y con conf <=0.56; una persona sin altura
             # (SGBM falló) trae conf alta y pasa. Usa la altura CRUDA de SGBM
             # (no la anulada por height_confidence_gate, que es solo demografía).
             if label and self.min_count_confidence > 0:
@@ -1480,7 +1480,7 @@ def build_counter(config: dict[str, Any]) -> Counter:
 
     # ``min_real_inside_frames`` per-site (filtro anti-flickering del detector).
     # None / ausente → DEFAULT 0 (filtro OFF). Activar en sites con FPs
-    # single-frame al borde del counting zone. Piloto: 2.
+    # single-frame al borde del counting zone. Validación en las instalaciones: 2.
     min_real_frames_cfg = counter_cfg.get("min_real_inside_frames")
     min_real_frames_kwarg = (
         int(min_real_frames_cfg) if min_real_frames_cfg is not None else None

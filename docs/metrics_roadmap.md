@@ -6,7 +6,7 @@ telemetría de device). Criterio: **no agregar funcionalidad nueva** salvo que
 sea muy barata (un dato estático de config).
 
 Las métricas servibles se calculan sobre la capa de rollup
-(`infra/sql/migrations/2026-05-31_rollup_layer.sql`): vistas `*_by_bucket_*`
+(en `infra/sql/bootstrap.sql`): vistas `*_by_bucket_*`
 rápidas (rollup + live tail ≤5s), consumidas por Grafana y por el read-only
 externo. Ninguna requiere tabla de rollup nueva.
 
@@ -34,14 +34,13 @@ privacidad); "tiempo de permanencia" es estimación a nivel local (no por person
 | Métrica | Por qué |
 |---|---|
 | Atracción de vidriera | el único proxy posible (shoppers÷passersby por RSSI) no es preciso — "estar cerca" ≠ "frenar a mirar"; lo literal necesita visión exterior |
-| Distribución por entrada | el dato ya está (`count_events.device_id`), pero en monocam da 100%; se activa solo con **multi-cam por local** |
+| Distribución por entrada | el dato ya está (`count_events.device_id`); con una sola cámara da 100%, se desagrega con 2+ cámaras por local |
 | Ratio clientes/vendedor (STAR) | no existe un "staff típico" (varía por temporada, horario, día); requeriría feed de dotación por turno |
 
 ### Comportamiento in-store → visión multi-zona / no-video
 `Mapa de calor por zonas`, `Conversión de probadores`, `Recorrido del cliente`,
 `Tiempo y abandono de cola`. Hoy: monocam cenital en la puerta y **regla dura de
-no transmitir video**. Requieren el salto a multi-cámara / sensado por zona
-(roadmap multi-cam, ya previsto para deploys multi-cam por sucursal).
+no transmitir video**. Requieren sensado multi-zona, fuera del alcance del prototipo.
 
 ### Inventario → feed de stock/costo del cliente
 `GMROI`, `Sell-through`, `Merma (shrinkage)`. El POS manda transacciones (ventas),

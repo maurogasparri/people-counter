@@ -1,6 +1,6 @@
 # Migraciones SQL
 
-Cambios incrementales y **data-preserving** sobre la RDS del piloto (que ya
+Cambios incrementales y **data-preserving** sobre la RDS del PoC (que ya
 tiene datos en producción). Estilo `ADD COLUMN IF NOT EXISTS` / `CREATE OR
 REPLACE` / `ALTER`, no `DROP TABLE`.
 
@@ -14,15 +14,12 @@ REPLACE` / `ALTER`, no `DROP TABLE`.
   **squashea** (se borra de acá): su contenido ya vive en el schema canónico y
   el git history preserva el archivo.
 
-Las migraciones hasta **2026-05-28 inclusive** ya fueron aplicadas al piloto y
-consolidadas en `bootstrap.sql` (ver el header de ese archivo). Quedan
-**pendientes** (aplicadas a la DB viva pero todavía sin foldear a
-`bootstrap.sql`) la capa de rollup:
-
-- `2026-05-31_rollup_layer.sql` — tablas base `rollup_*` + `refresh_rollups()`
-  incremental (watermark en `rollup_state`) + las views `*_by_bucket_*` como
-  UNION rollup + live-tail.
-- `2026-05-31b_tz_aware_bucketing.sql` — bucketing tz-aware (local-as-UTC).
+**No hay migraciones pendientes.** Todas las migraciones aplicadas al PoC
+—incl. la capa de rollup (`rollup_*` + `refresh_rollups()` incremental con
+watermark en `rollup_state` + views `*_by_bucket_*` UNION rollup + live-tail),
+el bucketing tz-aware (local-as-UTC) y el canary `ambiguous_reject_count`— ya
+están foldeadas en `bootstrap.sql`. Un deploy fresco desde bootstrap reproduce
+el estado completo; el git history preserva los `.sql` squasheados.
 
 ## `migrate_historical_rollups.example.sql` NO es una migración
 
@@ -37,7 +34,7 @@ se foldea a `bootstrap.sql`.
 ```powershell
 # Conecta como master (people_counter) via Secrets Manager + SSL.
 # Patrón: scripts/provision.py:_rds_connect(stack, region).
-# El stack del piloto es "people-counter-dev".
+# El stack del PoC es "people-counter-dev".
 ```
 
 Escribir un applier one-off en `debug/` (gitignoreado) que lea el `.sql` y lo

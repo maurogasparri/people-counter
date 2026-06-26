@@ -117,8 +117,8 @@ Si tras subir la ventana sigue ≈ 0 adopciones, relajar el gate:
 ```
 
 ⚠ **No bajar `adoption_iou_min` < 0.2** sin verificar primero que no hay
-ID swaps visibles en cruces. Es el gate que nos diferencia del incumbent
-FFC (que usa booleano puro y sí tiene swaps).
+ID swaps visibles en cruces. Es el gate que nos diferencia de un enfoque
+de gate booleano puro (que sí tiene swaps).
 
 ### 2. Crossers perdidos en la zona de la línea (no contó al visitante)
 
@@ -249,7 +249,7 @@ perro (forma/altura atípica) ni a un track fantasma sobre clutter. Esos se
 cuelan por el agujero del guard de altura.
 
 **Síntoma diagnóstico**: counts en horarios sin clientes, todos con
-`height_m=?` (sin altura) y confianza baja. Caso real piloto (2026-06-01): de
+`height_m=?` (sin altura) y confianza baja. Caso real en las instalaciones (2026-06-01): de
 lunes a jueves 10:30-18:30 el único "tráfico" es un perro. Análisis de 831
 `count_events`: **todo** evento con altura medida tiene `conf >= 0.5` y es
 humano; el perro/fantasma sale **siempre sin altura y con `conf <= 0.56`**.

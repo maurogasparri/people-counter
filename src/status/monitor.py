@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.status.health import (
+    CPU_TEMP_CRITICAL_C,
     PIPELINE_STALL_S,
     check_calibration_loadable,
     check_cpu_temp_ok,
@@ -88,6 +89,7 @@ class HealthMonitor:
         internet_probe_interval_s: float = 30.0,
         hailo_probe_interval_s: float = 30.0,
         init_grace_s: float = 120.0,
+        cpu_temp_critical_c: float = CPU_TEMP_CRITICAL_C,
     ) -> None:
         self._led = led
         self._signals = signals
@@ -95,6 +97,7 @@ class HealthMonitor:
         self._internet_probe_interval_s = float(internet_probe_interval_s)
         self._hailo_probe_interval_s = float(hailo_probe_interval_s)
         self._init_grace_s = float(init_grace_s)
+        self._cpu_temp_critical_c = float(cpu_temp_critical_c)
         self._created_ts = time.time()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -149,7 +152,7 @@ class HealthMonitor:
         hw_ok = (
             s.capture_ok
             and s.detect_ok
-            and check_cpu_temp_ok()
+            and check_cpu_temp_ok(self._cpu_temp_critical_c)
             and hailo_ok
             and check_disk_ok()
             and check_calibration_loadable(s.calibration_path)

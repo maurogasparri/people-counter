@@ -73,9 +73,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 $STACK_NAME = "people-counter-$Environment"
-$SECRET_ID  = "people-counter/$Environment/rds-master"
+# Los dos secrets de Secrets Manager que el CFN crea: ambos quedan en recovery
+# window (7-30 dias) al delete-stack y chocan en un redeploy con el mismo nombre,
+# asi que se force-deletean sin recovery.
+$SECRET_IDS = @(
+    "people-counter/$Environment/rds-master",   # RDS master (IAM auth + admin)
+    "people-counter-ses-smtp-$Environment"        # SES SMTP creds (Grafana alerting)
+)
 $RDS_ID     = "people-counter-$Environment"
 $FULL_DOMAIN = "$GrafanaSubdomain.$DomainName"
+$API_DOMAIN  = "api.$DomainName"
 
 function Test-StackExists {
     aws cloudformation describe-stacks --stack-name $STACK_NAME --region $Region 2>$null | Out-Null
@@ -102,16 +109,17 @@ if ($stackExists) {
 
 Write-Host ""
 Write-Host "Tambien se va a:" -ForegroundColor Yellow
-Write-Host "  - force-delete del secret  $SECRET_ID  (sin recovery window)"
+Write-Host "  - force-delete de los secrets (sin recovery window):"
+foreach ($sid in $SECRET_IDS) { Write-Host "      $sid" }
 if ($DeleteSnapshot) {
     Write-Host "  - BORRAR el snapshot final de RDS ($RDS_ID) -> SE PIERDEN LOS DATOS" -ForegroundColor Red
 } else {
     Write-Host "  - CONSERVAR el snapshot final de RDS (usa -DeleteSnapshot para borrarlo)"
 }
 if ($DeleteCert) {
-    Write-Host "  - BORRAR el cert ACM de $FULL_DOMAIN (requiere re-validacion DNS al redeploy)" -ForegroundColor Red
+    Write-Host "  - BORRAR los certs ACM de $FULL_DOMAIN y $API_DOMAIN (requieren re-validacion DNS al redeploy)" -ForegroundColor Red
 } else {
-    Write-Host "  - CONSERVAR el cert ACM de $FULL_DOMAIN (usa -DeleteCert para borrarlo)"
+    Write-Host "  - CONSERVAR los certs ACM de $FULL_DOMAIN y $API_DOMAIN (usa -DeleteCert para borrarlos)"
 }
 
 # === Confirmacion ===
@@ -142,17 +150,20 @@ if ($stackExists) {
 
 # === [2/5] Force-delete del secret ===
 Write-Host ""
-Write-Host "[2/5] Force-delete del secret $SECRET_ID..." -ForegroundColor Cyan
+Write-Host "[2/5] Force-delete de los secrets (sin recovery window)..." -ForegroundColor Cyan
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-aws secretsmanager delete-secret --secret-id $SECRET_ID --region $Region `
-    --force-delete-without-recovery 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "[2/5] Secret eliminado sin recovery window" -ForegroundColor Green
-} else {
-    Write-Host "[2/5] Secret no existia o ya estaba borrado (ok)" -ForegroundColor Green
+foreach ($sid in $SECRET_IDS) {
+    aws secretsmanager delete-secret --secret-id $sid --region $Region `
+        --force-delete-without-recovery 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  eliminado: $sid" -ForegroundColor Green
+    } else {
+        Write-Host "  no existia o ya borrado: $sid (ok)" -ForegroundColor Green
+    }
 }
 $ErrorActionPreference = $prevEAP
+Write-Host "[2/5] Secrets limpiados" -ForegroundColor Green
 
 # === [3/5] App Runner leftover (orphan del deploy viejo) ===
 Write-Host ""
@@ -232,21 +243,23 @@ if ($DeleteSnapshot) {
 }
 
 if ($DeleteCert) {
-    $certArn = aws acm list-certificates --region $Region `
-        --query "CertificateSummaryList[?DomainName=='$FULL_DOMAIN'].CertificateArn | [0]" `
-        --output text 2>$null
-    if ($certArn -and $certArn -ne "None") {
-        aws acm delete-certificate --certificate-arn $certArn --region $Region 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  cert ACM borrado: $certArn"
+    foreach ($certFqdn in @($FULL_DOMAIN, $API_DOMAIN)) {
+        $certArn = aws acm list-certificates --region $Region `
+            --query "CertificateSummaryList[?DomainName=='$certFqdn'].CertificateArn | [0]" `
+            --output text 2>$null
+        if ($certArn -and $certArn -ne "None") {
+            aws acm delete-certificate --certificate-arn $certArn --region $Region 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  cert ACM borrado ($certFqdn): $certArn"
+            } else {
+                Write-Host "  no se pudo borrar el cert de $certFqdn (puede estar en uso por otro recurso)" -ForegroundColor Yellow
+            }
         } else {
-            Write-Host "  no se pudo borrar el cert (puede estar en uso por otro recurso)" -ForegroundColor Yellow
+            Write-Host "  sin cert ACM para $certFqdn"
         }
-    } else {
-        Write-Host "  sin cert ACM para $FULL_DOMAIN"
     }
 } else {
-    Write-Host "  cert ACM conservado (sin -DeleteCert)"
+    Write-Host "  certs ACM conservados (sin -DeleteCert)"
 }
 $ErrorActionPreference = $prevEAP
 
@@ -257,10 +270,12 @@ Write-Host "TEARDOWN COMPLETO" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Pendiente manual en tu DNS provider:" -ForegroundColor Yellow
-Write-Host "  - El CNAME $FULL_DOMAIN -> (ALB/AppRunner viejo) quedo STALE."
+Write-Host "  - El CNAME $FULL_DOMAIN -> (ALB viejo) quedo STALE."
 Write-Host "    Lo actualizas DESPUES del nuevo deploy (apunta a otro endpoint)."
+Write-Host "  - El CNAME $API_DOMAIN -> (API Gateway viejo) tambien quedo STALE."
+Write-Host "  - Los 3 CNAMEs DKIM de SES quedan STALE si recreas la identity en el redeploy."
 if (-not $DeleteCert) {
-    Write-Host "  - Los CNAMEs de validacion ACM: DEJALOS (el cert se conservo)."
+    Write-Host "  - Los CNAMEs de validacion ACM: DEJALOS (los certs se conservaron)."
 }
 Write-Host ""
 Write-Host "Para el deploy nuevo:" -ForegroundColor Cyan

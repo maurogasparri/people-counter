@@ -169,7 +169,7 @@ class MQTTClient:
         todavía (típico apenas bootea el device) — encola la conexión y el loop
         la establece y la reintenta con el backoff de reconnect_delay_set.
 
-        Esto evita el modo de falla observado en piloto (2026-05-31): una race de
+        Esto evita el modo de falla observado en la validación en las instalaciones (2026-05-31): una race de
         DNS al arrancar hacía que el connect() sync tirara getaddrinfo y matara el
         thread de conexión, dejando MQTT caído sin reconexión hasta un restart
         manual mientras el outbox se llenaba (el auto-reconnect de paho sólo actúa

@@ -40,6 +40,16 @@ class TestGenerateReport:
         assert "baseline" in html.lower() and "difiere" in html.lower()
         assert 'class="alert"' in html
 
+    def test_optical_baseline_offset_within_sanity_bound_no_alert(self):
+        # El baseline ÓPTICO real (~146mm, pupila del lente + tolerancias) cae
+        # dentro del bound de sanidad informativo (±15mm del nominal mecánico
+        # 140mm) → NO debe disparar la alerta de solve degenerado. El verdict de
+        # calidad lo da el ground-truth de profundidad, no este número.
+        html = generate_html_report(
+            _mock_calibration(146.6), baseline_tol_mm=15.0, device_id="D"
+        )
+        assert "difiere" not in html.lower()
+
     def test_report_includes_depth_zones(self):
         zones = {
             "center": (2000.0, 10.0, 0.5, 95.0),

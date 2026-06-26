@@ -831,12 +831,12 @@ def test_entry_side_uses_last_outside_pos_under_detection_gap():
     snapshotear sides[] desde la última posición outside-counting-zone conocida
     (lado de approach, inequívoco), no desde la primera detección inside.
 
-    Reproduce el bug operativo observado en piloto: counting zone 264-384 vertical
+    Reproduce el bug operativo observado en la validación en las instalaciones: counting zone 264-384 vertical
     + línea en y=324 + detector que pierde el frame inside-pre-línea.
     Sin fix, sides[0] se cachea ya como ``below`` y el cruce nunca se
     detecta — el track sale de la counting zone sin emitir.
     """
-    # counting zone vertical chico, simulando la setup de piloto antes del enlarge.
+    # counting zone vertical chico, simulando la setup de la validación en las instalaciones antes del enlarge.
     small_zone = {"x_min": 100, "x_max": 500, "y_min": 264, "y_max": 384}
     counter = Counter(lines=[_line_h(line_y=324)], counting_zone=small_zone)
 
@@ -1158,7 +1158,7 @@ def test_real_detection_cross_at_exit_still_counts():
 def test_kalman_exit_skipped_when_track_born_inside_counting_zone():
     """Reproduce el bug del sitter pegado a la línea de cruce.
 
-    Escenario operativo (observado en piloto 2026-05-23 17:45): la persona
+    Escenario operativo (observado en la validación en las instalaciones 2026-05-23 17:45): la persona
     está sentada justo dentro de la counting zone, cerca de la línea de cruce. El
     track nace inside counting zone (sin last_outside_pos previo) → had_outside_pos
     = False. La persona se mueve un toque (se acomoda en la silla):
@@ -1222,7 +1222,7 @@ def test_kalman_exit_counts_when_track_has_outside_history():
 
 
 def test_entry_fresca_skipped_when_first_inside_frame_is_kalman():
-    """Reproduce el bug del entry-Kalman alucinado (piloto 2026-05-24
+    """Reproduce el bug del entry-Kalman alucinado (validación en las instalaciones 2026-05-24
     09:47-09:54, tid=35): el detector emitió una FP outside counting zone, el
     Kalman la proyectó adentro, y la entry-fresca con is_real=False
     snapshoteaba sides[] + configuraba was_inside=True habilitando el
@@ -1296,7 +1296,7 @@ def test_entry_fresca_deferred_until_real_detection():
 
 def test_last_outside_pos_only_updated_with_real_detections():
     """Reproduce el bug de last_outside_pos envenenado por Kalman
-    extrapolation (observado en piloto 2026-05-23 18:10).
+    extrapolation (observado en la validación en las instalaciones 2026-05-23 18:10).
 
     Escenario: sitter inside counting zone cuyo track sale por extrapolación
     Kalman alucinada hacia el lateral del frame (ej. x=850). Ese frame
@@ -1796,7 +1796,7 @@ def test_min_count_height_default_is_off():
 
 # ---------------------------------------------------------------------------
 # Guard min_count_confidence — anti-FP no-humano SIN altura (perro / fantasma)
-# Casos reales del piloto (2026-06-01): de lunes a jueves 10:30-18:30 el único
+# Casos reales hallados en la validación en las instalaciones (2026-06-01): de lunes a jueves 10:30-18:30 el único
 # "tráfico" es un perro. Análisis de 831 count_events: TODO evento con altura
 # medida tiene conf >= 0.5 y es humano; el perro/fantasma sale SIEMPRE sin
 # altura y con conf <= 0.56. Default 0.60 los descarta sin tocar personas.
@@ -1816,13 +1816,13 @@ def _set_track_conf_history(track, confidence_values, head_height_mm=None):
     ]
 
 
-# Confidencias reales del perro/fantasma medidas en el piloto (todas sin altura).
+# Confidencias reales del perro/fantasma medidas en la validación en las instalaciones (todas sin altura).
 PILOT_DOG_CONFIDENCES = [0.29, 0.32, 0.36, 0.37, 0.38, 0.42, 0.56]
 
 
 @pytest.mark.parametrize("dog_conf", PILOT_DOG_CONFIDENCES)
 def test_min_count_confidence_blocks_dog_no_height(dog_conf):
-    """Caso real piloto: perro/fantasma sin altura medida + conf <= 0.56 cruza
+    """Caso real hallado en la validación en las instalaciones: perro/fantasma sin altura medida + conf <= 0.56 cruza
     la línea → con default 0.60 el counter NO emite."""
     counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
     track = _make_track(1, [[300, 150, 3000]])
@@ -2028,7 +2028,7 @@ def test_build_counter_reads_min_count_height_m_from_config():
 
 
 def test_min_real_inside_frames_blocks_single_frame_entry():
-    """Regresión piloto 2026-05-24 15:23:47 (tid=67): track de campera
+    """Regresión hallada en la validación en las instalaciones 2026-05-24 15:23:47 (tid=67): track de campera
     flickeando con 1 solo frame real al borde y_min, después Kalman
     extrapola 247 px a outside abajo, dispara IN espurio.
 
@@ -2115,7 +2115,7 @@ def test_min_real_inside_frames_blocks_death_emit_thin_evidence():
 
 
 def test_stale_outside_pos_after_kalman_exit_does_not_double_count():
-    """Regresión del caso piloto 2026-05-24 14:57:55 (tid=316): doble
+    """Regresión del caso hallado en la validación en las instalaciones 2026-05-24 14:57:55 (tid=316): doble
     INGRESS en 161 ms.
 
     Flow del bug:

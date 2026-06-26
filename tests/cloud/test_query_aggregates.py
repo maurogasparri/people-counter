@@ -269,7 +269,7 @@ def test_cursor_round_trip():
     from src.cloud import query_aggregates
 
     bucket_iso = "2026-05-25T10:00:00Z"
-    site_id = "site_54_21"
+    site_id = "demo-01"
 
     encoded = query_aggregates._encode_cursor(bucket_iso, site_id)
     decoded_bucket, decoded_site = query_aggregates._decode_cursor(encoded)

@@ -41,8 +41,14 @@ _HAILO_TEMP_RE = re.compile(
 )
 
 
-def check_cpu_temp_ok() -> bool:
+def check_cpu_temp_ok(threshold_c: float = CPU_TEMP_CRITICAL_C) -> bool:
     """Devuelve True cuando la CPU está debajo del threshold de throttling o es ilegible.
+
+    ``threshold_c`` default 80 °C (donde la RPi5 empieza el soft-throttle). En
+    sitios con gabinete cerrado mal ventilado donde el device opera de forma
+    estable en la banda de soft-throttle, se puede subir per-device a 85 °C (el
+    hard-throttle, techo real) vía ``status_led.cpu_temp_critical_c`` — la temp
+    igual viaja en telemetría, así que no se pierde observabilidad.
 
     Fail-open: una zona térmica ilegible (tests fuera de la RPi, cambios de
     kernel) no debe prender el LED de falla.
@@ -50,7 +56,7 @@ def check_cpu_temp_ok() -> bool:
     try:
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
             temp = int(f.read().strip()) / 1000.0
-        return temp < CPU_TEMP_CRITICAL_C
+        return temp < threshold_c
     except Exception:
         return True
 

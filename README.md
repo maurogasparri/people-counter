@@ -8,7 +8,7 @@ Sistema de conteo de personas de bajo costo para locales comerciales, basado en 
 - **Detecta tráfico exterior** vía captura pasiva de probe requests WiFi y advertising BLE
 - **Clasifica tráfico** con umbrales duales de RSSI: transeúntes (-75 dBm) vs compradores (-55 dBm), calculando Turn In Rate
 - **Cuenta solo dispositivos "humanos"** en el tráfico exterior: WiFi con MAC randomizada (locally-administered bit) y BLE con address type *random* — los identificadores globales (OUI real) son infra/IoT fijo (APs, smart-TVs, beacons) y se descartan.
-- **Deduplica** WiFi/BLE local en el device via hash groups con stitching de 4 reglas: seqnum continuity 802.11 (anti MAC-randomization), cross-protocol L2 (WiFi+BLE simultáneo), BLE anchoring (durante la vida de un RPA ~15min), y fingerprint continuity (IEs en WiFi / manufacturer-data en BLE, estable a la rotación — cubre lo que el seqnum no agarra, ej. iOS que resetea el seqnum). Los counts publicados son distinct grupos, no distinct hashes. La L3 inter-cámara queda reservada para deploys multi-cam por local (no aplica al PoC con 1 device/sucursal).
+- **Deduplica** WiFi/BLE local en el device via hash groups con stitching de 4 reglas: seqnum continuity 802.11 (anti MAC-randomization), cross-protocol L2 (WiFi+BLE simultáneo), BLE anchoring (durante la vida de un RPA ~15min), y fingerprint continuity (IEs en WiFi / manufacturer-data en BLE, estable a la rotación — cubre lo que el seqnum no agarra, ej. iOS que resetea el seqnum). Los counts publicados son distinct grupos, no distinct hashes.
 - **Transmite metadatos** a AWS vía MQTT con buffer local SQLite para resiliencia offline
 - **Respeta horarios operativos** vía AWS IoT Device Shadow (configuración pushada desde la nube)
 
@@ -50,33 +50,34 @@ El dispositivo corre tres servicios systemd independientes:
 | `wifi-monitor.service` | `rfkill unblock` + `airmon-ng check kill` | Libera wlan0 al boot (destraba rfkill + mata NM/wpa); el pipeline lo pasa a monitor mode (`iw` + `nexutil -m2`) |
 | `people-counter-reset.timer` | Diario a las 04:00 | Resetea el estado de dedup + rota el salt local. Los totales/canaries del counter se resetean in-process en el rollover de medianoche (`main.py`) |
 
-El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT. La dedup L3 inter-cámara queda reservada para deploys multi-cam future work (no aplica al PoC con 1 device/sucursal).
+El probing WiFi/BLE corre como servicio separado porque requiere acceso exclusivo al hardware WiFi (monitor mode). Visión y WiFi nunca compiten por recursos. Ambos publican independientemente a MQTT.
 
 La config cloud usa una estrategia de **caché local de shadow**: al bootear, `main.py` lee un archivo `.shadow.json` si existe (actualizado por un proceso de fondo o en el boot anterior). Los cambios cloud-pusheados se aplican en el próximo boot del servicio.
 
-### Status LED para diagnóstico en sitio
+### Status LED para diagnóstico en las instalaciones
 
-Un LED RGB en el frente del enclosure le da al operador del local un código visual del estado del dispositivo sin SSH. Cascada worst-first por capa (hardware > pipeline > internet > cloud > OK):
+Un LED RGB en el frente del enclosure le da al operador del local un código visual del estado del dispositivo sin SSH. **6 estados = 3 colores puros (rojo/verde/azul) × 2 modos (fijo/parpadeante)**, en cascada worst-first por capa (hardware > pipeline > internet > cloud > unprovisioned > OK). Sin amarillo (R+G se veía verdoso por el balance de brillo):
 
 | LED | Patrón | Significado |
 |-----|--------|-------------|
 | Apagado | — | Sin power (PoE caído) |
-| Rojo | Fijo | Boot failure (servicio no levanta) |
-| Amarillo | Fijo | Hardware roto (cámara, Hailo, temp >80°C, disco lleno) |
-| Amarillo | Parpadeante | Pipeline stalled o software crasheó |
+| Rojo | Fijo | HARDWARE_FAULT — cámara/Hailo/disco/temp sobre umbral (config-driven, default 80°C), o crash/wedge del init |
+| Rojo | Parpadeante | SOFTWARE_FAULT — pipeline stalled o crash del software |
 | Verde | Parpadeante | Sin internet (ethernet up pero no llega afuera) |
-| Verde | Fijo | Internet OK, AWS IoT no responde |
-| Azul | Fijo | Operación normal |
+| Verde | Fijo | Internet OK, AWS IoT no responde (sin cloud) |
 | Azul | Parpadeante | Sin provisioning (certs ausentes — solo en install) |
+| Azul | Fijo | Operación normal (OK) |
 
 `src/status/health.py` corre los probes (CPU/Hailo temp, disco free, calibración cargable, internet TCP a 1.1.1.1:53, MQTT connected flag, watchdog del pipeline) y `src/status/monitor.py` los agrega cada 2s en un thread separado para no estresar el hot path. Configurable vía `status_led:` en `config.yaml` (pines GPIO, intervalos, enabled flag para bench sin LED).
 
 ## Estado del proyecto
 
+**Prototipo completo.** Las 12 etapas del plan (S1–S12) están cerradas y todas las áreas validadas — visión, tracking/conteo, WiFi/BLE, mensajería, cloud, visualización y validación. Detalle por sprint en [CLAUDE.md](CLAUDE.md); resultados de las pruebas en [docs/benchmark_results.md](docs/benchmark_results.md).
+
 | Área | Estado | Detalles |
 |------|--------|---------|
-| Código fuente | 31 módulos en 9 paquetes de `src/` | `vision/` (9: capture, calibration, depth, detect, world_coords, static_suppressor, pre_filter, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (3: persist_event, ingest_pos_transaction, query_aggregates) + `config/` (2: loader, hardware) + `web/` (2: viewer, annotate) + `main.py` + `telemetry.py` |
-| Tests | 1025 funciones de test en 44 archivos (1041 casos, 82% coverage — ver `docs/coverage_report.md`) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
+| Código fuente | 33 módulos en 9 paquetes de `src/` | `vision/` (9: capture, calibration, depth, detect, world_coords, static_suppressor, pre_filter, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (3: persist_event, ingest_pos_transaction, query_aggregates) + `config/` (2: loader, hardware) + `web/` (3: viewer, annotate, admin_auth) + `main.py` + `telemetry.py` |
+| Tests | 1070 funciones de test en 48 archivos (1086 casos, 81% coverage — ver `docs/coverage_report.md`) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
 | Config | Defaults + Per-device + Cloud + Hardware-agnostic | `config/config.example.yaml` (defaults canónicos), `/etc/people-counter/config.yaml` (per-device override), AWS IoT Shadow (business cloud). Parámetros de hardware (sensor, lens, bracket, board ChArUco, AE timings) consolidados en `src/config/hardware.py` (HardwareParams) y leídos por el runtime + todos los setup tools — swap de sensor / bracket / board = solo editar config.yaml, ningún script tiene constantes hardware hardcodeadas |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
@@ -88,10 +89,20 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
-| Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 5 fases) | VPC + RDS Postgres 16.6 (db.t4g.micro, IAM auth + force_ssl + auto minor upgrades) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + ECS Fargate Grafana 13 detrás de ALB con ACM cert custom (`grafana.tfg.gasparri.com.ar`) + SNS alarms. ~$35/mo PoC. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
+| Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 6 fases) | VPC + RDS Postgres 16 (db.t4g.micro, IAM auth + force_ssl + auto minor upgrades) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + ECS Fargate Grafana 13 detrás de ALB con ACM cert custom (`grafana.tfg.gasparri.com.ar`) + SNS alarms. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
 | Deployment | Listo | provision.py (create/deploy/harvest/reprovision), servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
 | Disaster recovery | Listo | `harvest` baja `calibration.npz` al workstation; `reprovision` revoca cert viejo en IoT Core y emite uno nuevo. Certs nunca se respaldan — rotan en cada restore |
-| Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup_guide.md). Guía para operadores en campo (docs/pilot_operator_guide.md) |
+| Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup_guide.md). Guía para operadores en las instalaciones (docs/operator_guide.md) |
+
+## Acceso a los dashboards (evaluación)
+
+El backend cloud expone los tableros de Grafana en
+**https://grafana.tfg.gasparri.com.ar** (HTTPS con cert ACM, dominio propio).
+
+Para revisión externa hay un usuario **read-only** (`user`, rol *Viewer*):
+ve los 5 dashboards de las 2 carpetas (Analítica comercial + Operación y
+flota), sin poder editar, ejecutar queries crudas (Explore deshabilitado)
+ni acceder a administración. **La contraseña está disponible bajo solicitud.**
 
 ## Quick start
 
@@ -124,7 +135,7 @@ El sistema usa **defaults canónicos + override per-device + cloud channel**:
 
 `mounting_height_m` (per-device) alimenta el SGBM auto-tune (`num_disparities: auto` deriva el rango de disparidad por sitio) y el head-height gating del clasificador adulto/niño. La calibración estéreo es mount-independent (un único `.npz` factory sirve para mount 2.0–3.5m).
 
-## Instalación en sitio
+## Instalación en las instalaciones
 
 Los tools de setup (`focus_assist.py`, `calibrate.py`, `preview.py`, `diagnose_depth.py`,
 `diagnose_calibration.py`) leen `/etc/people-counter/config.yaml` para `vision.resolution` y
@@ -235,11 +246,13 @@ Subcomando aparte para restart limpio:
 python scripts/calibrate.py reset --yes   # borra captures + session.json + .npz
 ```
 
-**Protocolo recomendado para el piloto**: con buen espacio + luz, `--guided` (las
-mismas 20 poses deterministas en cada dispositivo) da comparabilidad entre unidades
-para QA. En espacios chicos / luz difícil, el barrido (default) es más práctico —
-la cobertura la garantiza su mapa de zonas/distancia/tilt, y se valida igual con el
-RMS + `diagnose_calibration`.
+**Protocolo de calibración recomendado**: el modo de **barrido libre** (default) es
+el recomendado para la puesta en marcha — es el que se usó y validó en la calibración
+del prototipo (RMS epipolar 0,12 px) y el más práctico en espacios chicos / luz
+difícil; su cobertura la garantiza el mapa de zonas/distancia/tilt y se valida con el
+RMS + `diagnose_calibration`. El modo `--guided` (20 poses deterministas) queda como
+opción para QA comparable entre unidades cuando hay buen espacio + luz, p. ej. en un
+eventual despliegue de flota.
 
 ### 3. Monitor de salud de calibración (post-calibración)
 
@@ -302,7 +315,7 @@ Pasos resumidos:
    Imgs sin `.json` se tratan como background revisado (`.txt` vacío).
 6. **Subir a Kaggle dataset privado** vía Kaggle CLI:
    `kaggle datasets version -p training_data/dataset_v_next ...`. El
-   notebook consume desde ahí (no más signed URLs de Roboflow).
+   notebook consume el dataset desde ahí.
 7. **Training en Kaggle T4**: `train_head_detector.ipynb`. Para iterar
    a v2/v3/... basta cambiar el slug del dataset + name del run.
    ~20 min por iteración. Descarga del modelo entrenado vía Kaggle CLI.
@@ -334,8 +347,8 @@ Defense-in-depth runtime (independiente del modelo):
   geometría cenital).
 - **Cluster por centroide** (`cluster_distance_px: 150`): mergea
   detecciones multi-firing (cabeza + hombro como cajas distintas).
-- **`StaticSuppressor`** (`cell_size_px: 30`, `window_seconds: 3`):
-  suprime detecciones en celdas hot ≥70% de los últimos 3s — clutter
+- **`StaticSuppressor`** (`cell_size_px: 30`, `window_seconds: 15`):
+  suprime detecciones en celdas hot ≥70% de los últimos 15s — clutter
   estructural (maniquíes, ropa colgada, sombras) que sobrevive NMS.
 
 ## Estructura del repo
@@ -348,11 +361,11 @@ src/
 ├── mqtt/            # Cliente AWS IoT Core + buffer SQLite con replay
 ├── cloud/           # Lambdas: persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC) + ingest_pos_transaction (POS API → tabla pos_transactions) + query_aggregates (API read-only de agregados sobre las vistas)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
-├── config/          # Loader (deep-merge defaults + per-device + IoT Shadow) + hardware (HardwareParams dataclass — sensor/lens/bracket/charuco/ae_lock leídos del config, hardware-agnostic)
-├── web/             # Live preview HTTP/MJPEG (viewer + annotate); gateado por has_subscribers — counting es sync-deterministic independiente del viewer
-├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime + canaries (track_stitching_ratio, ghost_adoption_count, death_emit_count, wifi_ble_stitching_ratio)
+├── config/          # Loader (per-device strict + IoT Shadow overrides) + hardware (HardwareParams dataclass — sensor/lens/bracket/charuco/ae_lock leídos del config, hardware-agnostic)
+├── web/             # Live preview HTTP/MJPEG (viewer + annotate) + panel admin con login (admin_auth); gateado por has_subscribers — counting es sync-deterministic independiente del viewer
+├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime + canaries (track_stitching_ratio, ghost_adoption_count, death_emit_count, ambiguous_reject_count, wifi_ble_stitching_ratio)
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
-tests/               # 1025 funciones de test en 44 archivos espejando src/ + tests/scripts/ para el wizard
+tests/               # 1070 funciones de test en 48 archivos espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven. Default
@@ -403,16 +416,16 @@ config/
 ├── people-counter-reset.*        # Timer de reset diario de dedup (04:00)
 └── logrotate.conf                # Rotación de logs
 infra/
-├── README.md                              # Walkthrough del deploy + costos + verificación E2E
+├── README.md                              # Walkthrough del deploy + verificación E2E
 ├── cloudformation/people-counter.yaml     # Stack completo de AWS
-├── deploy.ps1                             # Orquestador 5 fases (RDS + IoT + Lambda + ECR + cert ACM + ECS Fargate + ALB Grafana + CNAME). -StartFromPhase para resumir
+├── deploy.ps1                             # Orquestador 6 fases (RDS + IoT + Lambdas + ECR + SES + certs ACM + ECS Fargate + ALB + Grafana datasource/dashboards/alerts). -StartFromPhase para resumir
 ├── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_events / telemetry / pos_transactions + funciones SQL height_class() y rssi_class() + vistas cartesian + lambda_writer con rds_iam)
-├── sql/migrations/                        # Migraciones incrementales data-preserving sobre la RDS viva (2026-05-31_rollup_layer.sql + 2026-05-31b_tz_aware_bucketing.sql)
+├── sql/migrations/                        # Migraciones incrementales data-preserving sobre la RDS viva (squasheadas a bootstrap.sql una vez aplicadas)
 └── sql/migrate_historical_rollups.example.sql  # Template staging→tablas base rollup_* para histórico AGREGADO (no es migración de schema)
 docs/
 ├── setup_guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
 ├── lab_calibration_guide.md      # Protocolo de foco + calibración en lab (universal para la flota)
-└── pilot_operator_guide.md       # Guía para el operador en sitio (foco → calibración → verificación)
+└── operator_guide.md             # Guía para el operador en las instalaciones (foco → calibración → verificación)
 training_data/                    # Workspace gitignoreado de training (sites.yaml inline + captures rectificadas)
 debug/                            # Drop-zone gitignoreado para reportes, capturas y logs de test
 ```

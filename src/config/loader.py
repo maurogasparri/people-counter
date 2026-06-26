@@ -903,7 +903,7 @@ def apply_shadow_delta(
                 logger.warning("No se pudo crear el backup %s", bak)
             # Write atómico: tmp en el MISMO directorio + fsync + os.replace.
             # El write_text directo anterior dejaba el config.yaml truncado
-            # ante un corte de energía mid-write (retail, 363 días/año) →
+            # ante un corte de energía mid-write (retail, 365 días/año) →
             # el próximo boot fallaba la validación → exit 2 → restart-loop
             # infinito sin intervención. El fsync garantiza que el contenido
             # esté en disco ANTES del rename (sin él, el rename atómico puede

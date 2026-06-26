@@ -4,15 +4,15 @@
 El compile a HEF en ``hailomz compile`` corre quantization-aware con un
 sample de ~200 imágenes representativas. Para evitar leak entre el set
 de quant y el de evaluación / training, sampleamos del pool original
-(``training_data/captures/``) excluyendo los frames que ya fueron al
-dataset de Roboflow (listados en
-``training_data/roboflow_uploaded_manifest.txt``).
+(``training_data/captures/``) excluyendo los frames que ya fueron a los
+batches de labeling (listados en los manifests de cada batch, ej.
+``training_data/label_train_v1.manifest``).
 
 Uso típico:
 
     python scripts/training/sample_for_calib.py \\
         --sources training_data/captures \\
-        --exclude-manifest training_data/roboflow_uploaded_manifest.txt \\
+        --exclude-manifest training_data/label_train_v1.manifest \\
         --output models/training/people-counter-detector/calib \\
         --total 200 \\
         --motion-ratio 0.6 \\
@@ -40,7 +40,7 @@ from collections import defaultdict
 from pathlib import Path
 
 
-# Filenames renameados por sample_for_roboflow.py tienen la forma
+# Filenames renameados por sample_for_labeling.py tienen la forma
 # ``NNN_<site>__<original>.jpg`` (ej. ``000_<site_name>__<ts>_motion_L_<hash>.jpg``).
 # Este regex extrae site + basename original para el matching contra mjpeg_capture/<site>/<basename>.
 _RENAMED_RX = re.compile(r"^\d+_(?P<site>site_[^_]+(?:_[^_]+)*)__(?P<orig>.+\.jpg)$")
@@ -95,7 +95,7 @@ def main() -> None:
         type=Path,
         action="append",
         default=[],
-        help="Dir con frames renombrados (formato sample_for_roboflow.py) "
+        help="Dir con frames renombrados (formato sample_for_labeling.py) "
         "que deben EXCLUIRSE del calib. Repetible.",
     )
     parser.add_argument(
@@ -104,9 +104,9 @@ def main() -> None:
         action="append",
         default=[],
         help="Manifest .txt con una entry por línea (formato "
-        "NNN_<site>__<orig>.jpg, igual que sample_for_roboflow.py). "
+        "NNN_<site>__<orig>.jpg, igual que sample_for_labeling.py). "
         "Sirve para excluir aún cuando los archivos originales ya no "
-        "existen — usar training_data/roboflow_uploaded_manifest.txt. "
+        "existen — usar los manifests de los batches de labeling. "
         "Repetible.",
     )
     parser.add_argument(

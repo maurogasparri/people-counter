@@ -133,7 +133,7 @@ class TestMQTTClientConstruction:
 
     @patch("src.mqtt.client.mqtt.Client")
     def test_connect_uses_async_so_boot_dns_race_retries(self, mock_mqtt_cls):
-        """Regresión piloto 2026-05-31: el connect inicial debe usar
+        """Regresión hallada en la validación en las instalaciones 2026-05-31: el connect inicial debe usar
         connect_async (no el sync connect), así una race de DNS al bootear la
         reintenta el loop de paho con backoff en vez de matar el thread y dejar
         MQTT caído. Además connect_async NO debe re-levantar si tira por red."""

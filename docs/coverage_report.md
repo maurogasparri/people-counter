@@ -1,7 +1,7 @@
 # Reporte de coverage de tests
 
 Cobertura de la suite de tests unitarios sobre `src/`. Generado con
-`pytest-cov` (coverage.py) el **2026-06-17**.
+`pytest-cov` (coverage.py) el **2026-06-26**.
 
 ## Cómo regenerarlo
 
@@ -16,12 +16,12 @@ pytest --cov=src --cov-report=term-missing --cov-report=html
 
 | Métrica | Valor |
 |---|---:|
-| Tests ejecutados | **1039 passed**, 2 skipped |
-| Sentencias totales en `src/` | 6740 |
-| Sentencias sin cubrir | 1203 |
-| **Cobertura total** | **82%** |
+| Tests ejecutados | **1084 passed**, 2 skipped (1086 total) |
+| Sentencias totales en `src/` | 6847 |
+| Sentencias sin cubrir | 1275 |
+| **Cobertura total** | **81%** |
 | Archivos al 100% | 15 |
-| Tiempo de ejecución | ~46 s |
+| Tiempo de ejecución | ~77 s |
 | Plataforma | Python 3.12 (workstation) / target runtime 3.13 (Pi) |
 
 ## Cobertura por módulo
@@ -34,16 +34,15 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 |---|---:|---:|
 | `vision/static_suppressor.py` | 52 | 98% |
 | `cloud/persist_event.py` | 123 | 98% |
-| `cloud/ingest_pos_transaction.py` | 125 | 98% |
 | `config/hardware.py` | 75 | 97% |
 | `tracking/counter.py` | 449 | 97% |
-| `status/monitor.py` | 73 | 96% |
+| `status/monitor.py` | 74 | 96% |
 | `wifi_ble/fingerprint.py` | 43 | 95% |
 | `web/admin_auth.py` | 45 | 93% |
 | `vision/calibration.py` | 645 | 92% |
 | `config/loader.py` | 384 | 91% |
 | `status/health.py` | 68 | 91% |
-| `tracking/tracker.py` | 444 | 91% |
+| `tracking/tracker.py` | 450 | 91% |
 | `web/annotate.py` | 184 | 90% |
 | `status/led.py` | 89 | 90% |
 | `vision/best_frame.py` | 169 | 89% |
@@ -54,13 +53,13 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 | `telemetry.py` | 247 | 82% |
 | `vision/report.py` | 166 | 81% |
 | `web/viewer.py` | 350 | 77% |
-| `vision/capture.py` | 277 | 73% |
 | `wifi_ble/wifi_probe.py` | 261 | 70% |
 | `vision/depth.py` | 235 | 64% |
-| `main.py` | 981 | 62% |
+| `main.py` | 987 | 62% |
+| `vision/capture.py` | 371 | 61% |
 | `vision/detect.py` | 230 | 61% |
 | `wifi_ble/ble_scan.py` | 101 | 60% |
-| **TOTAL** | **6740** | **82%** |
+| **TOTAL** | **6847** | **81%** |
 
 > **Pasada de hardening de tests (2026-06-17)**. Se cerraron los gaps de
 > mayor riesgo entre el núcleo de decisión y las Lambdas:
@@ -72,7 +71,7 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 >   corrían (false confidence). Los nuevos tests llaman `_emit_on_death` con
 >   un snap controlado: pasa todos los guards menos el target, con control que
 >   confirma el aislamiento.
-> - **`persist_event` 82%→98%** y **`ingest_pos_transaction` 82%→98%**: paths
+> - **`persist_event` 82%→98%** y **`ingest_pos_transaction` 82%→100%**: paths
 >   de resiliencia del Lambda caliente (reconexión de conexión stale vía
 >   health-check `SELECT 1`, swallow del close fallido, selección de
 >   `sslmode`/`sslrootcert`) + ramas de validación (event_ts de tipo
@@ -86,10 +85,13 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 > test assertaba el side-effect al toque. Pasaba aislado y fallaba con la
 > suite completa según el scheduling; ahora espera el efecto con timeout.
 >
-> El total agregado sube poco (81%→82%) porque el denominador está dominado
-> por los bordes de hardware + `main.py` (ver abajo) que no se persiguen por
-> diseño; el valor de la pasada está en llevar los módulos de mayor riesgo a
-> 97-98%, no en el número agregado.
+> El total agregado se movió poco con esa pasada; en la medición actual
+> (2026-06-26) es **81%** — el código de runtime sumado después (p. ej.
+> `camera_sync` en `capture.py`, que pasó de 73% a 61% al crecer ~90
+> sentencias que no se ejercitan sin hardware) diluyó el agregado. El
+> denominador está dominado por los bordes de hardware + `main.py` que no se
+> persiguen por diseño; el valor está en los módulos de mayor riesgo a 97-98%,
+> no en el número agregado.
 
 ## Interpretación
 
@@ -97,7 +99,7 @@ La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
 (88–98%) y los límites de hardware/I/O están más bajos (60–77%)**.
 
 - **Lógica de negocio bien cubierta (88–98%)**: el `counter` (rescue cascade
-  de 3 capas + guards, 94%), el `tracker` (Kalman + state machine + ghost
+  de 3 capas + guards, 97%), el `tracker` (Kalman + state machine + ghost
   pool, 91%), la `calibration` fisheye K-B (92%), el `dedup` con las 4 reglas
   de stitching (88%), `fingerprint` (95%), `static_suppressor` (98%),
   `config/loader` strict (91%) y los probes de salud (`health`/`monitor`/`led`
@@ -123,11 +125,11 @@ La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
   inicialización; lo no cubierto es el hot loop de captura→detect→track→count
   que solo corre con hardware. Su comportamiento integral se valida con
   `tests/test_main.py` (smoke) + el replay mode (`--replay-dir`) + la
-  validación E2E del piloto.
+  validación E2E en las instalaciones.
 
 ## Conclusión
 
-82% de cobertura total con el **núcleo de decisión (counter/tracker/dedup/
+81% de cobertura total con el **núcleo de decisión (counter/tracker/dedup/
 calibration) por encima del 88%** (counter y las Lambdas de ingesta en
 97-98% tras la pasada de hardening). El gap hasta el 100% son mayoritariamente
 los bordes de hardware, cubiertos por validación on-device en lugar de tests

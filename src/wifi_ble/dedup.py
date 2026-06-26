@@ -30,8 +30,8 @@ abstracto). Los counts publicados (``passersby``, ``shoppers``) son distinct
 
 Privacy: el ``seqnum`` y los timestamps quedan SOLO en SQLite local (rotado
 diario via ``reset_daily``). El MQTT publish sigue mandando counts agregados,
-nunca hashes ni seqnums. La capa 3 (inter-camara) no aplica al PoC con 1
-device/sucursal.
+nunca hashes ni seqnums. El dedup es local al device (monocam, 1
+device/sucursal).
 """
 
 from __future__ import annotations
@@ -555,7 +555,7 @@ class DedupEngine:
     ) -> list[str]:
         """Devuelve hashes vistos por primera vez en una ventana temporal.
 
-        Mantenido para compat con el publisher viejo y eventual L3 cloud dedup.
+        Mantenido para compat con el publisher viejo.
         Filtra por ``first_seen`` — un hash solo se reporta en la ventana en
         la que fue stitcheado por primera vez ese dia.
 

@@ -517,6 +517,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
         "people-counter.service",
         "people-counter-reset.service",
         "people-counter-reset.timer",
+        "cpu-freq-cap.service",  # freq-cap térmico: parte del deploy estándar
     ]:
         src = config_dir / config_file
         if src.exists():
@@ -534,7 +535,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     _ssh(host, "sudo systemctl daemon-reload")
     _ssh(
         host,
-        "sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer",
+        "sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer cpu-freq-cap",
     )
     logger.info("Systemd services and logrotate installed")
 

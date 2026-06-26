@@ -4,7 +4,7 @@ Diseño de la actualización Over-The-Air para la flota de devices edge. **Estad
 propuesto, no implementado.** Este documento fija las decisiones de arquitectura
 antes de escribir código; cada decisión lista la alternativa rechazada y por qué.
 
-> Principio rector: los devices operan **desatendidos 12h/día, 363 días/año**. El
+> Principio rector: los devices operan **desatendidos 12h/día, 365 días/año**. El
 > peor caso de un OTA es **brickear un equipo que justamente no querés visitar**.
 > Por eso el diseño prioriza **atomicidad + rollback automático** sobre simplicidad.
 
