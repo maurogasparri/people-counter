@@ -64,7 +64,8 @@
 param(
     [string]$Environment = "dev",
     [string]$Region = "us-east-1",
-    [string]$DomainName = "tfg.gasparri.com.ar",
+    # Pasar el dominio propio con -DomainName; el marcador no resuelve.
+    [string]$DomainName = "<tu-dominio>",
     [string]$GrafanaSubdomain = "grafana",
     [switch]$DeleteSnapshot,
     [switch]$DeleteCert,

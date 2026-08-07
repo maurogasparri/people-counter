@@ -4,11 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "people-counter"
-version = "0.1.0"
+version = "1.0.0"
 description = "Low-cost people counting for retail via stereo vision and edge AI"
 requires-python = ">=3.11"
 dependencies = [
-    "opencv-contrib-python>=4.10",
+    # Cota superior deliberada: OpenCV 5.0 removio cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC,
+    # que usa el solve de calibracion estereo (src/vision/calibration.py). Sin la
+    # cota, una instalacion limpia resuelve a 5.x y la calibracion falla en
+    # tiempo de ejecucion. Portar el pipeline a la API de OpenCV 5 es trabajo
+    # aparte; este repositorio reproduce los resultados sobre la serie 4.x.
+    "opencv-contrib-python>=4.10,<5",
     "numpy>=2.0",
     "scipy>=1.13",
     "paho-mqtt>=2.1",

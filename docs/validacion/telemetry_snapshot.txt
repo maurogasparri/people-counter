@@ -1,0 +1,80 @@
+=== ULTIMA TELEMETRIA (device real) ===
+  telemetry_id                   c0b76d44-99ef-4f74-b7a9-5f819843acf2
+  device_id                      store-pilot-01-cam-01
+  event_ts                       2026-06-21 17:12:29.584380+00:00
+  bucket_hour                    2026-06-21 17:00:00+00:00
+  uptime_s                       5444.32
+  cpu_temp_c                     45.2
+  hailo_temp_c                   39.541924
+  disk_free_mb                   106430
+  mem_available_mb               7453
+  fps                            16.605877
+  frame_latency_p50_ms           23.99181
+  frame_latency_p95_ms           26.515457
+  detection_rate_per_min         0.0
+  tracker_confirmed_count        0
+  tracker_pending_count          0
+  total_in                       2
+  total_out                      0
+  mqtt_connected                 True
+  mqtt_disconnect_count          0
+  seconds_since_last_reconnect   5401.275
+  buffer_backlog_messages        0
+  wifi_probe_ok                  True
+  ble_scanner_ok                 True
+  wifi_ble_stitching_ratio       0.15289256
+  track_stitching_ratio          13.5
+  death_emit_count               0
+  ghost_adoption_count           3
+  received_at                    2026-06-21 17:12:29.855226+00:00
+  throttled_flags                0
+  arm_clock_mhz                  2400
+  fan_rpm                        3686
+  power_w                        3.994
+  ext5v_v                        5.1322
+  fs_readonly                    False
+  service_restarts               0
+  clock_synchronized             True
+  cam_left_ok                    True
+  cam_right_ok                   True
+  wifi_probe_rate_per_min        5.3986616
+
+=== AGREGADOS 48h (device real) ===
+  n                21
+  cpu_min          24.85
+  cpu_avg          46.43
+  cpu_max          54.0
+  hailo_min        19.56
+  hailo_avg        37.34
+  hailo_max        41.82
+  fan_min          0
+  fan_avg          2786.0476190476190476
+  fan_max          3722
+  pw_min           3.44
+  pw_avg           4.06
+  pw_max           4.9
+  fps_min          9.97
+  fps_avg          15.22
+  fps_max          27.9
+  throttled_max    0
+  backlog_max      2
+  mqtt_disc_max    0
+  restarts_max     0
+
+=== canaries (ultima fila) ===
+  wifi_ble_stitching   0.15289256
+  track_stitching      13.5
+  death_emit           0
+  ghost_adoption       3
+  clock_sync           True
+  cam_left_ok          True
+  cam_right_ok         True
+  wifi_probe_ok        True
+  ble_scanner_ok       True
+  fs_readonly          False
+  mqtt_connected       True
+
+=== TC-12 IDEMPOTENCIA (count_events) ===
+  fila de prueba: ('store-pilot-01-cam-01', datetime.datetime(2026, 6, 21, 17, 7, 52, 640015, tzinfo=datetime.timezone.utc), 117, 'in')
+  count antes=1160 | filas insertadas (re-insert dup)=0 | count despues=1160
+  VEREDICTO: PASS (idempotente, 0 dup)

@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import tempfile
 import time
 from pathlib import Path
 
 import pytest
 
-from src.wifi_ble.dedup import DedupEngine, _seqnum_delta
+from src.wifi_ble.dedup import (
+    DB_FILE_MODE,
+    DedupEngine,
+    _seqnum_delta,
+    secure_db_permissions,
+)
 
 
 def _make_engine(
@@ -743,3 +750,61 @@ def test_read_during_open_write_does_not_lock():
     finally:
         writer.rollback()
         writer.close()
+
+
+# ---------------------------------------------------------------------------
+# Permisos del archivo del SQLite
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="os.chmod no expresa permisos POSIX en Windows"
+)
+class TestDbFilePermissions:
+    """La tabla `dedup_meta` guarda la salt: el archivo va restringido a 0600."""
+
+    @staticmethod
+    def _mode(path: str) -> int:
+        return stat.S_IMODE(os.stat(path).st_mode)
+
+    def test_archivo_nuevo_queda_en_0600(self, tmp_path):
+        """Creación: sqlite3 crearía 0644 con el umask habitual."""
+        db = str(tmp_path / "dedup.sqlite")
+        DedupEngine(db_path=db)
+        assert self._mode(db) == DB_FILE_MODE
+
+    def test_archivo_preexistente_laxo_se_corrige_al_abrir(self, tmp_path):
+        """Arranque sobre un archivo heredado de una instalación anterior."""
+        db = str(tmp_path / "dedup.sqlite")
+        DedupEngine(db_path=db)
+        os.chmod(db, 0o644)
+        assert self._mode(db) == 0o644
+
+        DedupEngine(db_path=db)
+        assert self._mode(db) == DB_FILE_MODE
+
+    def test_ensure_secure_permissions_es_idempotente(self, tmp_path):
+        """Re-afirmarlo no cambia nada ni falla."""
+        db = str(tmp_path / "dedup.sqlite")
+        eng = DedupEngine(db_path=db)
+        eng.ensure_secure_permissions()
+        eng.ensure_secure_permissions()
+        assert self._mode(db) == DB_FILE_MODE
+
+    def test_auxiliares_wal_y_shm_tambien_restringidos(self, tmp_path):
+        """Los -wal/-shm heredan el modo del principal; si quedaron laxos de
+        una versión anterior, ensure_secure_permissions los repara."""
+        db = str(tmp_path / "dedup.sqlite")
+        eng = DedupEngine(db_path=db)
+        eng.process_detection("AA:BB:CC:DD:EE:FF", "wifi", -60.0)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db + suffix
+            if not os.path.exists(sidecar):
+                continue
+            os.chmod(sidecar, 0o644)
+            eng.ensure_secure_permissions()
+            assert self._mode(sidecar) == DB_FILE_MODE
+
+    def test_no_falla_si_el_archivo_no_existe(self, tmp_path):
+        """Best-effort: un path inexistente no debe propagar excepción."""
+        secure_db_permissions(str(tmp_path / "no-existe.sqlite"))

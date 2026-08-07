@@ -13,10 +13,12 @@
     Sufijo del stack. Default: dev.
 
 .PARAMETER DomainName
-    Dominio raiz. Default: tfg.gasparri.com.ar.
+    Dominio raiz del despliegue. Sin valor por defecto util: hay que pasar el
+    dominio propio con -DomainName. El usado en el despliegue de referencia no
+    se versiona; vive en la configuracion excluida del control de versiones.
 
 .PARAMETER GrafanaSubdomain
-    Subdominio para Grafana. Default: grafana -> grafana.tfg.gasparri.com.ar.
+    Subdominio para Grafana. Default: grafana -> grafana.<tu-dominio>.
 
 .PARAMETER AlertEmail
     Email para SNS subs de alarmas.
@@ -41,7 +43,7 @@
 
 param(
     [string]$Environment = "dev",
-    [string]$DomainName = "tfg.gasparri.com.ar",
+    [string]$DomainName = "<tu-dominio>",
     [string]$GrafanaSubdomain = "grafana",
     [string]$AlertEmail = "mauro@gasparri.com.ar",
     [ValidateSet(1, 2, 3, 4, 5, 6)]
@@ -325,7 +327,7 @@ if ($StartFromPhase -le 5) {
     $DKIM_VALUE_3 = Get-StackOutput "SesDkimToken3Value"
     if (-not $DKIM_NAME_1) { throw "SesDkimToken1Name no encontrado — el stack no creo la SES identity?" }
 
-    $zonePrefix = $DomainName.Split('.')[0]   # ej. tfg.gasparri.com.ar -> tfg
+    $zonePrefix = $DomainName.Split('.')[0]   # ej. sub.ejemplo.com -> sub
     Write-Host ""
     Write-Host "Agregar al DNS provider los siguientes CNAMEs:" -ForegroundColor Yellow
     Write-Host "  --- Service domains ---"

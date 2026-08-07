@@ -279,6 +279,40 @@ def preprocess(
 # ---------------------------------------------------------------------------
 
 
+def _orient_yolov8(output: np.ndarray) -> np.ndarray:
+    """Normaliza un tensor YOLOv8 2D a la orientación ``(anchors, 4 + n_clases)``.
+
+    Según cómo se haya exportado el modelo, la salida llega como
+    ``(4 + n_clases, anchors)`` o ya transpuesta. El número de clases no se
+    conoce de antemano: se deriva del propio tensor, de modo que la función
+    sirve igual para un modelo de una clase (5 canales) que para los 80 de
+    COCO (84 canales) o cualquier otro.
+
+    El criterio: la dimensión de canales vale ``4 + n_clases`` y por lo tanto
+    es ``>= 5``. Cuando ambas orientaciones cumplen esa condición —el caso
+    normal, con miles de anchors y decenas de canales— gana la que deja más
+    anchors, porque en YOLOv8 los anchors siempre superan a los canales.
+    Ese desempate es el que permite que la función también sea correcta con
+    tensores diminutos, donde los anchors pueden ser menos que los canales.
+
+    Raises:
+        ValueError: Si ninguna orientación deja al menos una clase.
+    """
+    rows, cols = output.shape
+    candidatos: list[tuple[int, np.ndarray]] = []
+    if cols >= 5:
+        candidatos.append((rows, output))
+    if rows >= 5:
+        candidatos.append((cols, output.T))
+    if not candidatos:
+        raise ValueError(
+            f"Tensor {output.shape}: ninguna orientación deja 4 coordenadas "
+            "más al menos una clase."
+        )
+    candidatos.sort(key=lambda c: c[0], reverse=True)
+    return candidatos[0][1]
+
+
 def postprocess(
     raw_output: np.ndarray,
     confidence_threshold: float,
@@ -290,10 +324,10 @@ def postprocess(
 ) -> list[Detection]:
     """Postprocesa output raw de YOLOv8 a detecciones de personas.
 
-    Shape de output YOLOv8: ``(1, 84, 8400)`` donde:
-
-    - 84 = 4 coords bbox (cx, cy, w, h) + 80 scores de clase COCO
-    - 8400 = cantidad de anchors de predicción
+    Shape de output YOLOv8: ``(1, 4 + n_clases, anchors)`` — por ejemplo
+    ``(1, 84, 8400)`` para los 80 de COCO a 640×640, o ``(1, 5, 8400)`` para
+    un modelo de una sola clase. El número de clases se deriva del tensor,
+    no se asume.
 
     Args:
         raw_output: Tensor raw de output del modelo.
@@ -308,16 +342,23 @@ def postprocess(
     """
     # Squeeze batch dimension si está presente
     if raw_output.ndim == 3:
-        output = raw_output[0]  # (84, 8400)
+        output = raw_output[0]
     else:
         output = raw_output
+    if output.ndim != 2:
+        raise ValueError(
+            f"Se esperaba un tensor 2D (o 3D con batch); llegó {raw_output.shape}"
+        )
 
-    # Output YOLOv8 puede ser (84, 8400) o (8400, 84) según el export
-    if output.shape[0] == 84:
-        output = output.T  # → (8400, 84)
+    output = _orient_yolov8(output)
 
-    # Extraer scores de la clase person (clase 0 en COCO)
-    # Columnas: [cx, cy, w, h, class0_score, class1_score, ..., class79_score]
+    # Columnas: [cx, cy, w, h, class0_score, ..., class(n-1)_score].
+    n_classes = output.shape[1] - 4
+    if COCO_PERSON_CLASS >= n_classes:
+        raise ValueError(
+            f"El modelo expone {n_classes} clase(s); no hay índice "
+            f"{COCO_PERSON_CLASS} para 'person'."
+        )
     person_scores = output[:, 4 + COCO_PERSON_CLASS]
 
     # Filtrar por confidence

@@ -1,0 +1,11 @@
+=== device_ids con actividad ultimas 48h (telemetry) ===
+  store-pilot-01-cam-01        n=122    last=2026-06-22 01:02:45.869215+00:00
+
+Device real elegido: store-pilot-01-cam-01
+
+table                   n    p50_s    p95_s    min_s    max_s  n_neg
+count_events           11    0.254    0.272    0.208    0.278      0
+telemetry             119    0.265    7.213    0.208   82.934      0
+wifi_ble_events       506    0.278    0.393    0.213    0.586      0
+
+CSV -> docs/benchmarks/20260621/e2e_latency_live.csv

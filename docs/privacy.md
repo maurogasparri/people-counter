@@ -19,13 +19,12 @@ captura opcional de frames "best-frame" para data de active learning.
 - Cantidad de cruces de la línea virtual por dirección, agregada por
   evento. No incluye identificación individual.
 - Profundidad estimada de la cabeza (m), altura aproximada (m) y
-  clasificación adulto/niño binaria. Métrica derivada por persona,
+  rango de estatura (adulto/niño). Métrica derivada por persona,
   *no* identificadora.
 - Identificador opaco de visitante (`visitor_hash`): un valor aleatorio de
   **16 bytes** (`BYTEA` en RDS), transmitido como los **32 caracteres hex de un
   `uuid.uuid4().hex`**, que el dispositivo asigna a cada grupo de identidad
-  post-stitching. **No deriva de la MAC ni del hash de la MAC, no es
-  invertible**, y se renueva cada día (`reset_daily()` rota la salt y resetea
+  post-stitching. **No deriva de la MAC ni del hash de la MAC**, y se renueva cada día (`reset_daily()` rota la salt y resetea
   los grupos). La MAC se hashea aparte con SHA-256 + salt local truncado a 16
   bytes **solo en el estado local del dispositivo** (`wifi_ble_dedup.sqlite`,
   salt rotada a diario); ese hash **nunca se transmite**. Nunca se almacenan ni
@@ -58,11 +57,11 @@ captura opcional de frames "best-frame" para data de active learning.
 | Alcance | Solo durante horario operativo del local; un frame por persona contada |
 | Contexto | Local comercial con cartelería visible al ingreso |
 | Finalidad | Mejora del modelo de detección (active learning) durante piloto |
-| Base jurídica | Interés legítimo del responsable (Art. 5 inc. f LPDP / Art. 6 RGPD), evaluado contra los derechos del titular en el contexto comercial |
+| Base jurídica considerada | Interés legítimo del responsable, evaluado contra los derechos del titular en el contexto comercial. La determinación de la base jurídica aplicable corresponde al responsable del tratamiento y excede el alcance de este prototipo |
 | Categorías de datos | Imagen visual no biométrica (no se ejecuta reconocimiento facial) |
 | Categorías de titulares | Personas físicas que circulan por el local |
 | Plazo de conservación | 7 días, enforced por timer + script |
-| Destinatarios | Personal técnico autorizado del responsable; nunca se transmite a terceros sin anonimización previa (`scripts/export_anonymized.py`) |
+| Destinatarios | Personal técnico autorizado del responsable; nunca se transmite a terceros sin ofuscación visual previa (`scripts/export_anonymized.py`) |
 | Transferencias internacionales | Ninguna del frame; los metadatos agregados a AWS (us-east-1) ya están cubiertos por la política general |
 
 ### Medidas técnicas de mitigación
@@ -85,10 +84,12 @@ captura opcional de frames "best-frame" para data de active learning.
 4. **Hardening systemd.** El servicio de purga usa
    `ProtectSystem=strict` y `ReadWritePaths` explícito a la carpeta de
    JPGs. No puede tocar otros archivos.
-5. **Anonimización antes de exportar.** Si los frames se envían fuera
+5. **Ofuscación visual antes de exportar.** Si los frames se envían fuera
    del dispositivo (e.g. para etiquetado externo), `scripts/export_anonymized.py`
    aplica blur al área del bbox conocido (o blur uniforme + canny edges
-   como fallback si no hay metadata) antes de cualquier salida.
+   como fallback si no hay metadata) antes de cualquier salida. Es una
+   **ofuscación**, no una anonimización: el frame difuminado conserva
+   silueta, vestimenta, acompañantes y contexto espacio-temporal.
 6. **Sin reconocimiento facial.** El detector (YOLOv8n fine-tuneado,
    `people-counter-detector`) produce bounding boxes de cabeza top-down,
    no encodings faciales. No hay base de datos biométrica.
@@ -112,7 +113,10 @@ captura opcional de frames "best-frame" para data de active learning.
 
 ## Derechos del titular
 
-Bajo LPDP (Argentina) / RGPD (UE), el titular puede:
+Los marcos de referencia consultados durante el diseño (LPDP en Argentina,
+RGPD en la UE) contemplan los siguientes derechos del titular. Su
+aplicabilidad concreta y la evaluación de cumplimiento corresponden al
+responsable del tratamiento:
 
 - **Acceso**: solicitar confirmación sobre si sus datos están siendo
   tratados y obtener copia.
@@ -130,9 +134,9 @@ plazo, sin perjuicio de la solicitud explícita.
 ## Procedimiento para activar `best_frame.enabled: true`
 
 > **No flippear esta toggle a true sin completar TODOS los siguientes
-> pasos.** El default está pensado para que el sistema funcione sin
-> requerir DPIA — activar la captura cambia la categoría legal del
-> tratamiento.
+> pasos.** El default está pensado para que el sistema opere sin almacenar
+> imágenes; activar la captura cambia la naturaleza del tratamiento y exige
+> una evaluación propia por parte del responsable.
 
 Checklist obligatorio:
 

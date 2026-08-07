@@ -28,8 +28,12 @@ Payload publicado:
 
 La categorización passerby/shopper la aplica server-side la función SQL
 ``rssi_class(rssi_max)`` — el device solo emite el RSSI crudo. Privacy:
-``visitor_hash`` es el ``group_id`` opaco post-stitching local (16 bytes,
-derivados de SHA-256 + salt diaria local). MACs crudas nunca salen del Pi.
+``visitor_hash`` es el ``group_id`` opaco post-stitching local: un UUID v4
+ALEATORIO (``uuid.uuid4().hex``, 16 bytes) — NO deriva de la MAC ni de su
+hash, asi que no hay nada que invertir ni conociendo la salt. La
+correspondencia ``group_id`` <-> hash de MAC vive solo en el SQLite local del
+dia y se destruye en el reset diario (que ademas rota la salt), lo que impide
+vincular jornadas. MACs crudas nunca salen del Pi.
 
 ``store_id`` lo infiere la Lambda persist_event desde el ``device_id``.
 """

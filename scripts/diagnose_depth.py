@@ -142,7 +142,7 @@ def main() -> None:
         "--json",
         dest="json_path",
         help="Escribe los resultados per-zona + veredicto a este "
-        "path JSON. Permite que el wizard / tooling de CI "
+        "path JSON. Permite que el wizard u otra herramienta "
         "parsee el score sin scrappear stdout. Schema: "
         "{distance_mm, zones: {<name>: {depth_mm, std_mm, "
         "err_pct, fill_pct}}, center_threshold_pct, "

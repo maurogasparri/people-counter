@@ -450,15 +450,26 @@ counter:
         top_to_bottom: ingress
         bottom_to_top: egress
 
-  # Classifier adulto/niño — basado en altura de cabeza sobre el piso (usa
-  # depth estéreo + mounting_height_m). adult_min_m puede necesitar tuning
-  # per-site según la demografía local.
+  # Estimación de estatura — altura de cabeza sobre el piso, derivada del
+  # depth estéreo + mounting_height_m.
+  #
+  # `enabled` SÍ gobierna el dispositivo: con false no se calcula la altura y
+  # el evento se emite sin `height_m`.
+  #
+  # `adult_min_m` NO se aplica en el dispositivo: ningún módulo lo lee. El
+  # dispositivo emite la estatura cruda y el corte entre rangos ocurre
+  # íntegramente server-side, en la función SQL `height_class()` de
+  # `infra/sql/bootstrap.sql`, que es el umbral operativo y la única fuente de
+  # verdad. Se conserva acá como referencia documental del valor con el que se
+  # definió esa función; cambiarlo no altera ningún comportamiento. Para mover
+  # el umbral de verdad hay que hacer CREATE OR REPLACE de la función SQL, lo
+  # que además se aplica retroactivamente a las vistas y a toda la historia.
   height_classifier:
     enabled: true
-    adult_min_m: 1.55               # Altura de cabeza (m) >= esto => adulto,
-                                    # si no, niño. 1.55m cae cerca del P25
-                                    # de mujeres adultas en Argentina; pocos
-                                    # adultos se misclasifican.
+    adult_min_m: 1.55               # Referencia documental, sin efecto en el
+                                    # dispositivo. Altura de cabeza (m) >= esto
+                                    # => rango superior. 1.55 m cae cerca del
+                                    # P25 de mujeres adultas en Argentina.
 
   # Debounce de cruce de línea — distancia mínima en pixels que el track
   # debe haberse movido entre frames consecutivos para considerar un flip

@@ -16,9 +16,9 @@ pytest --cov=src --cov-report=term-missing --cov-report=html
 
 | Métrica | Valor |
 |---|---:|
-| Tests ejecutados | **1084 passed**, 2 skipped (1086 total) |
-| Sentencias totales en `src/` | 6847 |
-| Sentencias sin cubrir | 1275 |
+| Tests ejecutados | **1096 passed**, 7 skipped (1103 total) |
+| Sentencias totales en `src/` | 6889 |
+| Sentencias sin cubrir | 1288 |
 | **Cobertura total** | **81%** |
 | Archivos al 100% | 15 |
 | Tiempo de ejecución | ~77 s |
@@ -46,7 +46,7 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 | `web/annotate.py` | 184 | 90% |
 | `status/led.py` | 89 | 90% |
 | `vision/best_frame.py` | 169 | 89% |
-| `wifi_ble/dedup.py` | 180 | 88% |
+| `wifi_ble/dedup.py` | 206 | 82% * |
 | `cloud/query_aggregates.py` | 301 | 87% |
 | `mqtt/client.py` | 220 | 86% |
 | `mqtt/buffer.py` | 83 | 83% |
@@ -93,6 +93,10 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 > persiguen por diseño; el valor está en los módulos de mayor riesgo a 97-98%,
 > no en el número agregado.
 
+\* `wifi_ble/dedup.py` incluye el ajuste de permisos del archivo SQLite,
+que es no-op fuera de POSIX: medido sobre Linux su cobertura es mayor. La
+cifra de la tabla corresponde a la corrida sobre la máquina de desarrollo.
+
 ## Interpretación
 
 La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
@@ -119,7 +123,8 @@ La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
   En todos, lo que queda sin cubrir son las ramas que requieren el
   dispositivo físico; la lógica pura aledaña (parsing, transforms, filtros)
   sí está testeada. Estas rutas se validan con los smoke tests *on-hardware*
-  en la Pi (commits "validated on hardware"), no en CI.
+  en la Pi (commits "validated on hardware"), no con la ejecución local de la
+  suite.
 
 - **`main.py` (62%)**: es el orquestador. Lo cubierto son los helpers y la
   inicialización; lo no cubierto es el hot loop de captura→detect→track→count
@@ -133,6 +138,6 @@ La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
 calibration) por encima del 88%** (counter y las Lambdas de ingesta en
 97-98% tras la pasada de hardening). El gap hasta el 100% son mayoritariamente
 los bordes de hardware, cubiertos por validación on-device en lugar de tests
-unitarios en CI. Para una flota de dispositivos edge desatendidos es el
+unitarios en la ejecución local de la suite. Para una flota de dispositivos edge desatendidos es el
 trade-off correcto: la red de tests es más densa justo donde un error afecta
 el dato entregado al cliente.

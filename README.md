@@ -2,6 +2,12 @@
 
 Sistema de conteo de personas de bajo costo para locales comerciales, basado en visión estéreo e IA en el borde.
 
+## Versión
+
+Este repositorio corresponde a la versión **1.0.0** del prototipo, publicada bajo el tag **`v1.0-tfg`**. El identificador de commit correspondiente se obtiene con `git rev-parse v1.0-tfg` y figura además en la página del release.
+
+Ese tag identifica el estado exacto del código, de las plantillas de infraestructura y de los registros de validación entregados como Trabajo Final de Grado de la Licenciatura en Administración de Infraestructura Tecnológica de la Universidad Siglo 21. Cualquier desarrollo posterior no forma parte de esa entrega.
+
 ## Qué hace
 
 - **Cuenta personas** que entran y salen de un local en tiempo real usando profundidad por cámara estéreo + YOLOv8n en acelerador Hailo-8L
@@ -76,8 +82,8 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 
 | Área | Estado | Detalles |
 |------|--------|---------|
-| Código fuente | 33 módulos en 9 paquetes de `src/` | `vision/` (9: capture, calibration, depth, detect, world_coords, static_suppressor, pre_filter, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (3: persist_event, ingest_pos_transaction, query_aggregates) + `config/` (2: loader, hardware) + `web/` (3: viewer, annotate, admin_auth) + `main.py` + `telemetry.py` |
-| Tests | 1070 funciones de test en 48 archivos (1086 casos, 81% coverage — ver `docs/coverage_report.md`) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
+| Código fuente | 33 módulos en 8 subpaquetes de `src/` | `vision/` (9: capture, calibration, depth, detect, world_coords, static_suppressor, pre_filter, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (3: persist_event, ingest_pos_transaction, query_aggregates) + `config/` (2: loader, hardware) + `web/` (3: viewer, annotate, admin_auth) + `main.py` + `telemetry.py` |
+| Tests | 1083 funciones de test en 48 archivos (1103 casos, 81% coverage — ver `docs/coverage_report.md`) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
 | Config | Defaults + Per-device + Cloud + Hardware-agnostic | `config/config.example.yaml` (defaults canónicos), `/etc/people-counter/config.yaml` (per-device override), AWS IoT Shadow (business cloud). Parámetros de hardware (sensor, lens, bracket, board ChArUco, AE timings) consolidados en `src/config/hardware.py` (HardwareParams) y leídos por el runtime + todos los setup tools — swap de sensor / bracket / board = solo editar config.yaml, ningún script tiene constantes hardware hardcodeadas |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
@@ -89,7 +95,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
-| Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 6 fases) | VPC + RDS Postgres 16 (db.t4g.micro, IAM auth + force_ssl + auto minor upgrades) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + ECS Fargate Grafana 13 detrás de ALB con ACM cert custom (`grafana.tfg.gasparri.com.ar`) + SNS alarms. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
+| Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 6 fases) | VPC + RDS Postgres 16 (db.t4g.micro, IAM auth + force_ssl + auto minor upgrades) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + ECS Fargate Grafana 13 detrás de ALB con ACM cert custom (`grafana.<tu-dominio>`) + SNS alarms. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
 | Deployment | Listo | provision.py (create/deploy/harvest/reprovision), servicios systemd (pipeline + wifi-monitor + reset diario), logrotate, preflight |
 | Disaster recovery | Listo | `harvest` baja `calibration.npz` al workstation; `reprovision` revoca cert viejo en IoT Core y emite uno nuevo. Certs nunca se respaldan — rotan en cada restore |
 | Guía de setup | Completa | Guía de 14 pasos desde microSD hasta backup/disaster recovery (docs/setup_guide.md). Guía para operadores en las instalaciones (docs/operator_guide.md) |
@@ -97,7 +103,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 ## Acceso a los dashboards (evaluación)
 
 El backend cloud expone los tableros de Grafana en
-**https://grafana.tfg.gasparri.com.ar** (HTTPS con cert ACM, dominio propio).
+**https://grafana.<tu-dominio>** (HTTPS con cert ACM, dominio propio).
 
 Para revisión externa hay un usuario **read-only** (`user`, rol *Viewer*):
 ve los 5 dashboards de las 2 carpetas (Analítica comercial + Operación y
@@ -106,12 +112,52 @@ ni acceder a administración. **La contraseña está disponible bajo solicitud.*
 
 ## Quick start
 
+Desde cero, en una máquina de desarrollo (Windows, macOS o Linux). No requiere
+la Raspberry Pi ni el acelerador: la suite de pruebas corre íntegra sin
+hardware.
+
 ```bash
+# 1. Clonar
 git clone https://github.com/maurogasparri/people-counter.git
 cd people-counter
+
+# 2. Entorno aislado (Python >= 3.11; el dispositivo usa 3.13)
+python -m venv .venv
+# Linux / macOS:
+source .venv/bin/activate
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+
+# 3. Dependencias, incluidas las de desarrollo
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
-pytest
+
+# 4. Suite de pruebas
+pytest -q
 ```
+
+Resultado esperado sobre Windows: **1096 pruebas superadas y 7 omitidas**
+(1103 en total). Cinco omisiones comprueban permisos de archivo POSIX; las
+otras dos requieren el filtro WLS de `opencv-contrib`, ausente en el wheel de
+Windows. Sobre el dispositivo (Linux aarch64) no hay omisiones: **1102
+superadas y 1 fallida**, y esa falla es artefacto del entorno —la prueba
+presupone que no existe el archivo de configuración de producción, que en un
+equipo aprovisionado sí existe—. Ninguna omisión indica fallo.
+
+El entorno resuelto por estas instrucciones se verificó el 2026-08-04 con
+OpenCV 4.14, NumPy 2.5 y SciPy 1.18. La dependencia de OpenCV está acotada a
+la serie 4.x de forma deliberada: la 5.0 removió una constante que usa el
+solve de calibración estéreo.
+
+Para medir cobertura:
+
+```bash
+pytest --cov=src --cov-report=term -q
+```
+
+Los artefactos del modelo de detección **no** son necesarios para la suite. Si
+querés además reproducir las métricas del detector, seguí
+[Artefactos del modelo](#artefactos-del-modelo).
 
 ### Dependencias
 
@@ -124,6 +170,8 @@ pytest
 | aircrack-ng, nexmon | `apt` + paquetes `.deb` | Solo RPi, WiFi monitor mode |
 
 En máquinas de desarrollo (Windows/Mac/Linux), `pip install -e ".[dev]"` es suficiente para correr tests. Los paquetes del sistema RPi solo se necesitan en el dispositivo target — ver [docs/setup_guide.md](docs/setup_guide.md) para la instalación completa.
+
+La tabla anterior indica qué versiones son **admisibles** para instalar el proyecto. No indica cuáles se usaron: un rango describe una familia de entornos posibles, no un entorno. El registro de las versiones exactas sobre las que se ejecutaron las mediciones que reporta el trabajo —dispositivo, plataforma cloud y contenedores, con sus digests— está en [docs/dependencies.md](docs/dependencies.md), junto con el congelado completo del entorno del dispositivo en [requirements-lock.txt](requirements-lock.txt).
 
 ## Configuración
 
@@ -271,6 +319,44 @@ campo / periódico. El QC de bracket *pre*-calibración se retiró: medir la
 geometría de un fisheye de 120° con modelo pinhole sin coeficientes de
 distorsión produce yaw/offsets fantasma.
 
+### 4. Vista previa en vivo del pipeline (diagnóstico, apagada por omisión)
+
+El runtime puede servir un visor HTTP que streamea, como MJPEG, un compuesto de
+tres paneles: **izquierda con overlay** (cajas, IDs de track, counting zone,
+línea virtual, destellos +IN/+OUT), **derecha rectificada sin overlay** y **mapa
+de profundidad**. Sirve para verificar en el lugar que el conteo se comporta
+como se espera mientras alguien camina bajo las cámaras.
+
+**Viene deshabilitada.** El parámetro es `--web-viewer-port`, cuyo valor por
+omisión es `0` = apagado, y la unidad de systemd **no** lo pasa: en producción el
+visor no arranca. Para una sesión de diagnóstico hay que habilitarlo a mano:
+
+```bash
+# Detener el servicio y correr el pipeline a mano con el visor en un puerto alto
+sudo systemctl stop people-counter
+cd /usr/src/people-counter
+sudo -u pi PYTHONPATH=. python3 -m src.main \
+    --config /etc/people-counter/config.yaml \
+    --web-viewer-port 8080
+# abrir http://<IP-del-dispositivo>:8080 y, al terminar, Ctrl-C +
+sudo systemctl start people-counter
+```
+
+> ⚠️ **Expone imagen en vivo de personas, sin autenticación.** El flujo
+> (`/stream`) y las métricas (`/stats`) responden a **cualquiera** que alcance
+> el puerto: la única credencial del visor protege los botones de reinicio y
+> apagado, no la imagen. Además el servidor bindea **todas** las interfaces
+> (`0.0.0.0`) y el sistema no aplica ninguna restricción por dirección de
+> origen — el aislamiento depende enteramente de la red donde esté el
+> dispositivo. Usarlo **solo en una red controlada**, el tiempo que dure el
+> diagnóstico, y apagarlo después. No dejarlo habilitado de forma permanente ni
+> exponerlo a través de un reenvío de puertos.
+
+El visor **no escribe nada a disco**: los fotogramas viven en una cola en
+memoria que descarta los más viejos si el cliente va lento. Si el bind falla
+(puerto ocupado, o el 80 sin `CAP_NET_BIND_SERVICE`) se registra una
+advertencia y el pipeline sigue corriendo sin visor.
+
 ## Entrenamiento del detector
 
 El modelo activo es `people-counter-detector`: YOLOv8n single-class
@@ -362,10 +448,10 @@ src/
 ├── cloud/           # Lambdas: persist_event (IoT Rules → RDS Postgres via IAM auth, out of VPC) + ingest_pos_transaction (POS API → tabla pos_transactions) + query_aggregates (API read-only de agregados sobre las vistas)
 ├── status/          # Driver RGB LED + health probes + thread monitor que mapea HealthSignals → LedState
 ├── config/          # Loader (per-device strict + IoT Shadow overrides) + hardware (HardwareParams dataclass — sensor/lens/bracket/charuco/ae_lock leídos del config, hardware-agnostic)
-├── web/             # Live preview HTTP/MJPEG (viewer + annotate) + panel admin con login (admin_auth); gateado por has_subscribers — counting es sync-deterministic independiente del viewer
+├── web/             # Live preview HTTP/MJPEG (viewer + annotate) + panel admin con login (admin_auth). DESHABILITADO por default (--web-viewer-port 0): sirve imagen sin auth, se enciende solo para diagnóstico. Gateado por has_subscribers — counting es sync-deterministic independiente del viewer
 ├── telemetry.py     # Reporte periódico: CPU/Hailo temp, RAM, disco, uptime + canaries (track_stitching_ratio, ghost_adoption_count, death_emit_count, ambiguous_reject_count, wifi_ble_stitching_ratio)
 └── main.py          # Orquestador del pipeline (captura → depth → detect → track → count → MQTT). Flag --no-mqtt para debug local sin AWS
-tests/               # 1070 funciones de test en 48 archivos espejando src/ + tests/scripts/ para el wizard
+tests/               # 1083 funciones de test en 48 archivos espejando src/ + tests/scripts/ para el wizard
 scripts/
 ├── calibrate.py           # CLI: generate-board, capture, calibrate, verify, wizard, reset
 │                          # wizard = pipeline end-to-end browser-driven. Default
@@ -435,3 +521,105 @@ debug/                            # Drop-zone gitignoreado para reportes, captur
 - [CLAUDE.md](CLAUDE.md) — Documentación completa de arquitectura para Claude Code
 - [docs/setup_guide.md](docs/setup_guide.md) — Guía de ensamblaje de hardware + setup RPi
 - [config/config.example.yaml](config/config.example.yaml) — Configuración anotada con estrategia
+
+## Artefactos del modelo
+
+Los pesos del detector **no se versionan**: se distribuyen como adjuntos de la
+versión etiquetada del repositorio. El manifiesto de sumas de verificación sí
+está versionado, de modo que se puede comprobar que el archivo descargado es
+exactamente el que se usó.
+
+| Archivo | Tamaño | Qué es |
+|---|---:|---|
+| `people-counter-detector.pt` | 6.242.019 B | Pesos afinados en formato PyTorch, tal como los produjo el entrenamiento. Es el punto de partida de toda la cadena y lo que permite re-exportar o re-compilar |
+| `people-counter-detector.onnx` | 12.265.214 B | Exportación ONNX de esos mismos pesos, precisión completa. Es el artefacto que permite reproducir la inferencia en cualquier equipo, sin acelerador |
+| `people-counter-detector.hef` | 9.390.809 B | Compilación cuantizada para el acelerador Hailo-8L. Es el artefacto que corre en el dispositivo |
+
+La cadena `.pt` → `.onnx` → `.hef` está verificada: el ONNX publicado es
+byte-idéntico al que produjo la misma corrida de entrenamiento que el `.pt`, y
+ambos devuelven la misma inferencia sobre una entrada fija (coincidencia del
+score máximo hasta 2·10⁻⁷ y de las coordenadas de la caja hasta 0,06 px).
+
+### Cómo obtenerlos
+
+1. Descargar los tres archivos desde la sección *Releases* del repositorio, en
+   la versión etiquetada correspondiente.
+2. Colocar los tres en `models/training/people-counter-detector/`, creando el
+   directorio si no existe:
+
+   ```bash
+   mkdir -p models/training/people-counter-detector
+   # mover aquí los tres archivos descargados
+   ```
+
+3. Verificar las sumas **antes de ejecutar nada**, desde la raíz del
+   repositorio:
+
+   ```bash
+   sha256sum -c models/CHECKSUMS.txt
+   ```
+
+   Salida esperada: una línea `OK` por cada uno de los tres archivos y código
+   de salida 0. En
+   PowerShell, sin `sha256sum` disponible:
+
+   ```powershell
+   Get-FileHash models\training\people-counter-detector\people-counter-detector.onnx -Algorithm SHA256
+   ```
+
+Una vez colocados y verificados, la caracterización del detector se reproduce
+con `python scripts/analysis/eval_detector_valset.py` (requiere además el
+conjunto de validación, que no se distribuye — ver más abajo).
+
+### Modelo base
+
+El afinado parte de **YOLOv8n con pesos COCO** de Ultralytics, que **no se
+redistribuye** en este repositorio ni en sus adjuntos. Lo descarga
+automáticamente la biblioteca `ultralytics` al invocar `YOLO("yolov8n.pt")`,
+desde los adjuntos de publicación del propio proyecto Ultralytics. El archivo
+obtenido de ese modo durante el desarrollo tiene 6.549.796 B y suma SHA-256:
+
+```
+f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36
+```
+
+Se consigna para que un tercero pueda confirmar que partió del mismo archivo.
+La versión exacta de la publicación de origen no está fijada por este
+repositorio: la resuelve `ultralytics` en el momento de la descarga.
+
+### Material que no se distribuye
+
+El conjunto de imágenes de entrenamiento y validación, sus anotaciones y las
+matrices de calibración por sucursal **no forman parte del repositorio ni de
+los adjuntos**: proceden de cámaras instaladas en locales de la organización y
+contienen personas. Los resultados que dependen de ese material se reportan en
+el trabajo escrito con la evidencia bruta que sí se publica, bajo
+`docs/validacion/`.
+
+## Despliegue de la infraestructura en la nube
+
+El procedimiento completo de despliegue en AWS —plantilla de CloudFormation,
+las seis fases del script de orquestación, los pasos manuales de DNS y el
+desmantelamiento— está documentado en
+[`infra/README.md`](infra/README.md). El esquema de la base de datos y sus
+vistas se describen en [`docs/database_schema.md`](docs/database_schema.md), y
+la configuración de alertas en [`docs/alerting.md`](docs/alerting.md).
+
+Reproducir el sistema completo no es necesario para evaluar el trabajo: la
+suite de pruebas y los bancos de análisis corren sin la nube.
+
+## Licencia
+
+Este repositorio se distribuye bajo una **licencia de uso académico con
+derechos reservados**. Se permite descargar, examinar, compilar y ejecutar el
+contenido con la finalidad de evaluar, verificar o reproducir los resultados
+del Trabajo Final de Grado, así como para estudio e investigación sin fines
+comerciales, conservando la nota de licencia y atribuyendo la autoría.
+
+Quedan reservados todos los demás derechos: no se autoriza el uso comercial,
+la redistribución del código o de obras derivadas, ni su incorporación a
+productos o servicios de terceros sin autorización previa y por escrito del
+titular.
+
+El texto completo está en [LICENSE](LICENSE), e incluye la ausencia de
+garantía y el alcance del material no incluido en el repositorio.

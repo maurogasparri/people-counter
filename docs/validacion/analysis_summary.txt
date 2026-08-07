@@ -1,0 +1,29 @@
+=== A3/A4 SOAK (720 muestras) ===
+  duracion: 3625 s  (60.4 min)
+  temp_c: min=45.5 avg=48.2 p95=52.7 max=54.3
+  throttled!=0x0: 0 muestras  (SANO)
+  arm_mhz: min=1600 max=2400 (downclock idle del governor)
+  svc mem.current MiB: min=403 avg=408 max=411
+  svc mem.peak  MiB: max=416
+  cg_high: max=0
+  cg_max: max=0
+  cg_oom: max=0
+  cg_oomkill: max=0
+  sistema MemAvailable MiB: min=7420 (headroom)
+  swap usado MiB: max=0.0 (0 = sin swapping)
+  CPU busy% (agregado 4 cores): avg=15.3 p95=27.4 max=43.8
+  loadavg(1m): avg=0.94 max=2.66
+  -> working set svc (peak 416 MiB) vs target flota 2048 MiB = 1632 MiB de margen (20% usado)
+
+=== A1(b) POWER running, escena vacia/estatica (8483 muestras) ===
+  total_w: avg=4.00 p50=3.79 p95=5.38 max=9.93 min=2.82
+  draw pared estimado (+13%): avg=4.52 W  p95=6.08 W
+  % presupuesto PoE HAT (25.5W): avg=15.7% p95=21.1%
+    riel VDD_CORE   avg=1.209 W
+    riel 3V3_SYS    avg=1.177 W
+    riel 1V8_SYS    avg=0.390 W
+    riel 1V1_SYS    avg=0.369 W
+    riel 0V8_SW     avg=0.391 W
+    riel 3V7_WL_SW  avg=0.210 W
+
+  proyeccion energia: avg 4.00W x 12h x 363d = 17.4 kWh/anio (output-side); pared ~19.7 kWh/anio

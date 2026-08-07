@@ -1,0 +1,57 @@
+TC-18 — Reanudación tras corte de energía REAL (yank físico del riel PoE)
+=========================================================================
+Fecha: 2026-06-21  |  commit del device: 221eb21  |  device: store-pilot-01-cam-01
+Método: corte físico real de la alimentación (NO reboot por software). Pre-corte
+se snapshotea el estado; post-corte se reconstruye desde el propio device
+(timestamps de boot/journal relativos al kernel) + lado de red (RDS).
+
+--- PRE-CORTE (marcador) ---
+wall-clock              : 2026-06-21T18:24:04-03:00
+uptime previo           : 2 h 36 min
+service                 : active   |  NRestarts: 0
+buffer.db unsent        : 0  (drena online)
+buffer.db size          : 208896 bytes
+camera_sync             : enabled: true
+throttle                : 0x0
+última telemetría RDS   : 2026-06-21 21:21:23 UTC
+
+--- [ usuario desenchufa el riel PoE -> confirma -> reenchufa -> confirma ] ---
+
+--- POST-CORTE (reconstruido en el device) ---
+boot                    : 2026-06-21 18:25:13
+systemd-analyze         : 3.139s (kernel) + 33.796s (userspace) = 36.936s
+people-counter active   : +36 s desde boot
+wifi-monitor active     : +10 s
+reset.timer active      : +9  s
+primer 'MQTT conectado' : +37 s
+primer frame ('Pipeline: FPS') : +46 s   <-- REANUDACIÓN A OPERACIÓN NOMINAL
+camera_sync_converged   : delta_us = 972  (re-convergió tras el cold boot)
+servicios activos       : people-counter / wifi-monitor / reset.timer = active
+
+--- INTEGRIDAD buffer/SQLite tras corte abrupto ---
+PRAGMA integrity_check buffer.db          : ok
+PRAGMA integrity_check wifi_ble_dedup.db  : ok
+buffer.db size post                        : 217088 bytes (page-alloc normal)
+buffer unsent post                         : 0
+
+--- SALUD FILESYSTEM / ENERGÍA ---
+root fs montado          : rw   (no readonly)
+errores fs en dmesg      : 0    (ext4/IO/corrupt)
+NRestarts                : 0    (boot limpio, sin crash-loop)
+throttle                 : 0x0  (sin undervolt en la renegociación PoE)
+
+--- RESUMEN cloud (no pérdida) ---
+telemetría post-corte en RDS : 4 eventos nuevos (última 21:35:50 UTC)
+                                -> el device reconectó y reanudó la publicación
+
+=========================================================================
+CRITERIOS:
+  reanudación < 90 s         : 46 s            -> ✅ CUMPLE
+  buffer/SQLite íntegro      : integrity ok    -> ✅ CUMPLE
+  filesystem sano            : rw, 0 errores   -> ✅ CUMPLE
+  sin pérdida (telemetría)   : resumió en RDS  -> ✅ CUMPLE
+VEREDICTO TC-18: ✅ CUMPLE
+=========================================================================
+Comandos: pre/post snapshot por SSH (uptime -s, systemd-analyze, journalctl
+-o short-unix offsets desde boot, sqlite3 PRAGMA integrity_check, findmnt /,
+vcgencmd get_throttled) + query a RDS (telemetría post-corte).

@@ -10,7 +10,7 @@ cartesiano. Sirve para:
 - **Onboarding**: el próximo dev ve el shape del comportamiento + cómo lo
   ejercita la suite.
 - **Trazabilidad regulatoria**: "demostrá que el counter es correcto" se
-  responde con la matriz + 1084 tests verde (2 skipped) + canaries en flota.
+  responde con la matriz + 1096 tests verde (7 skipped) + canaries en flota.
 
 > **NO es exhaustivo combinatorio.** El producto teórico es ~86.000 celdas;
 > la mayoría son trivially equivalent (simetrías horizontal/vertical,
@@ -39,7 +39,7 @@ cartesiano. Sirve para:
 | **M — Ghost outside_pos inherit** | M1 preserved (dist ≤ threshold) / M2 invalidated (dist > threshold) | `_resurrect_ghost` con `ghost_outside_invalidate_px` |
 | **N — Gate de altura humana** | N1 altura ≥ `min_count_height_m` (o gate off) / N2 altura < umbral (rechaza) / N3 altura = None (pasa, no aplica) | Guard `min_count_height_m` en exit (`_process_track`) y death (`_emit_on_death`) |
 | **O — Gate conf sin altura** | O1 conf ≥ `min_count_confidence` (o gate off) / O2 conf < umbral con altura None (rechaza) / O3 altura presente (gate ignorado) | Guard `min_count_confidence` en exit y death |
-| **P — Gate demografía** | P1 conf ≥ `height_confidence_gate` (reporta demografía) / P2 conf < umbral (height_m/head_depth_m → None, demografía unknown; **NO afecta conteo**) | `height_confidence_gate` en emisión del payload |
+| **P — Gate de rango de estatura** | P1 conf ≥ `height_confidence_gate` (reporta el rango) / P2 conf < umbral (height_m/head_depth_m → None, rango unknown; **NO afecta conteo**) | `height_confidence_gate` en emisión del payload |
 | **Q — Evidencia real inside** | Q1 `real_inside_frames` ≥ `min_real_inside_frames` (o gate off) / Q2 < umbral (rechaza, anti-flicker single-frame) | Guard `min_real_inside_frames` en exit y death |
 
 Ejes ortogonales del counter en sí: **A × B × C × D × E × F × G × H × I × J**.
@@ -142,8 +142,8 @@ Notación: `✓` cubierto / `gap` requiere test / `void` structurally impossible
 
 Los cuatro gates son **filtros de emisión ortogonales**: actúan sobre un track
 que ya tiene cruce neto ≠ 0, decidiendo si el count se emite y/o si la
-demografía se reporta. N/O/Q gatean el **conteo**; P gatea **solo la
-demografía** (el count sale igual). Cada gate corre tanto en la rama de exit
+el rango de estatura se reporta. N/O/Q gatean el **conteo**; P gatea **solo
+el rango de estatura** (el count sale igual). Cada gate corre tanto en la rama de exit
 observado como en el death-emit.
 
 | # | Eje | Caso | Resultado | Test |
@@ -158,8 +158,8 @@ observado como en el death-emit.
 | 65 | O3 | altura presente → gate de conf ignorado | emit | `test_min_count_confidence_ignored_when_height_present` |
 | 66 | O2 | sin altura + conf baja en death-emit | no emit | `test_min_count_confidence_blocks_death_emit_dog` |
 | 67 | O off | `0.0` desactiva; default es `0.60` | emit / config | `test_min_count_confidence_off_when_zero`, `test_min_count_confidence_default_is_060`, `test_build_counter_reads_min_count_confidence_from_config` |
-| 68 | P2 | conf < `height_confidence_gate` → demografía unknown, **count sale** | emit sin demografía | `test_height_confidence_gate_below_threshold_marks_unknown` |
-| 69 | P1 | conf ≥ umbral → reporta demografía | emit con demografía | `test_height_confidence_gate_above_threshold_reports_demographics` |
+| 68 | P2 | conf < `height_confidence_gate` → rango unknown, **count sale** | emit sin rango de estatura | `test_height_confidence_gate_below_threshold_marks_unknown` |
+| 69 | P1 | conf ≥ umbral → reporta el rango | emit con rango de estatura | `test_height_confidence_gate_above_threshold_reports_demographics` |
 | 70 | P default/override | default = constante de clase; override por constructor | — | `test_height_confidence_gate_default_from_class_constant`, `test_height_confidence_gate_override_via_constructor`, `test_build_counter_reads_height_confidence_gate_from_config` |
 | 71 | Q2 | `real_inside_frames` < `min_real_inside_frames` (single-frame flicker, exit) | no emit | `test_min_real_inside_frames_blocks_single_frame_entry` |
 | 72 | Q1 | caminante con suficientes frames reales | emit | `test_min_real_inside_frames_passes_walker_with_enough_frames` |

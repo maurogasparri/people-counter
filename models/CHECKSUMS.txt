@@ -1,0 +1,3 @@
+212fd9ce4cd3e245a3cd1f61c35d040eee6327c479416218773a99173bb5cee9  models/training/people-counter-detector/people-counter-detector.pt
+77a107270184a853244f985a296ce632f580b79e12a82ab84f22074255f50c47  models/training/people-counter-detector/people-counter-detector.onnx
+3189838c1557c24ea628eb4c9f28bc7780ed58cac2de2358a5432c2c6220f1de  models/training/people-counter-detector/people-counter-detector.hef

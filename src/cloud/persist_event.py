@@ -380,8 +380,10 @@ _DISPATCH = {
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Handler de Lambda — invocado por las 3 IoT Topic Rules.
 
-    Errores de validacion se descartan (return 200) para que IoT no reintente.
-    Errores transitorios de DB se re-raisean para que IoT reintente.
+    Los errores de validacion y los de datos del device (constraint/check) se
+    descartan devolviendo 400: la invocacion termina SIN excepcion, asi que IoT
+    no reintenta un payload que volveria a fallar igual. Errores transitorios
+    de DB se re-raisean para que IoT reintente.
     """
     try:
         event_type = event.get("type")

@@ -13,8 +13,11 @@ Diseñado para ser seguro en el hot path del runtime:
 - Las fallas de bind (puerto en uso, CAP_NET_BIND_SERVICE faltante en el
   puerto 80) se loggean pero no matan el pipeline — el counter sigue corriendo.
 
-Puerto default 80 porque el operador on-site no carga una lista de puertos
-custom. ``--web-viewer-port 0`` deshabilita el viewer entero.
+**Deshabilitado por default en el runtime**: ``--web-viewer-port`` vale 0 y el
+unit de systemd no lo pasa, así que en producción el viewer no arranca. Hay que
+habilitarlo explícitamente por sesión de diagnóstico, porque el stream y
+``/stats`` NO piden credencial (la auth cubre solo reboot/shutdown) y el server
+bindea todas las interfaces: solo debe encenderse en una red controlada.
 """
 
 from __future__ import annotations

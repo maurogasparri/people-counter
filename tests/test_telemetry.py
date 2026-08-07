@@ -221,7 +221,7 @@ def test_read_pmic_none_on_failure():
 
 
 def test_read_fan_rpm_never_raises():
-    # En CI no hay hwmon 'pwmfan' → None; nunca debe raisear.
+    # Fuera del dispositivo no hay hwmon 'pwmfan' → None; nunca debe raisear.
     result = _read_fan_rpm()
     assert result is None or isinstance(result, int)
 

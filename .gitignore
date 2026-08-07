@@ -49,7 +49,15 @@ Thumbs.db
 /nul
 
 # Models (downloaded, not committed)
-/models/
+# Se excluye el CONTENIDO (/models/*) y no el directorio (/models/): git no
+# puede re-incluir un archivo si su directorio padre esta excluido, asi que
+# con "/models/" la negacion de abajo no tendria efecto. Mismo patron que
+# /training_data/*.
+/models/*
+# Excepcion: el manifiesto de checksums SI se versiona. Los binarios se
+# publican como adjuntos de la release; el hash queda en el arbol para que
+# un tercero pueda verificar que el artefacto descargado es el mismo.
+!/models/CHECKSUMS.txt
 # Pesos COCO off-the-shelf que baja ultralytics (ej. al correr
 # scripts/training/compare_detectors.py). Build artifact, regenerable.
 /yolov8n.pt

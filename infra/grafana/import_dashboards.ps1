@@ -23,7 +23,8 @@
       3. Fallback ``admin/admin`` (solo Grafana recién deployado).
 
 .PARAMETER GrafanaUrl
-    URL base de Grafana. Default: https://grafana.tfg.gasparri.com.ar
+    URL base de Grafana. Hay que pasarla con -GrafanaUrl: el marcador del
+    default no resuelve. La URL real del despliegue no se versiona.
 
 .PARAMETER DashboardsDir
     Directorio con los JSON a importar. Default: infra/grafana/dashboards (relativo a este script).
@@ -39,7 +40,7 @@
 #>
 
 param(
-    [string]$GrafanaUrl = "https://grafana.tfg.gasparri.com.ar",
+    [string]$GrafanaUrl = "https://grafana.<tu-dominio>",
     [string]$DashboardsDir = ""
 )
 

@@ -1,0 +1,5 @@
+# El manifiesto de sumas de verificación se comprueba con `sha256sum -c`, que
+# no tolera finales de línea CRLF: con `core.autocrlf=true` (el valor habitual
+# en Windows) el checkout convertía los saltos y la verificación fallaba con
+# "No such file or directory". Se fuerza LF en el checkout de toda plataforma.
+models/CHECKSUMS.txt text eol=lf

@@ -1,0 +1,10 @@
+=== TC-14 — Privacidad en RDS ===
+  wifi_ble_events.visitor_hash: 500 muestras, con formato MAC crudo: 0 (debe ser 0)
+    ej: <valor omitido> (hash opaco)
+  columnas imagen/PII/bytea en schema: 3 [('telemetry', 'frame_latency_p50_ms', 'real'), ('telemetry', 'frame_latency_p95_ms', 'real'), ('wifi_ble_events', 'visitor_hash', 'bytea')]
+  VEREDICTO TC-14 (RDS): REVISAR
+
+=== TC-11 — POS idempotencia + conversión ===
+  pos_transactions total: 7122
+  re-INSERT de transaction_id existente -> filas=0, count 7122->7122 | idempotente: True
+  muestra ventas/día (para conversion_rate): [('demo-08', datetime.date(2026, 6, 6), 2), ('demo-05', datetime.date(2026, 6, 6), 1), ('demo-06', datetime.date(2026, 6, 6), 2)]

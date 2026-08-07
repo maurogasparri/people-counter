@@ -1,0 +1,2 @@
+TC-13 sin auth -> HTTP 403  body={"message":"Forbidden"}
+VEREDICTO TC-13 (no-auth): CUMPLE (rechazado)

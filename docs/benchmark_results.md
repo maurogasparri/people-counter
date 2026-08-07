@@ -40,7 +40,7 @@ no pudo verificarse se indica explícitamente.
 | TC-16 | Resiliencia de conectividad breve (~30 min) | 30 eventos | encolados offline → drenados íntegros, 0 pérdida / 0 duplicado | ✅ PASS |
 | TC-17 | Resiliencia de conectividad prolongada (72 h) | 1302 eventos | persistidos sin pérdida → drenados 0/0; cap acota a 1000 sin desborde | ✅ PASS |
 | TC-18 | Reinicio tras corte de energía (< 90 s) | 1 corte físico real | frames fluyendo en **+46 s**; `integrity_check` SQLite OK; fs sano, throttle 0x0 | ✅ PASS |
-| TC-19 | Disponibilidad del stack cloud (24 h ≥ 99 %) | 48 h continuas | Sin reinicios ni desconexiones MQTT; backlog del outbox máx 2; 0 throttling; dashboards accesibles. Corroborado por la continuidad de ingestión sobre 33,6 días (mejor ventana de 24 h: 299 ≥ 288 telemetrías, 0 pérdida) | ✅ PASS |
+| TC-19 | Disponibilidad del stack cloud (24 h ≥ 99 %) | 24 h (21-06 16:20 → 22-06 16:20, −03) | Medido sobre los servicios, no sobre el device: **RDS 288/288 intervalos (100 %)**, **Fargate `LiveTaskCount` ≥ 1 en 288/288 (100 %)**, **IoT Core 0 fallos del broker** y publicaciones aceptadas en 287/288 (99,7 %). Alarmas: ninguna de las diez alcanzó su condición. Tableros: destino sano en 288/288, 842 peticiones, 0 respuestas 5XX | ✅ PASS |
 
 **TC-03 — sub-conteo en cruces simultáneos bidireccionales.** La corrida dirigida
 dio 8/10 (umbral ≥ 9/10) **sin fusión de identidades** (8/8 tracks). La causa
@@ -72,15 +72,42 @@ diseño). Resultado: 0 conteos de las pasadas medibles; el gate queda validado.
 mitigación de la limitación L1 (techo `max_head_height` levantado + ajuste
 SGBM); ver §4.
 
-**TC-19 — disponibilidad del stack cloud.** En una corrida de 48 h continuas el
-stack operó sin reinicios ni desconexiones MQTT, con el backlog del outbox acotado
-(máx 2 mensajes), 0 throttling y los dashboards accesibles — supera el criterio de
-≥ 99 % en 24 h. Como corroboración adicional, la continuidad de ingestión sobre los
-33,6 días de operación de la unidad de desarrollo muestra, en la mejor ventana continua
-de 24 h con el device sin interrupción, 299 de 288 telemetrías esperadas a 5 min
-persistidas (0 pérdida); los gaps del período corresponden a **device apagado** (unidad de
-desarrollo entre sesiones, traslado off-site), no a caídas del backend
-(IoT Core → Lambda → RDS → Grafana), que no registró outages.
+**TC-19 — disponibilidad del stack cloud.** El criterio interroga a **IoT Core,
+RDS y Fargate**, de modo que se mide sobre las métricas que cada servicio publica
+por su cuenta y no sobre la continuidad de la telemetría del dispositivo: los
+huecos de esa serie corresponden a **equipo apagado** —es una unidad de
+desarrollo, con traslados off-site entre sesiones— y no informan sobre la
+disponibilidad de la nube. Reconstrucción con
+`docs/validacion/tc19_cloud_availability.py` sobre la ventana de 24 h del 21-06
+16:20 al 22-06 16:20 (−03), en intervalos de 5 min:
+
+| Servicio | Señal | Cobertura |
+|---|---|---|
+| RDS | `CPUUtilization` / `DatabaseConnections` — la instancia sólo emite mientras corre | **288/288 (100 %)**, CPU 5,0–6,6 %, 9–13,8 conexiones |
+| Fargate | `LiveTaskCount` del servicio de Grafana | **288/288 (100 %)**, siempre ≥ 1 tarea viva |
+| IoT Core | `Failure` del broker / `PublishIn.Success` | **0 fallos**; publicaciones aceptadas en 287/288 (99,7 %) |
+
+Los tres superan el umbral de 99 %. Las otras dos condiciones del criterio se
+reconstruyen por separado, porque el historial de transiciones de alarmas de
+CloudWatch está vacío y la accesibilidad de los tableros no quedó registrada:
+
+**Alarmas** (`docs/validacion/tc19_alarm_reconstruction.py`). Las métricas que
+alimentan a cada alarma sí se retienen, de modo que la condición de las diez se
+reevalúa con sus propios parámetros —operador, umbral, períodos de evaluación,
+*datapoints-to-alarm* y tratamiento de faltantes—. **Ninguna alcanzó su
+condición durante la ventana.** La más exigente, `grafana-tasks` —que trata los
+faltantes como incumplimiento— tuvo métrica en los 288 intervalos con un destino
+sano en todos.
+
+**Tableros** (`docs/validacion/tc19_dashboard_reachability.py`). Grafana corre
+detrás de un ALB que publica el estado de sus destinos: `HealthyHostCount` = 1
+en **288/288** intervalos, 0 destinos no sanos, **842 peticiones atendidas** y
+**cero respuestas 5XX**, con latencia media de 5 ms. La accesibilidad queda
+medida, no inferida.
+
+> **Caveat de retención.** CloudWatch conserva la resolución de 5 min durante 63
+> días: la ventana de junio deja de ser reconstruible alrededor del **2026-08-23**.
+> Por eso la salida del guion se archiva junto al resto de la evidencia.
 
 ## 3. Caracterización de banco (requisitos no funcionales)
 
@@ -150,7 +177,7 @@ de frame entre relojes de sensor) sin cableado.
 
 | Métrica | Valor |
 |---|---|
-| Tests totales | 1084 passed, 2 skipped (1086 total) |
+| Tests totales | 1096 passed, 7 skipped (1103 total) sobre Windows; 1102 passed, 1 failed, 0 skipped sobre el dispositivo |
 | Cobertura global | 81 % |
 | Módulos críticos | `counter.py` 97 % · `persist_event.py` 98 % · `calibration.py` 92 % · `tracker.py` 91 % · `dedup.py` 88 % |
 
@@ -187,7 +214,7 @@ altura las cabezas quedan a 0,6–0,73 m, donde la diferencia de estatura entre
 personas se traduce en muy poca disparidad y el pipeline de runtime
 (SGBM `downscale=4` + WLS + extracción por slices de 10 cm) la suaviza,
 capturando sólo ~10 % de la variación real. No afecta el conteo (usa centroide
-2D), sólo la demografía adulto/niño. Mitigada por config —
+2D), sólo la segmentación por rango de estatura. Mitigada por config —
 `max_head_height_m: 1.95`, `uniqueness_ratio: 15`, WLS `λ: 1500`— y validada
 A/B sobre la misma persona en las instalaciones (sujeto de 1,82 m: de ~1,73 m / −9 cm a
 ~1,78 m / −4 cm, dentro de ±10 cm, sin costo de FPS). Residual ~−4 cm; su fix

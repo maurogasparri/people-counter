@@ -1,8 +1,12 @@
-"""Anonimiza JPGs best-frame antes de exportarlos fuera del dispositivo.
+"""Ofusca visualmente los JPG best-frame antes de sacarlos del dispositivo.
 
 Cuando samples necesitan salir del dispositivo — ej: shippeados a un proveedor
-externo de labeling para loops de active-learning — primero tienen que ser
-anonimizados. Este script implementa dos modos:
+externo de labeling para loops de active-learning — primero hay que ofuscar
+la region de la persona. Este script implementa dos modos:
+
+Es una **ofuscacion visual**, no una anonimizacion: el frame difuminado
+conserva silueta, vestimenta, acompaniantes y contexto espacio-temporal, de
+modo que no puede afirmarse que deje de permitir la singularizacion.
 
   - **Blur targeted (preferido)**: lee el bbox de un JSON sidecar
     (``<jpg>.json`` con ``{"bbox": [x1, y1, x2, y2], ...}``) y blurrea solo

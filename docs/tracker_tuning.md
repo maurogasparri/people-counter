@@ -275,7 +275,7 @@ counter:
 Sin altura medida Y `mediana(conf) < 0.60` → el counter rechaza el emit. Una
 persona real sin altura trae conf alta (>= 0.6) y **pasa** → recall preservado.
 Es un eje **ortogonal** a `height_confidence_gate` (ese solo decide si reportar
-demografía cuando HAY altura; el conteo se mantiene). Acá, sin altura, decide
+rango de estatura cuando HAY altura; el conteo se mantiene). Acá, sin altura, decide
 contar-o-no.
 
 **Knobs**:
@@ -468,7 +468,7 @@ tracking:
 | `tracking_zone.enabled` | false (off) | `tracking` | clutter estructural genera tracks ruidosos | counting_zone + margen pequeños podrían perder approach |
 | `tracking_zone.frame_margin_px` | 100 | `tracking` | filtrar más clutter periférico (subir) | menor margen es más permisivo (bajar si pierde approach) |
 | `tracking_zone.auto_margin_px` | 250 | `tracking` | filtrar más agresivo (mayor margen pierde más) | menor margen pierde más approach lead-in |
-| `height_confidence_gate` | 0.5 | `counter` | demografía espuria en eventos | demografía de pasadas rápidas se reporta unknown |
+| `height_confidence_gate` | 0.5 | `counter` | rango de estatura espurio en eventos | el rango de estatura de pasadas rápidas se reporta unknown |
 | `keepalive_max_frames` | 600 | `tracking.state_machine` | rara vez | counts fantasma |
 | `ambiguous_match_ratio` | 0.8 | `tracking.state_machine` | rara vez | ID swaps |
 

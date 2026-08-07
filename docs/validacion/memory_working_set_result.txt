@@ -1,0 +1,57 @@
+=== Descomposición del conjunto de trabajo del servicio ===
+Fuente: memory.stat del cgroup system.slice/people-counter.service
+Dispositivo: store-pilot-01-cam-01 (Raspberry Pi 5, 8.063 MiB de RAM total)
+Medido: 2026-08-06, montaje cenital en posición
+
+--- BAJO CARGA (26,6-27,0 FPS, suscriptor del visor sostenido) ---
+  memory.current                :   423,2 MiB
+  memory.peak                   :   426,3 MiB
+  anon                          :   226,9 MiB   53,6%
+  file (caché de archivos)      :   187,5 MiB   44,3%
+    active_file                 :   101,3 MiB
+    inactive_file               :    66,0 MiB
+    file_mapped                 :    81,8 MiB
+    file_dirty                  :     2,4 MiB
+  shmem                         :    20,2 MiB
+  slab_reclaimable              :     4,3 MiB
+  slab_unreclaimable            :     1,2 MiB
+  kernel_stack                  :     0,8 MiB
+  pgfault / pgmajfault          :   351.594 / 706
+
+  RECUPERABLE bajo presión      :   171,6 MiB   40,6%
+  IRREDUCIBLE (anon+slab_unrec+stack): 229,0 MiB   54,1%
+
+--- EN REPOSO (10 FPS, regulador activo) ---
+  memory.current                :   240,9 MiB
+  anon                          :   212,1 MiB   88,0%
+  file (caché de archivos)       :    24,1 MiB   10,0%
+  slab + kernel_stack            :     2,4 MiB
+
+--- CONTRASTE ---
+  anon        : 212,1 -> 226,9 MiB   (+14,8 MiB, +7%)
+  file        :  24,1 -> 187,5 MiB   (x7,8)
+  current     : 240,9 -> 423,2 MiB   (+182 MiB, casi todo caché)
+  proporción anónima: 88,0% -> 53,6%  (BAJA)
+
+--- LECTURA ---
+La proporción anónima NO se mantiene: cae del 88% al 53,6%. Pero cae porque
+crece el denominador, no porque crezca la parte irreducible: la memoria anónima
+sube apenas 14,8 MiB entre reposo y carga plena, mientras la caché de archivos
+se multiplica por 7,8.
+
+Esa caché es memoria oportunista: el núcleo la retiene porque hay RAM libre y
+la libera bajo presión. En una unidad de 2 GB sería sensiblemente menor.
+
+Conclusión: el componente independiente de la RAM total es la memoria anónima,
+estable en 212-227 MiB con y sin carga. memory.current (423 MiB) sobreestima el
+requerimiento real, que es de ~229 MiB. La medición sobre la unidad de 8 GB es
+una COTA SUPERIOR válida para la variante de 2 GB, pero por una razón distinta
+de la prevista: no porque la fracción anónima domine, sino porque la fracción
+que no es anónima es recuperable.
+
+--- CONTRASTE CON LA CAMPAÑA ---
+  campaña 21/06 (soak, 8 GB) : mem.peak 416 MiB
+  esta corrida (8 GB)        : mem.peak 426 MiB
+  Coinciden dentro del 2,4%. El pico de la campaña también estaba compuesto en
+  ~44% por caché recuperable; el requerimiento irreducible que respalda la
+  elección de 2 GB es de ~229 MiB, no de 416.

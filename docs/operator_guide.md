@@ -365,6 +365,13 @@ ir a sección 5.
 
 ### 3.7. Panel admin del viewer (Reiniciar / Apagar)
 
+> **Requisito previo**: el viewer viene **deshabilitado** (`--web-viewer-port`
+> vale 0 y la unidad de systemd no lo pasa), así que en una instalación estándar
+> este panel **no está accesible** y reiniciar o apagar se hace por SSH. El
+> visor se enciende a mano solo para una sesión de diagnóstico — ver «Vista
+> previa en vivo del pipeline» en el README, con la advertencia de que expone
+> imagen en vivo sin autenticación.
+
 El viewer en vivo (la IP del dispositivo en el navegador) tiene un panel
 **Admin** opcional con botones **Reiniciar** y **Apagar** — útil para reciclar
 o apagar el device sin SSH ni tocar el cableado. Está **deshabilitado hasta que

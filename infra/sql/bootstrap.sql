@@ -346,12 +346,19 @@ INSERT INTO holidays (holiday_date, name, type) VALUES
 -- confiable). El threshold 1.55 m coincide con el default histórico del
 -- config del device (counter.height_classifier.adult_min_m). Para modificar
 -- globalmente: CREATE OR REPLACE — se aplica retroactivo a vistas e historia.
+--
+-- El cast ::real del literal NO es decorativo. height_m es REAL (float4) y
+-- 1.55 no tiene representación exacta en float4: vale 1.5499999523162842 al
+-- ensancharse. Sin el cast, Postgres compara el float4 contra un numeric en
+-- doble precisión y una estatura de 1.55 exacto cae en 'child', contra lo que
+-- declara la semántica (>= threshold → 'adult'). Con ambos lados en float4 la
+-- comparación se hace en el mismo dominio y el borde cae del lado documentado.
 
 CREATE OR REPLACE FUNCTION height_class(h REAL) RETURNS TEXT
 LANGUAGE SQL IMMUTABLE AS $$
     SELECT CASE
         WHEN h IS NULL THEN 'unknown'
-        WHEN h < 1.55  THEN 'child'
+        WHEN h < 1.55::real THEN 'child'
         ELSE 'adult'
     END
 $$;

@@ -361,8 +361,8 @@
     {
       "id": 29,
       "type": "piechart",
-      "title": "Composición demográfica de los visitantes",
-      "description": "Distribución de los visitantes por categoría etaria estimada (altura medida por estéreo). Métrica anecdótica/de contexto, no accionable por la operación.",
+      "title": "Composición por rango de estatura estimada",
+      "description": "Distribución de los ingresos por rango de estatura estimada, a partir de la altura obtenida por visión estéreo. La categoría «Sin estimar» corresponde a los ingresos en que la profundidad estéreo no permitió estimar la estatura con confianza suficiente; al incluirla, los porcentajes se calculan sobre el total de ingresos y no sobre el subconjunto medible. Métrica de contexto, no accionable por la operación.",
       "datasource": {
         "type": "postgres",
         "uid": "__DS_UID__"
@@ -377,7 +377,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT SUM(ins_adult) AS \"Adultos\", SUM(ins_child) AS \"Niños\" FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date"
+          "rawSql": "SELECT SUM(ins_adult) AS \"Estatura ≥ 1,55 m\", SUM(ins_child) AS \"Estatura < 1,55 m\", SUM(ins_unknown) AS \"Sin estimar\" FROM counting_by_bucket_day WHERE store_id IN (${sites:sqlstring}) AND bucket_day BETWEEN $__timeFrom()::date AND $__timeTo()::date"
         }
       ],
       "fieldConfig": {

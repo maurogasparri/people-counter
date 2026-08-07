@@ -23,7 +23,7 @@ Manager y ECS Fargate lo inyecta como env var al container.
 
 | Pieza | Owner | Detalle |
 |---|---|---|
-| SES Domain Identity (`tfg.gasparri.com.ar`) | CFN | Resource `SesDomainIdentity` con DKIM 2048-bit |
+| SES Domain Identity (`<tu-dominio>`) | CFN | Resource `SesDomainIdentity` con DKIM 2048-bit |
 | 3 CNAMEs de DKIM en DNS externo | manual | `deploy.ps1` los muestra; agregar al DNS provider |
 | SES Email Identity (`mauro@gasparri.com.ar`) | CFN | Resource `SesAlertEmailIdentity`; verificación = click en mail que envía AWS |
 | IAM User `people-counter-ses-smtp-dev` | CFN | Policy: `ses:SendRawEmail` sobre identity del dominio |
@@ -38,7 +38,7 @@ Manager y ECS Fargate lo inyecta como env var al container.
 
 ```bash
 # Domain identity verificado?
-aws sesv2 get-email-identity --email-identity tfg.gasparri.com.ar \
+aws sesv2 get-email-identity --email-identity <tu-dominio> \
   --query 'VerifiedForSendingStatus' --output text
 # → True
 
@@ -50,7 +50,7 @@ aws sesv2 get-email-identity --email-identity mauro@gasparri.com.ar \
 
 ### Test send desde Grafana UI
 
-1. Login en `https://grafana.tfg.gasparri.com.ar`
+1. Login en `https://grafana.<tu-dominio>`
 2. **Alerting → Contact points → New contact point**
 3. Tipo: **Email**
 4. Addresses: `mauro@gasparri.com.ar`

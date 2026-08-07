@@ -322,7 +322,7 @@ El histórico **agregado** (sin eventos individuales) de un sistema previo se
 inserta **directo en las tablas base `rollup_*`** (saltea el raw, que no existe
 para ese período). Entregables:
 [`infra/sql/migrate_historical_rollups.example.sql`](../infra/sql/migrate_historical_rollups.example.sql)
-(template staging→rollups: bucket local-as-UTC, demografía desconocida →
+(template staging→rollups: bucket local-as-UTC, rango de estatura desconocido →
 `unknown`, `ON CONFLICT` idempotente) y
 [`scripts/migrate_historical.py`](../scripts/migrate_historical.py) (loader
 CSV→staging por **lotes con commits incrementales**, para no saturar RDS — ver

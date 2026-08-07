@@ -1,0 +1,32 @@
+=== TC-15 — latencia de extremo a extremo POR INVOCACIÓN ===
+  dispositivo : store-pilot-01   umbral: 5 s
+  unidad      : una invocación = un mensaje MQTT = una ejecución de la Lambda
+
+  --- REGISTRO COMPLETO ---
+  flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
+  conteo           1973    1973    0.235     6.678   28651.40   344  17.44%     0.399
+  telemetria       3229    3229    0.247     6.445  305825.83   253   7.84%     0.142
+  inalambrico      1857   15165    0.366     7.728  305387.51   818  44.05%     0.471
+  AGREGADO         7059                                        1415  20.05%     0.792
+
+  --- EXCLUYENDO REPLAYS DEL BUFFER (>60 s) ---
+  flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
+  conteo           1907    1907    0.233     6.373      18.00   278  14.58%     0.322
+  telemetria       3204    3204    0.247     6.315      41.69   228   7.12%     0.128
+  inalambrico      1821   14921    0.359     7.017      55.76   782  42.94%     0.450
+  AGREGADO         6932                                        1288  18.58%     0.721
+
+  --- CONFIGURACIÓN ACTUAL (desde 2026-06-08, sin replays) ---
+  flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
+  conteo            880     880    0.213     0.328      13.92     9   1.02%     0.018
+  telemetria       2896    2896    0.244     0.428      41.69   122   4.21%     0.086
+  inalambrico       952   10519    0.294     0.435      31.49    29   3.05%     0.020
+  AGREGADO         4728                                         160   3.38%     0.112
+
+  --- CONFIGURACIÓN ANTERIOR (hasta 2026-06-08, sin replays) ---
+  flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
+  conteo           1027    1027    0.259     6.542      18.00   269  26.19%     0.747
+  telemetria        308     308    0.280     6.600      23.62   106  34.42%     0.294
+  inalambrico       869    4402    6.373     7.217      55.76   753  86.65%     2.413
+  AGREGADO         2204                                        1128  51.18%     3.133
+

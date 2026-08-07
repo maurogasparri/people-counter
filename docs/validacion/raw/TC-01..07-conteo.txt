@@ -1,0 +1,2 @@
+SKIPPED: conteo controlado — requiere montaje cenital + cruces de personas
+EJECUTADO POR SEPARADO: la corrida dirigida de TC-01 a TC-07 se realizó fuera de la corrida automatizada, por requerir montaje cenital y cruces de personas; sus resultados se consignan en el cuerpo del trabajo. La demostración funcional del 2026-08-06 se conserva en demo_crossings_20260806_result.txt

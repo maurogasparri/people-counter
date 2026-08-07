@@ -1,0 +1,20 @@
+﻿  ventana : 2026-06-21 19:20 a 2026-06-22 19:20 UTC (24.0 h)
+  local   : 2026-06-21 16:20 a 2026-06-22 16:20 (−03)
+  intervalos de 5 min esperados: 288
+
+  servicio  métrica                   puntos  cobertura      min      max  lectura
+  IoT Core  PublishIn.Success            287      99.7%      1.0      6.0  publicaciones aceptadas
+  IoT Core  Failure                        0       0.0%      0.0      0.0  fallos del broker
+  RDS       CPUUtilization               288     100.0%      5.0      6.6  instancia viva
+  RDS       DatabaseConnections          288     100.0%      9.0     13.8  conexiones
+  Fargate   LiveTaskCount                288     100.0%      1.0      1.0  tareas vivas
+
+  --- veredicto por servicio ---
+    RDS        DISPONIBLE   CPUUtilization presente en 100.0% de los intervalos
+    Fargate    DISPONIBLE   LiveTaskCount ≥ 1 en todos los puntos (0 intervalos sin tarea), cobertura 100.0%
+    IoT Core   DISPONIBLE   0 fallos del broker; publicaciones aceptadas en 99.7% de los intervalos
+
+  VEREDICTO TC-19: CUMPLE (criterio: disponibilidad ≥ 99 % sobre 24 h del stack en la nube)
+
+  Nota: la continuidad de la telemetría del dispositivo NO integra este
+  cálculo. Sus huecos son equipo apagado y no indisponibilidad de la nube.

@@ -519,6 +519,12 @@ def build_wifi_ble(
         fingerprint_stitch_enabled=bool(fp_cfg.get("enabled", True)),
         fingerprint_stitch_window_seconds=float(fp_cfg.get("window_seconds", 900.0)),
     )
+    # El SQLite guarda la salt del hashing en `dedup_meta`. El constructor ya
+    # deja el archivo en 0600; re-afirmarlo en el arranque repara además los
+    # auxiliares -wal/-shm que ya estén abiertos y cubre un archivo heredado de
+    # una instalación anterior con el modo laxo. Idempotente: solo llama a
+    # chmod si el modo difiere.
+    dedup.ensure_secure_permissions()
 
     wifi_capture: WiFiProbeCapture | None = None
     iface = wifi_cfg.get("wifi_interface", "wlan0")
@@ -846,12 +852,16 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
     _INIT_HEALTH["led"] = status_led
 
     # --- Web viewer en vivo --------------------------------------------------
-    # Default ON, puerto 80 (--web-viewer-port 0 deshabilita). Falla de bind
-    # loggea warning y deja ``viewer = None`` así el pipeline sigue sin él.
-    # Puerto 80 necesita CAP_NET_BIND_SERVICE bajo systemd; el unit del servicio
-    # se lo otorga. Las dev runs fuera de systemd necesitan root para bindear <1024.
+    # Default OFF (--web-viewer-port 0). Se habilita explícitamente pasando un
+    # puerto: el viewer expone imagen en vivo SIN autenticación y bindea todas
+    # las interfaces, así que encenderlo es una decisión por sesión de
+    # diagnóstico, en una red controlada — no un estado de reposo. El unit de
+    # systemd NO pasa el flag, de modo que en producción queda apagado.
+    # Falla de bind loggea warning y deja ``viewer = None`` así el pipeline
+    # sigue sin él. El puerto 80 necesita CAP_NET_BIND_SERVICE bajo systemd (el
+    # unit lo otorga); las dev runs fuera de systemd necesitan root para <1024.
     viewer: WebViewer | None = None
-    web_port = int(getattr(args, "web_viewer_port", 80))
+    web_port = int(getattr(args, "web_viewer_port", 0))
     if web_port > 0:
         viewer = WebViewer(port=web_port)
         if not viewer.start():
@@ -2756,7 +2766,13 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
         )
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Construye el parser de CLI del runtime.
+
+    Extraído de ``main`` para poder aseverar los defaults desde los tests sin
+    arrancar el pipeline — en particular el de ``--web-viewer-port``, que
+    gobierna si se expone imagen en vivo sin autenticación.
+    """
     parser = argparse.ArgumentParser(description="People Counter Edge Device")
     parser.add_argument(
         "--config",
@@ -2823,13 +2839,14 @@ def main() -> None:
     parser.add_argument(
         "--web-viewer-port",
         type=int,
-        default=80,
+        default=0,
         help="Puerto HTTP para el viewer de debug en vivo. Streamea un composite "
         "de 3 paneles (left annotated | right raw | depth colormap) como MJPEG. "
-        "Abrir la IP del dispositivo en un browser para ver en vivo. Default 80 "
-        "(necesita CAP_NET_BIND_SERVICE bajo systemd; el unit del servicio se "
-        "lo otorga). Pasar 0 para deshabilitar. Las fallas de bind se loggean "
-        "pero no matan el pipeline.",
+        "Default 0 = DESHABILITADO: el viewer sirve imagen en vivo SIN "
+        "autenticación, así que hay que habilitarlo explícitamente y solo en una "
+        "red controlada. Para diagnóstico on-site pasar un puerto (ej. 8080; el "
+        "80 necesita CAP_NET_BIND_SERVICE, que el unit del servicio otorga). Las "
+        "fallas de bind se loggean pero no matan el pipeline.",
     )
     parser.add_argument(
         "--depth-debug",
@@ -2840,7 +2857,11 @@ def main() -> None:
         "counts del histograma así el diagnóstico sigue siendo útil sin el PNG. "
         "Auto-detiene tras 5 dumps; restart para re-armar.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     if args.depth_debug:
         enable_depth_debug(True)

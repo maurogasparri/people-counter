@@ -1,0 +1,23 @@
+﻿=== TC-12 — idempotencia de ingesta sobre 20 duplicados por tabla ===
+
+--- count_events
+    restricción de unicidad : (device_id, event_ts, track_id, direction)
+    filas antes             : 314247
+    filas seleccionadas     : 20 (distintas, orden determinista)
+    descartadas por unicidad: 20/20
+    insertadas              : 0
+    filas después           : 314247  (delta 0)
+    VEREDICTO count_events: CUMPLE
+
+--- pos_transactions
+    restricción de unicidad : (store_id, transaction_id)
+    filas antes             : 8933
+    filas seleccionadas     : 20 (distintas, orden determinista)
+    descartadas por unicidad: 20/20
+    insertadas              : 0
+    filas después           : 8933  (delta 0)
+    VEREDICTO pos_transactions: CUMPLE
+
+  Transacción confirmada (no-op: no se insertó ninguna fila).
+
+  VEREDICTO TC-12: CUMPLE (criterio: los 20 duplicados descartados por la restricción)

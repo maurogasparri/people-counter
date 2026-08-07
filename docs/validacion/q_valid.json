@@ -1,0 +1,1 @@
+{"version":"2.0","rawPath":"/v1/aggregates","routeKey":"GET /v1/aggregates","queryStringParameters":{"from":"2026-06-15T00:00:00Z","to":"2026-06-21T00:00:00Z","store_id":"store-pilot-01"},"requestContext":{"http":{"method":"GET","path":"/v1/aggregates"}},"headers":{}}

@@ -37,8 +37,10 @@ device/sucursal).
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -50,6 +52,59 @@ logger = logging.getLogger(__name__)
 
 # Modulo del seqnum 802.11 (12 bits).
 SEQNUM_MOD = 4096
+
+# Modo del archivo del SQLite. La tabla `dedup_meta` guarda la salt del
+# hashing, que es el unico secreto que separa el resumen de la MAC observada:
+# el archivo tiene que ser legible solo por su duenio. sqlite3 crea el archivo
+# con el umask del proceso (0644 con el umask habitual), asi que hay que
+# ajustarlo explicitamente.
+DB_FILE_MODE = 0o600
+
+# Sufijos de los archivos auxiliares que el motor genera junto al principal en
+# modo WAL. Verificado sobre el dispositivo: una vez que el archivo principal
+# esta en 0600, SQLite crea -wal y -shm heredando ese modo. Se listan igual
+# para reparar los que hayan quedado creados con el modo anterior.
+_DB_SIDECAR_SUFFIXES = ("-wal", "-shm")
+
+
+def secure_db_permissions(db_path: str) -> None:
+    """Restringe a ``DB_FILE_MODE`` el SQLite de dedup y sus auxiliares.
+
+    Idempotente: consulta el modo actual y solo llama a ``chmod`` cuando
+    difiere, de modo que puede invocarse en cada arranque sin efecto ni ruido
+    en el log. Best-effort: cualquier fallo se registra y no aborta — quedarse
+    sin deduplicacion por un problema de permisos seria peor que el permiso
+    laxo, y el caso real (arranque como otro usuario sobre un archivo ajeno)
+    se diagnostica mejor por el log que por un crash.
+
+    No-op fuera de POSIX: en Windows ``os.chmod`` no expresa permisos de
+    usuario/grupo/otros y aplicarlo daria una falsa sensacion de proteccion.
+    """
+    if os.name != "posix":
+        return
+    for suffix in ("",) + _DB_SIDECAR_SUFFIXES:
+        path = f"{db_path}{suffix}"
+        try:
+            current = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            continue  # -wal/-shm solo existen mientras hay conexiones abiertas
+        except OSError:
+            logger.warning("dedup_db_stat_failed path=%s", path, exc_info=True)
+            continue
+        if current == DB_FILE_MODE:
+            continue
+        try:
+            os.chmod(path, DB_FILE_MODE)
+            logger.info(
+                "dedup_db_permissions_tightened path=%s from=%o to=%o",
+                path,
+                current,
+                DB_FILE_MODE,
+            )
+        except OSError:
+            logger.warning(
+                "dedup_db_chmod_failed path=%s mode=%o", path, current, exc_info=True
+            )
 
 
 def _seqnum_delta(a: int, b: int) -> int:
@@ -212,6 +267,21 @@ class DedupEngine:
                 )
                 """
             )
+        # El archivo lo crea implicitamente sqlite3 en el _connect() de arriba,
+        # con el umask del proceso. Se ajusta aca, cerrada ya la conexion, de
+        # modo que el mismo llamado cubre la creacion (archivo nuevo) y el
+        # arranque del servicio (archivo preexistente con el modo viejo).
+        secure_db_permissions(self.db_path)
+
+    def ensure_secure_permissions(self) -> None:
+        """Re-verifica el modo del archivo. Pensado para el arranque.
+
+        ``_ensure_db`` ya lo aplica al construir el motor; esta entrada existe
+        para que el arranque del pipeline pueda re-afirmarlo de forma explicita
+        y auditable, y para reparar los auxiliares -wal/-shm que solo existen
+        mientras hay una conexion abierta. Idempotente.
+        """
+        secure_db_permissions(self.db_path)
 
     def _load_or_create_salt(self) -> str:
         """Lee el salt persistido o crea uno random la primera vez.

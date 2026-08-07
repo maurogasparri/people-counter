@@ -2,7 +2,7 @@
 
 Hay dos formas de consumir datos del sistema sin pasar por Grafana:
 
-1. **REST API** (`GET https://api.tfg.gasparri.com.ar/v1/aggregates`) — **US-09**
+1. **REST API** (`GET https://api.<tu-dominio>/v1/aggregates`) — **US-09**
    (RF-13). Recomendado para integraciones con sistemas externos (ERP del
    retailer, CRM, BI corporativo). Auth: AWS SigV4. Ver sección **REST API**
    abajo.
@@ -18,7 +18,7 @@ Endpoint unificado que devuelve, en una sola respuesta, counts (con
 breakdown adult/child/unknown), tráfico externo WiFi/BLE y POS transactions
 agrupados por bucket × site.
 
-**Spec OpenAPI 3.1** disponible en `GET https://api.tfg.gasparri.com.ar/v1/openapi.json`
+**Spec OpenAPI 3.1** disponible en `GET https://api.<tu-dominio>/v1/openapi.json`
 (sin auth — para que el cliente pueda generar su SDK ANTES de tener credenciales).
 
 ### Auth
@@ -107,7 +107,7 @@ BIGINT entero — evita errores de precisión de floats al sumar decimales.
 
 ```json
 {
-  "type": "https://api.tfg.gasparri.com.ar/errors/range-too-large",
+  "type": "https://api.<tu-dominio>/errors/range-too-large",
   "title": "Date range exceeds maximum for bucket size",
   "status": 400,
   "detail": "Requested 180.0 days with bucket=15min, max allowed is 7d",
@@ -146,7 +146,7 @@ v1 (UsagePlans + API keys) — no implementado en el PoC.
 ```bash
 curl --aws-sigv4 "aws:amz:us-east-1:execute-api" \
      --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
-     "https://api.tfg.gasparri.com.ar/v1/aggregates?from=2026-05-24T00:00:00Z&to=2026-05-25T00:00:00Z&bucket=1h"
+     "https://api.<tu-dominio>/v1/aggregates?from=2026-05-24T00:00:00Z&to=2026-05-25T00:00:00Z&bucket=1h"
 ```
 
 **Python (boto3-style sin SDK custom)**:
@@ -158,7 +158,7 @@ from botocore.awsrequest import AWSRequest
 session = boto3.Session()
 creds = session.get_credentials().get_frozen_credentials()
 
-url = "https://api.tfg.gasparri.com.ar/v1/aggregates"
+url = "https://api.<tu-dominio>/v1/aggregates"
 params = {"from": "2026-05-24T00:00:00Z", "to": "2026-05-25T00:00:00Z", "bucket": "1h"}
 
 req = AWSRequest(method="GET", url=url, params=params)

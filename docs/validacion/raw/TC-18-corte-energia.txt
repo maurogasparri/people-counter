@@ -1,0 +1,1 @@
+EJECUTADO POR SEPARADO: corte físico real del riel PoE — fuera de la corrida automatizada por requerir intervención humana. Resultado en tc18_powercut_result.txt

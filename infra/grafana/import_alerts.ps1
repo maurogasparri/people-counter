@@ -19,7 +19,8 @@
 #>
 
 param(
-    [string]$GrafanaUrl = "https://grafana.tfg.gasparri.com.ar",
+    # Pasar la URL real con -GrafanaUrl; el marcador no resuelve.
+    [string]$GrafanaUrl = "https://grafana.<tu-dominio>",
     [string]$AlertsFile = ""
 )
 

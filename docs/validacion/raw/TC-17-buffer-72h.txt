@@ -1,0 +1,10 @@
+=== TC-17: inyectando 1302 eventos (72h) OFFLINE ===
+  encolados=1302 | count_unsent=1302 | persistidos sin pérdida: True
+  enforce_backlog_limit dropeó=0 (cap 50000) -> sin desborde: True
+  reconectando -> drenando en batches de 100...
+  drenados=1302 | restantes=0 | duplicados=False | perdidos=0
+  VEREDICTO TC-17: CUMPLE (persistencia + drenaje íntegro, 0 pérdida/0 dup, sin desborde)
+
+=== Control de cap (anti-desborde) ===
+  inyectados 1500, cap 1000 -> dropeados 500, unsent final 1000 (acotado a 1000: True)
+buffer_backlog_capped

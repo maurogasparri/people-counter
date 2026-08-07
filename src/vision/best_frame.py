@@ -15,7 +15,7 @@ El stack de privacidad se hace cumplir como capas independientes de garantías:
      ``src/main.py`` para el path de publish).
   3. Retención corta enforced por ``scripts/purge_best_frames.py`` + timer
      de systemd.
-  4. Anonimización opcional (``scripts/export_anonymized.py``) cuando el
+  4. Ofuscación visual opcional (``scripts/export_anonymized.py``) cuando el
      operador quiere shippear samples para labeling externo.
   5. Paperwork del operador (DPIA, signage, privacy policy) gatea poner
      el toggle en on — ver ``docs/privacy.md``.

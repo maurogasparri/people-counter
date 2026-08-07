@@ -19,8 +19,11 @@ Parameters:
 
   DomainName:
     Type: String
-    Default: tfg.gasparri.com.ar
-    Description: Dominio raiz para custom domains (Grafana y futuro API).
+    Default: <tu-dominio>
+    Description: >-
+      Dominio raiz para custom domains (Grafana y API). El default es un
+      marcador: hay que pasar el dominio propio al desplegar (infra/deploy.ps1
+      lo envia con -DomainName). El valor real no se versiona.
 
   GrafanaSubdomain:
     Type: String

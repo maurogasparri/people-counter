@@ -623,7 +623,7 @@ def test_tracker_constant_velocity_long_run_stays_locked():
 def test_kalman_update_microbench(capsys):
     """Print per-frame cost of Kalman predict+update for a 5-track scene.
 
-    Not a hard assertion (CI variability), but the absolute numbers
+    Not a hard assertion (machine variability), but the absolute numbers
     should land in the low-microseconds-per-step range — well below
     the 33 ms budget at 30 FPS.
     """

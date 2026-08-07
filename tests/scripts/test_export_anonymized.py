@@ -1,6 +1,6 @@
 """Tests para scripts/export_anonymized.py.
 
-El script de anonimización es el último guardrail técnico antes de que los frames
+El script de ofuscación visual es el último guardrail técnico antes de que los frames
 leave the device — the targeted-blur path must measurably alter the
 bbox region, and the fallback must heavily blur the entire frame.
 """

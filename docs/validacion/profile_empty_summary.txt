@@ -1,0 +1,25 @@
+=== A5 PROFILE [empty-scene full-throughput] ===
+  ventana: 2026-06-21 14:20:52,013 -> 2026-06-21 14:25:51,968
+  FPS efectivo (sostenido) = 8346/300s = 27.8 FPS
+
+  [escena vacia (det=N, SGBM skip)] n=8118 frames
+    stage      mean   p50   p95  %frame
+    cap        14.1    14    17   40.4%
+    rect        4.9     5     6   14.0%
+    detect     15.9    16    17   45.6%
+    depth       0.0     0     0    0.0%
+    track       0.0     0     0    0.0%
+    total      34.9    35    37  100.0%
+    FPS (compute-bound 1000/TOTAL): mean=28.8 p50=28.5 min=14.7
+
+  [con deteccion (det=Y, SGBM corre)] n=228 frames
+    stage      mean   p50   p95  %frame
+    cap         5.1     0    17   10.3%
+    rect        4.3     4     5    8.7%
+    detect     15.2    15    17   30.8%
+    depth      22.6    26    30   45.8%
+    track       2.2     2     4    4.5%
+    total      49.3    48    66  100.0%
+    FPS (compute-bound 1000/TOTAL): mean=21.4 p50=20.9 min=14.4
+
+  CSV por frame -> docs/benchmarks/20260621/profile_empty_perframe.csv

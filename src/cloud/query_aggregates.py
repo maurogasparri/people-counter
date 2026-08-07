@@ -39,7 +39,7 @@ Variables de entorno (seteadas por CFN):
     PG_USER:    lambda_query_reader default.
     PG_REGION:  region para generar el token IAM.
     SSL_ROOT_CERT_PATH: path opcional al cert bundle de RDS (verify-full).
-    API_BASE_URL: prefijo público (ej. https://api.tfg.gasparri.com.ar) usado
+    API_BASE_URL: prefijo público (ej. https://api.<tu-dominio>) usado
                   para construir los Link headers absolutos.
 """
 
@@ -87,7 +87,10 @@ _DEFAULT_BUCKET = "15min"
 _DEFAULT_LIMIT = 1000
 _MAX_LIMIT = 5000
 _SITE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
-_PROBLEM_BASE = "https://api.tfg.gasparri.com.ar/errors"
+# Base de los tipos de problema RFC 7807. Se deriva de API_BASE_URL para no
+# fijar ningun dominio en el codigo; la plantilla de infraestructura inyecta
+# esa variable con el dominio real del despliegue.
+_PROBLEM_PATH = "/errors"
 _CACHE_FRESH_THRESHOLD = timedelta(hours=1)
 _CACHE_MAX_AGE_SECONDS = 86400  # 24h
 
@@ -558,7 +561,10 @@ def _shape_row(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _api_base_url() -> str:
-    return os.environ.get("API_BASE_URL", "https://api.tfg.gasparri.com.ar").rstrip("/")
+    # Sin API_BASE_URL no hay dominio que suponer: se usa un dominio reservado
+    # por RFC 2606, que senala configuracion faltante en vez de inventar un
+    # extremo. En el despliegue la variable la inyecta la plantilla.
+    return os.environ.get("API_BASE_URL", "https://api.example.invalid").rstrip("/")
 
 
 def _build_link_header(
@@ -635,7 +641,7 @@ def _problem_response(
 ) -> dict[str, Any]:
     """RFC 7807 Problem Details."""
     body: dict[str, Any] = {
-        "type": f"{_PROBLEM_BASE}/{slug}",
+        "type": f"{_api_base_url()}{_PROBLEM_PATH}/{slug}",
         "title": title,
         "status": status_code,
         "detail": detail,
@@ -753,7 +759,7 @@ def _openapi_spec() -> dict[str, Any]:
                                 "entre versiones; los clientes pueden hacer "
                                 "match sobre el último segmento (slug)."
                             ),
-                            "example": "https://api.tfg.gasparri.com.ar/errors/range-too-large",
+                            "example": "https://api.<tu-dominio>/errors/range-too-large",
                         },
                         "title": {
                             "type": "string",

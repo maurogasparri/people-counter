@@ -196,6 +196,45 @@ class TestPostprocess:
         assert len(dets) == 1
 
 
+class TestPostprocessClassCount:
+    """El layout se deriva del tensor: sirve para cualquier cantidad de clases."""
+
+    @staticmethod
+    def _raw(num_classes: int, n_anchors: int = 1) -> np.ndarray:
+        """(1, 4 + num_classes, n_anchors) con una persona en el centro."""
+        out = np.zeros((4 + num_classes, n_anchors), dtype=np.float32)
+        out[0, 0], out[1, 0], out[2, 0], out[3, 0] = 320, 320, 100, 200
+        out[4, 0] = 0.9  # score de la clase 0 = person
+        return np.expand_dims(out, 0)
+
+    @pytest.mark.parametrize("num_classes", [1, 80])
+    @pytest.mark.parametrize("transpose", [False, True])
+    def test_decodes_regardless_of_class_count_and_layout(self, num_classes, transpose):
+        raw = self._raw(num_classes)
+        if transpose:
+            raw = raw.transpose(0, 2, 1)
+        dets = postprocess(raw, 0.5, 0.45, 1.0, 0, 0, (640, 640))
+        assert len(dets) == 1
+        x1, y1, x2, y2 = dets[0].bbox
+        assert (x1, y1, x2, y2) == (270, 220, 370, 420)
+        assert dets[0].confidence == pytest.approx(0.9)
+
+    @pytest.mark.parametrize("num_classes", [1, 80])
+    def test_realistic_anchor_count(self, num_classes):
+        """Con miles de anchors, que es el caso real, ambos layouts coinciden."""
+        raw = self._raw(num_classes, n_anchors=8400)
+        a = postprocess(raw, 0.5, 0.45, 1.0, 0, 0, (640, 640))
+        b = postprocess(raw.transpose(0, 2, 1), 0.5, 0.45, 1.0, 0, 0, (640, 640))
+        assert len(a) == len(b) == 1
+        assert a[0].bbox == b[0].bbox
+
+    def test_rejects_tensor_without_class_channel(self):
+        """4 canales son solo coordenadas: no hay ninguna clase que leer."""
+        raw = np.zeros((1, 4, 4), dtype=np.float32)
+        with pytest.raises(ValueError):
+            postprocess(raw, 0.5, 0.45, 1.0, 0, 0, (640, 640))
+
+
 class TestDetection:
     def test_to_dict(self):
         det = Detection(

@@ -219,7 +219,7 @@ en el retry tenemos una observación posterior con RSSI más fuerte").
 ## Auth y transporte
 
 - **Endpoint** (custom domain): `https://api.${DomainName}/pos/transactions`
-  — ej. `https://api.tfg.gasparri.com.ar/pos/transactions` (output del stack:
+  — ej. `https://api.<tu-dominio>/pos/transactions` (output del stack:
   `IngestPosCustomUrl`). Se crea cuando se pasa `ApiCertArn` al deploy; la
   firma SigV4 funciona igual sobre el custom domain que sobre el default.
 - **Endpoint** (default, fallback): `https://${ApiId}.execute-api.${Region}.amazonaws.com/pos/transactions`
@@ -372,7 +372,7 @@ curl --aws-sigv4 "aws:amz:us-east-1:execute-api" \
      --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
      -H "Content-Type: application/json" \
      -d '{"transaction_id":"POS-RECOLETA-20260518-001234","store_id":"ar-recoleta","event_ts":"2026-05-18T14:32:15-03:00","type":"sale","items":2,"amount_minor":4500000,"currency":"ARS","payment_method":"credit_card"}' \
-     "https://api.tfg.gasparri.com.ar/pos/transactions"
+     "https://api.<tu-dominio>/pos/transactions"
 ```
 
 **Python con `requests-aws4auth`** (recomendado para integraciones):
@@ -388,7 +388,7 @@ auth = AWS4Auth(
     "execute-api",
 )
 
-url = "https://api.tfg.gasparri.com.ar/pos/transactions"  # o la URL execute-api default
+url = "https://api.<tu-dominio>/pos/transactions"  # o la URL execute-api default
 
 tx = {
     "transaction_id": "POS-RECOLETA-20260518-001234",
@@ -422,9 +422,9 @@ const signer = new SignatureV4({
 
 const request = new HttpRequest({
     method: "POST",
-    hostname: "api.tfg.gasparri.com.ar",
+    hostname: "api.<tu-dominio>",
     path: "/pos/transactions",
-    headers: { "content-type": "application/json", host: "api.tfg.gasparri.com.ar" },
+    headers: { "content-type": "application/json", host: "api.<tu-dominio>" },
     body: JSON.stringify(tx),
 });
 

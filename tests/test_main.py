@@ -17,6 +17,7 @@ from src.main import (
     _telem_fps,
     build_capture,
     build_mqtt,
+    build_parser,
     get_telemetry,
     run_pipeline,
     setup_logging,
@@ -747,11 +748,59 @@ def test_run_pipeline_capture_error_continues(
 # ---------------------------------------------------------------------------
 
 
+class TestWebViewerPortDefault:
+    """El viewer sirve imagen en vivo sin autenticación y bindea todas las
+    interfaces, así que su default tiene que ser 'apagado'. Estos tests son el
+    candado: si alguien vuelve a poner 80 (o cualquier puerto) por omisión, el
+    dispositivo empieza a exponer video en cuanto arranca."""
+
+    def test_default_is_zero_meaning_disabled(self):
+        assert build_parser().parse_args([]).web_viewer_port == 0
+
+    def test_can_be_enabled_explicitly(self):
+        args = build_parser().parse_args(["--web-viewer-port", "8080"])
+        assert args.web_viewer_port == 8080
+
+    def test_getattr_fallback_in_run_pipeline_is_also_disabled(self):
+        """``run_pipeline`` lee el puerto con getattr(args, ..., <default>). Ese
+        segundo default es el que aplica cuando el caller arma un Namespace a
+        mano (tests, embebido), y también tiene que ser 0."""
+        fuente = Path("src/main.py").read_text(encoding="utf-8")
+        assert 'getattr(args, "web_viewer_port", 0)' in fuente
+
+    def _run(self, flags: list[str], mock_viewer_cls) -> None:
+        """Corre el pipeline hasta que la captura se agota, con la config
+        completa (si la config fuera parcial el pipeline cortaría ANTES de la
+        línea del viewer y el test pasaría sin probar nada)."""
+        tmpdir = tempfile.mkdtemp()
+        config = _make_pipeline_config(tmpdir)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        with (
+            patch("src.mqtt.client.mqtt.Client", MagicMock()),
+            patch("src.main.load_model", MagicMock()),
+            patch("src.main.build_capture") as mock_build_cap,
+        ):
+            mock_build_cap.return_value = _make_mock_capture([(frame, frame)])
+            run_pipeline(config, build_parser().parse_args(flags))
+
+    @patch("src.main.WebViewer")
+    def test_run_pipeline_does_not_start_viewer_by_default(self, mock_viewer_cls):
+        self._run([], mock_viewer_cls)
+        assert not mock_viewer_cls.called
+
+    @patch("src.main.WebViewer")
+    def test_run_pipeline_starts_viewer_when_port_given(self, mock_viewer_cls):
+        """Control positivo: prueba que el test de arriba NO pasa por corte
+        temprano del pipeline, sino porque el default está en 0."""
+        self._run(["--web-viewer-port", "8080"], mock_viewer_cls)
+        mock_viewer_cls.assert_called_once_with(port=8080)
+
+
 def test_main_missing_config_exits():
     """main() falla si --config no se pasa Y el default no existe.
 
     Después del refactor strict, --config defaultea a
-    /etc/people-counter/config.yaml. En un entorno de test (Windows / CI)
+    /etc/people-counter/config.yaml. En una estación de desarrollo
     ese path no existe, así que load_config raisea FileNotFoundError —
     el mismo fail-fast que antes, distinta exception.
     """
