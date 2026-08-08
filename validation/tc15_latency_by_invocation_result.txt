@@ -1,28 +1,30 @@
-2026-08-08 11:54:47,502 INFO botocore.credentials: Found credentials in shared credentials file: ~/.aws/credentials
+2026-08-08 21:29:50,765 INFO botocore.credentials: Found credentials in shared credentials file: ~/.aws/credentials
 === TC-15 — latencia de extremo a extremo POR INVOCACIÓN ===
   dispositivo : store-pilot-01   umbral: 5 s
   unidad      : una invocación = un mensaje MQTT = una ejecución de la Lambda
 
+  ventana     : hasta 2026-06-30 23:59:59-03:00 (fija; ver la cabecera del guion)
+
   --- REGISTRO COMPLETO ---
   flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
-  conteo           2326    2326    0.231     6.586   28651.40   349  15.00%     0.194
-  telemetria       3842    3842    0.243     6.309  305825.83   258   6.72%     0.140
-  inalambrico      2061   17997    0.343     7.334  305387.51   821  39.84%     0.458
-  AGREGADO         8229                                        1428  17.35%     0.777
+  conteo           1973    1973    0.235     6.678   28651.40   344  17.44%     0.399
+  telemetria       2511    2511    0.244     6.611  305825.83   232   9.24%     0.268
+  inalambrico      1618   12630    1.321     7.811  305387.51   807  49.88%     0.989
+  AGREGADO         6102                                        1383  22.66%     1.599
 
   --- EXCLUYENDO REPLAYS DEL BUFFER (>60 s) ---
   flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
-  conteo           2255    2255    0.229     6.334      18.00   278  12.33%     0.155
-  telemetria       3815    3815    0.243     6.206      41.69   231   6.06%     0.126
-  inalambrico      2024   17734    0.340     6.976      55.76   784  38.74%     0.438
-  AGREGADO         8094                                        1293  15.97%     0.703
+  conteo           1907    1907    0.233     6.373      18.00   278  14.58%     0.322
+  telemetria       2486    2486    0.243     6.391      41.69   207   8.33%     0.239
+  inalambrico      1582   12386    0.498     7.020      55.76   771  48.74%     0.945
+  AGREGADO         5975                                        1256  21.02%     1.452
 
-  --- CONFIGURACIÓN ACTUAL (desde 2026-06-08, sin replays) ---
+  --- CONFIGURACIÓN ACTUAL (2026-06-08 → 2026-06-30, sin replays) ---
   flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
-  conteo           1228    1228    0.214     0.314      13.92     9   0.73%     0.006
-  telemetria       3507    3507    0.241     0.397      41.69   125   3.56%     0.085
-  inalambrico      1155   13332    0.293     0.412      31.49    31   2.68%     0.021
-  AGREGADO         5890                                         165   2.80%     0.112
+  conteo            880     880    0.213     0.328      13.92     9   1.02%     0.018
+  telemetria       2178    2178    0.240     0.446      41.69   101   4.64%     0.200
+  inalambrico       713    7984    0.286     0.395      31.49    18   2.52%     0.036
+  AGREGADO         3771                                         128   3.39%     0.254
 
   --- CONFIGURACIÓN ANTERIOR (hasta 2026-06-08, sin replays) ---
   flujo          invoc.   filas      p50       p95        max   >5s   % >5s  lentas/h
@@ -31,32 +33,40 @@
   inalambrico       869    4402    6.373     7.217      55.76   753  86.65%     2.413
   AGREGADO         2204                                        1128  51.18%     3.133
 
+  --- COBERTURA TEMPORAL (configuración vigente, sin replays) ---
+  flujo          días con actividad   primera             última              
+  conteo                         10   2026-06-07 21:02:25  2026-06-28 19:20:14   lapso 20.9 días
+  telemetria                     13   2026-06-07 21:28:16  2026-06-28 21:05:24   lapso 21.0 días
+  inalambrico                    12   2026-06-07 21:00:00  2026-06-28 21:00:00   lapso 21.0 días
+  AGREGADO                       13   2026-06-07 21:00:00  2026-06-28 21:05:24   lapso 21.0 días
+  (días y horarios en America/Argentina/Buenos_Aires)
+
   --- hueco desde la invocación anterior (mismo flujo) ---
 
     conteo
       hueco previo        n      p50        max  lentas  % lentas
-      a) < 30 s         995    0.221   28651.40     101     10.2%
-      b) 30-120 s       621    0.221      15.06      25      4.0%
-      c) 2-4 min        251    0.232      10.80      14      5.6%
-      d) 4-6 min         90    0.257      11.75       8      8.9%
-      e) 6-30 min       236    5.269     429.27     119     50.4%
-      f) > 30 min       132    6.119   28610.70      82     62.1%
+      a) < 30 s         879    0.223   28651.40      97     11.0%
+      b) 30-120 s       481    0.223      15.06      25      5.2%
+      c) 2-4 min        193    0.237      10.80      14      7.3%
+      d) 4-6 min         70    0.263      11.75       8     11.4%
+      e) 6-30 min       219    5.976     429.27     119     54.3%
+      f) > 30 min       130    6.119   28610.70      81     62.3%
       z) primera          1    0.303       0.30       0      0.0%
 
     telemetria
       hueco previo        n      p50        max  lentas  % lentas
-      a) < 30 s          28   22.992   24559.01      23     82.1%
+      a) < 30 s          25   20.066   24559.01      22     88.0%
       b) 30-120 s        26    0.245      41.69       2      7.7%
-      c) 2-4 min         48    0.249     165.25       2      4.2%
-      d) 4-6 min       3422    0.240      13.48     101      3.0%
-      e) 6-30 min        40    5.949     218.23      21     52.5%
-      f) > 30 min       277    0.287  305825.83     108     39.0%
+      c) 2-4 min         44    0.251     165.25       2      4.5%
+      d) 4-6 min       2102    0.239      12.56      78      3.7%
+      e) 6-30 min        39    5.788     221.20      20     51.3%
+      f) > 30 min       274    0.287  305825.83     107     39.1%
       z) primera          1    6.420       6.42       1    100.0%
 
     inalambrico
       hueco previo        n      p50        max  lentas  % lentas
       a) < 30 s          3114011.287   28395.53      31    100.0%
       d) 4-6 min          1    1.451       1.45       0      0.0%
-      e) 6-30 min      2010    0.340     158.87     781     38.9%
-      f) > 30 min        18    0.395  305387.51       8     44.4%
+      e) 6-30 min      1570    0.508     158.87     767     48.9%
+      f) > 30 min        15    6.434  305387.51       8     53.3%
       z) primera          1   55.765      55.76       1    100.0%

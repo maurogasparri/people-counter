@@ -10,21 +10,26 @@ Los nombres empiezan por el caso al que pertenecen, de modo que el listado los
 agrupa solo, y **cada caso tiene una única salida**.
 
 Los casos TC-01 a TC-08 son cruces de personas bajo la cámara: su resultado sale
-de los eventos persistidos en la base de datos. Lo que esta carpeta aporta de esa
-campaña es el **banco que fija los criterios**, la **traza por repetición** del
-día y las **mediciones de estatura**; ver la sección siguiente.
+de los eventos persistidos en la base de datos, que un guion extrae por ventana
+de ensayo. Además de esa extracción, la carpeta aporta el **banco que fija los
+criterios**, la **traza por repetición** del día y las **mediciones de
+estatura**; la sección siguiente los describe.
 
-## Campaña dirigida del 25 de junio de 2026
+## Campaña dirigida — 24 y 25 de junio de 2026
 
 | Archivo | Qué es |
 |---|---|
 | `tc_controlled.py` | Banco de la campaña: define el criterio de aceptación de cada caso y evalúa la ventana contra la base de datos |
 | `tc_audit.md` | Reconstrucción de las 656 visitas a la zona de conteo de la jornada: entradas, cruces con su lado y balance, veredicto de salida, muertes, adopciones y rechazos por guarda |
 | `tc_trace.csv` | La misma traza, una fila por visita, para inspección |
-| `tc03_simulacion_result.txt` | Salida del banco `scripts/analysis/simulate_associator.py`: simetría por reflexión, prueba pareada y superficie de decisión. **Caracteriza el algoritmo, no el sistema completo**, con modelo de ruido no calibrado. Incluye las dos parametrizaciones: la nominal y una **adversa** (separación 10 px, p_miss 0,25), que es donde puede ponerse a prueba la simetría. Es la segunda evidencia de TC-03, junto a `tc03_result.txt` |
 | `height_mae.csv` | Las quince mediciones de estatura de TC-08: instante del cruce, sujeto, estatura real y estimada. **Cada fila es un cruce distinto**; los valores estimados que se repiten son mediciones independientes que coincidieron. El instante se recuperó del registro persistido para que cada fila sea verificable por separado |
 | `height_mae.py` | Guion que recogió esas mediciones desde la base de datos |
 | `count_session.py` | Guion de conteo por sesión usado durante la campaña |
+
+La campaña abarca **dos jornadas**, que son una sola sesión del dispositivo:
+el **24**, día del montaje, en el que se registraron las dos ráfagas de tráfico
+orgánico de TC-04, y el **25**, con los siete casos restantes. El equipo arrancó
+el 24 a las 14:24 y siguió encendido hasta las 19:06 del 25, sin reiniciar.
 
 La auditoría y la traza se **regeneraron el 2026-08-08** con
 `scripts/analysis/audit_directed_trials.py` sobre el registro de aplicación del
@@ -37,8 +42,19 @@ por `<ip-del-dispositivo>`.
 
 ## Casos de prueba
 
+Los casos de campo comparten un mismo guion de extracción,
+`tc01_08_field_events.py`, que consulta la base por la ventana de cada ensayo y
+escribe un archivo por caso.
+
 | Caso | Ejecuta | Salida |
 |---|---|---|
+| TC-01 / TC-02 — conteo de ingreso y de egreso | `tc01_08_field_events.py` | `tc01_02_result.txt` |
+| TC-03 — cruces simultáneos en direcciones opuestas | `tc01_08_field_events.py` · `scripts/analysis/simulate_associator.py` | `tc03_result.txt` (ensayo) · `tc03_simulacion_result.txt` (banco de simulación) |
+| TC-04 — ráfaga en el mismo sentido | `tc01_08_field_events.py` | `tc04_result.txt` |
+| TC-05 — robustez a la variación de apariencia | `tc01_08_field_events.py` | `tc05_result.txt` |
+| TC-06 — rechazo por debajo del umbral de altura | `tc01_08_field_events.py` | `tc06_result.txt` |
+| TC-07 — hesitación sin cruzar la línea | `tc01_08_field_events.py` | `tc07_result.txt` |
+| TC-08 — estimación de estatura | `tc01_08_field_events.py` · `height_mae.py` | `tc08_result.txt` · `height_mae.csv` |
 | TC-09 / TC-10 — stitching WiFi y entre protocolos | `tc09_10_stitching.py` | `tc09_10_result.txt` |
 | TC-11 — tasa de conversión de extremo a extremo | `tc11_conversion_rate.py` | `tc11_conversion_result.txt` |
 | TC-12 — idempotencia de la ingesta en la nube | `tc12_idempotency.py` | `tc12_idempotency_result.txt` |

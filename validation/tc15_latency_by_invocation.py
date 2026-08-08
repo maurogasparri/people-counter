@@ -20,6 +20,19 @@ Se reporta el registro completo y, en paralelo, la variante que excluye los
 replays del buffer local —eventos encolados durante un corte de conectividad y
 entregados después—, que son latencia de red del sitio y no de la cadena.
 
+**La ventana está fijada y no depende del momento en que se corra el guion.**
+Cierra el 30 de junio de 2026 porque ahí cierra la campaña de validación, igual
+que el resto del registro. La actividad posterior —agosto— corresponde al equipo
+operando sobre un escritorio y a la grabación del video de demostración, ajena a
+la validación: telemetría e inalámbrico emitiendo a cadencia fija las 24 horas,
+sin un solo evento de conteo salvo el día de la grabación. Sin ese tope, el
+resultado del guion cambiaba cada vez que se lo ejecutaba.
+
+El tope deja además fuera, sin ambigüedad, la regla de EventBridge
+``people-counter-persist-event-warmup-dev`` (``rate(2 minutes)``), creada por
+línea de comandos el 2026-08-06T09:34:14Z, que mantiene tibio el entorno de
+ejecución de la Lambda y favorecería artificialmente la latencia.
+
 Reproducible: py validation/tc15_latency_by_invocation.py
 """
 
@@ -50,6 +63,7 @@ from scripts.provision import _rds_connect  # noqa: E402
 TIENDA = "store-pilot-01"
 UMBRAL = 5.0
 REPLAY = 60.0  # por encima de esto se considera entrega diferida del buffer
+TZ_LOCAL = "America/Argentina/Buenos_Aires"  # huso del emplazamiento
 
 # Cada flujo se reduce a una fila por INVOCACIÓN.
 INVOCACIONES = {
@@ -96,14 +110,28 @@ def main() -> int:
     # (commit 3d7a7d9). Eso multiplicó por 12 la tasa de invocación de la
     # Lambda y, con ella, la probabilidad de encontrar el entorno tibio. El
     # agregado histórico mezcla las dos configuraciones: se reportan aparte.
+    #
+    # CORTE se compara contra un timestamptz sin huso explícito, de modo que
+    # Postgres lo evalúa en la zona de la sesión, que es UTC: el límite real es
+    # 2026-06-08T00:00Z = 7 de junio 21:00 hora local. Por eso la ventana de la
+    # configuración vigente incluye invocaciones fechadas el 7 de junio en hora
+    # local (59 de ellas). Es deliberado: el corte lo define un despliegue de
+    # software, no una fecha civil.
     CORTE = "2026-06-08"
+    # Tope superior FIJO — sin esto el resultado del guion derivaba con cada
+    # ejecución. Cierra donde cierra la campaña de validación; ver la cabecera.
+    TOPE = "2026-06-30 23:59:59-03:00"
+    VENTANA = f"origen <= TIMESTAMPTZ '{TOPE}'"
+    print(f"  ventana     : hasta {TOPE} (fija; ver la cabecera del guion)\n")
+
     for etiqueta, filtro in (
-        ("REGISTRO COMPLETO", ""),
-        ("EXCLUYENDO REPLAYS DEL BUFFER (>60 s)", f"WHERE lat <= {REPLAY}"),
-        (f"CONFIGURACIÓN ACTUAL (desde {CORTE}, sin replays)",
-         f"WHERE lat <= {REPLAY} AND origen >= '{CORTE}'"),
+        ("REGISTRO COMPLETO", f"WHERE {VENTANA}"),
+        ("EXCLUYENDO REPLAYS DEL BUFFER (>60 s)",
+         f"WHERE {VENTANA} AND lat <= {REPLAY}"),
+        (f"CONFIGURACIÓN ACTUAL ({CORTE} → 2026-06-30, sin replays)",
+         f"WHERE {VENTANA} AND lat <= {REPLAY} AND origen >= '{CORTE}'"),
         (f"CONFIGURACIÓN ANTERIOR (hasta {CORTE}, sin replays)",
-         f"WHERE lat <= {REPLAY} AND origen < '{CORTE}'"),
+         f"WHERE {VENTANA} AND lat <= {REPLAY} AND origen < '{CORTE}'"),
     ):
         print(f"  --- {etiqueta} ---")
         print(f"  {'flujo':<13}{'invoc.':>8}{'filas':>8}{'p50':>9}{'p95':>10}"
@@ -125,11 +153,34 @@ def main() -> int:
               f"{tot_l:>6}{100.0*tot_l/tot_n:>7.2f}%{tot_l/horas_max:>10.3f}")
         print()
 
+    # --- cobertura temporal de la ventana ------------------------------------
+    # El recuento de invocaciones es exacto, pero el equipo es una unidad de
+    # desarrollo que se apagó y se trasladó entre sesiones: la actividad no es
+    # continua y conviene que el propio artefacto lo diga.
+    print("  --- COBERTURA TEMPORAL (configuración vigente, sin replays) ---")
+    print(f"  {'flujo':<13}{'días con actividad':>20}   {'primera':<20}{'última':<20}")
+    union = " UNION ALL ".join(
+        f"SELECT origen, received_at FROM ({s}) u{i}"
+        for i, s in enumerate(INVOCACIONES.values()))
+    for flujo, sub in list(INVOCACIONES.items()) + [("AGREGADO", union)]:
+        cur.execute(f"""
+          SELECT count(DISTINCT (origen AT TIME ZONE '{TZ_LOCAL}')::date),
+                 min(origen AT TIME ZONE '{TZ_LOCAL}'),
+                 max(origen AT TIME ZONE '{TZ_LOCAL}'),
+                 round(EXTRACT(epoch FROM (max(origen) - min(origen)))/86400.0, 1)
+          FROM (SELECT *, EXTRACT(epoch FROM (received_at - origen)) lat
+                FROM ({sub}) i) x
+          WHERE {VENTANA} AND lat <= {REPLAY} AND origen >= '{CORTE}'""")
+        d, pr, ul, lapso = cur.fetchone()
+        print(f"  {flujo:<13}{d:>20}   {pr:%Y-%m-%d %H:%M:%S}  {ul:%Y-%m-%d %H:%M:%S}"
+              f"   lapso {lapso} días")
+    print(f"  (días y horarios en {TZ_LOCAL})\n")
+
     # --- hueco desde la invocación anterior, por flujo -----------------------
     print("  --- hueco desde la invocación anterior (mismo flujo) ---")
     for flujo, sub in INVOCACIONES.items():
         cur.execute(f"""
-          WITH i AS ({sub}),
+          WITH i AS (SELECT * FROM ({sub}) s WHERE {VENTANA}),
           g AS (SELECT received_at,
                        EXTRACT(epoch FROM (received_at - origen)) lat,
                        EXTRACT(epoch FROM (received_at -

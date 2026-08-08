@@ -30,8 +30,7 @@ abstracto). Los counts publicados (``passersby``, ``shoppers``) son distinct
 
 Privacy: el ``seqnum`` y los timestamps quedan SOLO en SQLite local (rotado
 diario via ``reset_daily``). El MQTT publish sigue mandando counts agregados,
-nunca hashes ni seqnums. El dedup es local al device (monocam, 1
-device/sucursal).
+nunca hashes ni seqnums. El dedup es local al device (un punto de captura, 1 device por sucursal).
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 # Métricas — alcance y roadmap
 
 Estado de las métricas de retail frente a los datos que el sistema captura hoy
-(visión cenital monocam en puerta + WiFi/BLE pasivo + POS del cliente +
+(visión cenital estéreo en puerta + WiFi/BLE pasivo + POS del cliente +
 telemetría de device). Criterio: **no agregar funcionalidad nueva** salvo que
 sea muy barata (un dato estático de config).
 
@@ -34,12 +34,13 @@ privacidad); "tiempo de permanencia" es estimación a nivel local (no por person
 | Métrica | Por qué |
 |---|---|
 | Atracción de vidriera | el único proxy posible (shoppers÷passersby por RSSI) no es preciso — "estar cerca" ≠ "frenar a mirar"; lo literal necesita visión exterior |
-| Distribución por entrada | el dato ya está (`count_events.device_id`); con una sola cámara da 100%, se desagrega con 2+ cámaras por local |
+| Distribución por entrada | el dato ya está (`count_events.device_id`); con un solo dispositivo por local da 100%, se desagrega con 2+ dispositivos |
 | Ratio clientes/vendedor (STAR) | no existe un "staff típico" (varía por temporada, horario, día); requeriría feed de dotación por turno |
 
 ### Comportamiento in-store → visión multi-zona / no-video
 `Mapa de calor por zonas`, `Conversión de probadores`, `Recorrido del cliente`,
-`Tiempo y abandono de cola`. Hoy: monocam cenital en la puerta y **regla dura de
+`Tiempo y abandono de cola`. Hoy: un único punto de captura cenital en la puerta
+y **regla dura de
 no transmitir video**. Requieren sensado multi-zona, fuera del alcance del prototipo.
 
 ### Inventario → feed de stock/costo del cliente

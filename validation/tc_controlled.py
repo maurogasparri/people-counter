@@ -23,7 +23,9 @@ Uso:
   py tc_controlled.py TC-05                                     # lee height_mae.csv
   py tc_controlled.py report                                    # tabla markdown Tabla 14
 
-Cada corrida acumula un row en docs/benchmarks/<fecha>/tc_controlled_results.csv.
+Cada corrida acumula un row en validation/tc_controlled_results.csv. Ese archivo
+resumen NO se publica: su contenido está superado por la tabla de veredictos de
+docs/benchmark_results.md, que además trae los datos por evento.
 """
 import argparse
 import csv
@@ -100,7 +102,7 @@ TCS = {
 
 
 def results_csv(date):
-    d = REPO / "docs" / "benchmarks" / date
+    d = REPO / "validation"
     d.mkdir(parents=True, exist_ok=True)
     return d / "tc_controlled_results.csv"
 
@@ -364,7 +366,7 @@ def cmd_report(date):
             print(f"| {tc} {r['desc']} | {r['criterio']} | {r['observado']} | {v} |")
         else:
             print(f"| {tc} {TCS[tc]['desc']} | {TCS[tc]['crit']} | (sin correr) | ⏳ |")
-    print("\nPegar en la Tabla 14 del TFG. Detalle crudo en tc_controlled_results.csv.")
+    print("\nDetalle crudo acumulado en validation/tc_controlled_results.csv.")
 
 
 def main():

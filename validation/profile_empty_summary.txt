@@ -22,4 +22,4 @@
     total      49.3    48    66  100.0%
     FPS (compute-bound 1000/TOTAL): mean=21.4 p50=20.9 min=14.4
 
-  CSV por frame -> docs/benchmarks/20260621/profile_empty_perframe.csv
+  CSV por frame -> validation/profile_empty_perframe.csv

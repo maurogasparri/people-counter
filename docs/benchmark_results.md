@@ -31,6 +31,13 @@ decisión de la organización y desarrollada en el plan de implementación). Los
 valores provienen de mediciones instrumentadas reproducibles; cuando un criterio
 no pudo verificarse se indica explícitamente.
 
+**Sobre las ventanas de medición.** El dispositivo es una unidad de desarrollo y
+**no operó de forma continua**: se encendió por sesiones y se trasladó entre
+ellas. Por eso ninguna cifra de este documento debe leerse como lapso de
+servicio, y las que se apoyan en una serie declaran su ventana con fechas y
+cantidad de muestras en lugar de la diferencia entre el primer y el último
+registro, que en varios casos abarca semanas sin actividad.
+
 ## 2. Casos de prueba (TC-01 … TC-19)
 
 | Código | Descripción | Muestra | Resultado observado | Veredicto |
@@ -49,11 +56,31 @@ no pudo verificarse se indica explícitamente.
 | TC-12 | Idempotencia de la ingesta en la nube | 20 duplicados × 2 tablas | 40/40 descartados por la restricción de unicidad; 0 filas insertadas | ✅ PASS |
 | TC-13 | Consulta de agregados: control de acceso y validación | 4 invocaciones | sin credenciales → 403; falta `from` → 400; rango de 20 d con agrupamiento de 15 min → 400 (RFC 7807); válida → 200 | ✅ PASS |
 | TC-14 | Privacidad por diseño | 500 muestras en la nube + auditoría del disco del dispositivo | 0 direcciones MAC en claro; las 3 columnas señaladas por el barrido examinadas y descartadas; 0 imágenes escritas por el pipeline | ✅ PASS |
-| TC-15 | Latencia de extremo a extremo (p95 ≤ 5 s) | 4 728 invocaciones (configuración vigente) | p95 0,33 s conteo · 0,43 s telemetría · 0,44 s inalámbrico. La configuración previa al 8-06 no cumplía (p95 6,5–7,2 s) | ✅ PASS |
+| TC-15 | Latencia de extremo a extremo (p95 ≤ 5 s) | 3 771 invocaciones (configuración vigente, 8 al 30 de junio) | p95 0,33 s conteo · 0,45 s telemetría · 0,40 s inalámbrico. La configuración previa al 8-06 no cumplía (p95 6,5–7,2 s) | ✅ PASS |
 | TC-16 | Resiliencia ante corte breve de conectividad | 30 eventos (prueba de componente) | encolados offline → drenados íntegros, 0 pérdida / 0 duplicado | ✅ PASS |
 | TC-17 | Resiliencia ante corte prolongado | 1 302 eventos = volumen de 72 h (prueba de componente) | persistidos y drenados sin pérdida ni duplicado, muy por debajo del tope de 50 000 mensajes; el control con tope reducido a 1 000 confirma que el acotamiento actúa | ✅ PASS |
 | TC-18 | Reinicio tras corte de energía (< 90 s) | 1 corte físico real | frames fluyendo en **+46 s**; `integrity_check` SQLite OK; fs sano, throttle 0x0 | ✅ PASS |
 | TC-19 | Disponibilidad del stack cloud (24 h ≥ 99 %) | 24 h (21-06 16:20 → 22-06 16:20, −03) | Medido sobre los servicios, no sobre el device: **RDS 288/288 intervalos (100 %)**, **Fargate `LiveTaskCount` ≥ 1 en 288/288 (100 %)**, **IoT Core 0 fallos del broker** y publicaciones aceptadas en 287/288 (99,7 %). Alarmas: ninguna de las diez alcanzó su condición. Tableros: destino sano en 288/288, 842 peticiones, 0 respuestas 5XX | ✅ PASS |
+
+**Cuándo se ejecutó cada caso.** Las fechas importan porque el dispositivo no
+operó de forma continua, y porque no todos los casos admiten el mismo grado de
+precisión al respecto.
+
+| Casos | Ejecución |
+|---|---|
+| TC-01 a TC-08 | **24-06 14:24 a 25-06 19:06**, una única sesión continua con el equipo montado en su emplazamiento (ver L3) |
+| TC-09, TC-10, TC-16, TC-17 | **21-06 22:02**, en el lote automatizado que documenta `validation/run_benchmarks.md` |
+| TC-18 | **21-06 18:24**, corte físico de alimentación, anterior al montaje |
+| TC-19 | ventana de métricas del **21-06 16:20 al 22-06 16:20**; la reconstrucción se corrió después, sobre métricas retenidas |
+| TC-11, TC-12 | **entre el 21 de junio y el 7 de agosto** — su salida no registra el instante de ejecución, de modo que sólo puede acotarse el rango |
+| TC-13, TC-14, TC-15 | reejecutados el **8 de agosto**; la parte de nube de TC-14 proviene del lote del 21-06. TC-15 mide sobre una **ventana fija que cierra el 30 de junio**, de modo que la fecha de reejecución no altera su resultado |
+
+Los cuatro casos del lote del 21 de junio —TC-09, TC-10, TC-16 y TC-17— son
+**pruebas de componente con entrada sintética de verdad conocida**, que corren
+sobre bases temporales. Son deterministas: reproducirlas hoy da el mismo
+resultado, de modo que la fecha es trazabilidad y no una condición del hallazgo.
+Los que consultan la base o la nube sí dependen del momento, y por eso se declara
+lo que cada uno permite: fecha exacta donde la hay, rango donde no.
 
 **TC-01 y TC-02 — conteo de ingreso y de egreso.**
 
@@ -354,6 +381,12 @@ personas.
 Se planificaron dos ráfagas de cinco personas. Por tratarse de tráfico no
 coreografiado, la de egreso resultó de **siete** y la de ingreso de **cinco**.
 Ambas fueron revisadas y confirmadas por el operador en el momento del ensayo.
+
+Las dos ráfagas son del **24 de junio**, a las 15:51 y 15:57 —día del montaje—,
+y no del 25 como el resto de la campaña. No son jornadas separadas: el
+dispositivo arrancó el 24 a las 14:24 y siguió encendido hasta las 19:06 del 25,
+de modo que los ocho casos de campo pertenecen a **una misma sesión continua**
+(ver L3).
 
 **Criterio de aceptación.** Todos los cruces contados, sin omisión, sin doble
 conteo y sin fusión de identidades.
@@ -800,13 +833,27 @@ MAC. El recorrido del esquema señala tres columnas, que se examinan una a una:
 |---|---|---|
 | `telemetry.frame_latency_p50_ms` | real | latencia de cuadro, en milisegundos |
 | `telemetry.frame_latency_p95_ms` | real | latencia de cuadro, en milisegundos |
-| `wifi_ble_events.visitor_hash` | bytea | el resumen salado y truncado que **sustituye** a la dirección |
+| `wifi_ble_events.visitor_hash` | bytea | un **identificador aleatorio** de 16 bytes (`uuid.uuid4().hex`): el `group_id` que el dispositivo asigna a cada grupo de identidad tras el stitching local |
 
-Las dos primeras son magnitudes de rendimiento. La tercera es precisamente el
-mecanismo de anonimización, no una excepción a él. El aviso del barrido es un
-heurístico que se dispara por tipo de dato —cualquier columna binaria— y no un
-hallazgo: por eso su veredicto automático queda en «revisar», y la revisión es
-la que se acaba de exponer.
+Las dos primeras son magnitudes de rendimiento. La tercera, pese al nombre de la
+columna, **no es un resumen de la dirección**: se genera al azar y no deriva de
+la MAC ni de su hash. Eso hace que la propiedad sea más fuerte que la de un
+resumen salado, que en principio sería invertible por búsqueda exhaustiva sobre
+el espacio de direcciones, acotado y enumerable; **un identificador aleatorio no
+es invertible ni siquiera conociendo la sal**, porque no hay relación funcional
+que revertir. La correspondencia entre ese identificador y el seudónimo local de
+la dirección vive únicamente en el almacenamiento del dispositivo y se destruye
+en el reinicio diario, que además rota la sal.
+
+Conviene precisar el término: lo que se verifica sobre el **seudónimo local** de
+la dirección es **seudonimización**, no anonimización — el espacio de direcciones
+es acotado y quien conociera la sal podría reconstruir la correspondencia. Lo
+que llega a la nube, en cambio, es el identificador aleatorio, sobre el que esa
+reconstrucción no es posible.
+
+El aviso del barrido es un heurístico que se dispara por tipo de dato
+—cualquier columna binaria— y no un hallazgo: por eso su veredicto automático
+queda en «revisar», y la revisión es la que se acaba de exponer.
 
 *En el dispositivo.* El directorio de salida del extractor de
 fotogramas **no existe**, de modo que nunca se escribió uno. La función está
@@ -841,19 +888,37 @@ dentro, y esas filas comparten latencia por construcción —no son observacione
 independientes—. La marca de origen es el instante del evento para conteo y
 telemetría, y el cierre de la ventana para el flujo inalámbrico. Se reporta
 además la variante que excluye los reenvíos del buffer local, que son latencia
-de red del sitio y no de la cadena. Registro completo: **7 059 invocaciones** del
-dispositivo piloto.
+de red del sitio y no de la cadena. La ventana abarca del **8 al 30 de junio de
+2026** y está fijada en el guion, no depende del momento en que se lo ejecute.
+Registro completo dentro de esa ventana, sumando las dos configuraciones de
+cadencia: **6 102 invocaciones** del dispositivo piloto.
+
+*Sobre la ventana: se cierra el **30 de junio**, donde cierra la campaña de
+validación, igual que el resto del registro. La actividad posterior del
+dispositivo —agosto— corresponde al equipo operando sobre un escritorio y a la
+grabación del video de demostración: telemetría e inalámbrico emitiendo a
+cadencia fija las veinticuatro horas, sin un solo evento de conteo salvo el día
+de la grabación. No es tráfico de validación y queda fuera. El corte inferior es
+el despliegue del 8 de junio evaluado en UTC, de modo que la primera invocación
+de la ventana lleva fecha local del 7 de junio a las 21:00.*
+
+*Dentro de la ventana el recuento de invocaciones es exacto, pero **no
+corresponde a operación continua**. El equipo es una unidad de desarrollo que se
+apagó y se trasladó entre sesiones: hay actividad en **13 días distintos**, no en
+los 21 que separan la primera invocación de la última. Las cifras caracterizan la
+cadena en las jornadas en que el dispositivo estuvo encendido, que es lo que la
+medición puede sostener.*
 
 **Criterio de aceptación.** Percentil 95 no mayor que 5 s.
 
-**Resultado.** La configuración vigente cumple con holgura, sobre 4 728
+**Resultado.** La configuración vigente cumple con holgura, sobre 3 771
 invocaciones:
 
 | Flujo | Invocaciones | p50 | p95 | Máximo | Por encima de 5 s |
 |---|---:|---:|---:|---:|---:|
 | Conteo | 880 | 0,213 s | **0,328 s** | 13,9 s | 1,0 % |
-| Telemetría | 2 896 | 0,244 s | **0,428 s** | 41,7 s | 4,2 % |
-| Inalámbrico | 952 | 0,294 s | **0,435 s** | 31,5 s | 3,1 % |
+| Telemetría | 2 178 | 0,240 s | **0,446 s** | 41,7 s | 4,6 % |
+| Inalámbrico | 713 | 0,286 s | **0,395 s** | 31,5 s | 2,5 % |
 
 **El caso detectó además un incumplimiento anterior, y queda documentado.** El
 mismo análisis sobre la configuración previa al 8 de junio de 2026 arroja
@@ -870,18 +935,22 @@ y el registro conserva la medición que quedó atrás. Medir por invocación fue
 que hizo visible el contraste: sobre el recuento por filas, y sobre muestras
 pequeñas, la diferencia entre ambas configuraciones se diluye.
 
-**Una invocación programada, posterior a esta medición.** En la cuenta existe
-una regla de EventBridge —`people-counter-persist-event-warmup-dev`,
+**Una invocación programada, ajena a esta medición.** En la cuenta existe una
+regla de EventBridge —`people-counter-persist-event-warmup-dev`,
 `rate(2 minutes)`— que invoca la función de persistencia con un evento de conteo
 duplicado, descartado por la restricción de unicidad, con el solo fin de
 mantener tibio su entorno de ejecución. **No forma parte de la plantilla de
-infraestructura**: se creó por línea de comandos el **2026-08-06**.
+infraestructura**: se creó por línea de comandos el **2026-08-06 a las 09:34:14
+UTC**, según el registro de auditoría de la cuenta.
 
-Es **posterior a las mediciones de este caso**, de modo que no explica los
-percentiles publicados. Sí implica dos cosas hacia adelante: una corrida nueva
-de la medición daría mejor que lo aquí reportado, porque la función ya no parte
-en frío; y un despliegue limpio desde la plantilla **no tendría** esa regla, así
-que reproduciría el comportamiento sin ella.
+La ventana de este caso cierra el **30 de junio**, treinta y siete días antes,
+de modo que **ninguna de las invocaciones medidas pudo verse afectada**. No es
+una cuestión de magnitud despreciable sino de imposibilidad temporal. Sí implica
+dos cosas hacia adelante: una corrida que incluyera agosto daría mejor que lo
+aquí reportado, porque la función ya no parte en frío —razón adicional por la
+que la ventana quedó fijada en el guion en lugar de extenderse hasta el día de
+la ejecución—; y un despliegue limpio desde la plantilla **no tendría** esa
+regla, así que reproduciría el comportamiento sin ella.
 
 **Procedencia de la evidencia.**
 `validation/tc15_latency_by_invocation.py` y su salida
@@ -1048,8 +1117,8 @@ como limitación L2 en §4.)
 
 | Métrica | Valor | Objetivo flota | Veredicto |
 |---|---|---|---|
-| `memory.peak` del servicio (soak ~60 min) | 416 MiB | < 2048 MiB | ✅ (20 % usado) |
-| `memory.peak` bajo stress sintético | 247 MiB | < 2048 MiB | ✅ (12 %) |
+| `memory.peak` del servicio (soak de 60 min continuos, 720 muestras) | 416 MiB | < 2048 MiB | ✅ (20 % usado) |
+| `memory.peak` bajo stress sintético (11 min continuos, 132 muestras) | 247 MiB | < 2048 MiB | ✅ (12 %) |
 | `memory.events` (high/max/oom) y swap | 0 | 0 | ✅ |
 
 El pico bajo estrés sintético es **menor** que el del soak porque el estrés
@@ -1311,7 +1380,7 @@ sesión.
 Los demás casos no dependen del montaje y por eso no comparten esa restricción:
 TC-09, TC-10, TC-16 y TC-17 son pruebas de componente sobre bases temporales;
 TC-11, TC-12, TC-13 y TC-19 se ejecutan contra la nube; TC-14 combina un barrido
-en la nube con una auditoría del disco del equipo; TC-15 abarca 19 jornadas de
+en la nube con una auditoría del disco del equipo; TC-15 abarca 13 jornadas de
 actividad; y TC-18 es un corte físico de alimentación del 21 de junio, anterior
 al montaje. La caracterización de banco de §3 es también del 21 de junio, fuera
 del emplazamiento. No es una limitación del producto sino de la fuerza estadística

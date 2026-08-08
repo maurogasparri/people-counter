@@ -1,7 +1,7 @@
 # Reporte de coverage de tests
 
 Cobertura de la suite de tests unitarios sobre `src/`. Generado con
-`pytest-cov` (coverage.py) el **2026-06-26**.
+`pytest-cov` (coverage.py) el **2026-08-08**.
 
 ## Cómo regenerarlo
 
@@ -21,8 +21,8 @@ pytest --cov=src --cov-report=term-missing --cov-report=html
 | Sentencias sin cubrir | 1303 |
 | **Cobertura total** | **81%** |
 | Archivos al 100% | 15 |
-| Tiempo de ejecución | ~77 s |
-| Plataforma | Python 3.12 (workstation) / target runtime 3.13 (Pi) |
+| Tiempo de ejecución | ~46 s |
+| Plataforma | Windows 11, Python 3.12.6, pytest 9.0.2 (workstation) / target runtime 3.13 (Pi) |
 
 ## Cobertura por módulo
 
@@ -59,7 +59,7 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 | `vision/capture.py` | 371 | 61% |
 | `vision/detect.py` | 230 | 61% |
 | `wifi_ble/ble_scan.py` | 101 | 60% |
-| **TOTAL** | **6847** | **81%** |
+| **TOTAL** | **6891** | **81%** |
 
 > **Pasada de hardening de tests (2026-06-17)**. Se cerraron los gaps de
 > mayor riesgo entre el núcleo de decisión y las Lambdas:
@@ -85,8 +85,8 @@ Ordenado de mayor a menor cobertura. Los 15 archivos al 100% (la mayoría de
 > test assertaba el side-effect al toque. Pasaba aislado y fallaba con la
 > suite completa según el scheduling; ahora espera el efecto con timeout.
 >
-> El total agregado se movió poco con esa pasada; en la medición actual
-> (2026-06-26) es **81%** — el código de runtime sumado después (p. ej.
+> El total agregado se movió poco con esa pasada; en la medición de entonces
+> (2026-06-26) era **81%** — el código de runtime sumado después (p. ej.
 > `camera_sync` en `capture.py`, que pasó de 73% a 61% al crecer ~90
 > sentencias que no se ejercitan sin hardware) diluyó el agregado. El
 > denominador está dominado por los bordes de hardware + `main.py` que no se
