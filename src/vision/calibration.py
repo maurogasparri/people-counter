@@ -828,7 +828,7 @@ def default_pose_sequence(
 
     Check de cobertura operativa: cabezas a depth 1.0m (persona de
     1.85m a mount 2.0m, borde near de la línea de conteo) hasta 2.5m
-    (niño de 1.0m a mount 3.5m); piso 2.0m–3.5m. Rango completo de
+    (sujeto de 1.0m a mount 3.5m); piso 2.0m–3.5m. Rango completo de
     bbox depth 1.0–3.5m cae bien dentro de las distancias sampleadas
     1–3m más la extrapolación tolerada de ±0.5m.
     """

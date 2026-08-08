@@ -9,7 +9,7 @@ vistas y los paneles:
   - Embudo coherente: passersby > shoppers > ingresos > ventas.
   - Patrón diario (horario 10-22) + semanal (picos vie/sáb) + más demanda
     después de las 16 h en días de semana.
-  - Demografía adult/child/unknown (altura cruzando el threshold 1.55 m).
+  - Rango de estatura adult/child/unknown (altura cruzando el threshold 1.55 m).
   - Dwell por visita -> ocupación que sube durante el día y drena al cierre
     (Ley de Little -> panel de duración de visita).
   - Visitantes WiFi/BLE en 1..N ventanas de 15 min (panel de engagement).
@@ -114,7 +114,8 @@ WEEKDAY_EVENING_BOOST = 1.30
 # para que ``base_ins`` sea el promedio diario real. Pico vie/sáb, domingo flojo.
 WEEKDAY_MULT = [0.821, 0.772, 0.821, 0.917, 1.207, 1.497, 0.966]
 
-# Demografía de los ingresos: adulto / niño / (resto = unknown).
+# Rango de estatura de los ingresos: adult / child / (resto = unknown).
+# Son tramos de altura del esquema, no edades.
 ADULT_FRAC = 0.90
 CHILD_FRAC = 0.07
 

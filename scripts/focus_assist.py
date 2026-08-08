@@ -81,8 +81,8 @@ TARGET_DISTANCE_MAX_MM = 1700.0  # Target universal para toda la flota —
 # simétrico en ambos extremos. Ver
 # docs/lab_calibration_guide.md.
 DEFAULT_MOUNT_HEIGHT_M = 3.0  # Moda de nuestra distribución de altura de puerta
-HEAD_HEIGHT_MAX_M = 1.85  # adulto alto
-HEAD_HEIGHT_MIN_M = 1.20  # niño bajo
+HEAD_HEIGHT_MAX_M = 1.85  # sujeto alto
+HEAD_HEIGHT_MIN_M = 1.20  # sujeto bajo
 COMPACT_BBOX_THRESHOLD = 0.25  # Área bbox del board/frame > esto ->
 # escena compacta (el board llena la
 # vista, los corners ven paredes a

@@ -13,7 +13,7 @@ Cualquier otra key del config sigue requiriendo SSH + edit + restart.
 |---|---|---|
 | `operating_hours` | `{monday:"10:00-22:00", ..., sunday:"10:00-21:00"}` | Horario de la tienda por día. Fuera de horario, el conteo se pausa (a menos que `--ignore-operating-hours` en CLI). |
 | `counting_enabled` | `true` | Toggle del conteo de personas (visión). `false` = pipeline corre pero no emite count events. |
-| `external_traffic_enabled` | `true` | Toggle de la captura WiFi/BLE (passersby + shoppers). `false` = subsystem deshabilitado, ideal para pausa de privacidad por sucursal. |
+| `external_traffic_enabled` | `true` | Toggle de la captura WiFi/BLE (detección de dispositivos cercanos). `false` = subsystem deshabilitado, ideal para pausa de privacidad por sucursal. |
 
 Cualquier otra key pusheada se ignora silenciosamente (loggeada como
 `shadow_delta_requires_restart` en el device).

@@ -89,7 +89,7 @@ class CountEvent:
     # Mediana de head height (m) y head depth (m) a lo largo del historial
     # de detecciones del track. None cuando no se sampleó profundidad
     # (classifier disabled o cada frame detectado cayó fuera del depth map).
-    # La categorización adulto/niño se aplica server-side vía la función SQL
+    # La categorización por rango de estatura se aplica server-side vía la función SQL
     # height_class(height_m) sobre count_events. El device persiste solo la
     # medición cruda — el threshold vive centralizado en SQL.
     height_m: Optional[float] = None
@@ -314,7 +314,7 @@ class Counter:
     META_KEY = "counter"
 
     # Gate de mediana de confidence per-track. Bajo este threshold los
-    # campos demográficos del CountEvent (height_class, height_m,
+    # campos de estatura del CountEvent (height_class, height_m,
     # head_depth_m) se reportan como unknown/None — el bbox fue marginal
     # a lo largo del track y la altura derivada de SGBM no es confiable.
     # 0.5 separa razonablemente las pasadas tipo "v2 normal" (0.6-0.8)
@@ -364,7 +364,7 @@ class Counter:
     #      este desplazamiento (en px, max de x_range y y_range) durante la
     #      visita. Filtra el edge case donde un track salió brevemente del
     #      counting zone (had_outside_pos=True) y después jittereó adentro sin
-    #      movimiento real. Default 80 px ≈ media zancada de adulto a la
+    #      movimiento real. Default 80 px ≈ media zancada a la
     #      altura de montaje típica. **Tuneable per-instancia** via el
     #      kwarg ``min_visit_range_for_death_emit`` del constructor — bajarlo
     #      (ej. 50) en sites con detector flakey donde la mayoría del visit
@@ -398,7 +398,7 @@ class Counter:
     # solo filtra alturas medidas y bajas): si SGBM NO le sacó altura al track
     # (mediana None) Y la mediana de YOLO confidence cae por debajo de este
     # threshold, el counter NO emite el conteo. Eje ortogonal al
-    # height_confidence_gate (ese gatea SOLO la demografía cuando HAY altura; el
+    # height_confidence_gate (ese gatea SOLO el rango de estatura cuando HAY altura; el
     # conteo se mantiene). Acá, sin altura, decide contar o no.
     # Caso real hallado en la validación en las instalaciones: de lunes a jueves 10:30-18:30 el único "tráfico" es un
     # perro (+ tracks fantasma sobre clutter). Análisis de 831 count_events del
@@ -464,7 +464,7 @@ class Counter:
                 ``DEFAULT_MIN_COUNT_HEIGHT_M = 0.0`` = filtro desactivado.
                 Activar en sites con FPs no-humanos persistentes (perros,
                 carritos altos, objetos sobre sillas). 1.0 filtra perros y
-                objetos < 1m sin perder niños de 4+ años. 0.7 más conservador.
+                objetos < 1m sin perder personas de más de 1 m. 0.7 más conservador.
                 Tracks sin medición SGBM (median=None) pasan — recall sobre
                 precision en ambigüedad. Para esos casos sin altura está el
                 guard complementario ``min_count_confidence``.
@@ -476,25 +476,25 @@ class Counter:
                 alturas medidas y bajas) cubriendo el caso del FP no-humano al
                 que SGBM no le saca altura (perro, track fantasma sobre
                 clutter). Eje ORTOGONAL a ``height_confidence_gate``: ese solo
-                afecta la demografía cuando HAY altura (el conteo se mantiene);
+                afecta el rango de estatura cuando HAY altura (el conteo se mantiene);
                 este decide contar-o-no cuando NO hay altura. ``None`` (default)
                 usa ``DEFAULT_MIN_COUNT_CONFIDENCE = 0.60``. ``0.0`` lo
                 desactiva (back-compat: cualquier track sin altura cuenta).
                 Bajar a 0.50 para priorizar recall. Validado contra 831
                 count_events del PoC (2026-06-01).
             height_confidence_gate: Threshold de mediana de YOLO confidence
-                del track para que los campos demográficos (height_class,
+                del track para que los campos de estatura (height_class,
                 height_m, head_depth_m) se reporten en el CountEvent.
                 Tracks con median(conf) < threshold reportan ``height_class
                 = "unknown"`` y demás campos en None — el bbox fue marginal
                 a lo largo de la trayectoria y la altura derivada de SGBM
                 no es confiable. **El conteo en sí (in/out) NO se afecta**;
-                solo la clasificación demográfica se vuelve conservadora.
+                solo la clasificación por rango de estatura se vuelve conservadora.
                 ``None`` (default) usa ``DEFAULT_HEIGHT_CONFIDENCE_GATE
                 = 0.5``. Subir a 0.7 en sites con detector flaky donde
                 pasadas marginales reportan altura espuria; bajar a 0.3
                 solo si el detector está bien calibrado y querés
-                demografía de pasadas rápidas también.
+                el rango de estatura de pasadas rápidas también.
             min_real_inside_frames: Mínimo de frames con detección REAL
                 inside la counting zone (entry-fresca + frames is_real=True
                 durante la visita) antes de que el counter pueda emitir.
@@ -1333,7 +1333,7 @@ class Counter:
             # ``min_count_confidence``, el emit se rechaza. El perro real de la
             # validación en las instalaciones sale sin altura y con conf <=0.56; una persona sin altura
             # (SGBM falló) trae conf alta y pasa. Usa la altura CRUDA de SGBM
-            # (no la anulada por height_confidence_gate, que es solo demografía).
+            # (no la anulada por height_confidence_gate, que es solo el rango de estatura).
             if label and self.min_count_confidence > 0:
                 track_height_m = _aggregate_height_m_from_track(track)
                 conf_median = _aggregate_confidence_from_track(track)
@@ -1362,7 +1362,7 @@ class Counter:
                     "count_event",
                     extra={"track_id": track.track_id, "label": label},
                 )
-                # Demographics gate: la altura se calcula desde SGBM dentro
+                # Gate de estatura: la altura se calcula desde SGBM dentro
                 # del bbox, y SGBM degrada con motion blur (matching estéreo
                 # falla en bordes desenfocados) y con bbox poco precisos
                 # (centroide off-cabeza). Cuando la mediana de confidence
@@ -1371,8 +1371,8 @@ class Counter:
                 # derivada no es confiable — el conteo en sí (dirección,
                 # cruce) se mantiene porque solo depende del centroide.
                 # Limpiar height_m/head_depth_m a None así los dashboards
-                # no surfacean valores demográficos espurios (la
-                # categorización adulto/niño se computa server-side desde
+                # no surfacean valores de estatura espurios (la
+                # categorización por rango de estatura se computa server-side desde
                 # height_m, así NULL → 'unknown' en la vista).
                 conf_median = _aggregate_confidence_from_track(track)
                 if (
@@ -1487,7 +1487,7 @@ def build_counter(config: dict[str, Any]) -> Counter:
     )
 
     # ``height_confidence_gate`` per-site (umbral de median(conf) para
-    # reportar demografía en el CountEvent). None / ausente → DEFAULT 0.5.
+    # reportar el rango de estatura en el CountEvent). None / ausente → DEFAULT 0.5.
     # No afecta el conteo; solo la calidad del reporte de altura.
     height_conf_gate_cfg = counter_cfg.get("height_confidence_gate")
     height_conf_gate_kwarg = (

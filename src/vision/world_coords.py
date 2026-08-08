@@ -5,8 +5,8 @@ camera-to-scene. Para traducir esas profundidades a cantidades físicamente
 significativas (altura de cabeza, coordenadas en el plano del piso, etc.)
 combinamos la profundidad con la altura de montaje sobre el piso del install.
 
-Actualmente se usa para clasificar detecciones como adulto vs niño en base a
-la altura de la cabeza.
+Actualmente se usa para clasificar detecciones por rango de estatura en base a
+la altura de la cabeza. Los rangos son tramos de altura, no edades.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def head_height_above_floor(
 
 
 # NOTA: las funciones `classify_height` y `aggregate_height_class` se
-# eliminaron cuando la categorización adulto/niño se movió server-side. La
+# eliminaron cuando la categorización por rango de estatura se movió server-side. La
 # categorización ahora vive centralizada en la función SQL
 # `height_class(height_m)` que se aplica server-side sobre
 # `count_events.height_m` (mediana ya estabilizada del detection_history

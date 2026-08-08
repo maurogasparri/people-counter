@@ -1851,7 +1851,7 @@ def test_min_count_confidence_passes_no_height_high_conf():
 
 def test_min_count_confidence_ignored_when_height_present():
     """El guard SOLO aplica sin altura. Con altura medida, una conf baja NO
-    bloquea el conteo (la demografía la maneja height_confidence_gate, pero el
+    bloquea el conteo (el rango de estatura lo maneja height_confidence_gate, pero el
     count se mantiene) — eje ortogonal."""
     counter = Counter(lines=[_line_h()], counting_zone=COUNTING_ZONE)
     track = _make_track(1, [[300, 150, 3000]])
@@ -1943,7 +1943,7 @@ def test_height_confidence_gate_override_via_constructor():
 
 def test_height_confidence_gate_below_threshold_marks_unknown():
     """Median conf < gate → height_m en CountEvent se reporta None
-    aunque el track tenga altura medida. La categorización adulto/niño
+    aunque el track tenga altura medida. La categorización por rango de estatura
     se aplica server-side desde height_m (NULL → 'unknown' en la
     función SQL height_class)."""
     counter = Counter(
@@ -1964,7 +1964,7 @@ def test_height_confidence_gate_below_threshold_marks_unknown():
     ev = _advance(counter, track, [300, 450, 3000])
     assert ev is not None
     assert ev.direction == "ingress"  # SÍ cuenta — gate no afecta conteo
-    assert ev.height_m is None  # demografía blanqueada → SQL: 'unknown'
+    assert ev.height_m is None  # estatura blanqueada → SQL: 'unknown'
     assert ev.head_depth_m is None
 
 

@@ -200,8 +200,8 @@ class BLEScanner:
             if stop_event.is_set():
                 return
 
-            # Solo contar dispositivos "humanos": address type random (RPA/
-            # aleatoria = teléfono). Los public (OUI real) son infra/IoT fijo.
+            # Solo dispositivos portátiles: address type random (RPA/aleatoria
+            # = teléfono). Los public (OUI real) son infra/IoT fijo.
             if self.randomized_only and not ble_address_is_random(device):
                 return
 

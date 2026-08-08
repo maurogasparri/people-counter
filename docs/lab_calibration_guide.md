@@ -108,13 +108,13 @@ Cálculo del DoF (M12 120° a f/2.0, IMX708 binned 2.8μm pitch, CoC=4.2μm):
 
 | Caso | Mount | Cabeza (depth) | Pie/piso (depth) | Bbox depth range |
 |------|-------|----------------|-------------------|-------------------|
-| Adulto alto, mount mín | 2.0m | 1.0m (en counting line) | 2.0m | 1.0–2.0m |
-| Niño chico, mount máx | 3.5m | 2.5m | 3.5m | 2.5–3.5m |
+| Sujeto alto, mount mín | 2.0m | 1.0m (en counting line) | 2.0m | 1.0–2.0m |
+| Sujeto bajo, mount máx | 3.5m | 2.5m | 3.5m | 2.5–3.5m |
 | **Unión flota** | 2.0–3.5m | 1.0–2.5m | 2.0–3.5m | **1.0–3.5m** |
 
 Con foco a 1.5m: DoF = 0.59m a ∞. El blur en los extremos del rango operativo (1.0m y 3.5m) queda en ~1.4–1.6μm, bien por debajo del CoC threshold de 4.2μm. Foco simétricamente balanceado entre cabeza y pie.
 
-**Por qué 1.5m y no 2.0m**: foco a 2.0m peakea la sharpness en el piso del mount máximo (3.5m), donde SGBM ya tiene textura de sobra. Penaliza la cabeza a 1.0m (extremo near del rango), donde el detector necesita más sharpness para preservar recall sobre adultos altos en mounts bajos.
+**Por qué 1.5m y no 2.0m**: foco a 2.0m peakea la sharpness en el piso del mount máximo (3.5m), donde SGBM ya tiene textura de sobra. Penaliza la cabeza a 1.0m (extremo near del rango), donde el detector necesita más sharpness para preservar recall sobre sujetos altos en mounts bajos.
 
 El holder M12 del Arducam B0310 **no tiene set screw**, así que el lens se fija con **esmalte de uñas transparente** aplicado al seam entre el barrel y el holder una vez logrado el foco. Cura al aire (no necesita activador). Mecánicamente es débil comparado con un anaeróbico industrial (Trabasil AM3 o similar), pero suficiente para un lens M12 que no va a ser tocado más después del foco y que opera sin vibración constante en una cámara fija de techo.
 

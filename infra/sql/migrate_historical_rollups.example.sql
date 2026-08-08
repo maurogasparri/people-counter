@@ -61,8 +61,8 @@ CREATE TABLE IF NOT EXISTS stg_historical_hourly (
 
 -- -----------------------------------------------------------------------------
 -- 2) COUNTING → rollup_counting_hour  (+ deriva _day)
---    net = ins - outs.  Demografía: lo conocido va a adult/child, el resto a
---    unknown. Sin demografía → todo unknown.
+--    net = ins - outs.  Rango de estatura: lo conocido va a adult/child, el
+--    resto a unknown. Sin estatura → todo unknown.
 -- -----------------------------------------------------------------------------
 INSERT INTO rollup_counting_hour
     (store_id, bucket_hour, ins, outs, net,
@@ -74,7 +74,7 @@ SELECT
     COALESCE(ins_adult, 0),
     COALESCE(ins_child, 0),
     COALESCE(ins, 0) - COALESCE(ins_adult, 0) - COALESCE(ins_child, 0),  -- ins_unknown
-    0, 0, COALESCE(outs, 0)                                              -- outs sin demografía → unknown
+    0, 0, COALESCE(outs, 0)                                              -- outs sin estatura → unknown
 FROM stg_historical_hourly
 WHERE ins IS NOT NULL OR outs IS NOT NULL
 ON CONFLICT (store_id, bucket_hour) DO UPDATE SET

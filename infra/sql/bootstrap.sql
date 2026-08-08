@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS count_events (
     -- conteos sospechosos, detectar drift entre devices.
     confidence      REAL,
     -- Altura cruda en metros (medición geométrica del par estéreo). La
-    -- categorización adulto/niño/desconocido se aplica server-side via la
+    -- categorización por rango de estatura (adult/child/unknown) se aplica
+    -- server-side via la
     -- función SQL height_class(height_m) — single source of truth del threshold.
     height_m        REAL,
     received_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -364,7 +365,7 @@ LANGUAGE SQL IMMUTABLE AS $$
 $$;
 
 COMMENT ON FUNCTION height_class(REAL) IS
-    'Clasifica una altura en metros como adulto / niño / desconocido. Threshold: 1.55 m. Para modificar globalmente: CREATE OR REPLACE FUNCTION; se aplica retroactivo a las vistas y a toda la historia.';
+    'Clasifica una altura en metros en un rango de estatura: adult / child / unknown. Son tramos de altura, no edades. Threshold: 1.55 m. Para modificar globalmente: CREATE OR REPLACE FUNCTION; se aplica retroactivo a las vistas y a toda la historia.';
 
 -- Función rssi_class — categorización shopper/passerby/weak/unknown.
 -- Mismo patrón que height_class: el device emite el RSSI crudo, la
@@ -703,8 +704,8 @@ END $$;
 -- Vistas idempotentes (CREATE OR REPLACE). Los COMMENT ON por columna/vista
 -- están más abajo en este mismo archivo.
 
--- --- counting: ingresos y egresos con desglose demográfico ---
--- Categorización adulto/niño/desconocido aplicada via la función SQL
+-- --- counting: ingresos y egresos con desglose por rango de estatura ---
+-- Categorización por rango de estatura (adult/child/unknown) aplicada via la función SQL
 -- height_class(height_m) — single source of truth del threshold.
 -- Cada vista base = rollup (buckets cerrados) UNION ALL raw (bucket abierto, live
 -- tail ≤5s), bucketeado en la ZONA HORARIA de cada tienda (join sites + lday/lhour/l15)

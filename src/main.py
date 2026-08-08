@@ -541,8 +541,9 @@ def build_wifi_ble(
         except Exception:
             logger.exception("dedup wifi process_detection falló")
 
-    # Filtrar a dispositivos "humanos" (MACs randomizadas WiFi / address type
-    # random BLE). True por default; apagable per-site para contar todo.
+    # Filtrar a dispositivos portátiles, descartando la infraestructura fija
+    # (MACs randomizadas WiFi / address type random BLE). True por default;
+    # apagable per-site para contar todo. Un dispositivo no es una persona.
     randomized_only = bool(wifi_cfg.get("randomized_only", True))
 
     try:
@@ -2212,7 +2213,7 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> None:
             mount_height_mm = (
                 float(vision_cfg.get("mounting_height_m", 0.0) or 0.0) * 1000.0
             )
-            # Nota: la categorización adulto/niño se aplica server-side via
+            # Nota: la categorización por rango de estatura se aplica server-side via
             # la función SQL height_class(height_m). El device persiste solo
             # la medición cruda (head_height_mm). Threshold centralizado en
             # SQL, modificable sin redeploy.

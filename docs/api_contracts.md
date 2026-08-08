@@ -70,7 +70,7 @@ Todos los topics comparten el mismo envelope (construido por
 | `direction` | string | ✓ | `"in"` o `"out"` — qué dirección cruzó la línea |
 | `track_id` | int | recomendado | ID interno del tracker. Junto con `(device_id, event_ts, direction)` forma el UNIQUE constraint para idempotencia |
 | `event_time` | number | ✓ | epoch seconds del cruce real (no del publish). Si falta, fallback al `timestamp` del envelope. **El device manda timestamp crudo** — Postgres deriva `bucket_15min`, `bucket_hour`, `bucket_day` server-side via columnas GENERATED. |
-| `height_m` | number | nullable | Altura cruda del sujeto en metros. La categorización adulto/niño/desconocido la aplica la función SQL `height_class(height_m)` server-side — el device solo persiste la medición cruda. Threshold centralizado, modificable retroactivo a toda la historia con `CREATE OR REPLACE FUNCTION`. |
+| `height_m` | number | nullable | Altura cruda del sujeto en metros. La categorización por rango de estatura (`adult`/`child`/`unknown`) la aplica la función SQL `height_class(height_m)` server-side — el device solo persiste la medición cruda. Threshold centralizado, modificable retroactivo a toda la historia con `CREATE OR REPLACE FUNCTION`. |
 | `confidence` | number | nullable | Score del detector \[0, 1\]. Debug-only |
 
 **Compatibilidad legacy**: la Lambda persist_event acepta también la key

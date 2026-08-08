@@ -224,13 +224,13 @@ motion blur / oclusión) PASAN — preferimos recall sobre precisión en
 ambigüedad. El preview también oculta tracks debajo del threshold (refleja
 lo que el pipeline procesa).
 
-**Trade-off**: niños muy chicos (< 4 años, altura ~0.95 m) no se cuentan.
+**Trade-off**: las personas de estatura inferior a ~0.95 m no se cuentan.
 En retail típico estos vienen con padre (que sí se cuenta), así que el
 trade-off es aceptable.
 
 **Knobs alternativos**:
 - `0.7` más conservador (filtra solo perros < 70 cm).
-- `1.2` filtra hasta niños de ~6 años (riesgo de perder counts legítimos).
+- `1.2` filtra hasta estaturas de ~1.2 m (riesgo de perder counts legítimos).
 
 Confirmar en logs que el filtro está agarrando lo esperado:
 
@@ -462,7 +462,7 @@ tracking:
 | `adoption_max_dist_px` | 100 | `tracking.state_machine` | low FPS site | nunca |
 | `ghost_outside_invalidate_px` | 150 | `tracking.state_machine` | rara vez | rara vez |
 | `min_visit_range_for_death_emit` | 80 | `counter` | counts fantasma | crossers perdidos |
-| `min_count_height_m` | 0.0 (off) | `counter` | FPs no-humanos cuentan | filtra niños chicos legítimos |
+| `min_count_height_m` | 1.0 | `counter` | FPs no-humanos cuentan | filtra personas de baja estatura legítimas |
 | `min_count_confidence` | 0.60 | `counter` | FPs sin altura (perro/fantasma) cuentan | personas sin altura no cuentan (subir recall) |
 | `min_real_inside_frames` | 0 (off) | `counter` | FPs single-frame al borde del counting zone | caminantes muy rápidos (<150 ms inside) se pierden |
 | `tracking_zone.enabled` | false (off) | `tracking` | clutter estructural genera tracks ruidosos | counting_zone + margen pequeños podrían perder approach |

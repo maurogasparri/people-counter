@@ -136,7 +136,8 @@ vision:
     # Knobs de matching (default = el de depth.py). Tunearlos NO afecta el conteo
     # (centroide 2D), solo la profundidad/estatura. Palancas contra la compresión
     # de estatura a mount bajo (edge-bleed near-camera que sesga el head-depth):
-    uniqueness_ratio: 5             # Margen % best vs 2do match. SUBIR (10-15)
+    uniqueness_ratio: 15            # Margen % best vs 2do match. 15 es el valor
+                                    # validado contra L1 (docs/benchmark_results.md).
                                     # rechaza matches ambiguos del borde de cabeza.
     p1_factor: 12                   # Penalty smoothness ±1 disparidad (P1=factor·block²).
     p2_factor: 96                   # Penalty discontinuidad (P2=factor·block², 8×P1).
@@ -159,7 +160,7 @@ vision:
     # disagree, típicamente en bordes de objetos donde el matching es
     # ambiguo. Sin WLS, un bbox de cabeza que cae sobre una zona con
     # holes hace que el blob_percentile downstream tome una muestra
-    # truncada → altura derivada noisy → adult/child classifier
+    # truncada → altura derivada noisy → clasificador de rango de estatura
     # inconsistente.
     #
     # ON por default: el costo extra (~2× SGBM compute + filter pass)
@@ -170,7 +171,8 @@ vision:
     # ser mejor compromiso.
     wls:
       enabled: true                 # Toggle del post-filter.
-      lambda: 4000.0                # Strength del smoothness term.
+      lambda: 1500.0                # Strength del smoothness term. 1500 es el valor
+                                    # validado contra L1.
                                     # Más alto = más smoothing pero menos
                                     # preservación de bordes. 4000 sweet
                                     # spot retail (rellena holes sin lavar
@@ -227,7 +229,7 @@ vision:
                                     # estabiliza antes de cruzar la línea)
                                     # sin tocar precisión de depth (SGBM
                                     # sigue a downscale=4) — count-neutral,
-                                    # solo demografía un toque más noisy.
+                                    # solo el rango de estatura un toque más noisy.
                                     # Subir si la altura sigue noisy.
     match_radius_px: 100.0          # Distancia 2D máxima entre el
                                     # centroide de una detección y el
@@ -486,17 +488,17 @@ counter:
   # rechazarlo). Tracks sin medición SGBM (mediana=None) NUNCA se filtran
   # — preferimos preservar recall en casos donde la altura falla por
   # motion blur / oclusiones. 0.0 = filtro desactivado (back-compat).
-  # 1.0 filtra perros + objetos < 1m sin perder niños de 4+ años;
+  # 1.0 filtra perros + objetos < 1m sin perder personas de más de 1 m;
   # 0.7 más conservador. Caso real en las instalaciones 2026-05-24: perro caminando
   # cruzaba la línea y disparaba IN; campera en silla con SGBM noise
   # también. Ver docs/tracker_tuning.md patrón 5.
-  min_count_height_m: 0.0
+  min_count_height_m: 1.0
 
   # Filtro anti-FP no-humanos SIN altura (complementa min_count_height_m, que
   # solo filtra alturas medidas y bajas). Si SGBM NO le sacó altura al track
   # (mediana de head_height_mm = None) Y la mediana de confidence YOLO cae por
   # debajo de este umbral, el counter NO emite el conteo. Eje ORTOGONAL a
-  # height_confidence_gate: ese gatea SOLO la demografía cuando HAY altura (el
+  # height_confidence_gate: ese gatea SOLO el rango de estatura cuando HAY altura (el
   # conteo se mantiene); este decide contar-o-no cuando NO hay altura.
   # Caso real en las instalaciones: de lunes a jueves 10:30-18:30 el único "tráfico" es un
   # perro (+ tracks fantasma sobre clutter). Análisis de 831 count_events
@@ -519,15 +521,15 @@ counter:
   # de extrapolación Kalman → ingress espurio. Ver docs/tracker_tuning.md.
   min_real_inside_frames: 0
 
-  # Umbral de median(confidence YOLO) del track para reportar demografía
+  # Umbral de median(confidence YOLO) del track para reportar el rango de estatura
   # (height_class, height_m, head_depth_m) en el CountEvent. Tracks con
   # confidence mediana < este threshold reportan height_class="unknown" y
   # demás campos None — el bbox fue marginal y la altura derivada de SGBM
   # no es confiable. **NO afecta el conteo** (dirección, cruce); solo la
-  # calidad del reporte demográfico. Default 0.5 separa pasadas normales
+  # calidad del rango reportado. Default 0.5 separa pasadas normales
   # (median 0.6-0.8) de degradadas por motion blur (0.3-0.45). Subir a 0.7
-  # en sites donde aparecen demografías espurias; bajar a 0.3 si el
-  # detector está bien calibrado y querés demografía de pasadas rápidas.
+  # en sites donde aparecen rangos espurios; bajar a 0.3 si el
+  # detector está bien calibrado y querés el rango de pasadas rápidas.
   height_confidence_gate: 0.5
 
   # Death-emit-if-crossed — capa 3 del rescue cascade. Cuando un track
@@ -537,7 +539,7 @@ counter:
   # vez en su vida) y (b) visit_range >= este threshold (px). El visit_range
   # se actualiza SOLO con detecciones reales (no Kalman pushes), así un
   # sitter cuyo bbox jitterea cerca de la línea no dispara death-emit.
-  # Default 80 px ≈ media zancada de adulto a la altura de montaje típica.
+  # Default 80 px ≈ media zancada a la altura de montaje típica.
   # Bajar a 50 en sites con detector muy flakey donde el síntoma diagnóstico
   # es death_emit_count = 0 con track_stitching_ratio > 1.3 sostenido —
   # el guard rechaza crossers reales que tuvieron poca observación.
@@ -551,9 +553,10 @@ counter:
 wifi_ble:
   enabled: true                     # Master switch (overrideable desde cloud).
   ble_enabled: true                 # Captura de advertising BLE.
-  randomized_only: true             # Contar SOLO dispositivos "humanos": WiFi
-                                    # con MAC randomizada (locally-administered
-                                    # bit) + BLE con address type random (RPA).
+  randomized_only: true             # Conservar SOLO dispositivos portátiles (descarta
+                                    # infraestructura fija): WiFi con MAC randomizada
+                                    # (locally-administered bit) + BLE con address
+                                    # type random (RPA).
                                     # Descarta infra/IoT fijo (MAC global / BLE
                                     # public: APs-como-cliente, smart-TVs,
                                     # beacons, parlantes). false = contar todo
@@ -774,14 +777,16 @@ lens:
 # resueltos son los defaults; el cap geométrico solo entra para mounts inusuales
 # (muy bajos) donde el default haría que el gate colapse.
 head_depth:
-  max_head_height_m: auto           # auto = min(1.80, mount - 0.30).
+  max_head_height_m: 1.95           # Techo de estatura plausible. NO usar `auto`
+                                    # (= min(1.80, mount - 0.30)) a mount bajo: el cap
+                                    # de 1.80 reintroduce la compresion descrita como L1.
                                     # P95 masculino global ~1.83m. Cap
                                     # geométrico deja 30cm de near-range para
                                     # SGBM. Override manual: float.
   min_head_above_floor_m: 0.50      # Floor del head — anthropometric puro,
                                     # no depende de mount. Cabeza humana
                                     # plausible está al menos 50cm del piso
-                                    # (excluye niños gateando + objetos al ras).
+                                    # (excluye siluetas al ras del piso y objetos bajos).
   column_radius_m: 0.25             # Radio (m) de la columna vertical 3D
                                     # centrada en el centroide del cuerpo.
                                     # Pixels cuyo (X, Y) métrico back-projecta
@@ -814,8 +819,8 @@ head_depth:
 # confiados. Distinto del adult_min_m del classifier: ese decide adult/child
 # dentro del rango plausible; este descarta solo lo imposible.
 height:
-  sanity_min_m: 0.80                # Lower bound. Por debajo: piso, niño muy
-                                    # chico con bbox fallado, ruido.
+  sanity_min_m: 0.80                # Lower bound. Por debajo: piso, silueta muy
+                                    # baja con bbox fallado, ruido.
                                     # Anthropometric, no depende de mount.
   sanity_max_m: auto                # auto = min(2.10, mount - 0.20). Override
                                     # manual: float. P99 global ~1.92m, 2.10

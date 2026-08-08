@@ -370,7 +370,7 @@ flowchart TB
         B1["BLE RPA<br/>AddressType=random"]
     end
 
-    FILT{"¿randomizada / random?<br/>(filtro de humanos)"}
+    FILT{"¿randomizada / random?<br/>(filtro de infraestructura fija)"}
     W1 --> FILT
     W2 --> FILT
     B1 --> FILT

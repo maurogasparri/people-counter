@@ -216,7 +216,7 @@ cartesiano de granularidades). Lista completa de grants en
 
 | Familia de vistas | Granularidades | Métricas |
 |---|---|---|
-| `counting_by_bucket_*` | 15min / hora / día | `ins`, `outs`, `net` + desglose demográfico (`ins_adult`/`ins_child`/`ins_unknown`) |
+| `counting_by_bucket_*` | 15min / hora / día | `ins`, `outs`, `net` + desglose por rango de estatura (`ins_adult`/`ins_child`/`ins_unknown`) |
 | `wifi_ble_by_bucket_*` | 15min / hora / día | `passersby`, `shoppers`, `weak` (categorizado server-side por `rssi_class`) |
 | `pos_by_bucket_*` | 15min / hora / día | `transactions`, `sales`, `returns`, montos |
 | `turn_in_rate_by_bucket_*` | 15min / hora / día | `turn_in_rate = ins / passersby` |

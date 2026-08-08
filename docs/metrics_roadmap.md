@@ -14,7 +14,7 @@ externo. Ninguna requiere tabla de rollup nueva.
 
 | Métrica | Fórmula | Vista / dato |
 |---|---|---|
-| Visitantes totales vs únicos | avistajes vs `COUNT(DISTINCT visitor_hash)` | `wifi_ble_by_bucket_*` (`visitors`) |
+| Dispositivos totales vs únicos | avistajes vs `COUNT(DISTINCT visitor_hash)` | `wifi_ble_by_bucket_*` (`visitors`) |
 | Horas pico / estacionalidad | ingresos por hora/día/semana | `counting_by_bucket_hour/day` |
 | Tasa de captura | ingresos ÷ passersby | `turn_in_rate_by_bucket_*` |
 | Tiempo de permanencia | Ley de Little (ocupación / arribos) | `visit_duration_by_bucket_*` |
@@ -25,7 +25,7 @@ externo. Ninguna requiere tabla de rollup nueva.
 | Ventas por visitante (RPV) | facturación ÷ ingresos (= conversión × ticket) | `revenue_per_visitor_by_bucket_*` |
 | Ventas por m² | facturación neta ÷ superficie | `sales_per_sqm_by_bucket_*` (col `sites.sales_area_m2`) |
 
-**Caveats**: "visitantes únicos" es intra-día (el `visitor_hash` rota a diario por
+**Caveats**: "dispositivos únicos" es intra-día (el `visitor_hash` rota a diario por
 privacidad); "tiempo de permanencia" es estimación a nivel local (no por persona/zona).
 
 ## ❌ Fuera de alcance (16) — límites con causa, no gaps a cerrar

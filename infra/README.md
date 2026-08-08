@@ -148,7 +148,7 @@ Views (todas en `bootstrap.sql` — ver el archivo para la lista completa y las
 definiciones). El patrón es un **producto cartesiano** de las facts agregadas a
 3 buckets (`_15min` / `_hour` / `_day`):
 
-- **`counting_by_bucket_*`** — `ins / outs / net` + desglose demográfico (vía `height_class()`) por `(store_id, bucket)`. Buckets server-derived (`GENERATED` desde `event_ts`).
+- **`counting_by_bucket_*`** — `ins / outs / net` + desglose por rango de estatura (vía `height_class()`) por `(store_id, bucket)`. Buckets server-derived (`GENERATED` desde `event_ts`).
 - **`wifi_ble_by_bucket_*`** — `passersby / shoppers / weak` (vía `rssi_class()`) + `COUNT(DISTINCT visitor_hash)` por bucket. El `DISTINCT` dedupa un visitor presente en N ventanas.
 - **`pos_by_bucket_*`** — ventas/devoluciones/items/montos por bucket.
 - **`turn_in_rate_by_bucket_*`** / **`conversion_by_bucket_*`** — `turn_in_rate = ins / passersby`, `conversion = ins / shoppers` (FULL OUTER JOIN preserva buckets de una sola fuente).

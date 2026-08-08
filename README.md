@@ -2,6 +2,11 @@
 
 Sistema de conteo de personas de bajo costo para locales comerciales, basado en visión estéreo e IA en el borde.
 
+## Validación
+
+- **Resultados** → [`docs/benchmark_results.md`](docs/benchmark_results.md): 19 casos de prueba y la caracterización de banco, cada uno con su procedimiento, criterio de aceptación, datos y origen de la evidencia.
+- **Evidencia primaria** → [`validation/`](validation/): los guiones que reproducen cada prueba y sus salidas, con [índice](validation/README.md).
+
 ## Versión
 
 Este repositorio corresponde a la versión **1.0.0** del prototipo, publicada bajo el tag **`v1.0-tfg`**. El identificador de commit correspondiente se obtiene con `git rev-parse v1.0-tfg` y figura además en la página del release.
@@ -12,8 +17,8 @@ Ese tag identifica el estado exacto del código, de las plantillas de infraestru
 
 - **Cuenta personas** que entran y salen de un local en tiempo real usando profundidad por cámara estéreo + YOLOv8n en acelerador Hailo-8L
 - **Detecta tráfico exterior** vía captura pasiva de probe requests WiFi y advertising BLE
-- **Clasifica tráfico** con umbrales duales de RSSI: transeúntes (-75 dBm) vs compradores (-55 dBm), calculando Turn In Rate
-- **Cuenta solo dispositivos "humanos"** en el tráfico exterior: WiFi con MAC randomizada (locally-administered bit) y BLE con address type *random* — los identificadores globales (OUI real) son infra/IoT fijo (APs, smart-TVs, beacons) y se descartan.
+- **Clasifica dispositivos detectados** por intensidad de señal con umbrales duales de RSSI: tráfico cercano (-75 dBm) vs muy cercano (-55 dBm), calculando Turn In Rate. Es una proxy de proximidad, no un recuento de personas
+- **Descarta los dispositivos de infraestructura fija** en el tráfico exterior: conserva solo WiFi con MAC randomizada (locally-administered bit) y BLE con address type *random*, que son los de equipos portátiles — los identificadores globales (OUI real) son infra/IoT fijo (APs, smart-TVs, beacons) y se descartan. Un dispositivo portátil no equivale a una persona.
 - **Deduplica** WiFi/BLE local en el device via hash groups con stitching de 4 reglas: seqnum continuity 802.11 (anti MAC-randomization), cross-protocol L2 (WiFi+BLE simultáneo), BLE anchoring (durante la vida de un RPA ~15min), y fingerprint continuity (IEs en WiFi / manufacturer-data en BLE, estable a la rotación — cubre lo que el seqnum no agarra, ej. iOS que resetea el seqnum). Los counts publicados son distinct grupos, no distinct hashes.
 - **Transmite metadatos** a AWS vía MQTT con buffer local SQLite para resiliencia offline
 - **Respeta horarios operativos** vía AWS IoT Device Shadow (configuración pushada desde la nube)
@@ -38,8 +43,8 @@ Cada unidad consiste en:
 Dispositivo edge (por puerta)         AWS Cloud (PoC, 1 device)
 +--------------------------+         +-------------------------------+
 | Capture → Rectify → SGBM |  MQTT   | IoT Core (3 IoT Rules)        |
-| YOLOv8n → Track → Count  |--TLS-->| → Lambda persist_event         |
-| WiFi/BLE → Hash → Stitch |  QoS1  |    (IAM auth a RDS, out-VPC)   |
+| YOLOv8n → Track → Count  |---TLS-->| → Lambda persist_event        |
+| WiFi/BLE → Hash → Stitch |  QoS1   |    (IAM auth a RDS, out-VPC)  |
 | SQLite buffer + dedup    |         | → RDS Postgres 16 (db.t4g.μ)  |
 +--------------------------+         | → ECS Fargate + ALB + Grafana |
                                      |    (custom domain HTTPS)      |
@@ -83,7 +88,7 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Área | Estado | Detalles |
 |------|--------|---------|
 | Código fuente | 33 módulos en 8 subpaquetes de `src/` | `vision/` (9: capture, calibration, depth, detect, world_coords, static_suppressor, pre_filter, best_frame, report) + `wifi_ble/` (6: wifi_probe, ble_scan, fingerprint, hasher, dedup, publisher) + `tracking/` (3: tracker, kalman, counter) + `status/` (3: health, led, monitor) + `mqtt/` (2: client, buffer) + `cloud/` (3: persist_event, ingest_pos_transaction, query_aggregates) + `config/` (2: loader, hardware) + `web/` (3: viewer, annotate, admin_auth) + `main.py` + `telemetry.py` |
-| Tests | 1083 funciones de test en 48 archivos (1103 casos, 81% coverage — ver `docs/coverage_report.md`) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador adulto/niño, training pipeline (bench_detector), static suppressor (timestamp-based window) |
+| Tests | 1083 funciones de test en 48 archivos (1103 casos, 81% coverage — ver `docs/coverage_report.md`) | Visión, tracking (incluye rescue cascade — ghost pool / decisive Kalman / death-emit con guards + invalidación de outside_pos lejano del ghost + knobs config-driven per-site + matriz de cobertura discriminante en `docs/counter_test_matrix.md` + tracking_zone polygon filter pre-tracker + guards min_count_height_m / min_real_inside_frames anti-FP no-humanos), MQTT, WiFi/BLE (4 reglas de stitching incl. fingerprint), config (defaults + per-device + HardwareParams + shadow delta validation), cloud (incl. persist + ingest POS), main, provision (incl. disaster recovery), reports, wizard, status LED + health monitor, clasificador por rango de estatura, training pipeline (bench_detector), static suppressor (timestamp-based window) |
 | Config | Defaults + Per-device + Cloud + Hardware-agnostic | `config/config.example.yaml` (defaults canónicos), `/etc/people-counter/config.yaml` (per-device override), AWS IoT Shadow (business cloud). Parámetros de hardware (sensor, lens, bracket, board ChArUco, AE timings) consolidados en `src/config/hardware.py` (HardwareParams) y leídos por el runtime + todos los setup tools — swap de sensor / bracket / board = solo editar config.yaml, ningún script tiene constantes hardware hardcodeadas |
 | Hardware | Ensamblado + verificado | RPi5 + Hailo-8L (fw 4.23, PCIe Gen 3) + 2x Arducam IMX708 120° HFOV |
 | Captura estéreo | Validada | picamera2, ambas cámaras funcionando. Sensor mode canónico 2304×1296 (binned full-FOV, 16:9) para foco, calibración y runtime — elegido por velocidad de detección ChArUco (≥8 FPS en Pi 5), mejor SNR del binning 2x2, y para que rectify+SGBM quepan en el budget runtime de 30+ FPS |
@@ -91,8 +96,8 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 | Calibración | Validada | **Fisheye Kannala-Brandt** (`cv2.fisheye.*`, 4 coef angulares k1–k4), baseline 140mm por diseño. ChArUco 9x6/45mm/33mm/DICT_4X4_100 A3. Protocolo lab universal (mount-independent, sirve para flota mount 2.0–3.5m): poses a 1.0/2.0/3.0m, foco único a 1.5m ±20cm. `calibrate.py wizard` 100% browser-driven: start overlay, ghost silueta, beeps cortos diferenciados (start / pose nueva / tick de hold / captura / undo / fin) con pose-announce gateado (capture queda bloqueado hasta que el browser confirma fin del beep vía POST `/announce-done`), tolerance preset (`loose`/`normal`/`strict`), ground-truth en UI con spinner, reporte HTML con rectificación epipolar + depth heatmap embebidos. Salvaguardas anti-degeneración: pre-calibration sanity gate (re-detección ≥70% en ambas cámaras), coverage critical block (banda completa o grupo entero faltante = abort), L/R asymmetric detection alert en panel. Preview L durante captura guiada **sin overlay de ChArUco** (badge "N esquinas" en lugar de los 40 puntitos+IDs que tapaban el ghost), R sí mantiene overlay como diagnóstico. Subcomando `reset --yes` para restart limpio. Flag `--low-light` para PoC en cuarto chico/oscuro (afloja gates de quality, NO produce calibración válida) |
 | Asistente de foco | Validado | `focus_assist.py` UI web: header + side panel, start overlay, peak tracker, masking de zonas de bajo contraste, beeps en eventos (start / fin) + **pulso adaptativo tipo detector** (tap corto que acelera a medida que el score del centro se acerca al threshold de paso, lock holgado a >1.5×MIN_SCORE), auto-open del reporte. Target range lab protocol 1.30–1.70m (foco a 1.5m ±20cm) por default — universal para mount 2.0–3.5m. Lens locking con esmalte de uñas transparente aplicado al seam barrel↔holder (touch-dry 15min, cura full 30-60min) + llave dedicada en el barrel durante el foco — habilita foco + calib en una sola sesión de lab. **L/R parity check**: pill verde "OK" / roja "INVERTIDO" / ámbar "magnitud rara" basada en disparidad medida vs esperada por baseline+depth — detecta wiring swapped antes de calibrar. Flag `--low-light` para PoC en cuarto chico/oscuro (preset que afloja todos los gates y fuerza scene=compact). Flag `--meter centre/spot` para luz baja con zonas brillantes en periferia |
 | Preview en vivo | Disponible | `preview.py` — tool minimal browser-driven con UX consistente con focus / calib (start overlay, header). MJPEG side-by-side L|R con grid de tercios + crosshair central. Para apuntar el bracket, verificar oclusiones, o sanity check del wiring antes de correr foco/calibración. Sin detección, sin análisis. Flag `--meter centre/spot` |
-| Validación de profundidad | Reformulada | `diagnose_depth.py` y la fase ground-truth del wizard reportan **verdict basado solo en error del centro** (única zona con distancia conocida). Las 4 zonas perimetrales se clasifican con tags: ✓ Coincide / ● Otro plano / ⚠ SGBM falló según `std × fill_rate` — distinción honesta entre "calibración errada" vs "está midiendo otro objeto" vs "SGBM no puede matchear esta superficie". Reporte HTML con verdict card prominente arriba + tabla por zonas con tags de confianza |
-| Clasificador adulto/niño | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Threshold `adult_min_m: 1.55` (cerca de P25 de mujeres adultas en Argentina). Majority vote por track |
+| Validación de profundidad | Validada | `diagnose_depth.py` y la fase ground-truth del wizard reportan **verdict basado solo en el error del centro**, que es la única zona con distancia conocida. Las 4 zonas perimetrales **no entran en el verdict**: se etiquetan por confianza —coincide, otro plano, o SGBM sin correspondencia— según `std × fill_rate`, para distinguir "calibración errada" de "está midiendo otro objeto" y de "SGBM no puede matchear esta superficie". Reporte HTML con verdict card prominente arriba + tabla por zonas con esas etiquetas |
+| Clasificador por rango de estatura | Implementado | Head-height por stereo depth (`mount_height - min_depth_at_bbox`). Umbral `adult_min_m: 1.55` — valor convencional de diseño, fijado deliberadamente por debajo de la talla media de la población adulta femenina relevada por el Estudio Antropométrico Nacional Argentino del INTI, de modo que el error que se minimiza sea el de asignar al rango inferior a una persona adulta. Majority vote por track |
 | WiFi probe | Validada | nexmon + airmon-ng + scapy, probe requests capturadas en RPi5 |
 | BLE scan | Validado | bleak, 343 adverts, 8 dispositivos únicos, dedup + turn-in rate |
 | Infra cloud | CloudFormation deployada (`infra/deploy.ps1`, 6 fases) | VPC + RDS Postgres 16 (db.t4g.micro, IAM auth + force_ssl + auto minor upgrades) + IoT Core (3 Topic Rules) + Lambda persist_event (out of VPC, psycopg + RDS token) + ECR + ECS Fargate Grafana 13 detrás de ALB con ACM cert custom (`grafana.<tu-dominio>`) + SNS alarms. Stitching ratio canary en `telemetry.wifi_ble_stitching_ratio` |
@@ -103,12 +108,26 @@ Un LED RGB en el frente del enclosure le da al operador del local un código vis
 ## Acceso a los dashboards (evaluación)
 
 El backend cloud expone los tableros de Grafana en
-**https://grafana.<tu-dominio>** (HTTPS con cert ACM, dominio propio).
+**https://grafana.tfg.gasparri.com.ar** (HTTPS con cert ACM, dominio propio).
 
 Para revisión externa hay un usuario **read-only** (`user`, rol *Viewer*):
 ve los 5 dashboards de las 2 carpetas (Analítica comercial + Operación y
 flota), sin poder editar, ejecutar queries crudas (Explore deshabilitado)
 ni acceder a administración. **La contraseña está disponible bajo solicitud.**
+
+### Capturas de los tableros
+
+Los cinco tableros, poblados con **datos sintéticos**: las ocho sucursales de
+demostración (`demo-01` … `demo-08`) que genera `scripts/seed_mock_data.py`.
+Los nombres de sucursal, las cifras de facturación y las series de telemetría
+son **ficticios y generados por ese guion**; no corresponden a locales reales ni
+a una instalación en operación. El dispositivo del piloto no figura en ellas.
+
+- [1 · Panorama general](docs/img/01_panorama.png) — visitantes, tasa de conversión, facturación y embudo de tráfico externo a compradores
+- [2 · Comparativa de sucursales](docs/img/02_comparativa.png) — ranking y contraste contra el período anterior y contra el promedio del grupo
+- [3 · Detalle de sucursal](docs/img/03_detalle.png) — serie por franja horaria, rango de estatura y tráfico externo por clase de RSSI
+- [4 · Patrones de afluencia](docs/img/04_patrones.png) — mapa de calor día × hora, feriados y estacionalidad
+- [5 · Salud de la flota](docs/img/05_salud.png) — estado por dispositivo, frescura de datos, errores recientes y canaries de tracking
 
 ## Quick start
 
@@ -136,18 +155,20 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-Resultado esperado sobre Windows: **1096 pruebas superadas y 7 omitidas**
-(1103 en total). Cinco omisiones comprueban permisos de archivo POSIX; las
-otras dos requieren el filtro WLS de `opencv-contrib`, ausente en el wheel de
-Windows. Sobre el dispositivo (Linux aarch64) no hay omisiones: **1102
-superadas y 1 fallida**, y esa falla es artefacto del entorno —la prueba
-presupone que no existe el archivo de configuración de producción, que en un
-equipo aprovisionado sí existe—. Ninguna omisión indica fallo.
+Resultado esperado: **1096 pruebas superadas y 7 omitidas** (1103 en total),
+sin fallos. Las siete omisiones son artefactos de la plataforma: cinco
+comprueban permisos de archivo POSIX, que Windows no expresa, y dos requieren
+el filtro WLS de `opencv-contrib`, ausente en el wheel de Windows. Sobre Linux
+las siete se ejecutan. Ninguna omisión indica fallo.
 
-El entorno resuelto por estas instrucciones se verificó el 2026-08-04 con
-OpenCV 4.14, NumPy 2.5 y SciPy 1.18. La dependencia de OpenCV está acotada a
-la serie 4.x de forma deliberada: la 5.0 removió una constante que usa el
-solve de calibración estéreo.
+> En un equipo **ya aprovisionado** puede aparecer una falla: hay pruebas que
+> presuponen que no existe `/etc/people-counter/config.yaml`, y en ese caso el
+> archivo sí está. No ocurre en una máquina de desarrollo.
+
+El entorno resuelto por estas instrucciones se verificó el 2026-08-08 con
+Python 3.12.6, OpenCV 4.13.0, NumPy 2.4.2 y SciPy 1.17.1. La dependencia de
+OpenCV está acotada a la serie 4.x de forma deliberada: la 5.0 removió una
+constante que usa el solve de calibración estéreo.
 
 Para medir cobertura:
 
@@ -181,7 +202,7 @@ El sistema usa **defaults canónicos + override per-device + cloud channel**:
 - **Per-device** (`/etc/people-counter/config.yaml`): **única fuente de verdad en runtime**. El loader (`load_config`) lee SOLO este archivo — **no** mergea con el template. Tiene que estar completo (todas las keys requeridas, validadas en `_validate`). `config.example.yaml` es el TEMPLATE de provisioning: el operator lo copia, edita lo que cambia por unidad (`device.id`, `mounting_height_m`, counting zone/lines, MQTT endpoint + certs) y lo deja como config del device.
 - **Cloud** (AWS IoT Device Shadow): settings de negocio — horarios operativos, factor de escala, toggles de habilitación. Se aplican vía `RUNTIME_SAFE_KEYS` sin reinicio.
 
-`mounting_height_m` (per-device) alimenta el SGBM auto-tune (`num_disparities: auto` deriva el rango de disparidad por sitio) y el head-height gating del clasificador adulto/niño. La calibración estéreo es mount-independent (un único `.npz` factory sirve para mount 2.0–3.5m).
+`mounting_height_m` (per-device) alimenta el SGBM auto-tune (`num_disparities: auto` deriva el rango de disparidad por sitio) y el head-height gating del clasificador por rango de estatura. La calibración estéreo es mount-independent (un único `.npz` factory sirve para mount 2.0–3.5m).
 
 ## Instalación en las instalaciones
 
@@ -342,15 +363,15 @@ sudo -u pi PYTHONPATH=. python3 -m src.main \
 sudo systemctl start people-counter
 ```
 
-> ⚠️ **Expone imagen en vivo de personas, sin autenticación.** El flujo
-> (`/stream`) y las métricas (`/stats`) responden a **cualquiera** que alcance
-> el puerto: la única credencial del visor protege los botones de reinicio y
-> apagado, no la imagen. Además el servidor bindea **todas** las interfaces
-> (`0.0.0.0`) y el sistema no aplica ninguna restricción por dirección de
-> origen — el aislamiento depende enteramente de la red donde esté el
-> dispositivo. Usarlo **solo en una red controlada**, el tiempo que dure el
-> diagnóstico, y apagarlo después. No dejarlo habilitado de forma permanente ni
-> exponerlo a través de un reenvío de puertos.
+> ⚠️ **Mientras un operador lo tiene encendido expone imagen en vivo de
+> personas, sin autenticación.** El flujo (`/stream`) y las métricas (`/stats`) responden a
+> **cualquiera** que alcance el puerto: la única credencial del visor protege los
+> botones de reinicio y apagado, no la imagen. Además el servidor bindea
+> **todas** las interfaces (`0.0.0.0`) y el sistema no aplica ninguna restricción
+> por dirección de origen — el aislamiento depende enteramente de la red donde
+> esté el dispositivo. Usarlo **solo en una red controlada**, el tiempo que dure
+> el diagnóstico, y apagarlo después. No dejarlo habilitado de forma permanente
+> ni exponerlo a través de un reenvío de puertos.
 
 El visor **no escribe nada a disco**: los fotogramas viven en una cola en
 memoria que descarta los más viejos si el cliente va lento. Si el bind falla
@@ -468,7 +489,7 @@ scripts/
 │                          # Side-by-side L|R con grid + crosshair. Para apuntar el bracket
 │                          # antes de correr foco / calib. Flag --meter centre/spot
 ├── diagnose_depth.py      # Validación de profundidad: 5 zonas con tags de confianza
-│                          # (✓ Coincide / ● Otro plano / ⚠ SGBM falló). Verdict solo
+│                          # (coincide / otro plano / SGBM sin correspondencia). Verdict
 │                          # por error del centro. Flags: --meter, --lock-ae
 ├── diagnose_calibration.py # Salud de calibración post-cal: rectifica con la .npz y mide
 │                          # error epipolar L↔R. Veredicto OK / recalibrar (>1px). Sin
@@ -508,10 +529,18 @@ infra/
 ├── sql/bootstrap.sql                      # Schema (count_events / wifi_ble_events / telemetry / pos_transactions + funciones SQL height_class() y rssi_class() + vistas cartesian + lambda_writer con rds_iam)
 ├── sql/migrations/                        # Migraciones incrementales data-preserving sobre la RDS viva (squasheadas a bootstrap.sql una vez aplicadas)
 └── sql/migrate_historical_rollups.example.sql  # Template staging→tablas base rollup_* para histórico AGREGADO (no es migración de schema)
-docs/
+docs/                             # 21 documentos: guías, esquema de base, runbooks y resultados
+├── benchmark_results.md          # Registro de validación: 19 casos + caracterización de banco
 ├── setup_guide.md                # Ensamblaje de hardware + setup RPi (13 pasos)
 ├── lab_calibration_guide.md      # Protocolo de foco + calibración en lab (universal para la flota)
-└── operator_guide.md             # Guía para el operador en las instalaciones (foco → calibración → verificación)
+├── operator_guide.md             # Guía para el operador en las instalaciones (foco → calibración → verificación)
+├── tracker_tuning.md             # Runbook del tracker/counter: 6 patrones síntoma→fix
+├── counter_test_matrix.md        # Matriz de cobertura del counter (17 dimensiones)
+└── img/                          # Capturas de los tableros de Grafana (datos sintéticos)
+validation/                       # Evidencia primaria de docs/benchmark_results.md: guiones
+                                  # reproducibles y sus salidas, con índice propio (README.md)
+models/                           # Manifiesto de sumas del detector (los pesos van como adjuntos del release)
+calibration/                      # Patrón ChArUco A3 para imprimir (calib.io)
 training_data/                    # Workspace gitignoreado de training (sites.yaml inline + captures rectificadas)
 debug/                            # Drop-zone gitignoreado para reportes, capturas y logs de test
 ```
@@ -524,10 +553,18 @@ debug/                            # Drop-zone gitignoreado para reportes, captur
 
 ## Artefactos del modelo
 
-Los pesos del detector **no se versionan**: se distribuyen como adjuntos de la
-versión etiquetada del repositorio. El manifiesto de sumas de verificación sí
-está versionado, de modo que se puede comprobar que el archivo descargado es
-exactamente el que se usó.
+Los pesos del detector y la calibración estéreo **no se versionan**: se
+distribuyen como adjuntos de la versión etiquetada del repositorio. El
+manifiesto de sumas de los pesos sí está versionado, de modo que se puede
+comprobar que el archivo descargado es exactamente el que se usó.
+
+La **calibración estéreo desplegada** —`calibration.npz`, 11.949.680 B,
+SHA-256 `4cb38d0809060873ca014fadca4f3034f3013ec30ec5e9e37529290e67e37d96`— es
+byte-idéntica a la que el dispositivo tiene instalada. Contiene los intrínsecos
+K-B de ambas cámaras, los extrínsecos y los mapas de rectificación; ninguna
+imagen. Permite recomputar baseline, alineación y rectificación de forma
+independiente. Sus métricas y el registro de la corrida que la produjo están en
+[`docs/benchmark_results.md`](docs/benchmark_results.md) §3.
 
 | Archivo | Tamaño | Qué es |
 |---|---:|---|
@@ -594,7 +631,7 @@ matrices de calibración por sucursal **no forman parte del repositorio ni de
 los adjuntos**: proceden de cámaras instaladas en locales de la organización y
 contienen personas. Los resultados que dependen de ese material se reportan en
 el trabajo escrito con la evidencia bruta que sí se publica, bajo
-`docs/validacion/`.
+`validation/`.
 
 ## Despliegue de la infraestructura en la nube
 

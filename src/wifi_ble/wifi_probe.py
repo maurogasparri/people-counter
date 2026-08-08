@@ -591,7 +591,7 @@ class WiFiProbeCapture:
             if mac is None:
                 return
 
-            # Solo contar dispositivos "humanos": MACs randomizadas (LA bit).
+            # Solo dispositivos portátiles: MACs randomizadas (LA bit).
             # Las MACs globales son infra/IoT fijo (ver is_randomized_mac).
             if self.randomized_only and not is_randomized_mac(mac):
                 return

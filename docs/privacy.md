@@ -19,8 +19,9 @@ captura opcional de frames "best-frame" para data de active learning.
 - Cantidad de cruces de la línea virtual por dirección, agregada por
   evento. No incluye identificación individual.
 - Profundidad estimada de la cabeza (m), altura aproximada (m) y
-  rango de estatura (adulto/niño). Métrica derivada por persona,
-  *no* identificadora.
+  rango de estatura. Los literales `adult`/`child`/`unknown` del esquema
+  designan tramos de altura, no edades. Métrica derivada por evento de
+  conteo, *no* identificadora.
 - Identificador opaco de visitante (`visitor_hash`): un valor aleatorio de
   **16 bytes** (`BYTEA` en RDS), transmitido como los **32 caracteres hex de un
   `uuid.uuid4().hex`**, que el dispositivo asigna a cada grupo de identidad

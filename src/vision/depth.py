@@ -405,7 +405,7 @@ def head_depth_in_bbox(
         min_head_area_px: Cantidad mínima de pixels para que un slice
             califique como cluster de cabeza. Tuneado para el
             disparity grid en el combo runtime resolution + downscale
-            — chico suficiente para agarrar un niño pero grande
+            — chico suficiente para agarrar una cabeza baja pero grande
             suficiente para rechazar clusters de speckle.
         max_head_height_mm: Techo antropométrico de altura de cabeza;
             depths debajo de ``mount - max_head_height`` se rechazan

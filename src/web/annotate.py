@@ -259,8 +259,8 @@ def annotate_left(
         # suavizar el jitter de ~1-2cm del SGBM frame-a-frame. Si la
         # historia es corta (<2 samples), cae al último valor crudo
         # — sin suficiente ventana la mediana no aporta nada. El
-        # preview muestra solo el número en metros (sin categoría
-        # adulto/niño): la clasificación vive server-side en la función
+        # preview muestra solo el número en metros (sin el rango de
+        # estatura): la clasificación vive server-side en la función
         # SQL height_class(), y duplicarla acá implicaba mantener un
         # threshold sincronizado que se desfasaría con cualquier cambio
         # del cloud.

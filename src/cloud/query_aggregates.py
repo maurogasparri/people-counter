@@ -699,7 +699,7 @@ def _openapi_spec() -> dict[str, Any]:
             "title": "People Counter — API REST",
             "version": "1.0.0",
             "summary": (
-                "Consulta de agregados (counts demográficos + tráfico externo + "
+                "Consulta de agregados (counts por rango de estatura + tráfico externo + "
                 "POS) e ingesta de transacciones POS."
             ),
             "description": (
@@ -787,8 +787,8 @@ def _openapi_spec() -> dict[str, Any]:
                 "DirectionBreakdown": {
                     "type": "object",
                     "description": (
-                        "Conteos discriminados por clasificación demográfica "
-                        "derivada de la altura medida por estéreo del dispositivo. "
+                        "Conteos discriminados por rango de estatura "
+                        "derivado de la altura medida por estéreo del dispositivo. "
                         "`unknown` agrupa eventos sin medición confiable de altura."
                     ),
                     "required": ["adult", "child", "unknown", "total"],
@@ -796,17 +796,17 @@ def _openapi_spec() -> dict[str, Any]:
                         "adult": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "Personas clasificadas como adultos.",
+                            "description": "Eventos cuyo rango de estatura estimado es el superior.",
                         },
                         "child": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "Personas clasificadas como niños.",
+                            "description": "Eventos cuyo rango de estatura estimado es el inferior.",
                         },
                         "unknown": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "Eventos sin clasificación demográfica confiable.",
+                            "description": "Eventos sin estimación de estatura confiable.",
                         },
                         "total": {
                             "type": "integer",

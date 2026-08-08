@@ -29,9 +29,9 @@ class TestHeadHeightAboveFloor:
 
 
 # NOTA: las clases TestClassifyHeight y TestAggregateHeightClass se
-# eliminaron cuando la categorización adulto/niño se movió server-side. Ver el
+# eliminaron cuando la categorización por rango de estatura se movió server-side. Ver el
 # COMMENT en src/vision/world_coords.py para el contexto: la
-# categorización adulto/niño ahora vive en la función SQL
+# categorización por rango de estatura ahora vive en la función SQL
 # height_class() del cloud, el device solo persiste height_m crudo.
 
 

@@ -17,8 +17,8 @@ pytest --cov=src --cov-report=term-missing --cov-report=html
 | Métrica | Valor |
 |---|---:|
 | Tests ejecutados | **1096 passed**, 7 skipped (1103 total) |
-| Sentencias totales en `src/` | 6889 |
-| Sentencias sin cubrir | 1288 |
+| Sentencias totales en `src/` | 6891 |
+| Sentencias sin cubrir | 1303 |
 | **Cobertura total** | **81%** |
 | Archivos al 100% | 15 |
 | Tiempo de ejecución | ~77 s |
@@ -100,12 +100,12 @@ cifra de la tabla corresponde a la corrida sobre la máquina de desarrollo.
 ## Interpretación
 
 La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
-(88–98%) y los límites de hardware/I/O están más bajos (60–77%)**.
+(82–98%) y los límites de hardware/I/O están más bajos (60–77%)**.
 
-- **Lógica de negocio bien cubierta (88–98%)**: el `counter` (rescue cascade
+- **Lógica de negocio bien cubierta (82–98%)**: el `counter` (rescue cascade
   de 3 capas + guards, 97%), el `tracker` (Kalman + state machine + ghost
   pool, 91%), la `calibration` fisheye K-B (92%), el `dedup` con las 4 reglas
-  de stitching (88%), `fingerprint` (95%), `static_suppressor` (98%),
+  de stitching (82%), `fingerprint` (95%), `static_suppressor` (98%),
   `config/loader` strict (91%) y los probes de salud (`health`/`monitor`/`led`
   90–96%). Es el código donde un bug se traduce en counts incorrectos — y es
   el que tiene la red de tests más densa.
@@ -135,7 +135,7 @@ La cobertura no es uniforme por diseño: **el núcleo algorítmico está alto
 ## Conclusión
 
 81% de cobertura total con el **núcleo de decisión (counter/tracker/dedup/
-calibration) por encima del 88%** (counter y las Lambdas de ingesta en
+calibration) por encima del 82%** (counter y las Lambdas de ingesta en
 97-98% tras la pasada de hardening). El gap hasta el 100% son mayoritariamente
 los bordes de hardware, cubiertos por validación on-device en lugar de tests
 unitarios en la ejecución local de la suite. Para una flota de dispositivos edge desatendidos es el
