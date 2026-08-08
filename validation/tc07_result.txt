@@ -1,0 +1,12 @@
+TC-07 — hesitación: entrada a la zona sin cruzar la línea
+Eventos persistidos en la base, por ventana de ensayo.
+Extraído con validation/tc01_08_field_events.py — la interpretación
+está en docs/benchmark_results.md §2.
+==========================================================================
+
+Ocho aproximaciones
+  ventana: 2026-06-25T11:28:12Z  ->  2026-06-25T11:29:13Z
+  eventos: 0  (0 ingreso(s), 0 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  (ninguno)

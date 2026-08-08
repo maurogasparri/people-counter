@@ -1,0 +1,75 @@
+Suite de tests y cobertura — arbol publicado
+commit: (se completa en el commit de cierre)
+plataforma: Windows (los 7 saltos son artefactos de plataforma; sobre Linux se ejecutan)
+reproducible: py -m pytest -q --cov=src --cov-report=term
+===========================================================
+..............................................................
+[bench] Kalman predict+update: 28.4 �s/step (5 tracks � 500 frames in 71.0 ms)
+.......... [ 58%]
+........................................................................ [ 65%]
+........................................................................ [ 71%]
+...................ss................................................... [ 78%]
+........................................................................ [ 84%]
+........................................................................ [ 91%]
+.................................................sssss.................. [ 97%]
+.......................                                                  [100%]
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.12.6-final-0 _______________
+
+Name                                  Stmts   Miss  Cover
+---------------------------------------------------------
+src/__init__.py                           0      0   100%
+src/cloud/__init__.py                     0      0   100%
+src/cloud/ingest_pos_transaction.py     125      0   100%
+src/cloud/persist_event.py              123      2    98%
+src/cloud/query_aggregates.py           301     38    87%
+src/config/__init__.py                    0      0   100%
+src/config/hardware.py                   75      2    97%
+src/config/loader.py                    384     36    91%
+src/main.py                             990    382    61%
+src/mqtt/__init__.py                      0      0   100%
+src/mqtt/buffer.py                       83     14    83%
+src/mqtt/client.py                      220     30    86%
+src/status/__init__.py                    0      0   100%
+src/status/health.py                     68      6    91%
+src/status/led.py                        89      9    90%
+src/status/monitor.py                    74      3    96%
+src/telemetry.py                        247     44    82%
+src/tracking/__init__.py                  0      0   100%
+src/tracking/counter.py                 449     14    97%
+src/tracking/kalman.py                   33      0   100%
+src/tracking/tracker.py                 450     42    91%
+src/vision/__init__.py                    0      0   100%
+src/vision/best_frame.py                169     19    89%
+src/vision/calibration.py               645     49    92%
+src/vision/capture.py                   371    145    61%
+src/vision/depth.py                     235     84    64%
+src/vision/detect.py                    245     92    62%
+src/vision/pre_filter.py                 40      0   100%
+src/vision/report.py                    166     32    81%
+src/vision/static_suppressor.py          52      1    98%
+src/vision/world_coords.py               11      0   100%
+src/web/__init__.py                       0      0   100%
+src/web/admin_auth.py                    45      3    93%
+src/web/annotate.py                     184     18    90%
+src/web/viewer.py                       350     80    77%
+src/wifi_ble/__init__.py                  0      0   100%
+src/wifi_ble/ble_scan.py                101     40    60%
+src/wifi_ble/dedup.py                   206     38    82%
+src/wifi_ble/fingerprint.py              43      2    95%
+src/wifi_ble/hasher.py                    5      0   100%
+src/wifi_ble/publisher.py                51      0   100%
+src/wifi_ble/wifi_probe.py              261     78    70%
+---------------------------------------------------------
+TOTAL                                  6891   1303    81%
+1096 passed, 7 skipped in 52.25s
+
+--- detalle de los 7 tests salteados ---
+  SKIPPED [1] tests/vision/test_depth.py:99: WLS requiere opencv-contrib-python con ximgproc completo
+  SKIPPED [1] tests/vision/test_depth.py:121: WLS requiere opencv-contrib-python con ximgproc completo
+  SKIPPED [1] tests/wifi_ble/test_dedup.py:770: os.chmod no expresa permisos POSIX en Windows
+  SKIPPED [1] tests/wifi_ble/test_dedup.py:776: os.chmod no expresa permisos POSIX en Windows
+  SKIPPED [1] tests/wifi_ble/test_dedup.py:786: os.chmod no expresa permisos POSIX en Windows
+  SKIPPED [1] tests/wifi_ble/test_dedup.py:794: os.chmod no expresa permisos POSIX en Windows
+  SKIPPED [1] tests/wifi_ble/test_dedup.py:808: os.chmod no expresa permisos POSIX en Windows
+  1096 passed, 7 skipped in 37.45s

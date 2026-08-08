@@ -1,1 +1,0 @@
-{"statusCode": 400, "headers": {"content-type": "application/problem+json"}, "body": "{\"type\": \"https://api.<tu-dominio>/errors/missing-parameter\", \"title\": \"Missing required parameter\", \"status\": 400, \"detail\": \"'from' is required\", \"instance\": \"/v1/aggregates\", \"parameter\": \"from\"}"}

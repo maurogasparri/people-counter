@@ -1,4 +1,0 @@
-table,device_id,n,p50_s,p95_s,min_s,max_s,n_negative,global_min_lag_s
-count_events,store-pilot-01-cam-01,11,0.253895,0.2715455,0.207700,0.278266,0,0.207700
-telemetry,store-pilot-01-cam-01,119,0.264821,7.2128588999999925,0.207951,82.934013,0,0.207951
-wifi_ble_events,store-pilot-01-cam-01,506,0.277576,0.393149,0.213093,0.585682,0,0.213093

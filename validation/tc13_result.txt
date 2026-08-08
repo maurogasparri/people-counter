@@ -1,0 +1,42 @@
+TC-13 — control de acceso y validación de parámetros
+Cuatro invocaciones contra la interfaz de consulta de agregados.
+Generado con validation/tc13_api_checks.py — la interpretación está en
+docs/benchmark_results.md §2.
+==========================================================================
+
+1 · Petición bien formada
+--------------------------------------------------------------------------
+  esperado : 200 con agregados
+  petición : {"from": "2026-06-15T00:00:00Z", "to": "2026-06-21T00:00:00Z", "store_id": "store-pilot-01"}
+  estado   : 200
+  cabeceras: {"etag": "\"9761d2a192bbc981f6c5f6feeece3737\"", "cache-control": "public, max-age=86400, immutable", "link": "<https://api.<tu-dominio>/v1/aggregates?from=2026-06-15T00%3A00%3A00Z&to=2026-06-21T00%3A00%3A00Z&store_id=store-pilot-01>; rel=\"first\", <https://api.<tu-dominio>/v1/aggregates?from=2026-06-15T00%3A00%3A00Z&to=2026-06-21T00%3A00%3A00Z&store_id=store-pilot-01&cursor=eyJiIjoiMjAyNi0wNi0xNlQwMzo0NTowMFoiLCJzIjoiZGVtby0wMSJ9>; rel=\"next\"", "content-type": "application/json"}
+  cuerpo   : {"bucket": "15min", "data_freshness": {"demo-01": "2026-08-07T13:20:08.490864Z", "demo-02": "2026-08-07T13:20:08.490864Z", "demo-03": "2026-08-07T13:20:08.490864Z", "demo-04": "2026-08-07T13:20:08.490864Z", "demo-05": "2026-08-07T13:20:08.490864Z", "demo-06": "2026-08-07T13:20:08.490864Z", "demo-07": "2026-08-07T13:20:08.490864Z", "demo-08": "2026-08-07T13:20:08.490864Z", "store-pilot-01": "2026-08-08T14:30:00.238408Z"}, "rows": [{"site_id": "demo-01", "bucket_start": "2026-06-15T00:00:00Z", "counts": {"in": {"adult": 0, "child": 0, "unknown": 0, "total": 0}, "out": {"adult": 0, "child": 0, "unknown": 0, "total": 0}}, "external_traffic": {"passersby": 1, "shoppers": 1}, "pos": {"sales": 0, "returns": 0, "transactions": 0, "items_sale": 0, "items_return": 0, "amount_minor_sale": 0, "amount_minor_return": 0, "currency": "ARS"}}, {"site_id": "demo-02", "bucket_start": "2026-06-15T00:00:00Z", "counts": {"in": {"adult": 0, "child": 0, "unknown": 0, "total": 0}, "out": {"adult": 0, "child": 0, "unknown": 0, "total": 0}}, "external_traffic": {"passersby": 0, "shoppers": 0}, "pos": {"sales": 0, "returns": 0, "transactions": 0, "items_sale": 0, "items_return": 0, "amount_minor_sale": 0, "amount_minor_return": 0, "currency": "ARS"}}, {"site_id": "demo-03", "bucket_start": "2026-06-15T00:00:00Z", "counts": {"in": {"adult": 0, "child": 0, "unknown": 0, "total": 0}, "out": {"adult": 0, "child": 0, "unknown": 0, "total": 0}}, "external_traffic": {"passersby": 1, "shoppers": 0}, "pos": {"sales": 0, "returns": 0, "transactions": 0, "items_sale": 0, "items_return": 0, "amount_minor_sale": 0, "amount_minor_return": 0, "currency": "ARS"}}, {"site_id": "demo-04", "bucket_start": "2026-06-15T00:00:00Z", "counts": {"in": {"adult": 0, "child": 0, "unknown": 0, "total": 0}, "out": {"adult": 0,
+  [...] cuerpo completo: 407027 caracteres. Se vuelca el comienzo; el resto se reproduce corriendo este guion.
+
+
+2 · Falta el parámetro obligatorio `from`
+--------------------------------------------------------------------------
+  esperado : 400 application/problem+json — missing-parameter
+  petición : {"to": "2026-06-21T23:59:59Z"}
+  estado   : 400
+  cabeceras: {"content-type": "application/problem+json"}
+  cuerpo   : {"type": "https://api.<tu-dominio>/errors/missing-parameter", "title": "Missing required parameter", "status": 400, "detail": "'from' is required", "instance": "/v1/aggregates", "parameter": "from"}
+
+
+3 · Rango de 20 días con agrupamiento de 15 min
+--------------------------------------------------------------------------
+  esperado : 400 application/problem+json — range-too-large (máximo 7 d)
+  petición : {"from": "2026-06-01T00:00:00Z", "to": "2026-06-21T00:00:00Z", "store_id": "store-pilot-01", "bucket": "15min"}
+  estado   : 400
+  cabeceras: {"content-type": "application/problem+json"}
+  cuerpo   : {"type": "https://api.<tu-dominio>/errors/range-too-large", "title": "Date range exceeds maximum for bucket size", "status": 400, "detail": "Requested 20.0 days with bucket=15min, max allowed is 7d", "instance": "/v1/aggregates", "parameter": "bucket", "requested_days": 20.0, "max_days_for_bucket": 7}
+
+
+4 · Sin credenciales (petición HTTP real)
+--------------------------------------------------------------------------
+  esperado : 403 Forbidden
+  petición : POST https://api.<tu-dominio>/pos/transactions sin firma SigV4
+  estado   : 403
+  cabeceras: (sin cabeceras)
+  cuerpo   : {"message":"Forbidden"}
+

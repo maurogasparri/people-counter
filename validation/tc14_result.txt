@@ -1,0 +1,60 @@
+TC-14 — privacidad por diseño
+Dos comprobaciones independientes, una a cada lado del sistema.
+
+
+==========================================================================
+BLOQUE 1 — barrido en la nube (500 muestras + recorrido del esquema)
+==========================================================================
+
+=== TC-14 — Privacidad en RDS ===
+  wifi_ble_events.visitor_hash: 500 muestras, con formato MAC crudo: 0 (debe ser 0)
+    ej: <valor omitido> (hash opaco)
+  columnas imagen/PII/bytea en schema: 3 [('telemetry', 'frame_latency_p50_ms', 'real'), ('telemetry', 'frame_latency_p95_ms', 'real'), ('wifi_ble_events', 'visitor_hash', 'bytea')]
+  VEREDICTO TC-14 (RDS): REVISAR
+
+=== TC-11 — POS idempotencia + conversión ===
+  pos_transactions total: 7122
+  re-INSERT de transaction_id existente -> filas=0, count 7122->7122 | idempotente: True
+  muestra ventas/día (para conversion_rate): [('demo-08', datetime.date(2026, 6, 6), 2), ('demo-05', datetime.date(2026, 6, 6), 1), ('demo-06', datetime.date(2026, 6, 6), 2)]
+
+==========================================================================
+BLOQUE 2 — auditoría del sistema de archivos del dispositivo
+==========================================================================
+
+TC-14 (parte de dispositivo) — auditoria del sistema de archivos
+Objetivo: verificar que el proceso de vision no haya escrito imagenes a disco.
+Metodo: estado de la funcion en config, existencia del directorio de salida,
+barrido del disco completo, y restricciones del servicio que lo hacen imposible.
+===================================================================
+
+--- 1. estado de best_frame en el config de produccion ---
+  {'enabled': False, 'output_dir': '/var/lib/people-counter/best_frames', 'retention_days': 7, 'buffer_size': 20, 'jpeg_quality': 85, 'scoring': {'confidence_weight': 0.4, 'bbox_area_weight': 0.2, 'centrality_weight': 0.2, 'sharpness_weight': 0.2}}
+
+--- 2. directorio de salida del pipeline ---
+  /var/lib/people-counter/best_frames NO EXISTE (nunca se escribio un frame)
+
+--- 3. contenido del arbol de datos del servicio ---
+  total 5992
+  drwxr-xr-x  2 pi   pi      4096 Aug  7 20:11 .
+  drwxr-xr-x 49 root root    4096 Apr 15 19:32 ..
+  -rw-r--r--  1 pi   pi   2228224 Aug  7 20:10 buffer.db
+  -rw-r--r--  1 pi   pi     36864 May 22 12:06 dedup.db
+  -rw-r--r--  1 pi   pi   3190784 Aug  7 20:11 wifi_ble_dedup.sqlite
+  -rw-r--r--  1 pi   pi     32768 Aug  7 20:11 wifi_ble_dedup.sqlite-shm
+  -rw-r--r--  1 pi   pi    626272 Aug  7 20:11 wifi_ble_dedup.sqlite-wal
+
+--- 4. barrido de imagenes en todo el disco (excluye assets del SO) ---
+       42 /home/pi/calib_archive_20260622/calib_cap_20260622
+        1 /usr/src/sense-hat/examples/python-sense-hat
+        1 /usr/src/people-counter
+        1 /home/pi/calib_archive_20260622/samples
+
+--- 5. restricciones del servicio (systemd) ---
+  ReadWritePaths=/var/lib/people-counter /var/log/people-counter /etc/people-counter /usr/src/people-counter
+  PrivateTmp=true
+  ProtectHome=true
+
+--- 6. menciones de best_frame en el registro del servicio (desde 2026-01-01) ---
+  0 menciones
+
+CONCLUSION: 0 imagenes escritas por el pipeline de conteo.

@@ -1,0 +1,132 @@
+2026-06-22 20:58:10,752 WARNING calibrate: Low-light mode enabled — quality gates relaxed (exposure/blur/corner-sharp/LR-balance). PoC only, do NOT trust the resulting calibration for depth.
+2026-06-22 20:58:10,752 INFO calibrate: ============================================================
+2026-06-22 20:58:10,752 INFO calibrate: WIZARD FASE 0/4 — Pre-flight checks
+2026-06-22 20:58:10,752 INFO calibrate: ============================================================
+2026-06-22 20:58:10,752 INFO calibrate: ✓ output_dir escribible: /tmp/sample_cap_04
+2026-06-22 20:58:10,752 INFO calibrate: ✓ calibration output dir escribible: /tmp
+2026-06-22 20:58:10,752 INFO calibrate: ✓ Espacio libre: 3781MB
+2026-06-22 20:58:10,752 INFO calibrate: ✓ Puerto 8080 libre
+2026-06-22 20:58:10,752 INFO calibrate: ============================================================
+2026-06-22 20:58:10,752 INFO calibrate: WIZARD FASE 1/4 — Captura
+2026-06-22 20:58:10,752 INFO calibrate: ============================================================
+[26:32:57.187452452] [3956896]  INFO Camera camera_manager.cpp:340 libcamera v0.7.0+rpt20260205
+[26:32:57.200573157] [3956905]  INFO RPI pisp.cpp:720 libpisp version v1.4.0 23-03-2026 (13:29:05)
+[26:32:57.288429743] [3956905]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/share/libcamera/ipa/rpi/pisp/imx708.json
+[26:32:57.295679663] [3956905]  INFO Camera camera_manager.cpp:223 Adding camera '/base/axi/pcie@1000120000/rp1/i2c@88000/imx708@1a' for pipeline handler rpi/pisp
+[26:32:57.295700793] [3956905]  INFO RPI pisp.cpp:1181 Registered camera /base/axi/pcie@1000120000/rp1/i2c@88000/imx708@1a to CFE device /dev/media0 and ISP device /dev/media2 using PiSP variant BCM2712_C0
+[26:32:57.295737867] [3956905]  INFO RPI pisp.cpp:720 libpisp version v1.4.0 23-03-2026 (13:29:05)
+[26:32:57.377934410] [3956905]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/share/libcamera/ipa/rpi/pisp/imx708.json
+[26:32:57.385289109] [3956905]  INFO Camera camera_manager.cpp:223 Adding camera '/base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a' for pipeline handler rpi/pisp
+[26:32:57.385308665] [3956905]  INFO RPI pisp.cpp:1181 Registered camera /base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a to CFE device /dev/media1 and ISP device /dev/media3 using PiSP variant BCM2712_C0
+2026-06-22 20:58:11,077 INFO picamera2.picamera2: Initialization successful.
+2026-06-22 20:58:11,077 INFO picamera2.picamera2: Camera now open.
+2026-06-22 20:58:11,078 INFO picamera2.picamera2: Initialization successful.
+2026-06-22 20:58:11,078 INFO picamera2.picamera2: Camera now open.
+2026-06-22 20:58:11,081 INFO picamera2.picamera2: Camera configuration has been adjusted!
+[26:32:57.390177964] [3956896]  INFO Camera camera.cpp:1215 configuring streams: (0) 1152x648-RGB888/SMPTE170M/Rec709/None/Full (1) 2304x1296-BGGR_PISP_COMP1/RAW
+[26:32:57.390260093] [3956905]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a - Selected sensor format: 2304x1296-SBGGR10_1X10/RAW - Selected CFE format: 2304x1296-PC1B/RAW
+2026-06-22 20:58:11,081 INFO picamera2.picamera2: Configuration successful!
+[26:32:57.420666541] [3956912]  INFO IPARPI ipa_base.cpp:1498 Sync mode set to client
+2026-06-22 20:58:11,142 INFO picamera2.picamera2: Camera started
+2026-06-22 20:58:11,262 INFO picamera2.picamera2: Camera configuration has been adjusted!
+[26:32:57.571405252] [3956896]  INFO Camera camera.cpp:1215 configuring streams: (0) 1152x648-RGB888/SMPTE170M/Rec709/None/Full (1) 2304x1296-BGGR_PISP_COMP1/RAW
+[26:32:57.571502530] [3956905]  INFO RPI pisp.cpp:1485 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/imx708@1a - Selected sensor format: 2304x1296-SBGGR10_1X10/RAW - Selected CFE format: 2304x1296-PC1B/RAW
+2026-06-22 20:58:11,262 INFO picamera2.picamera2: Configuration successful!
+[26:32:57.578220467] [3956914]  INFO IPARPI ipa_base.cpp:1495 Sync mode set to server
+2026-06-22 20:58:11,274 INFO picamera2.picamera2: Camera started
+[26:32:59.672173502] [3956914]  INFO RPiSync sync.cpp:232 *** Sync achieved! Difference 0us
+[26:32:59.711586322] [3956912]  INFO RPiSync sync.cpp:281 *** Sync achieved! Difference -6365us
+2026-06-22 20:58:14,945 INFO src.vision.capture: camera_sync_converged delta_us=98.0
+2026-06-22 20:58:14,945 INFO src.vision.capture: stereo_capture_opened
+2026-06-22 20:58:14,947 INFO calibrate: Barrido libre — preview: http://people-counter.local:8080
+2026-06-22 20:58:14,947 INFO calibrate: Esperando que el operador haga click en Comenzar...
+2026-06-22 20:58:32,861 INFO calibrate: Barrido en curso — Finalizar en la UI cuando la cobertura esté lista.
+2026-06-22 20:58:32,861 INFO src.vision.capture: stereo_async_capture_started
+2026-06-22 20:58:38,295 INFO calibrate: sweep: frame estable rechazado — esquinas comunes 7<15
+2026-06-22 20:58:39,636 INFO calibrate: [sweep 1] capturada cx=0.26 cy=0.16 size=0.008 tilt=3 common=15
+2026-06-22 20:58:41,124 INFO calibrate: sweep: frame estable rechazado — Pocas esquinas (6<8); esquinas comunes 4<15
+2026-06-22 20:58:42,121 INFO calibrate: [sweep 2] capturada cx=0.45 cy=0.12 size=0.013 tilt=2 common=20
+2026-06-22 20:58:45,400 INFO calibrate: sweep: frame estable rechazado — esquinas comunes 7<15
+2026-06-22 20:58:45,975 INFO calibrate: [sweep 3] capturada cx=0.83 cy=0.14 size=0.008 tilt=5 common=15
+2026-06-22 20:58:48,851 INFO calibrate: [sweep 4] capturada cx=0.89 cy=0.56 size=0.011 tilt=9 common=17
+2026-06-22 20:58:51,415 INFO calibrate: [sweep 5] capturada cx=0.59 cy=0.62 size=0.018 tilt=10 common=40
+2026-06-22 20:58:56,514 INFO calibrate: sweep: frame estable rechazado — Pocas esquinas (5<8); esquinas comunes 0<15
+2026-06-22 20:58:57,094 INFO calibrate: [sweep 6] capturada cx=0.16 cy=0.58 size=0.011 tilt=8 common=15
+2026-06-22 20:59:00,717 INFO calibrate: sweep: frame estable rechazado — Pocas esquinas (5<8); esquinas comunes 0<15
+2026-06-22 20:59:02,697 INFO calibrate: [sweep 7] capturada cx=0.16 cy=0.88 size=0.013 tilt=4 common=20
+2026-06-22 20:59:05,451 INFO calibrate: sweep: frame estable rechazado — esquinas comunes 9<15
+2026-06-22 20:59:05,633 INFO calibrate: [sweep 8] capturada cx=0.44 cy=0.86 size=0.014 tilt=4 common=17
+2026-06-22 20:59:05,980 INFO calibrate: [sweep 9] capturada cx=0.45 cy=0.85 size=0.014 tilt=50 common=34
+2026-06-22 20:59:08,915 INFO calibrate: [sweep 10] capturada cx=0.81 cy=0.82 size=0.014 tilt=4 common=18
+2026-06-22 20:59:12,452 INFO calibrate: sweep: frame estable rechazado — Pocas esquinas (4<8); esquinas comunes 0<15
+2026-06-22 20:59:16,458 INFO calibrate: [sweep 11] capturada cx=0.92 cy=0.56 size=0.032 tilt=18 common=28
+2026-06-22 20:59:18,783 INFO calibrate: [sweep 12] capturada cx=0.54 cy=0.60 size=0.033 tilt=37 common=27
+2026-06-22 20:59:28,289 INFO calibrate: [sweep 13] capturada cx=0.20 cy=0.58 size=0.040 tilt=17 common=18
+2026-06-22 20:59:30,891 INFO calibrate: sweep: frame estable rechazado — esquinas comunes 6<15
+2026-06-22 20:59:31,319 INFO calibrate: [sweep 14] capturada cx=0.18 cy=0.09 size=0.013 tilt=15 common=17
+2026-06-22 20:59:33,598 INFO calibrate: [sweep 15] capturada cx=0.40 cy=0.13 size=0.027 tilt=20 common=16
+2026-06-22 20:59:35,242 INFO calibrate: [sweep 16] capturada cx=0.43 cy=0.15 size=0.033 tilt=45 common=28
+2026-06-22 20:59:35,752 INFO calibrate: [sweep 17] capturada cx=0.47 cy=0.15 size=0.037 tilt=56 common=35
+2026-06-22 20:59:36,912 INFO calibrate: sweep: frame estable rechazado — esquinas comunes 11<15
+2026-06-22 20:59:40,879 INFO calibrate: [sweep 18] capturada cx=0.94 cy=0.21 size=0.010 tilt=9 common=15
+2026-06-22 20:59:42,809 INFO calibrate: [sweep 19] capturada cx=0.88 cy=0.38 size=0.028 tilt=3 common=16
+2026-06-22 20:59:49,115 INFO calibrate: [sweep 20] capturada cx=0.51 cy=0.67 size=0.059 tilt=23 common=38
+2026-06-22 20:59:50,138 INFO calibrate: [sweep 21] capturada cx=0.51 cy=0.57 size=0.064 tilt=4 common=38
+2026-06-22 20:59:54,031 INFO calibrate: [sweep 22] capturada cx=0.50 cy=0.51 size=0.073 tilt=14 common=40
+2026-06-22 20:59:55,435 INFO calibrate: [sweep 23] capturada cx=0.47 cy=0.56 size=0.105 tilt=30 common=40
+2026-06-22 20:59:55,849 INFO calibrate: sweep: frame estable rechazado — esquinas comunes 8<15
+2026-06-22 20:59:56,645 INFO calibrate: [sweep 24] capturada cx=0.15 cy=0.56 size=0.072 tilt=82 common=22
+2026-06-22 21:00:01,359 INFO calibrate: [sweep 25] capturada cx=0.17 cy=0.85 size=0.036 tilt=14 common=27
+2026-06-22 21:00:01,654 INFO calibrate: [sweep 26] capturada cx=0.18 cy=0.84 size=0.036 tilt=26 common=21
+2026-06-22 21:00:03,475 INFO calibrate: [sweep 27] capturada cx=0.30 cy=0.83 size=0.055 tilt=2 common=32
+2026-06-22 21:00:03,774 INFO calibrate: [sweep 28] capturada cx=0.38 cy=0.80 size=0.056 tilt=60 common=30
+2026-06-22 21:00:04,871 INFO calibrate: [sweep 29] capturada cx=0.50 cy=0.76 size=0.053 tilt=45 common=37
+2026-06-22 21:00:05,533 INFO calibrate: [sweep 30] capturada cx=0.58 cy=0.74 size=0.060 tilt=14 common=40
+2026-06-22 21:00:06,328 INFO calibrate: [sweep 31] capturada cx=0.76 cy=0.72 size=0.054 tilt=3 common=40
+2026-06-22 21:00:07,512 INFO calibrate: [sweep 32] capturada cx=0.88 cy=0.72 size=0.051 tilt=4 common=40
+2026-06-22 21:00:12,242 INFO calibrate: [sweep 33] capturada cx=0.85 cy=0.49 size=0.057 tilt=54 common=40
+2026-06-22 21:00:13,448 INFO calibrate: [sweep 34] capturada cx=0.81 cy=0.49 size=0.041 tilt=44 common=30
+2026-06-22 21:00:13,693 INFO calibrate: [sweep 35] capturada cx=0.77 cy=0.47 size=0.045 tilt=29 common=30
+2026-06-22 21:00:19,889 INFO calibrate: [sweep 36] capturada cx=0.83 cy=0.25 size=0.048 tilt=11 common=31
+2026-06-22 21:00:22,426 INFO calibrate: [sweep 37] capturada cx=0.89 cy=0.24 size=0.038 tilt=87 common=33
+2026-06-22 21:00:28,143 INFO calibrate: [sweep 38] capturada cx=0.77 cy=0.21 size=0.090 tilt=2 common=23
+2026-06-22 21:00:31,709 INFO calibrate: [sweep 39] capturada cx=0.65 cy=0.20 size=0.121 tilt=4 common=34
+2026-06-22 21:00:32,744 INFO calibrate: [sweep 40] capturada cx=0.53 cy=0.24 size=0.101 tilt=4 common=35
+2026-06-22 21:00:38,914 INFO picamera2.picamera2: Camera stopped
+2026-06-22 21:00:39,118 INFO picamera2.picamera2: Camera closed successfully.
+2026-06-22 21:00:39,122 INFO picamera2.picamera2: Camera stopped
+2026-06-22 21:00:39,525 INFO picamera2.picamera2: Camera closed successfully.
+2026-06-22 21:00:39,525 INFO src.vision.capture: stereo_capture_closed
+2026-06-22 21:00:39,525 INFO calibrate: Barrido finalizado: 40 capturas en /tmp/sample_cap_04
+2026-06-22 21:00:42,744 INFO calibrate: Pre-calibration sanity: 36/40 pares con detección válida en ambas cámaras (90%, umbral 70%)
+2026-06-22 21:00:42,744 INFO calibrate: Cobertura: distancia {'near': 0, 'mid': 0, 'far': 0} · tilts {'frontal': 0, 'pitch': 0, 'yaw': 0, 'roll': 0}
+2026-06-22 21:00:42,744 INFO calibrate: Coverage por-pose omitido en modo barrido (usa su propia cobertura).
+2026-06-22 21:00:42,744 INFO calibrate: ============================================================
+2026-06-22 21:00:42,744 INFO calibrate: WIZARD FASE 2/4 — Calibración estéreo con 40 pares
+2026-06-22 21:00:42,744 INFO calibrate: ============================================================
+2026-06-22 21:00:44,620 INFO src.vision.calibration: stereo_pairs_validated
+2026-06-22 21:00:44,771 INFO src.vision.calibration: camera_calibrated
+2026-06-22 21:00:44,917 INFO src.vision.calibration: camera_calibrated
+2026-06-22 21:00:44,920 INFO src.vision.calibration: stereo_calibrated
+2026-06-22 21:00:44,969 INFO src.vision.calibration: stereo_geometry_computed
+2026-06-22 21:00:44,984 INFO src.vision.calibration: Calibration saved
+2026-06-22 21:00:44,984 INFO calibrate: fx=527.1 px   baseline=144.71 mm (diseño 140mm)
+2026-06-22 21:00:44,984 INFO calibrate: ============================================================
+2026-06-22 21:00:44,984 INFO calibrate: WIZARD FASE 3/4 — Verificación + residuales por par
+2026-06-22 21:00:44,984 INFO calibrate: ============================================================
+2026-06-22 21:00:45,090 INFO calibrate: Verificación epipolar: /tmp/verify_epipolar.png
+2026-06-22 21:00:48,898 INFO calibrate: Per-pair residuals: mediana=0.27px · 0 outliers (>2× mediana)
+2026-06-22 21:00:48,898 INFO calibrate: ============================================================
+2026-06-22 21:00:48,898 INFO calibrate: WIZARD FASE 4/4 — Ground-truth depth check (opcional)
+2026-06-22 21:00:48,898 INFO calibrate: ============================================================
+2026-06-22 21:00:51,322 INFO calibrate: Ground-truth check salteado.
+2026-06-22 21:00:52,779 INFO src.vision.report: Report saved
+2026-06-22 21:00:52,780 INFO calibrate:   Reporte JSON: /tmp/calibration_report_sample-04_20260622_210051.json
+2026-06-22 21:00:52,780 INFO calibrate: ============================================================
+2026-06-22 21:00:52,780 INFO calibrate: WIZARD COMPLETO
+2026-06-22 21:00:52,780 INFO calibrate:   Calibración: /tmp/sample_04.npz
+2026-06-22 21:00:52,780 INFO calibrate:   Reporte HTML: /tmp/calibration_report_sample-04_20260622_210051.html
+2026-06-22 21:00:52,780 INFO calibrate:   Baseline: 144.71 mm (diseño 140mm, Δ +4.71 mm)
+2026-06-22 21:00:52,780 INFO calibrate:   RMS estimado: 0.290 px
+2026-06-22 21:00:52,780 INFO calibrate: ============================================================
+2026-06-22 21:00:52,780 INFO calibrate: Baseline 144.71mm (diseño mecánico 140mm, Δ+4.71mm) — informativo; el óptico difiere del mecánico por la pupila del lente + tolerancias. El verdict lo decide el ground-truth de profundidad.

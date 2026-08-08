@@ -1,0 +1,29 @@
+TC-04 — ráfaga en el mismo sentido (tráfico real)
+Eventos persistidos en la base, por ventana de ensayo.
+Extraído con validation/tc01_08_field_events.py — la interpretación
+está en docs/benchmark_results.md §2.
+==========================================================================
+
+Ráfaga de egreso
+  ventana: 2026-06-24T18:51:40Z  ->  2026-06-24T18:52:15Z
+  eventos: 7  (0 ingreso(s), 7 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  15:51:44   out         0.801      1.61
+  15:51:56   out         0.862      1.50
+  15:51:59   out         0.855      1.42
+  15:52:00   out         0.841      1.70
+  15:52:00   out         0.898      1.51
+  15:52:02   out         0.611      1.50
+  15:52:11   out         0.816      1.71
+
+Ráfaga de ingreso
+  ventana: 2026-06-24T18:57:54Z  ->  2026-06-24T18:58:12Z
+  eventos: 5  (5 ingreso(s), 0 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  15:57:58   in          0.798      1.61
+  15:58:01   in          0.826      1.73
+  15:58:02   in          0.887      1.52
+  15:58:07   in          0.895      1.63
+  15:58:07   in          0.887      1.51

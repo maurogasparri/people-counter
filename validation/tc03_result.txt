@@ -1,0 +1,32 @@
+TC-03 — cruces simultáneos en direcciones opuestas
+Eventos persistidos en la base, por ventana de ensayo.
+Extraído con validation/tc01_08_field_events.py — la interpretación
+está en docs/benchmark_results.md §2.
+==========================================================================
+
+Primera corrida
+  ventana: 2026-06-25T13:15:33Z  ->  2026-06-25T13:16:20Z
+  eventos: 7  (2 ingreso(s), 5 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  10:15:47   out         0.812      1.85
+  10:15:54   out         0.765      1.71
+  10:16:00   out         0.740      1.85
+  10:16:06   in          0.417       -  
+  10:16:07   out         0.801      1.69
+  10:16:14   out         0.740      1.79
+  10:16:14   in          0.834      1.68
+
+Segunda corrida — con mayor separación lateral entre carriles (serie de cinco pares)
+  ventana: 2026-06-25T13:19:30Z  ->  2026-06-25T13:20:05Z
+  eventos: 8  (5 ingreso(s), 3 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  10:19:32   in          0.586      1.68
+  10:19:39   in          0.446       -  
+  10:19:39   out         0.672      1.70
+  10:19:47   in          0.557      1.68
+  10:19:53   in          0.546      1.86
+  10:19:54   out         0.672      1.71
+  10:20:02   out         0.668      1.80
+  10:20:02   in          0.647      1.67

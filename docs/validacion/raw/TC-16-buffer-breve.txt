@@ -1,3 +1,0 @@
-  corte breve: 30 eventos encolados offline | unsent=30 | persistidos=True
-  restablecido: drenados=30 restantes=0 dup=False perdidos=0
-  VEREDICTO TC-16: CUMPLE (retransmisión íntegra, 0 pérdida/0 dup)

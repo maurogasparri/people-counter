@@ -1,0 +1,50 @@
+Asistente de foco — resumen del informe
+Transcripción del informe que emite el asistente de foco al terminar la sesión.
+El asistente no produce un archivo de datos: su única salida es ese informe, de
+modo que esta transcripción es el registro de la puesta a punto de foco.
+=========================================================================
+
+Asistente de foco — reporte
+Fecha/hora: 2026-06-19 13:54:18
+Resultado
+PASS
+FOCO GLOBAL
+PASS
+IZQ nitidez centro: 1375 (≥200)
+PASS
+DER nitidez centro: 1414 (≥200)
+PASS
+IZQ corners: 654 (≥100)
+PASS
+DER corners: 694 (≥100)
+PASS
+Simetría L/R: diff 6.0% (≤15.0%)
+PASS
+Max zona diff: 32.6% (≤40.0%)
+PASS
+Distancia board: 1.50 m (objetivo 1.30-1.70 m)
+Nitidez por zona
+IZQ
+DER
+1608
+913
+568
+768
+1375
+573
+216
+375
+224
+1413
+978
+777
+873
+1414
+565
+321
+441
+264
+
+La matriz de nitidez lista 9 zonas por cámara, en el orden de lectura
+habitual (arriba-izquierda a abajo-derecha). Umbral de paso por zona
+y criterios de simetría, en el propio informe.

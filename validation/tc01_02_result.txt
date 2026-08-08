@@ -1,0 +1,31 @@
+TC-01 y TC-02 — conteo de ingreso y de egreso
+Eventos persistidos en la base, por ventana de ensayo.
+Extraído con validation/tc01_08_field_events.py — la interpretación
+está en docs/benchmark_results.md §2.
+==========================================================================
+
+Diez idas y vueltas del operador
+  ventana: 2026-06-25T11:11:27Z  ->  2026-06-25T11:14:15Z
+  eventos: 20  (10 ingreso(s), 10 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  08:11:56   out         0.852      1.68
+  08:12:03   in          0.877      1.67
+  08:12:10   out         0.830      1.70
+  08:12:17   in          0.877      1.70
+  08:12:23   out         0.873      1.71
+  08:12:30   in          0.877      1.70
+  08:12:35   out         0.848      1.71
+  08:12:43   in          0.902      1.70
+  08:12:49   out         0.877      1.71
+  08:12:57   in          0.877      1.67
+  08:13:04   out         0.841      1.71
+  08:13:11   in          0.884      1.70
+  08:13:18   out         0.848      1.70
+  08:13:25   in          0.866      1.68
+  08:13:32   out         0.834      1.71
+  08:13:40   in          0.877      1.70
+  08:13:47   out         0.819      1.71
+  08:13:56   in          0.895      1.70
+  08:14:03   out         0.862      1.71
+  08:14:11   in          0.887      1.70

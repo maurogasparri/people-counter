@@ -1,0 +1,21 @@
+TC-05 — robustez a la variación de apariencia (con capucha)
+Eventos persistidos en la base, por ventana de ensayo.
+Extraído con validation/tc01_08_field_events.py — la interpretación
+está en docs/benchmark_results.md §2.
+==========================================================================
+
+Cinco idas y vueltas (serie completa)
+  ventana: 2026-06-25T11:23:56Z  ->  2026-06-25T11:25:16Z
+  eventos: 10  (5 ingreso(s), 5 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  08:23:58   out         0.751      1.70
+  08:24:21   in          0.647      1.70
+  08:24:27   out         0.769      1.71
+  08:24:34   in          0.722      1.70
+  08:24:40   out         0.661      1.71
+  08:24:47   in          0.715      1.70
+  08:24:53   out         0.593      1.71
+  08:25:00   in          0.704      1.65
+  08:25:06   out         0.751      1.71
+  08:25:13   in          0.596      1.70

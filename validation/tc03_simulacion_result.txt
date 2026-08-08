@@ -1,0 +1,132 @@
+TC-03 — caracterización del algoritmo de asociación por simulación
+Banco: scripts/analysis/simulate_associator.py — entrada sintética de verdad
+conocida. Caracteriza la lógica de asociación y conteo, NO el sistema completo.
+Su modelo de ruido no está calibrado empíricamente.
+
+Comandos (semilla por defecto 20260803):
+  A1 y A2:  py scripts/analysis/simulate_associator.py --trials 2000 --symmetry-trials 500
+  Barrido:  py scripts/analysis/simulate_associator.py --sweep --sweep-trials 120
+  Adversa:  py scripts/analysis/simulate_associator.py --trials 2000 --symmetry-trials 500 \n              --separation-px 10 --p-miss 0.25 --speed-px-frame 24
+
+El barrido se corre por separado a propósito: las fases A1/A2 consumen el
+generador de aleatorios, de modo que encadenarlas cambia los valores del
+barrido para la misma semilla.
+==========================================================================
+
+# Banco de simulación del asociador
+
+## Configuración
+
+- Parámetros de tracking: `config\config.example.yaml`
+- `ambiguous_match_ratio` = 0.8 · `max_distance_px` = 100 · `depth_gate_m` = 0.5
+- Counting zone x 246–906, y 204–444; línea y=324 (ingreso = arriba→abajo)
+- Ruido: p_miss=0.1, σ_pos=6.0 px, σ_z=60.0 mm, conf~N(0.75,0.12)
+- Fusión por centroide previa al tracker: 150 px · separación del par: 60 px · velocidad 12 px/frame
+- Semilla: 20260803
+
+> El modelo de ruido no está calibrado empíricamente (no hay video grabado del prototipo con el cual ajustarlo) y omite la dependencia entre proximidad y calidad de detección. Ver el encabezado del script.
+
+## Control sin ruido
+
+- Ingreso contabilizado: sí · egreso contabilizado: sí · eventos emitidos: 2
+
+## A1 — Prueba determinista de simetría
+
+Cada ensayo se corre junto a su reflejo puntual exacto (misma realización de ruido, reflejada). Un algoritmo simétrico en dirección debe producir resultados espejados en todos los casos.
+
+- Pares evaluados: 500
+- Discrepancias respecto del espejo: **0**
+- Conclusión: no se detecta asimetría de dirección en las configuraciones evaluadas.
+
+## A2 — Prueba estadística pareada
+
+- Ensayos independientes: 2000
+- Pérdida de ingreso: 0/2000 = 0.000 (IC 95 % Wilson 0.000–0.002)
+- Pérdida de egreso: 0/2000 = 0.000 (IC 95 % Wilson 0.000–0.002)
+- Pares discordantes: b=0 (sólo ingreso), c=0 (sólo egreso)
+- McNemar exacto bilateral: p = 1.0000
+- Diferencia (ingreso − egreso) = +0.0000 (IC 95 % bootstrap +0.0000 — +0.0000)
+- La diferencia **no** es distinguible de cero al 95 %.
+
+- Rechazos por ambigüedad del asociador: total 15, media 0.01 por ensayo, máx 2
+
+## B — Superficie de decisión
+
+Fracción de cruces de verdad conocida no contabilizados, por separación entre personas y velocidad. `opuestos` = sentidos contrarios; `mismo` = control en el mismo sentido.
+
+| sep (px) | v (px/frame) | dirección | pérdida ingreso | pérdida egreso | pérdida total | rechazos/ensayo |
+|---:|---:|---|---:|---:|---:|---:|
+| 10 | 6 | opuestos | 0.100 | 0.100 | 0.100 | 1.67 |
+| 10 | 12 | opuestos | 0.042 | 0.050 | 0.046 | 0.86 |
+| 10 | 24 | opuestos | 0.017 | 0.017 | 0.017 | 0.32 |
+| 20 | 6 | opuestos | 0.075 | 0.075 | 0.075 | 0.95 |
+| 20 | 12 | opuestos | 0.008 | 0.008 | 0.008 | 0.61 |
+| 20 | 24 | opuestos | 0.000 | 0.017 | 0.008 | 0.30 |
+| 40 | 6 | opuestos | 0.017 | 0.017 | 0.017 | 0.12 |
+| 40 | 12 | opuestos | 0.000 | 0.000 | 0.000 | 0.10 |
+| 40 | 24 | opuestos | 0.000 | 0.000 | 0.000 | 0.15 |
+| 60 | 6 | opuestos | 0.000 | 0.000 | 0.000 | 0.03 |
+| 60 | 12 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 60 | 24 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 100 | 6 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 100 | 12 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 100 | 24 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 150 | 6 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 150 | 12 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 150 | 24 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 250 | 6 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 250 | 12 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 250 | 24 | opuestos | 0.000 | 0.000 | 0.000 | 0.00 |
+| 10 | 6 | mismo | — | — | 0.500 | 0.00 |
+| 10 | 12 | mismo | — | — | 0.500 | 0.00 |
+| 10 | 24 | mismo | — | — | 0.500 | 0.00 |
+| 20 | 6 | mismo | — | — | 0.500 | 0.00 |
+| 20 | 12 | mismo | — | — | 0.500 | 0.00 |
+| 20 | 24 | mismo | — | — | 0.500 | 0.00 |
+| 40 | 6 | mismo | — | — | 0.500 | 0.00 |
+| 40 | 12 | mismo | — | — | 0.500 | 0.00 |
+| 40 | 24 | mismo | — | — | 0.500 | 0.00 |
+| 60 | 6 | mismo | — | — | 0.500 | 0.00 |
+| 60 | 12 | mismo | — | — | 0.500 | 0.00 |
+| 60 | 24 | mismo | — | — | 0.500 | 0.00 |
+| 100 | 6 | mismo | — | — | 0.500 | 0.00 |
+| 100 | 12 | mismo | — | — | 0.500 | 0.00 |
+| 100 | 24 | mismo | — | — | 0.500 | 0.00 |
+| 150 | 6 | mismo | — | — | 0.000 | 0.00 |
+| 150 | 12 | mismo | — | — | 0.008 | 0.00 |
+| 150 | 24 | mismo | — | — | 0.054 | 0.03 |
+| 250 | 6 | mismo | — | — | 0.000 | 0.00 |
+| 250 | 12 | mismo | — | — | 0.000 | 0.00 |
+| 250 | 24 | mismo | — | — | 0.000 | 0.00 |
+
+==========================================================================
+PARAMETRIZACIÓN ADVERSA — separación 10 px, p_miss 0,25, velocidad 24 px/cuadro
+==========================================================================
+
+Régimen elegido a propósito, NO el punto de operación. Se corre porque en la
+separación nominal la pérdida es cero en ambos sentidos y la prueba de simetría
+queda vacía: sólo puede ponerse a prueba donde hay pérdida que comparar.
+
+## Control sin ruido
+
+- Ingreso contabilizado: sí · egreso contabilizado: sí · eventos emitidos: 2
+
+## A1 — Prueba determinista de simetría
+
+Cada ensayo se corre junto a su reflejo puntual exacto (misma realización de ruido, reflejada). Un algoritmo simétrico en dirección debe producir resultados espejados en todos los casos.
+
+- Pares evaluados: 500
+- Discrepancias respecto del espejo: **0**
+- Conclusión: no se detecta asimetría de dirección en las configuraciones evaluadas.
+
+## A2 — Prueba estadística pareada
+
+- Ensayos independientes: 2000
+- Pérdida de ingreso: 64/2000 = 0.032 (IC 95 % Wilson 0.025–0.041)
+- Pérdida de egreso: 70/2000 = 0.035 (IC 95 % Wilson 0.028–0.044)
+- Pares discordantes: b=42 (sólo ingreso), c=48 (sólo egreso)
+- McNemar exacto bilateral: p = 0.5984
+- Diferencia (ingreso − egreso) = -0.0030 (IC 95 % bootstrap -0.0120 — +0.0060)
+- La diferencia **no** es distinguible de cero al 95 %.
+
+- Rechazos por ambigüedad del asociador: total 671, media 0.34 por ensayo, máx 5

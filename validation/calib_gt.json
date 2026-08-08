@@ -1,0 +1,35 @@
+{
+  "distance_mm": 1765.0,
+  "zones": {
+    "center": {
+      "depth_mm": 1717.5445556640625,
+      "std_mm": 5.369908332824707,
+      "err_pct": -2.6886937300814444,
+      "fill_pct": 100.0
+    },
+    "top-left": null,
+    "top-right": {
+      "depth_mm": 1577.0853271484375,
+      "std_mm": 82.31533813476562,
+      "err_pct": -10.64672367430949,
+      "fill_pct": 95.97439236111111
+    },
+    "bottom-left": null,
+    "bottom-right": {
+      "depth_mm": 1290.17431640625,
+      "std_mm": 59.21004104614258,
+      "err_pct": -26.902305019475918,
+      "fill_pct": 91.11328125
+    }
+  },
+  "center_threshold_pct": 5.0,
+  "edge_ratio": 10.005715682113413,
+  "verdict": "PASS",
+  "checks": [
+    {
+      "name": "Error centro",
+      "detail": "2.69% \u2264 5.0%",
+      "ok": true
+    }
+  ]
+}

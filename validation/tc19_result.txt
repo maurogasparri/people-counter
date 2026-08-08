@@ -1,0 +1,120 @@
+TC-19 — disponibilidad del stack en la nube
+Las tres condiciones del criterio, reconstruidas por separado.
+
+
+==========================================================================
+BLOQUE 1 — disponibilidad de los servicios (288 intervalos de 5 min)
+==========================================================================
+
+﻿  ventana : 2026-06-21 19:20 a 2026-06-22 19:20 UTC (24.0 h)
+  local   : 2026-06-21 16:20 a 2026-06-22 16:20 (−03)
+  intervalos de 5 min esperados: 288
+
+  servicio  métrica                   puntos  cobertura      min      max  lectura
+  IoT Core  PublishIn.Success            287      99.7%      1.0      6.0  publicaciones aceptadas
+  IoT Core  Failure                        0       0.0%      0.0      0.0  fallos del broker
+  RDS       CPUUtilization               288     100.0%      5.0      6.6  instancia viva
+  RDS       DatabaseConnections          288     100.0%      9.0     13.8  conexiones
+  Fargate   LiveTaskCount                288     100.0%      1.0      1.0  tareas vivas
+
+  --- veredicto por servicio ---
+    RDS        DISPONIBLE   CPUUtilization presente en 100.0% de los intervalos
+    Fargate    DISPONIBLE   LiveTaskCount ≥ 1 en todos los puntos (0 intervalos sin tarea), cobertura 100.0%
+    IoT Core   DISPONIBLE   0 fallos del broker; publicaciones aceptadas en 99.7% de los intervalos
+
+  VEREDICTO TC-19: CUMPLE (criterio: disponibilidad ≥ 99 % sobre 24 h del stack en la nube)
+
+  Nota: la continuidad de la telemetría del dispositivo NO integra este
+  cálculo. Sus huecos son equipo apagado y no indisponibilidad de la nube.
+
+==========================================================================
+BLOQUE 2 — reevaluación de la condición de las alarmas
+==========================================================================
+
+﻿  ventana UTC   : 2026-06-21 19:20 a 2026-06-22 19:20
+  ventana local : 2026-06-21 16:20 a 2026-06-22 16:20 (−03)
+  alarmas       : 10
+
+--- people-counter-grafana-5xx-dev
+    condición : HTTPCode_Target_5XX_Count Sum GreaterThanThreshold 5.0 · 1×300s · faltantes=notBreaching
+    datos     : 0/288 intervalos con métrica · SIN DATOS
+    resultado : nunca alcanzó la condición
+
+--- people-counter-grafana-tasks-dev
+    condición : HealthyHostCount Minimum LessThanThreshold 1.0 · 2×300s · faltantes=breaching
+    datos     : 288/288 intervalos con métrica · min=1 max=1
+    resultado : nunca alcanzó la condición
+
+--- people-counter-ingest-pos-errors-dev
+    condición : Errors Sum GreaterThanOrEqualToThreshold 5.0 · 2×300s · faltantes=notBreaching
+    datos     : 0/288 intervalos con métrica · SIN DATOS
+    resultado : nunca alcanzó la condición
+
+--- people-counter-iot-errors-dev
+    condición : RuleMessageThrottled Sum GreaterThanThreshold 5.0 · 1×300s · faltantes=notBreaching
+    datos     : 0/288 intervalos con métrica · SIN DATOS
+    resultado : nunca alcanzó la condición
+
+--- people-counter-persist-event-errors-dev
+    condición : Errors Sum GreaterThanOrEqualToThreshold 3.0 · 1×300s · faltantes=notBreaching
+    datos     : 287/288 intervalos con métrica · min=0 max=0
+    resultado : nunca alcanzó la condición
+
+--- people-counter-query-aggregates-errors-dev
+    condición : Errors Sum GreaterThanOrEqualToThreshold 5.0 · 2×300s · faltantes=notBreaching
+    datos     : 1/288 intervalos con métrica · min=0 max=0
+    resultado : nunca alcanzó la condición
+
+--- people-counter-query-aggregates-latency-dev
+    condición : LatencyMs Maximum GreaterThanThreshold 5000.0 · 2×300s · faltantes=notBreaching
+    datos     : 1/288 intervalos con métrica · min=5444 max=5444
+    resultado : nunca alcanzó la condición
+
+--- people-counter-rds-connections-dev
+    condición : DatabaseConnections Maximum GreaterThanThreshold 60.0 · 3×300s · faltantes=notBreaching
+    datos     : 288/288 intervalos con métrica · min=9 max=14
+    resultado : nunca alcanzó la condición
+
+--- people-counter-rds-cpu-dev
+    condición : CPUUtilization Average GreaterThanThreshold 75.0 · 3×300s · faltantes=notBreaching
+    datos     : 288/288 intervalos con métrica · min=4.964 max=6.626
+    resultado : nunca alcanzó la condición
+
+--- people-counter-rds-storage-dev
+    condición : FreeStorageSpace Average LessThanThreshold 2000000000.0 · 1×300s · faltantes=notBreaching
+    datos     : 288/288 intervalos con métrica · min=1.627e+10 max=1.627e+10
+    resultado : nunca alcanzó la condición
+
+======================================================================
+  NINGUNA de las diez alarmas alcanzó su condición durante la ventana.
+  La condición «sin alarmas disparadas» del criterio queda acreditada.
+
+==========================================================================
+BLOQUE 3 — accesibilidad de los tableros
+==========================================================================
+
+﻿  ventana UTC   : 2026-06-21 19:20 a 2026-06-22 19:20
+  ventana local : 2026-06-21 16:20 a 2026-06-22 16:20 (−03)
+  intervalos de 5 min esperados: 288
+
+  métrica                     stat      puntos   suma/mín        máx  lectura
+  HealthyHostCount            Minimum      288          1          1  destinos sanos (mínimo del intervalo)
+  UnHealthyHostCount          Maximum      288          0          0  destinos NO sanos (máximo)
+  RequestCount                Sum          288        842        228  peticiones atendidas
+  HTTPCode_Target_2XX_Count   Sum           59        295        114  respuestas 2XX del destino
+  HTTPCode_Target_3XX_Count   Sum           90        510        114  respuestas 3XX del destino
+  HTTPCode_Target_4XX_Count   Sum            8         37         14  respuestas 4XX del destino
+  HTTPCode_Target_5XX_Count   Sum            0          0          0  respuestas 5XX del destino
+  HTTPCode_ELB_5XX_Count      Sum            0          0          0  errores del propio balanceador
+  TargetResponseTime          Average       94   0.000764     0.0213  latencia media de respuesta (s)
+  TargetResponseTime          Maximum       94   0.000764     0.1106  latencia máxima de respuesta (s)
+
+  --- lectura ---
+  destinos sanos    : 288/288 intervalos con métrica (100.0%); intervalos con 0 destinos sanos: 0
+  destinos NO sanos : máximo observado 0
+  respuestas 5XX    : destino 0 · balanceador 0
+  respuestas 2XX    : 295 sobre 842 peticiones
+  latencia          : media 0.005 s · máx 0.111 s
+
+  VEREDICTO accesibilidad: ACREDITADA
+  (criterio: ≥1 destino sano en toda la ventana y ausencia de 5XX)

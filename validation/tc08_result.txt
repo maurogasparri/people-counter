@@ -1,0 +1,38 @@
+TC-08 — estimación de estatura
+Eventos persistidos en la base, por ventana de ensayo.
+Extraído con validation/tc01_08_field_events.py — la interpretación
+está en docs/benchmark_results.md §2.
+==========================================================================
+
+Tanda 1 — operador (reutiliza cruces de TC-01/TC-02)
+  ventana: 2026-06-25T11:11:50Z  ->  2026-06-25T11:12:20Z
+  eventos: 4  (2 ingreso(s), 2 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  08:11:56   out         0.852      1.68
+  08:12:03   in          0.877      1.67
+  08:12:10   out         0.830      1.70
+  08:12:17   in          0.877      1.70
+
+Tanda 2 — segundo sujeto
+  ventana: 2026-06-25T12:33:00Z  ->  2026-06-25T12:33:35Z
+  eventos: 7  (3 ingreso(s), 4 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  09:33:03   out         0.816      1.76
+  09:33:06   in          0.604      1.78
+  09:33:11   out         0.801      1.78
+  09:33:15   in          0.737      1.78
+  09:33:20   out         0.830      1.76
+  09:33:26   in          0.841      1.85
+  09:33:31   out         0.780      1.78
+
+Tanda 3 — operador
+  ventana: 2026-06-25T12:41:50Z  ->  2026-06-25T12:42:16Z
+  eventos: 4  (2 ingreso(s), 2 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  09:41:52   out         0.852      1.70
+  09:41:59   in          0.877      1.69
+  09:42:06   out         0.841      1.70
+  09:42:13   in          0.841      1.69

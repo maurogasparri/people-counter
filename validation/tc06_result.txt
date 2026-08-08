@@ -1,0 +1,12 @@
+TC-06 — rechazo de objetos por debajo del umbral de altura
+Eventos persistidos en la base, por ventana de ensayo.
+Extraído con validation/tc01_08_field_events.py — la interpretación
+está en docs/benchmark_results.md §2.
+==========================================================================
+
+Ocho pasadas gateando
+  ventana: 2026-06-25T21:52:40Z  ->  2026-06-25T21:54:05Z
+  eventos: 1  (0 ingreso(s), 1 egreso(s))
+
+  hora local   sentido  confianza  estatura
+  18:53:34   out         0.453       -  
