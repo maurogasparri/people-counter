@@ -485,9 +485,13 @@ counter:
   # Filtro anti-FP no-humanos por altura. Si la MEDIANA de head_height_mm
   # del track durante la visita es < este threshold (m), el counter NO
   # emite el conteo Y el preview no muestra el bbox (el pipeline va a
-  # rechazarlo). Tracks sin medición SGBM (mediana=None) NUNCA se filtran
-  # — preferimos preservar recall en casos donde la altura falla por
-  # motion blur / oclusiones. 0.0 = filtro desactivado (back-compat).
+  # rechazarlo). Tracks sin medición SGBM (mediana=None) NUNCA los filtra
+  # ESTE guard — preferimos preservar recall en casos donde la altura falla
+  # por motion blur / oclusiones. OJO: eso NO significa que pasen siempre;
+  # a los que además traen confianza baja los rechaza `min_count_confidence`
+  # (ver más abajo). El reparto es: con altura bajo el umbral -> este guard;
+  # sin altura y confianza baja -> min_count_confidence.
+  # 0.0 = filtro desactivado (back-compat).
   # 1.0 filtra perros + objetos < 1m sin perder personas de más de 1 m;
   # 0.7 más conservador. Caso real en las instalaciones 2026-05-24: perro caminando
   # cruzaba la línea y disparaba IN; campera en silla con SGBM noise

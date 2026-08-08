@@ -386,9 +386,12 @@ class Counter:
 
     # Filtro anti-FP no-humanos por altura. Si la MEDIANA de head_height_mm del
     # track durante la visita es < este threshold (m), el counter NO emite el
-    # conteo. Tracks sin medición de altura (median = None) NUNCA se filtran —
-    # preferimos preservar recall en casos donde SGBM falla (motion blur,
-    # oclusiones). Default 0.0 = filtro desactivado (back-compat). Tuneable
+    # conteo. Tracks sin medición de altura (median = None) NUNCA los filtra
+    # ESTE guard — preferimos preservar recall en casos donde SGBM falla (motion
+    # blur, oclusiones). NO leer eso como "pasan siempre": a los que además
+    # traen confianza baja los rechaza ``min_count_confidence``. El reparto es:
+    # altura medida bajo el umbral -> este guard; sin altura y confianza baja ->
+    # min_count_confidence. Default 0.0 = filtro desactivado (back-compat). Tuneable
     # per-site: 1.0 filtra perros + objetos < 1m; 0.7 más conservador.
     # Caso real hallado en la validación en las instalaciones 2026-05-24: perro caminando por el local cruzaba la
     # línea y disparaba IN; campera en silla con SGBM noise también.
@@ -1310,7 +1313,9 @@ class Counter:
             # MEDIANA de head_height_mm del track durante la visita es
             # menor que ``min_count_height_m`` y la medición existe (no
             # None), el counter rechaza el emit. None = sin medición SGBM
-            # confiable -> pasa (recall sobre precisión). Caso hallado en la validación
+            # confiable -> pasa POR ACÁ, pero lo evalúa después el guard de
+            # ``min_count_confidence`` (recall sobre precisión sólo si la
+            # confianza acompaña). Caso hallado en la validación
             # en las instalaciones 2026-05-24: perro caminando, campera en silla.
             if label and self.min_count_height_m > 0:
                 track_height_m = _aggregate_height_m_from_track(track)
