@@ -311,8 +311,11 @@ sudo systemctl enable wifi-monitor people-counter people-counter-reset.timer cpu
 `cpu-freq-cap` capa el CPU a 1500 MHz (margen térmico para el gabinete cerrado,
 sin costo de FPS por ser el pipeline Hailo-bound). Es parte del deploy estándar;
 en un mount muy ventilado es innecesario y se puede deshabilitar con
-`sudo systemctl disable --now cpu-freq-cap`. En gabinete cerrado el steady-state
-ronda ~80-82 °C, así que conviene `status_led.cpu_temp_critical_c: 85` en el config.
+`sudo systemctl disable --now cpu-freq-cap`. En gabinete cerrado y con el cap
+aplicado, la jornada medida en el emplazamiento dio **73,9 °C de media con picos
+hasta 82,6 °C** bajo carga, sin que el firmware activara la protección térmica
+(ver L2 en `docs/benchmark_results.md`). Por esos picos conviene
+`status_led.cpu_temp_critical_c: 85` en el config.
 
 ## 11. Verificar todo
 

@@ -50,12 +50,22 @@ por `<ip-del-dispositivo>`.
 | TC-18 — reinicio tras corte de energía real | — | `tc18_powercut_result.txt` |
 | TC-19 — disponibilidad del stack en la nube | `tc19_cloud_availability.py` · `tc19_alarm_reconstruction.py` · `tc19_dashboard_reachability.py` | `tc19_result.txt` — los tres bloques en un solo archivo |
 
+**TC-03 es el único caso con dos salidas**, porque tiene dos evidencias de
+naturaleza distinta: el ensayo de campo y la caracterización del algoritmo por
+simulación. Esta última —`tc03_simulacion_result.txt`— trae la prueba de
+simetría por reflexión, la pareada y la superficie de decisión, en sus dos
+parametrizaciones, la nominal y una **adversa** de separación 10 px y p_miss
+0,25 que es donde la simetría puede ponerse a prueba. **Caracteriza el
+algoritmo, no el sistema completo**, y su modelo de ruido no está calibrado
+empíricamente.
+
 ## Caracterización de banco
 
 | Medición | Datos crudos | Procesa |
 |---|---|---|
 | Consumo eléctrico | `power_idle.csv` · `power_session.csv` · `power_fullthroughput.csv` | `analyze_bench.py` |
-| Térmico | `stress_monitor.csv` · `soak_system.csv` · `thermal_deploy_uncapped.csv` · `thermal_deploy_capped_1500mhz.csv` | `analyze_bench.py` → `analysis_summary.txt` |
+| Térmico | `stress_monitor.csv` · `soak_system.csv` (banco) · `thermal_deploy_uncapped.csv` · `thermal_deploy_capped_1500mhz.csv` (fuera del emplazamiento) | `analyze_bench.py` → `analysis_summary.txt` |
+| Térmico en el emplazamiento (L2) | `thermal_deploy_onsite.csv` — telemetría de salud de la sesión del 24-06 14:30 al 25-06 19:06, la que cubre la campaña dirigida; 349 muestras, mismo formato que las series anteriores | — |
 | Memoria | `stress_monitor.csv` · `soak_system.csv` | `memory_working_set.py` → `memory_working_set_result.txt` |
 | FPS, throughput y latencia por etapa | `profile_empty.log` · `profile_empty_perframe.csv` | `parse_profile.py` → `profile_empty_summary.txt` |
 | Sincronización de cámaras (delta L/R) | `camsync_sin_sync.csv` · `camsync_con_sync.csv` | `camsync_sin_sync.py` · `camsync_con_sync.py` |

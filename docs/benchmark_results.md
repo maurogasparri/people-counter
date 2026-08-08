@@ -1201,7 +1201,7 @@ La tabla los resume; el detalle de las limitaciones sigue debajo.
 | Compresión de estatura a mount bajo (L1) | TC-08 (estatura) | edge-bleed near-camera en el extractor de head-depth a mount ~2,4 m | techo `max_head_height` + ajuste SGBM (uniqueness / WLS) | **Mitigado** — validado A/B, dentro de ±10 cm |
 | Desfase estéreo episódico ~19 ms (~12 % de pares) | caracterización de sync L/R | captura en libre corrida: las fases de ambos sensores derivan | captura sincronizada por software (converge + hold) | **Resuelto** — p95 0,05 ms, 100 % < 5 ms |
 | Sub-conteo en cruces simultáneos en sentidos opuestos | TC-03 dirigido (2 corridas) | no aislada con el registro disponible; el modo observado es la pérdida de **uno** de los dos cruces de cada par, sin fusión de identidades | canary `ambiguous_reject_count`, incorporado después para observar la hipótesis en producción | **Limitación documentada** |
-| Throttling térmico en gabinete cerrado (L2) | validación en las instalaciones | heat-soak del gabinete cerrado (~84 °C) — el gabinete, no el cooler, es el factor dominante | freq-cap 1500 MHz (sin pérdida de FPS por ser Hailo-bound); ranuras de ventilación ampliadas como medida adicional opcional | **Mitigado** — con cap ~80 °C prom (máx 81 °C) vs ~84 °C sin cap, 0 throttling (banco: máx 64,8 °C) |
+| Throttling térmico en gabinete cerrado (L2) | validación en las instalaciones | heat-soak del gabinete cerrado — el gabinete, no el disipador, es el factor dominante; el 24-06, sin límite, llega a 84,25 °C, el firmware **activa** la protección térmica y el reloj cae de 2400 a 2311 MHz | freq-cap 1500 MHz (sin pérdida de FPS por ser Hailo-bound); ranuras de ventilación ampliadas como medida adicional opcional | **Mitigado** — el 25-06, con cap y bajo la carga de la campaña dirigida: media 73,9 °C, máximo 82,6 °C sobre 233 muestras y **cero** con el límite térmico activo (banco: máx 64,8 °C) |
 | CPU alta en escena vacía (~162 % agregado) | caracterización de CPU / profiling de banco | conversión de color redundante por frame + rectificación derecha eager + parsing de tramas sin pre-filtro + sin FPS adaptativo | eliminación de la conversión + rectificación lazy + pre-filtro de tramas + `vision.idle_throttle` (10 FPS en escena vacía, wake instantáneo) | **Resuelto** — ~50 % en escena vacía, count-neutral (validado de extremo a extremo en las instalaciones) |
 
 ### Limitaciones conocidas (detalle)
@@ -1217,23 +1217,99 @@ A/B sobre la misma persona en las instalaciones (sujeto de 1,82 m: de ~1,73 m / 
 ~1,78 m / −4 cm, dentro de ±10 cm, sin costo de FPS). Residual ~−4 cm; su fix
 de raíz (estimador robusto del crown) queda fuera del alcance del prototipo.
 
-**L2 — Margen térmico en gabinete cerrado — MITIGADA.** En la condición real de
-uso —el dispositivo dentro del gabinete impreso cerrado, donde el calor se acumula
-y el propio gabinete es el factor térmico dominante— bajo carga sostenida y **sin
-límite de frecuencia** el CPU alcanzó un máximo de **84,3 °C** y el firmware activó
-el throttling térmico (el mismo dispositivo fuera del gabinete opera ~60 °C).
-Mitigación adoptada: limitar la frecuencia máxima del CPU a 1500 MHz
-(`cpu-freq-cap.service`, persistente; sin pérdida de FPS por ser Hailo-bound). Con
-ese límite la temperatura **se estabiliza en ~80 °C de promedio (máx 81,0 °C)** y
-el **throttling desaparece por completo**; en banco (Active Cooler, sin gabinete)
-el máximo fue 64,8 °C. El freq-cap por sí solo mantiene al CPU fuera de la zona de
-throttling, por lo que se adopta como **mitigación definitiva** (no un parche a
-revertir); la **ampliación de las ranuras de ventilación queda como medida
-adicional, no requerida** en esta configuración.
+**L2 — Margen térmico en gabinete cerrado — MITIGADA.** La limitación es sobre
+el comportamiento del **gabinete impreso cerrado en uso real**. Las dos jornadas
+en que el dispositivo estuvo montado en su emplazamiento, dentro del gabinete,
+son el **24 de junio** —día del montaje— y el **25**, en el que se ejecutó la
+campaña dirigida. Las cifras de abajo se acotan a esas dos jornadas, y no al
+promedio de los archivos completos, que abarcan momentos en otras condiciones.
+
+**24 de junio — sin límite de frecuencia.** Ya montado en el emplazamiento, la
+temperatura sube de 60,1 °C a **84,25 °C** entre las 14:30 y las 14:47. En el
+pico el firmware **activa** el
+límite térmico y **la frecuencia cae de 2400 a 2311 MHz**: el throttling no se
+infiere de una bandera, se ve ocurrir en el registro. Es la única muestra de toda
+la serie con el bit activo. Ese mismo día se aplica el límite de frecuencia, que
+ya figura en 1500 MHz hacia el final de la jornada.
+
+**25 de junio — con límite a 1500 MHz, y bajo la carga de los ensayos.** Es la
+jornada más exigente del período con límite, porque es cuando se ejecutó la
+campaña: 233 muestras de telemetría, `arm_clock_mhz` en 1500 en todas.
+
+| | Valor |
+|---|---:|
+| Temperatura media | **73,9 °C** |
+| Máximo | **82,6 °C** |
+| Muestras con el límite térmico **activo** | **0** |
+
+Las banderas que aparecen ese día son **históricas**, arrastradas del episodio
+del 24: indican que hubo throttling en algún momento previo, no que lo haya
+durante los ensayos. Con 82,6 °C de pico y el límite de frecuencia aplicado, el
+firmware no volvió a activar la protección térmica.
+
+Que sean del día anterior no es una conjetura: **el 24 y el 25 son la misma
+sesión**. El dispositivo arrancó el 24 a las 14:24 y siguió encendido hasta las
+19:06 del 25, veintiocho horas y media sin reiniciar, con el equipo montado en
+su emplazamiento durante todo ese lapso. En esa única sesión entra el pico de
+84,25 °C con la protección activándose, la aplicación del límite de frecuencia y
+la campaña dirigida completa. Las banderas no se limpian hasta el siguiente
+arranque, que fue el 26 a las 09:20 — y desde ahí figuran en cero.
+
+> **Qué cubren los archivos publicados y qué no.**
+> `thermal_deploy_uncapped.csv` reúne 1 162 muestras en nueve jornadas entre el 7
+> y el 24 de junio, de las cuales sólo la última corresponde al gabinete en el
+> emplazamiento; los días previos, con el equipo fuera, no superan los 63,9 °C.
+> `thermal_deploy_capped_1500mhz.csv` contiene 1 272 muestras en **dos bloques
+> separados por 35,9 días sin registro**, y **ninguno de los dos corresponde al
+> emplazamiento**: 687 muestras del 26 al 28 de junio y 585 del 3 al 5 de agosto,
+> ambos con el equipo ya retirado y operando en el puesto de desarrollo. Su media
+> de 64,2 °C y su máximo de 67,75 describen el régimen del límite de frecuencia
+> **fuera** de la condición que esta limitación caracteriza, con una carga muy
+> baja —2 y 5 eventos de conteo en tres días— y a unos diez grados por debajo de
+> lo que el mismo límite dio en el emplazamiento bajo la carga de los ensayos.
+>
+> **Ninguno de los dos cubre las jornadas del emplazamiento**: el de sin límite
+> termina el 24 y el de con límite empieza el 26, de modo que el 25 —el día de la
+> campaña— no está en ninguno. Por eso se publica una tercera serie,
+> `validation/thermal_deploy_onsite.csv`, con la **sesión completa del
+> emplazamiento**: 349 muestras entre las 14:30 del 24 y las 19:06 del 25, en el
+> mismo formato de columnas que las otras dos. Promediar el archivo con límite
+> entero da 63,3 °C, que no describe ninguna situación real.
+
+**Mitigación adoptada:** limitar la frecuencia máxima del procesador a 1500 MHz
+(`cpu-freq-cap.service`, persistente; sin pérdida de FPS por ser el pipeline
+Hailo-bound). El contraste entre los dos días es directo: la misma condición de
+gabinete cerrado pasa de **cruzar el umbral de protección térmica** a operar bajo
+la carga de los ensayos sin activarla. En banco, con disipador activo y sin
+gabinete, el máximo fue 64,8 °C.
+
+Por eso el límite de frecuencia se adopta como **mitigación definitiva** y no
+como un parche a revertir; la **ampliación de las ranuras de ventilación queda
+como medida adicional, no requerida** en esta configuración.
+
+*Procedencia: `validation/thermal_deploy_onsite.csv` para las dos jornadas del
+emplazamiento —349 muestras de la sesión, de las cuales 233 corresponden al 25 y
+reproducen las cifras citadas—; `validation/thermal_deploy_uncapped.csv` y
+`validation/thermal_deploy_capped_1500mhz.csv` para las series fuera del
+emplazamiento.*
 
 **L3 — Alcance de la validación de conteo.** La evidencia de conteo es de
-**carácter indicativo**: una unidad, un operador y muestras del orden de la
-decena por caso. No es una limitación del producto sino de la fuerza estadística
+**carácter indicativo**: una unidad, un operador, muestras del orden de la decena
+por caso y —el dato más acotante— **una única sesión continua**. Los ocho casos
+de campo, de TC-01 a TC-08, se ejecutaron entre las 14:24 del 24 de junio y las
+19:06 del 25, con el dispositivo montado en su emplazamiento y sin un solo
+reinicio de por medio: 28,7 horas. No hay repetición en otra jornada, con otra
+puesta a punto ni en otras condiciones de luz, de modo que la evidencia no
+distingue entre el comportamiento del sistema y las particularidades de esa
+sesión.
+
+Los demás casos no dependen del montaje y por eso no comparten esa restricción:
+TC-09, TC-10, TC-16 y TC-17 son pruebas de componente sobre bases temporales;
+TC-11, TC-12, TC-13 y TC-19 se ejecutan contra la nube; TC-14 combina un barrido
+en la nube con una auditoría del disco del equipo; TC-15 abarca 19 jornadas de
+actividad; y TC-18 es un corte físico de alimentación del 21 de junio, anterior
+al montaje. La caracterización de banco de §3 es también del 21 de junio, fuera
+del emplazamiento. No es una limitación del producto sino de la fuerza estadística
 de la evidencia. Los casos dirigidos controlados la elevan —TC-01, TC-02, TC-04,
 TC-05 y TC-07 con sus eventos persistidos tabulados uno a uno, TC-08 con dos
 sujetos y quince mediciones, TC-06 con alturas medidas por el propio sistema—,
