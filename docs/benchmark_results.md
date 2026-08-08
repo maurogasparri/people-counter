@@ -1159,13 +1159,18 @@ limpia de la sesión —desviación de 5,4 mm con 100 % de relleno— y verifica
 el patrón inverso.
 
 Las tomas de esa sesión se hicieron con el **modo de baja luz** del asistente,
-pensado justamente para espacios chicos y luz difícil: relaja las guardas de
-calidad —exposición, desenfoque, nitidez de esquina y balance entre cámaras— y
-emite una advertencia genérica de no confiar en la calibración resultante para
-profundidad. Esa advertencia se imprime siempre que se usa el modo, con
-independencia del resultado: es una precaución de la herramienta, no una
-medición sobre esta calibración. El registro completo de la corrida está
-publicado para que pueda comprobarse.
+pensado justamente para espacios chicos y luz difícil. Ese modo relaja las
+guardas de calidad de **captura** —exposición, desenfoque, nitidez de esquina y
+balance entre cámaras— pero **no altera el algoritmo de calibración**: lo que
+retira son las garantías automáticas, de modo que la carga se traslada a la
+verificación explícita. Por eso el asistente advierte que la calibración
+resultante no debe darse por buena sin verificarla, y esa advertencia se imprime
+siempre que se usa el modo, con independencia del resultado.
+
+La verificación es la que se detalla arriba, y **esta calibración la superó**:
+RMS de reproyección 0,290 px y −2,69 % contra distancia medida en la zona
+central, con 100 % de relleno. El registro completo de la corrida está publicado
+para que pueda comprobarse.
 
 **Por eso el respaldo de la profundidad no es el informe de calibración sino
 TC-08**, que la mide donde importa y contra una referencia independiente:

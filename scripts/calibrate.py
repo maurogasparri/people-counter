@@ -158,9 +158,11 @@ def _apply_low_light_overrides() -> None:
     _calib_mod.QUALITY_MIN_CORNER_SHARPNESS = 5.0
     _calib_mod.QUALITY_MAX_LR_BRIGHTNESS_PCT = 70.0
     logger.warning(
-        "Low-light mode enabled — quality gates relaxed (exposure/blur/"
-        "corner-sharp/LR-balance). PoC only, do NOT trust the resulting "
-        "calibration for depth.",
+        "Low-light mode enabled — CAPTURE quality gates relaxed "
+        "(exposure/blur/corner-sharp/LR-balance). The calibration algorithm is "
+        "unchanged; what is removed are the automatic guarantees. Do NOT accept "
+        "the resulting calibration without verifying it (reprojection RMS + "
+        "depth ground-truth).",
     )
 
 
@@ -4737,14 +4739,15 @@ def main() -> None:
     p_wiz.add_argument(
         "--low-light",
         action="store_true",
-        help="Modo PoC para corridas en luz baja / cuartos "
-        "chicos. Afloja los gates de calidad de frame "
+        help="Modo para corridas en luz baja / cuartos "
+        "chicos. Afloja los gates de calidad de CAPTURA "
         "(exposición, blur, corner sharpness, balance de "
         "brightness L/R) así las capturas no son "
-        "rechazadas por las condiciones de la escena. La "
-        "calibración resultante NO va a ser válida para "
-        "depth de producción — usar solo para validar el "
-        "wizard end-to-end.",
+        "rechazadas por las condiciones de la escena. NO "
+        "altera el algoritmo de calibración: retira las "
+        "garantías automáticas, de modo que la calibración "
+        "resultante NO debe darse por buena sin verificarla "
+        "(RMS de reproyección + ground-truth de profundidad).",
     )
     p_wiz.add_argument(
         "--meter",
